@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,11 +85,36 @@ func setupHost(t *testing.T, h host, vids ...int) {
 	mustSSH(t, h.vm, b.String())
 }
 
+// testUsers are the login users the tests create; all other configured
+// users (e.g. a person's own login on the lab switch) are kept.
+var testUsers = []string{"alice", "bob"}
+
+// keptUsers returns the set lines of the configured non-test users.
+func keptUsers(t *testing.T) string {
+	t.Helper()
+	out := mustSSH(t, sw1, "swcli -c 'show configuration system login | display set'")
+	var keep []string
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, "set system login user ") && !strings.HasPrefix(l, "deactivate system login user ") {
+			continue
+		}
+		fs := strings.Fields(l)
+		if len(fs) > 4 && !slices.Contains(testUsers, fs[4]) {
+			keep = append(keep, l)
+		}
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	return strings.Join(keep, "\n") + "\n"
+}
+
 // configure replaces sw1's configuration with setLines and commits it
-// (commit + confirm).
+// (commit + confirm). Configured login users other than the test users are
+// kept.
 func configure(t *testing.T, setLines string) {
 	t.Helper()
-	base := "set system host-name sw1\n"
+	base := "set system host-name sw1\n" + keptUsers(t)
 	mustSSH(t, sw1, "cat > /root/lab.set <<'EOF'\n"+base+setLines+"\nEOF")
 	out := mustSSH(t, sw1, `swcli -c "configure
 load override lab.set
@@ -583,7 +609,7 @@ set system login user bob authentication ssh-key "%s"
 `, k, k)
 	configure(t, users)
 	out := mustSSH(t, sw1, "getent passwd alice bob; stat -c '%U %a %n' /home/alice/.ssh /home/alice/.ssh/authorized_keys")
-	for _, want := range []string{"alice:x:2000:", "Alice Admin", ":/usr/local/bin/swcli", "bob:x:2001:", "root 755 /home/alice/.ssh", "root 644 /home/alice/.ssh/authorized_keys"} {
+	for _, want := range []string{"alice:x:20", "Alice Admin", ":/usr/local/bin/swcli", "bob:x:20", "root 755 /home/alice/.ssh", "root 644 /home/alice/.ssh/authorized_keys"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
