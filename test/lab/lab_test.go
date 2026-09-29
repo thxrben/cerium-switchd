@@ -67,7 +67,7 @@ var (
 	hSrv1 = host{"srv1", "10.5.176.101", "ens19", "1/ens23", 1}
 	// sw2's host uses the underlay link (sw2 ens1 <-> sw1 ens1): the
 	// stacking links (stk-*) stay free for the stacking tests.
-	hSw2 = host{"sw2", "10.5.176.96", "ens1", "1/ens1", 2}
+	hSw2  = host{"sw2", "10.5.176.96", "ens1", "1/ens1", 2}
 	hSw3  = host{"sw3", "10.5.176.97", "ens23", "1/ens2", 3}
 	hosts = []host{hSrv1, hSw2, hSw3}
 )
