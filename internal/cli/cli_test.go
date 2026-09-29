@@ -493,6 +493,15 @@ func (f *fakeOps) Offload() ([]OffloadPort, error) {
 	return []OffloadPort{{Name: "1/0/0", Linux: "enp1s0f0", Driver: "tg3", MaxSpeedMbps: 1000, Pause: "yes", TC: "-", VLANFilter: "-", Csum: "on", TSO: "on", GRO: "on"}}, nil
 }
 
+func (f *fakeOps) Routes(instance string) ([]Route, error) {
+	if instance == "nope" {
+		return nil, fmt.Errorf("routing instance nope does not exist on this member")
+	}
+	return []Route{{Dest: "::/0", Proto: "static", Metric: 20, Via: "fd00::1 via irb.10"},
+		{Dest: "0.0.0.0/0", Proto: "static", Metric: 20, Via: "10.5.0.1 via 1/2/0"},
+		{Dest: "10.5.0.0/16", Proto: "direct", Via: "1/2/0"}}, nil
+}
+
 func (f *fakeOps) CancelPower(user string) error {
 	f.power = append(f.power, "cancel "+user)
 	return nil
@@ -669,6 +678,13 @@ func TestSystemOperationalCommands(t *testing.T) {
 		t.Errorf("not sorted by instance:\n%s", out)
 	}
 	contains(t, ts.ok("show ipv6 neighbors"), "fe80::1")
+	out = ts.ok("show route")
+	contains(t, out, "Routing instance default: 3 routes", "0.0.0.0/0                    static   20      10.5.0.1 via 1/2/0")
+	if strings.Index(out, "::/0") < strings.Index(out, "10.5.0.0/16") {
+		t.Errorf("IPv4 first:\n%s", out)
+	}
+	contains(t, ts.ok("show route instance mgmt_junos"), "Routing instance mgmt_junos")
+	contains(t, ts.run("show route instance nope"), "does not exist")
 	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")
 

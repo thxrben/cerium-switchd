@@ -22,7 +22,8 @@ Contents
    - [5.6 mclag](#56-mclag)
    - [5.7 switch-options](#57-switch-options)
    - [5.8 routing-options](#58-routing-options)
-   - [5.9 forwarding-options](#59-forwarding-options)
+   - [5.9 routing-instances](#59-routing-instances)
+   - [5.10 forwarding-options](#510-forwarding-options)
 6. [Frame handling summary](#6-frame-handling-summary)
 7. [Complete examples](#7-complete-examples)
 8. [Implementation status](#8-implementation-status)
@@ -111,9 +112,9 @@ Every port belongs to exactly one plane. Traffic never crosses from one plane to
 
 | Plane | Ports | Carries | IP |
 |---|---|---|---|
-| **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, MC-LAG peer-links, VXLAN tunnels | Client traffic only | none on any port |
-| **Stacking plane** | Dedicated **stacking ports** (e.g. 1G), direct 1:1 cables between members | Stack configuration, member state, MC-LAG synchronisation, RSTP coordination, BFD | none: IP-less protocol |
-| **Management plane** | One IP interface per member, on a VLAN (IRB-like) or a dedicated port, in VRF `mgmt` | SSH, web/API, syslog, NTP, DNS, MC-LAG BFD heartbeat | yes, in VRF `mgmt` only |
+| **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, MC-LAG peer-links, VXLAN tunnels, and the routed interfaces of the default and data routing instances (irb, routed ports) | Client traffic, routed between VLANs where configured (5.3.2, 5.3.3) | only on routed interfaces |
+| **Stacking plane** | Dedicated **stacking ports** (VC ports), direct 1:1 cables between members | Stack configuration, member state, MC-LAG synchronisation, RSTP coordination, BFD | none: IP-less protocol |
+| **Management plane** | The interfaces of routing instance `mgmt_junos` (`system management-instance`): a dedicated port or an irb unit per member | SSH, web/API, syslog, NTP, DNS, MC-LAG heartbeat | yes, in `mgmt_junos` only |
 
 Rules that follow from this:
 
@@ -123,14 +124,20 @@ Rules that follow from this:
   influences stacking or MC-LAG**. It is switched like any other frame and is not dropped.
 * The protocols a switch port legitimately terminates are the data plane's own link-local protocols. LACP is consumed on
   bundle members. BPDUs are consumed when RSTP runs, and trigger `bpdu-block`.
-* **No IP on data or stacking ports.** switchd disables IPv6 (link-local addresses, router solicitations, neighbour
-  discovery) on all of them and never assigns addresses. IP exists only on management interfaces (VRF `mgmt`) and the
-  VXLAN underlay interface (default VRF).
-* The management VRF has no route into the data plane's VLANs. The switch never routes between VLANs, or between
-  management and data traffic.
-* An in-band management VLAN on the data trunks is supported (`virtual-chassis member <id> management vlan`). Management then
-  shares the fate of the data plane. Commit confirmation and the serial console are the safety nets. A separate port,
-  set as an access port in the management VLAN, avoids that.
+* **No IP on switch ports or stacking ports.** switchd disables IPv6 (link-local addresses, router solicitations,
+  neighbour discovery) on them and never assigns addresses. IP exists only on routed interfaces (5.3.2, 5.3.3).
+* **Stack traffic never uses the management network**, and management traffic never uses the stacking ports.
+  Configuration sync runs only over stacking ports. The management network carries only access to the switch,
+  its services, and the MC-LAG heartbeat (which tells "peer dead" from "stacking cables cut").
+* Routing instances are separate routing tables: nothing is routed between `mgmt_junos` and the data plane, or between
+  two instances.
+* **Services live in the management instance.** With `system management-instance`, switchd's own traffic (syslog,
+  NTP, DNS lookups, heartbeat) goes out through `mgmt_junos`. The addresses of data routed interfaces are protected:
+  they answer ping, ARP and neighbour discovery (and routing protocols once they exist), replies to connections the
+  switch opened, and nothing else. So the SSH servers (the OS's and the CLI's) are reachable only through the
+  management interfaces, or through the OS's own interfaces that switchd does not manage.
+* An in-band management VLAN on the data trunks is possible (an irb unit in `mgmt_junos`). Management then shares the
+  fate of the data plane. Commit confirmation and the serial console are the safety nets. A dedicated port avoids that.
 
 ---
 
@@ -368,7 +375,7 @@ vlans {
 | `show system offload` | Hardware capabilities and acceleration per port (1.7). |
 | `show vlans` | VLANs with their ports (`*` = tagged). |
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
-| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default and `mgmt`), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
+| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, `mgmt_junos` and data instances), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
@@ -495,15 +502,15 @@ DNS resolvers.
   replaces is kept and restored when `name-server` is removed again. Without `name-server`, the file is not touched.
 * If another program rewrites the file (e.g. a DHCP client), switchd restores it within 30 seconds and logs a
   warning naming the problem. Disable the other program's resolver handling (OS takeover, plan 4.15).
-* switchd's own lookups (e.g. syslog server names) go through the management VRF when it is configured.
+* switchd's own lookups (e.g. syslog server names) go through the management instance when it is configured.
 * W: more than 3 servers (only the first 3 are used).
 
 #### `system ntp server <host> [prefer]`
-NTP servers, queried from the management VRF. `prefer` marks the preferred source. Without any server, the OS time
+NTP servers, queried through the management instance. `prefer` marks the preferred source. Without any server, the OS time
 configuration stays untouched. Correct time matters for logs, certificates and the stack's TLS.
 
 #### `system syslog host <host> { … }`
-Sends log messages to a remote server, from the management VRF. The format is RFC 5424, with the member host name as HOSTNAME.
+Sends log messages to a remote server, through the management instance (5.9) when there is one. The format is RFC 5424, with the member host name as HOSTNAME.
 * `transport udp|tcp|tls`: default `udp`. For TCP and TLS a queue of up to 10 000 messages is held in memory while the
   server is unreachable. When the queue is full, the **oldest** messages are dropped, and the count appears in `show system syslog`.
 * `port <1-65535>`: default 514 (udp/tcp) or 6514 (tls).
@@ -554,12 +561,22 @@ automation access on the OS port.
 * It uses the host's SSH host keys, so the fingerprint is the same as on the OS port.
 * Passwords are accepted for users with an `encrypted-password`; keys come from `authentication ssh-key`.
 * The pre-login banner is `system login message`.
-* It accepts connections from the management VRF (and, before a management interface is configured, from any
+* It accepts connections through the management instance (and, before one is configured, from any
   interface of the host).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
-HTTPS web interface and REST API in the management VRF. Default: port 443 with a self-signed certificate generated
+HTTPS web interface and REST API, reachable through the management instance. Default: port 443 with a self-signed certificate generated
 at first start. `certificate` and `key` must be given together (E otherwise). `disable` turns it off.
+
+#### `system management-instance`
+Makes routing instance `mgmt_junos` the management instance (1.5), as in Junos. Its interfaces are the members'
+management interfaces, and switchd's services use it: syslog, NTP and DNS lookups go out through it, and the MC-LAG
+heartbeat runs over it. See 5.9 for the instance itself.
+* E: `system management-instance` without `routing-instances mgmt_junos`, or the reverse.
+* W: an instance `mgmt_junos` without an interface of some member (that member has no management address).
+* **Without `management-instance`, switchd does not touch the host's existing management network configuration**
+  (e.g. the installer's NIC with DHCP). This is the safe default for the first installation. Once you configure it,
+  switchd takes over, and commit confirmation protects you against locking yourself out.
 
 #### `system commit confirmation { mode required|optional; timeout <minutes>; }`
 See 4.2. Defaults: `required`, 10 minutes.
@@ -669,31 +686,13 @@ members are rejected (E).
 * `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
   it is added to a loopback interface and must be routable in the underlay.
 
-#### `virtual-chassis member <id> management { vlan <vlan> | interface <interface-name>; address [ … ]; dhcp; gateway [ … ]; }`
-The member's management IP interface, in VRF `mgmt` (1.5). SSH, the web interface, syslog, NTP, DNS and the MC-LAG
-BFD heartbeat use it.
-* `vlan <vlan>` (IRB-like): an IP interface on this VLAN of the member's bridge. The VLAN is switched normally as
-  well. Hosts in it reach the switch and each other. W: no switch port of this member carries the VLAN
-  (the address would be unreachable). E: the VLAN is not defined.
-* `interface <interface-name>`: a dedicated port of this member that is **not** switched. E: the port is a switch
-  port, a bundle member or a stacking port, or it belongs to another member.
-* `vlan` and `interface` are mutually exclusive.
-* `address [ <address/prefix> … ]`: static IPv4 and/or IPv6 addresses.
-* `dhcp`: IPv4 address via DHCP. E: together with a static IPv4 address (a static IPv6 address is fine).
-* `gateway [ <ip> … ]`: default route(s) of the management VRF, at most one per address family (E).
-  W: a gateway of a family without an address of that family.
-* E: `address`, `dhcp` or `gateway` without `vlan`/`interface`.
-* **Without a `management` block, switchd does not touch the host's existing network configuration.** This is the safe
-  default for the first installation. Once you configure it, switchd takes over, and commit confirmation protects you
-  against locking yourself out.
-
 #### `virtual-chassis member <id> underlay { vlan <vlan> | interface <interface-name>; address [ … ]; gateway [ … ]; }`
-The IP interface that carries this member's VXLAN tunnels, in the default VRF (not `mgmt`). It has the same structure
-as `management`, and the same rules apply for `vlan`/`interface`, addresses and gateways.
+The IP interface that carries this member's VXLAN tunnels, in the default routing instance. (Phase 9 replaces this
+block with the Junos form, `switch-options vtep-source-interface`, and a routed interface; it is not implemented yet.)
+* `vlan <vlan>` (IRB-like) or `interface <interface-name>` (a dedicated port), `address [ … ]` static addresses.
 * `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
-* E: management and underlay on the same VLAN (they live in different VRFs).
+* E: the underlay VLAN or port is in routing instance `mgmt_junos`.
 * E: the underlay VLAN is itself extended over VXLAN (tunnel traffic would loop into the tunnel).
-* W: underlay shares the management interface.
 * W: underlay MTU (the dedicated port's `mtu`, or the VLAN's `mtu`) is smaller than the largest VXLAN VLAN MTU plus
   encapsulation overhead (5.7).
 
@@ -840,7 +839,8 @@ are routed subinterfaces (below).
   the bridge. Untagged frames are routed; tagged frames are dropped.
 * **Routed subinterfaces**: `vlan-tagging` on the port, then `unit <n> { vlan-id <id>; family inet { address …; } }`
   for n = 1–16385. Each unit takes the frames with its tag. Untagged frames are dropped (unless unit 0 is also routed).
-* `family inet` and `family inet6` each take several `address` entries. `family inet6` also gets a link-local address.
+* `family inet` and `family inet6` each take several `address <address/prefix>` entries. `family inet6` also gets a
+  link-local address. `family inet dhcp` takes the IPv4 address from DHCP instead (planned; W until implemented).
 * E: `family ethernet-switching` together with `family inet|inet6` on the same unit, or `family ethernet-switching`
   on a unit other than 0, or on a port with `vlan-tagging`.
 * E: a unit other than 0 without `vlan-tagging`, or without `vlan-id`. E: the same `vlan-id` on two units of a port.
@@ -855,20 +855,24 @@ are routed subinterfaces (below).
 address in that VLAN and **routes between VLANs** (and routed ports) in the default routing instance.
 * `irb.<n>` is attached to a VLAN with `vlans <v> l3-interface irb.<n>`. n is any number 0–16385; using the VLAN id
   keeps it readable (`irb.10` for VLAN 10). W: an irb unit that no VLAN references (it has no effect).
-* Addresses follow the same rules as routed interfaces (above).
+* Addresses follow the same rules as routed interfaces (above), with one addition: an irb address can belong to a
+  single member, `address 10.5.176.95/16 { member 1; }` (set form `… address 10.5.176.95/16 member 1`). This is how
+  every member gets its own management address on a management VLAN. Addresses without `member` exist on every
+  member (anycast gateway). E: `member` on an address of a port or `ae` (those belong to one member already).
 * In a stack, the irb interface exists on **every member that has the VLAN**, with the same addresses and the same MAC
   address (derived from the stack), so every member routes locally (anycast gateway). With MC-LAG, both peers
   answer for the gateway address.
-* The management address is **not** an irb interface: it stays per member in `virtual-chassis member <id> management` (5.2),
-  in VRF `mgmt`, with no routing to or from the data VLANs.
+* An irb unit can be the management interface: put it into `routing-instances mgmt_junos` (5.9) and give each member
+  its own address with `member`.
 * In the kernel, `irb.<n>` is a VLAN device on the bridge, and the bridge itself joins the VLAN (bridge self VLAN).
 
 **Routing** happens only between switchd's own L3 interfaces (irb, routed ports and subinterfaces): IPv4 forwarding is
 enabled per interface on them only. Interfaces the operating system manages (e.g. its installer management NIC)
 do not forward. For IPv6, Linux can only enable forwarding for the whole system, so switchd sets `accept_ra 2` on the
 OS-managed interfaces that use router advertisements first (they keep their SLAAC addresses and default routes).
-* W: routed interfaces exist while the operating system's management NIC is in the default instance (not moved to
-  `virtual-chassis member <id> management`): data VLANs can then reach the management network through the OS routes.
+* W: routed interfaces exist in the default instance while the operating system's management NIC (addresses the OS
+  configured) is also in it: data VLANs can then reach the management network through the OS routes. Configure the
+  management port in `mgmt_junos` to separate them.
 * ICMP redirects are not sent. Reverse-path filtering is loose (`rp_filter 2`) on routed interfaces.
 
 ### 5.4 vlans
@@ -893,8 +897,7 @@ only in a storage VLAN (`mtu 9014` for 9000-byte hosts) while the trunks carry `
 
 #### `l3-interface irb.<n>`
 Attaches the VLAN IP interface `irb.<n>` (5.3.3) to this VLAN. E: the irb unit is not configured. E: the same irb unit
-on two VLANs. E: the management VLAN of a member (`virtual-chassis member <id> management vlan`) has an l3-interface (management
-and data routing are kept apart).
+on two VLANs.
 
 #### `vxlan vni <vni>`
 Extends the VLAN over VXLAN to every other member that has the same VLAN, and to static remote VTEPs listing the VNI.
@@ -1047,8 +1050,7 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
 ### 5.8 routing-options
 
 #### `routing-options static route <prefix> { next-hop [ <ip> … ]; discard; }`
-Static routes of the default routing instance (the data plane, not management; management routes are
-`virtual-chassis member <id> management gateway`).
+Static routes of the default routing instance. Other instances have their own `routing-options` (5.9).
 * `next-hop`: one or more gateway addresses. Several next hops share the traffic (ECMP). A next hop must be inside
   a subnet of an L3 interface of the default instance, else the route is inactive (W at commit; it becomes active
   once such an interface exists and is up).
@@ -1056,7 +1058,43 @@ Static routes of the default routing instance (the data plane, not management; m
 * IPv4 and IPv6 prefixes can be mixed; a next hop must have the family of its prefix (E).
 * switchd installs the routes with its own protocol id and only ever removes routes it installed.
 
-### 5.9 forwarding-options
+### 5.9 routing-instances
+
+#### `routing-instances <name> { description <text>; instance-type virtual-router; interface <unit-name>; routing-options { static { route … } } }`
+A separate routing table (a Linux VRF), as in Junos. Interfaces in an instance route only among themselves; nothing is
+routed between instances or to and from the default instance.
+* `interface <unit-name>`: a routed unit (`irb.<n>`, `1/0/5.0`, `1/0/6.100`, `ae1.0`) that belongs to this instance.
+  E: the unit has no `family inet|inet6`. E: the unit is in two instances. Units in no instance are in the default one.
+* `routing-options static route …`: as in 5.8, for this instance.
+* Addresses and subnets may overlap between instances, but not within one (E).
+* `instance-type virtual-router` (default and the only type for now; `vrf` with route distinguishers comes with BGP).
+* **`mgmt_junos`** is the management instance (with `system management-instance`, 5.1). It takes no `instance-type`.
+  Typical configurations:
+
+  ```
+  # dedicated management port on each member
+  set system management-instance
+  set interfaces 1/2/0 unit 0 family inet address 10.5.20.76/16
+  set interfaces 2/2/0 unit 0 family inet address 10.5.20.77/16
+  set routing-instances mgmt_junos interface 1/2/0.0
+  set routing-instances mgmt_junos interface 2/2/0.0
+  set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+
+  # or a management VLAN
+  set vlans mgmt vlan-id 99
+  set vlans mgmt l3-interface irb.99
+  set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1
+  set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2
+  set routing-instances mgmt_junos interface irb.99
+  ```
+  A static route whose next hop is not in a subnet of a member's interfaces is inactive on that member.
+* Configurations of older versions (`virtual-chassis member <id> management { … }`) are converted into this form when
+  they are read: the addresses go onto the port or an irb unit (unit number = VLAN id), the gateways become static
+  routes of `mgmt_junos`, and `system management-instance` is set.
+* In the kernel an instance is a VRF device named like the instance, with its own routing table.
+* `show route [instance <name>]` lists the routes; `show interfaces` marks management interfaces.
+
+### 5.10 forwarding-options
 
 #### `forwarding-options analyzer <name> { input { … }; output { interface <if>; } }`
 Port mirroring. Copies of the selected traffic are sent out of the output interface. Mirroring never affects
@@ -1119,6 +1157,7 @@ Additional rules, applied in this order:
 ```
 system {
     host-name lab-sw;
+    management-instance;
     login {
         user admin {
             class super-user;
@@ -1134,17 +1173,17 @@ system {
         }
     }
 }
-virtual-chassis {
-    member 1 {
-        host-name lab-sw;
-        management {
-            interface 1/3/0;
-            address 192.168.1.20/24;
-            gateway 192.168.1.1;
+interfaces {
+    1/3/0 {
+        description "management port";
+        unit 0 {
+            family {
+                inet {
+                    address 192.168.1.20/24;
+                }
+            }
         }
     }
-}
-interfaces {
     1/1/0 {
         description "server A";
         unit 0 {
@@ -1182,6 +1221,18 @@ vlans {
         vlan-id 10;
     }
 }
+routing-instances {
+    mgmt_junos {
+        interface 1/3/0.0;
+        routing-options {
+            static {
+                route 0.0.0.0/0 {
+                    next-hop 192.168.1.1;
+                }
+            }
+        }
+    }
+}
 protocols {
     rstp {
         interface 1/1/0 {
@@ -1201,17 +1252,12 @@ protocols {
 ```
 # Stacking ports were designated locally beforehand, e.g. on both switches:
 #   request virtual-chassis vc-port set pic-slot 2 port 1
+set system management-instance
 set virtual-chassis member 1 host-name sw-a
-set virtual-chassis member 1 management vlan mgmt
-set virtual-chassis member 1 management address 192.168.1.11/24
-set virtual-chassis member 1 management gateway 192.168.1.1
 set virtual-chassis member 1 vtep-address 10.255.0.1
 set virtual-chassis member 1 underlay interface 1/5/0
 set virtual-chassis member 1 underlay address 10.99.0.1/24
 set virtual-chassis member 2 host-name sw-b
-set virtual-chassis member 2 management vlan mgmt
-set virtual-chassis member 2 management address 192.168.1.12/24
-set virtual-chassis member 2 management gateway 192.168.1.1
 set virtual-chassis member 2 vtep-address 10.255.0.2
 set virtual-chassis member 2 underlay interface 2/5/0
 set virtual-chassis member 2 underlay address 10.99.0.2/24
@@ -1240,6 +1286,11 @@ set interfaces 1/3/0 description "mirror to analyzer laptop"
 set interfaces 1/3/1 description "management access (1G)"
 set interfaces 1/3/1 unit 0 family ethernet-switching vlan members mgmt
 set vlans mgmt vlan-id 99
+set vlans mgmt l3-interface irb.99
+set interfaces irb unit 99 family inet address 192.168.1.11/24 member 1
+set interfaces irb unit 99 family inet address 192.168.1.12/24 member 2
+set routing-instances mgmt_junos interface irb.99
+set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
 set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
@@ -1265,17 +1316,17 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `virtual-chassis member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
+| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_junos), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` not yet |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
 | `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
 | L3: `interfaces irb`, routed ports and subinterfaces, `vlans <v> l3-interface`, `routing-options static` | implemented, unit and lab tested (IPv4 and IPv6); anycast MAC across the stack with Phase 5 |
-| `system host-name` / `virtual-chassis member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through VRF mgmt not yet |
+| `system host-name` / `virtual-chassis member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through the management instance not yet |
 | Hardware capability checks (1.7), `show system offload` | implemented, unit tested and checked on physical NICs (tg3, igb, r8169) and virtio |
 | Operational commands of 3.5 (`show arp`, `show system uptime`, `show system rollback`, `request system reboot` …) | implemented and tested; stack drain before reboot with Phase 5/7 |
 | Multi-user notices, persistent shared candidate, CLI surviving switchd restarts and its own crashes | implemented, unit and lab tested |
 | `system services web-management`, `system login message` on serial consoles | not implemented yet |
-| `system syslog` (UDP/TCP/TLS from VRF mgmt, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
+| `system syslog` (UDP/TCP/TLS through the management instance, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
@@ -1293,6 +1344,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 |---|---|---|---|---|
 | `system` | container |  |  | System parameters |
 | `system host-name` | leaf | &lt;hostname&gt; |  | Name of the stack/system |
+| `system management-instance` | flag |  |  | Use routing instance mgmt_junos for management (services, management interfaces) |
 | `system domain-name` | leaf | &lt;hostname&gt; |  | DNS domain name |
 | `system time-zone` | leaf | &lt;time-zone&gt; |  | Time zone (e.g. Europe/Berlin) |
 | `system name-server` | leaf-list | &lt;ip-address&gt; |  | DNS servers |
@@ -1349,12 +1401,6 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `virtual-chassis member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
 | `virtual-chassis member <member-id> mastership-priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
 | `virtual-chassis member <member-id> role` | leaf | switch \\| witness | switch | Member role |
-| `virtual-chassis member <member-id> management` | container |  |  | Management IP interface of this member (management VRF) |
-| `virtual-chassis member <member-id> management vlan` | leaf (excl. mgmt-attach) | &lt;vlan&gt; |  | Attach the management IP to this VLAN (IRB-like) |
-| `virtual-chassis member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched management port |
-| `virtual-chassis member <member-id> management address` | leaf-list | &lt;address/prefix&gt; |  | Static addresses (IPv4 and/or IPv6) |
-| `virtual-chassis member <member-id> management dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
-| `virtual-chassis member <member-id> management gateway` | leaf-list | &lt;ip-address&gt; |  | Default gateway, at most one per address family |
 | `virtual-chassis member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
 | `virtual-chassis member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
 | `virtual-chassis member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
@@ -1399,9 +1445,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interface-range <name> unit <unit> family ethernet-switching vlan` | container |  |  | VLAN membership |
 | `interface-range <name> unit <unit> family ethernet-switching vlan members` | leaf-list | &lt;vlan&gt; |  | VLAN names or ids (ranges like 10-20 allowed) |
 | `interface-range <name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
-| `interface-range <name> unit <unit> family inet address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interface-range <name> unit <unit> family inet address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
+| `interface-range <name> unit <unit> family inet address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
+| `interface-range <name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP (planned) |
 | `interface-range <name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
-| `interface-range <name> unit <unit> family inet6 address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interface-range <name> unit <unit> family inet6 address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
+| `interface-range <name> unit <unit> family inet6 address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
 | `interfaces <interface-name>` | list | &lt;interface-name&gt; |  | Interface configuration |
 | `interfaces <interface-name> description` | leaf | &lt;text&gt; |  | Interface description |
 | `interfaces <interface-name> disable` | flag |  |  | Administratively disable the interface |
@@ -1437,9 +1486,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interfaces <interface-name> unit <unit> family ethernet-switching vlan` | container |  |  | VLAN membership |
 | `interfaces <interface-name> unit <unit> family ethernet-switching vlan members` | leaf-list | &lt;vlan&gt; |  | VLAN names or ids (ranges like 10-20 allowed) |
 | `interfaces <interface-name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
-| `interfaces <interface-name> unit <unit> family inet address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interfaces <interface-name> unit <unit> family inet address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
+| `interfaces <interface-name> unit <unit> family inet address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
+| `interfaces <interface-name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP (planned) |
 | `interfaces <interface-name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
-| `interfaces <interface-name> unit <unit> family inet6 address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interfaces <interface-name> unit <unit> family inet6 address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
+| `interfaces <interface-name> unit <unit> family inet6 address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
 | `vlans <name>` | list | &lt;name&gt; |  | VLAN configuration |
 | `vlans <name> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q VLAN id |
 | `vlans <name> description` | leaf | &lt;text&gt; |  | VLAN description |
@@ -1492,6 +1544,15 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
 | `routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
 | `routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
+| `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); mgmt_junos is the management instance |
+| `routing-instances <instance-name> description` | leaf | &lt;text&gt; |  | Instance description |
+| `routing-instances <instance-name> instance-type` | leaf | virtual-router | virtual-router | Instance type |
+| `routing-instances <instance-name> interface` | leaf-list | &lt;unit-name&gt; |  | Routed units in this instance (irb.10, 1/0/5.0) |
+| `routing-instances <instance-name> routing-options` | container |  |  | Routing of this instance |
+| `routing-instances <instance-name> routing-options static` | container |  |  | Static routes |
+| `routing-instances <instance-name> routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
+| `routing-instances <instance-name> routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
+| `routing-instances <instance-name> routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
 | `forwarding-options` | container |  |  | Forwarding options |
 | `forwarding-options analyzer <name>` | list | &lt;name&gt; |  | Port mirroring session |
 | `forwarding-options analyzer <name> input` | container |  |  | Traffic to mirror |

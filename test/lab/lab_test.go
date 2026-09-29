@@ -541,39 +541,59 @@ func TestManagementPlane(t *testing.T) {
 		setupHost(t, h)
 	}
 	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
-	mustSSH(t, hSw3.vm, "ip -n h addr add 192.168.99.3/24 dev ens23")
+	mustSSH(t, hSw3.vm, "ip -n h addr add 192.168.99.3/24 dev ens23; ip -n h addr add 192.168.10.3/24 dev ens23")
 	mustSSH(t, hSw2.vm, "ip -n h addr add 192.168.98.2/24 dev ens19")
 	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") + access(hSw3.sw1Port, "v10")
+	mgmtVLAN := "set system management-instance\nset vlans mgmt l3-interface irb.99\n" +
+		"set interfaces irb unit 99 family inet address 192.168.99.1/24 member 1\n" +
+		"set routing-instances mgmt_junos interface irb.99\n"
+	// A data irb in the default instance, to check the protection.
+	dataIRB := "set vlans v10 l3-interface irb.10\nset interfaces irb unit 10 family inet address 192.168.10.1/24\n"
 
-	// IRB-like: management address on VLAN 99.
-	configure(t, base+"set virtual-chassis member 1 management vlan mgmt\nset virtual-chassis member 1 management address 192.168.99.1/24\n")
+	// Management on VLAN 99 (irb in mgmt_junos).
+	configure(t, base+mgmtVLAN+dataIRB)
 	if _, err := ssh(hSrv1.vm, "ip netns exec h ping -c2 -W1 192.168.99.1"); err != nil {
 		t.Error("management address not reachable from its VLAN")
 	}
 	if _, err := ssh(hSrv1.vm, "ip netns exec h timeout 3 bash -c '</dev/tcp/192.168.99.1/22'"); err != nil {
-		t.Error("sshd (default VRF) not reachable through the management VRF")
+		t.Error("sshd not reachable through the management instance")
 	}
 	if _, err := ssh(hSw3.vm, "ip netns exec h ping -c2 -W1 192.168.99.1"); err == nil {
 		t.Error("management address reachable from another VLAN")
 	}
-	out := mustSSH(t, sw1, "ip -d link show mgmt0; bridge vlan show dev swbr0; ip vrf show")
-	for _, want := range []string{"vlan protocol 802.1Q id 99", "master mgmt", "mgmt 100"} {
+	// The data irb answers ping, but the switch's services are not
+	// reachable through it.
+	if _, err := ssh(hSw3.vm, "ip netns exec h ping -c2 -W1 192.168.10.1"); err != nil {
+		t.Error("data irb does not answer ping")
+	}
+	if _, err := ssh(hSw3.vm, "ip netns exec h timeout 3 bash -c '</dev/tcp/192.168.10.1/22'"); err == nil {
+		t.Error("SSH reachable through a data irb (protection filter missing)")
+	}
+	out := mustSSH(t, sw1, "ip -d link show irb.99; ip vrf show; nft list table inet switchd_protect")
+	for _, want := range []string{"vlan protocol 802.1Q id 99", "master mgmt_junos", "mgmt_junos 100", `"irb.10"`} {
 		if !strings.Contains(strings.Join(strings.Fields(out), " "), want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, `"irb.99"`) {
+		t.Errorf("management irb must not be filtered:\n%s", out)
+	}
+	if out := mustSSH(t, sw1, "swcli -c 'show interfaces terse'"); !strings.Contains(out, "management") {
+		t.Errorf("management role not shown:\n%s", out)
+	}
 
 	// Dedicated port instead.
-	configure(t, base+"set virtual-chassis member 1 management interface 1/ens19\nset virtual-chassis member 1 management address 192.168.98.1/24\n")
+	configure(t, base+"set system management-instance\nset interfaces 1/ens19 unit 0 family inet address 192.168.98.1/24\n"+
+		"set routing-instances mgmt_junos interface 1/ens19.0\n")
 	if _, err := ssh(hSw2.vm, "ip netns exec h ping -c2 -W1 192.168.98.1"); err != nil {
 		t.Error("management address on the dedicated port not reachable")
 	}
-	out = mustSSH(t, sw1, "ip link show mgmt0 2>&1; bridge vlan show dev swbr0 | grep -c 99; true")
-	if !strings.Contains(out, "does not exist") || !strings.HasSuffix(strings.TrimSpace(out), "0") {
-		t.Errorf("IRB not removed after switching to a dedicated port:\n%s", out)
+	out = mustSSH(t, sw1, "ip link show irb.99 2>&1; ip -o link show ens19; bridge vlan show dev swbr0 | grep -c 99; nft list table inet switchd_protect 2>&1; true")
+	if !strings.Contains(out, "does not exist") || !strings.Contains(out, "master mgmt_junos") || !strings.Contains(out, "No such file") {
+		t.Errorf("after switching to a dedicated port (irb.99 gone, ens19 in mgmt_junos, no protection table):\n%s", out)
 	}
 
-	// No management block: switchd removes what it created.
+	// No management instance: switchd removes what it created.
 	configure(t, base)
 	out = mustSSH(t, sw1, "ip vrf show; ip -o link show ens19")
 	if strings.Contains(out, "mgmt") || strings.Contains(out, ",UP") {
@@ -618,7 +638,8 @@ func TestSyslogOverManagementVRF(t *testing.T) {
 	setupHost(t, hSrv1)
 	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
 	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") +
-		"set virtual-chassis member 1 management vlan mgmt\nset virtual-chassis member 1 management address 192.168.99.1/24\n"
+		"set system management-instance\nset vlans mgmt l3-interface irb.99\n" +
+		"set interfaces irb unit 99 family inet address 192.168.99.1/24 member 1\nset routing-instances mgmt_junos interface irb.99\n"
 	configure(t, base)
 	for _, transport := range []string{"udp", "tcp"} {
 		ready := make(chan struct{})
@@ -876,6 +897,24 @@ func TestRouting(t *testing.T) {
 	out = mustSSH(t, sw1, "sysctl -n net.ipv6.conf.all.forwarding net.ipv6.conf.ens18.accept_ra net.ipv6.conf.labra0.accept_ra")
 	if f := strings.Fields(out); len(f) != 3 || f[0] != "0" || f[1] != raBefore || f[2] != "1" {
 		t.Errorf("IPv6 forwarding / accept_ra not restored (all, ens18, labra0): %q (ens18 before: %s)", f, raBefore)
+	}
+
+	// A data routing instance: irb.20 and the routed port route among
+	// themselves, but not to the default instance (irb.10).
+	configure(t, cfg+"set routing-instances blue interface irb.20\nset routing-instances blue interface 1/ens19.0\n"+
+		"set routing-instances blue routing-options static route 10.99.0.0/24 next-hop 10.10.30.2\n")
+	if !ping(hSw3, "10.10.30.2") || !ping(hSw3, "10.99.0.1") {
+		t.Error("no routing inside instance blue")
+	}
+	if ping(hSrv1, "10.10.20.3") || ping(hSrv1, "10.10.30.2") {
+		t.Error("routed from the default instance into instance blue")
+	}
+	if out := mustSSH(t, sw1, "swcli -c 'show route instance blue'"); !strings.Contains(out, "10.99.0.0/24") || !strings.Contains(out, "static") {
+		t.Errorf("show route instance blue:\n%s", out)
+	}
+	configure(t, cfg)
+	if !ping(hSrv1, "10.10.20.3") {
+		t.Error("routing between v10 and v20 not restored after removing the instance")
 	}
 
 	// Changing an address is hitless for the other interfaces.

@@ -19,8 +19,20 @@ func (f fakeNames) LinuxNames() []string {
 	return out
 }
 
+var labNames = fakeNames{"ens18": "1/0/0", "ens19": "1/1/0", "ens21": "1/2/0", "ens22": "1/3/0", "ens23": "1/4/0"}
+
+func upgrade(t *testing.T, old string) *config.Tree {
+	t.Helper()
+	raw := newUpgrader(labNames, 1, nil).Upgrade(json.RawMessage(old))
+	tr, err := config.FromJSON(raw)
+	if err != nil {
+		t.Fatalf("upgraded configuration does not parse: %v\n%s", err, raw)
+	}
+	return tr
+}
+
 func TestUpgradeNames(t *testing.T) {
-	old := `{
+	tr := upgrade(t, `{
   "interfaces": {
     "1/ens19": {"unit": {"0": {"family": {"ethernet-switching": {"vlan": {"members": ["v10"]}}}}}},
     "1/ens21": {"ether-options": {"802.3ad": "ae1"}, "@inactive": true},
@@ -30,67 +42,83 @@ func TestUpgradeNames(t *testing.T) {
   },
   "interface-range": {"r": {"member": ["1/ens2*", "1/0/*", "1/nomatch*"], "member-range": {"1/ens22": {"to": "1/ens23"}}}},
   "vlans": {"v10": {"vlan-id": "10"}},
-  "stack": {"member": {"1": {"management": {"interface": "ens18", "address": ["10.0.0.1/24"]}},
-                       "2": {"management": {"interface": "eth9"}}}},
-  "forwarding-options": {"analyzer": {"a": {"input": {"ingress": {"interface": ["1/ens19"]}}, "output": {"interface": "1/ens23"}}}}
-}`
-	up := upgradeNames(fakeNames{"ens18": "1/0/0", "ens19": "1/1/0", "ens21": "1/2/0", "ens22": "1/3/0", "ens23": "1/4/0"}, 1)
-	raw := up(json.RawMessage(old))
-	tr, err := config.FromJSON(raw)
-	if err == nil {
-		t.Fatalf("names of other members and missing ports must stay (and fail parsing): %s", raw)
-	}
-	for _, want := range []string{`"1/1/0"`, `"1/2/0"`, `"1/3/0"`, `"interface":"1/0/0"`, `"interface":"eth9"`, `"2/eth0"`, `"1/gone0"`, `"to":"1/4/0"`, `"1/0/*"`, `"1/nomatch*"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("missing %s in %s", want, raw)
+  "forwarding-options": {"analyzer": {"a": {"input": {"ingress": {"interface": ["1/ens19", "1/gone1"]}}, "output": {"interface": "1/ens23"}}}}
+}`)
+	out := config.FormatSet(tr)
+	for _, want := range []string{"set interfaces 1/1/0 unit 0", "deactivate interfaces 1/2/0", "set interfaces 1/2/0 ether-options 802.3ad ae1",
+		"member-range 1/3/0 to 1/4/0", "r member 1/2/0\n", "r member 1/3/0\n", "r member 1/4/0\n", "r member 1/0/*\n", "ingress interface 1/1/0", "output interface 1/4/0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	// A wildcard becomes the ports it matched.
-	var m map[string]any
-	json.Unmarshal(raw, &m)
-	members := m["interface-range"].(map[string]any)["r"].(map[string]any)["member"].([]any)
-	got := map[string]bool{}
-	for _, v := range members {
-		got[v.(string)] = true
-	}
-	for _, w := range []string{"1/2/0", "1/3/0", "1/4/0", "1/0/*"} {
-		if !got[w] {
-			t.Errorf("wildcard expansion lacks %s: %v", w, members)
+	// Ports that cannot be converted are dropped (logged), never left behind
+	// in a form that makes the configuration unreadable.
+	for _, gone := range []string{"eth0", "gone", "nomatch"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s left in:\n%s", gone, out)
 		}
-	}
-	if got["1/0/0"] || got["1/1/0"] {
-		t.Errorf("1/ens2* must not match ens18/ens19: %v", members)
-	}
-
-	// A configuration of only this member's existing ports parses fully.
-	clean := `{"interfaces": {"1/ens19": {"description": "x"}, "1/ens21": {"@inactive": true, "disable": true}},
-	  "stack": {"member": {"1": {"management": {"interface": "ens18"}}}}}`
-	tr, err = config.FromJSON(up(json.RawMessage(clean)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr.Root.Leaf("interfaces", "1/1/0", "description") != "x" || !tr.Root.Get("interfaces", "1/2/0").Inactive ||
-		tr.Root.Leaf("virtual-chassis", "member", "1", "management", "interface") != "1/0/0" {
-		t.Errorf("upgraded:\n%s", config.FormatSet(tr))
 	}
 	// New-style input is unchanged.
-	if s := string(up(json.RawMessage(`{"interfaces":{"1/1/0":{"disable":true}}}`))); !strings.Contains(s, `"1/1/0"`) {
-		t.Error(s)
+	if tr := upgrade(t, `{"interfaces":{"1/1/0":{"disable":true}}}`); !tr.Root.Has("interfaces", "1/1/0", "disable") {
+		t.Error("new-style name changed")
 	}
 }
 
-// The stack hierarchy of older versions becomes virtual-chassis.
 func TestUpgradeStack(t *testing.T) {
-	up := upgradeNames(fakeNames{}, 1)
-	tr, err := config.FromJSON(up(json.RawMessage(`{"stack": {"bfd": {"multiplier": "5"},
+	tr := upgrade(t, `{"stack": {"bfd": {"multiplier": "5"},
 	  "member": {"1": {"priority": "200", "host-name": "a"}, "2": {"@inactive:priority": true, "priority": "10"}}},
-	  "protocols": {"rstp": {"interface": {"ae1": {"priority": "32"}}}}}`)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	  "protocols": {"rstp": {"interface": {"ae1": {"priority": "32"}}}}}`)
 	r := tr.Root
 	if r.Leaf("virtual-chassis", "member", "1", "mastership-priority") != "200" || r.Leaf("virtual-chassis", "bfd", "multiplier") != "5" ||
 		!r.Get("virtual-chassis", "member", "2", "mastership-priority").Inactive || r.Leaf("protocols", "rstp", "interface", "ae1", "priority") != "32" {
 		t.Errorf("converted:\n%s", config.FormatSet(tr))
+	}
+}
+
+// Management blocks become routed interfaces in routing instance
+// mgmt_junos (reference 5.9).
+func TestUpgradeManagement(t *testing.T) {
+	// A dedicated port (bare Linux name, the oldest form).
+	tr := upgrade(t, `{"stack": {"member": {"1": {"management": {"interface": "ens18",
+	  "address": ["10.5.176.95/16", "fd00::5/64"], "gateway": ["10.5.0.1", "fd00::1"]}}}}}`)
+	out := config.FormatSet(tr)
+	for _, want := range []string{
+		"set system management-instance",
+		"set interfaces 1/0/0 unit 0 family inet address 10.5.176.95/16",
+		"set interfaces 1/0/0 unit 0 family inet6 address fd00::5/64",
+		"set routing-instances mgmt_junos interface 1/0/0.0",
+		"set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
+		"set routing-instances mgmt_junos routing-options static route ::/0 next-hop fd00::1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "management {") || tr.Root.Has("virtual-chassis", "member", "1", "management") {
+		t.Errorf("management block left:\n%s", out)
+	}
+
+	// A management VLAN on two members, by name, with an existing address
+	// list elsewhere (the old leaf-list form).
+	tr = upgrade(t, `{"vlans": {"mgmt": {"vlan-id": "99"}},
+	  "interfaces": {"1/ens23": {"unit": {"0": {"family": {"inet": {"address": ["10.9.0.1/30"]}}}}}},
+	  "stack": {"member": {
+	    "1": {"management": {"vlan": "mgmt", "address": ["10.5.176.95/16"], "gateway": ["10.5.0.1"]}},
+	    "2": {"management": {"vlan": "99", "address": ["10.5.176.96/16"], "gateway": ["10.5.0.1"]}}}}}`)
+	out = config.FormatSet(tr)
+	for _, want := range []string{
+		"set vlans mgmt l3-interface irb.99",
+		"set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1",
+		"set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2",
+		"set routing-instances mgmt_junos interface irb.99",
+		"set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
+		"set interfaces 1/4/0 unit 0 family inet address 10.9.0.1/30",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "mgmt_junos interface irb.99"); n != 1 {
+		t.Errorf("irb.99 listed %d times:\n%s", n, out)
 	}
 }

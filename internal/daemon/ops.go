@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	"log/slog"
 	"maps"
 	"mclag/internal/inventory"
@@ -90,6 +91,10 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 			}
 		case i.Switching:
 			s.Role = "access " + vlanName[i.AccessVLAN]
+		case cfg.L3[name+".0"] != nil && cfg.L3[name+".0"].Instance == model.MgmtInstance:
+			s.Role = "management"
+		case cfg.L3[name+".0"] != nil || i.VlanTagging:
+			s.Role = "routed"
 		default:
 			s.Role = "plain"
 		}
@@ -113,6 +118,9 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 	var out []cli.IfStatus
 	for _, name := range slices.Sorted(maps.Keys(cfg.L3)) {
 		u := cfg.L3[name]
+		if !u.OnMember(o.member) {
+			continue
+		}
 		var linux string
 		switch {
 		case u.IRB():
@@ -135,11 +143,16 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 		s := cli.IfStatus{Name: name, Linux: linux, Configured: true, AdminUp: a.Flags&net.FlagUp != 0,
 			OperUp: a.OperState == netlink.OperUp || a.OperState == netlink.OperUnknown && a.Flags&net.FlagUp != 0,
 			MTU:    a.MTU + model.EthHeader, Description: u.Description, MAC: a.HardwareAddr.String()}
-		for _, p := range u.Addrs {
+		for _, p := range u.AddrsOn(o.member) {
 			s.Addrs = append(s.Addrs, p.String())
 		}
 		s.Role = "routed"
-		if u.IRB() {
+		if u.Instance == model.MgmtInstance {
+			s.Role = "management"
+		} else if u.Instance != "" {
+			s.Role = "routed (" + u.Instance + ")"
+		}
+		if u.IRB() && u.Instance != model.MgmtInstance {
 			s.Role = "irb vlan " + strconv.Itoa(u.VLAN)
 			if v := cfg.VLANByID[u.VLAN]; v != nil {
 				s.Role = "irb " + v.Name
@@ -347,4 +360,81 @@ func (o *ops) Offload() ([]cli.OffloadPort, error) {
 		})
 	}
 	return out, nil
+}
+
+func (o *ops) Routes(instance string) ([]cli.Route, error) {
+	table := unix.RT_TABLE_MAIN
+	if instance != "" {
+		l, err := netlink.LinkByName(instance)
+		v, ok := l.(*netlink.Vrf)
+		if err != nil || !ok {
+			return nil, fmt.Errorf("routing instance %s does not exist on this member", instance)
+		}
+		table = int(v.Table)
+	}
+	rs, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return nil, err
+	}
+	links, _ := netlink.LinkList()
+	byIndex := map[int]string{}
+	for _, l := range links {
+		byIndex[l.Attrs().Index] = l.Attrs().Name
+	}
+	ifName := func(i int) string {
+		n := byIndex[i]
+		if sw, ok := o.names.Name(n); ok {
+			return sw
+		}
+		return n
+	}
+	var out []cli.Route
+	for _, r := range rs {
+		if r.Type != unix.RTN_UNICAST && r.Type != unix.RTN_BLACKHOLE {
+			continue // local/broadcast entries of the kernel
+		}
+		dst := "default"
+		if r.Dst != nil {
+			if ones, bits := r.Dst.Mask.Size(); !(ones == 0 && bits > 0) {
+				dst = r.Dst.String()
+			}
+		}
+		if dst == "default" && r.Family == netlink.FAMILY_V6 {
+			dst = "::/0"
+		} else if dst == "default" {
+			dst = "0.0.0.0/0"
+		}
+		e := cli.Route{Dest: dst, Proto: routeProto(r.Protocol), Metric: r.Priority}
+		switch {
+		case r.Type == unix.RTN_BLACKHOLE:
+			e.Via = "discard"
+		case len(r.MultiPath) > 0:
+			for _, h := range r.MultiPath {
+				e.Via += fmt.Sprintf("%s via %s, ", h.Gw, ifName(h.LinkIndex))
+			}
+			e.Via = strings.TrimSuffix(e.Via, ", ")
+		case r.Gw != nil:
+			e.Via = fmt.Sprintf("%s via %s", r.Gw, ifName(r.LinkIndex))
+		default:
+			e.Via = ifName(r.LinkIndex)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func routeProto(p netlink.RouteProtocol) string {
+	switch int(p) {
+	case dataplane.RouteProto:
+		return "static"
+	case unix.RTPROT_KERNEL:
+		return "direct"
+	case unix.RTPROT_BOOT, unix.RTPROT_STATIC:
+		return "os"
+	case unix.RTPROT_DHCP:
+		return "dhcp"
+	case unix.RTPROT_RA:
+		return "ra"
+	}
+	return strconv.Itoa(int(p))
 }

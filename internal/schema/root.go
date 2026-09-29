@@ -49,16 +49,9 @@ func build() *Node {
 		E("local6", "Local facility 6"), E("local7", "Local facility 7"),
 	)
 
-	management := C("management", "Management IP interface of this member (management VRF)",
-		g("mgmt-attach", V("vlan", "Attach the management IP to this VLAN (IRB-like)", VlanSingle)),
-		g("mgmt-attach", V("interface", "Dedicated, non-switched management port", PhysInterface)),
-		LL("address", "Static addresses (IPv4 and/or IPv6)", IPPrefix),
-		F("dhcp", "Obtain the IPv4 address via DHCP"),
-		LL("gateway", "Default gateway, at most one per address family", IP),
-	)
-
 	system := C("system", "System parameters",
 		V("host-name", "Name of the stack/system", Hostname),
+		F("management-instance", "Use routing instance mgmt_junos for management (services, management interfaces)"),
 		V("domain-name", "DNS domain name", Hostname),
 		V("time-zone", "Time zone (e.g. Europe/Berlin)", String("<time-zone>", 64, `^[A-Za-z0-9_+/-]+$`)),
 		LL("name-server", "DNS servers", IP),
@@ -155,7 +148,6 @@ func build() *Node {
 				E("switch", "Regular switching member"),
 				E("witness", "Quorum-only member without data plane"),
 			), "switch"),
-			management,
 			V("vtep-address", "Local VXLAN tunnel endpoint address", IP),
 			C("underlay", "Layer 3 interface carrying VXLAN tunnels (default VRF)",
 				g("ul-attach", V("vlan", "Attach the underlay IP to this VLAN (IRB-like)", VlanSingle)),
@@ -219,10 +211,15 @@ func build() *Node {
 						),
 					),
 					P("inet", "IPv4 (routed interface)",
-						LL("address", "Interface addresses", IPPrefix),
+						L("address", "Interface address", IPPrefix,
+							V("member", "Only on this member (irb units)", MemberID),
+						),
+						F("dhcp", "Obtain the IPv4 address via DHCP (planned)"),
 					),
 					P("inet6", "IPv6 (routed interface)",
-						LL("address", "Interface addresses", IPPrefix),
+						L("address", "Interface address", IPPrefix,
+							V("member", "Only on this member (irb units)", MemberID),
+						),
 					),
 				),
 			),
@@ -303,13 +300,22 @@ func build() *Node {
 		),
 	)
 
-	routing := C("routing-options", "Routing of the default instance",
-		C("static", "Static routes",
-			L("route", "Destination network", RoutePrefix,
-				LL("next-hop", "Gateway addresses (several: ECMP)", IP),
-				F("discard", "Drop matching traffic silently"),
+	routingOptions := func(help string) *Node {
+		return C("routing-options", help,
+			C("static", "Static routes",
+				L("route", "Destination network", RoutePrefix,
+					LL("next-hop", "Gateway addresses (several: ECMP)", IP),
+					F("discard", "Drop matching traffic silently"),
+				),
 			),
-		),
+		)
+	}
+	routing := routingOptions("Routing of the default instance")
+	instances := L("routing-instances", "Separate routing tables (VRFs); mgmt_junos is the management instance", InstanceName,
+		V("description", "Instance description", Text),
+		VD("instance-type", "Instance type", Enum(E("virtual-router", "Separate routing table")), "virtual-router"),
+		LL("interface", "Routed units in this instance (irb.10, 1/0/5.0)", UnitName),
+		routingOptions("Routing of this instance"),
 	)
 	fwd := C("forwarding-options", "Forwarding options",
 		L("analyzer", "Port mirroring session", Identifier,
@@ -330,8 +336,9 @@ func build() *Node {
 
 	iface.Wrapped = true
 	vlans.Wrapped = true
+	instances.Wrapped = true
 
 	return C("", "",
-		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, fwd,
+		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd,
 	)
 }

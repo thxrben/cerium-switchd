@@ -41,7 +41,6 @@ func Run(ctx context.Context, o Options) error {
 	// Every record goes to the local buffer, the remote syslog servers and
 	// the journal (stderr).
 	hub := syslog.NewHub(o.Log.Handler(), 5000)
-	hub.VRF = dataplane.MgmtVRF
 	defer hub.Close()
 	log := slog.New(hub.Handler())
 	store, err := commit.OpenFileStore(filepath.Join(o.StateDir, "config"), 50)
@@ -67,6 +66,12 @@ func Run(ctx context.Context, o Options) error {
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	applier.onApplied = func(cfg *model.Config) {
+		// switchd's own traffic uses the management instance (reference 1.5).
+		if cfg.System.MgmtInstance {
+			hub.SetVRF(model.MgmtInstance)
+		} else {
+			hub.SetVRF("")
+		}
 		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
 		if !o.DryRun {
 			if err := accounts.Sync(cfg); err != nil {
@@ -85,7 +90,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
-		Upgrade: upgradeNames(names, 1),
+		Upgrade: newUpgrader(names, 1, log).Upgrade,
 		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
 	})
 	if err != nil {

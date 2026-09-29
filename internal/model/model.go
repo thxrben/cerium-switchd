@@ -26,24 +26,27 @@ type Config struct {
 	BPDUBlock  BPDUBlock
 	StackBFD   BFD
 	L3         map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
-	Routes     []StaticRoute
+	Routes     []StaticRoute      // default instance
+	Instances  map[string]*RoutingInstance
 }
 
 type System struct {
-	HostName    string
-	DomainName  string
-	TimeZone    string
-	NameServers []string
-	NTPServers  []NTPServer
-	Syslog      []SyslogHost
-	LogBuffer   int
-	Users       map[string]*User
-	Banner      string
-	SSH         SSHService
-	Web         WebService
-	Commit      CommitPolicy
-	Consoles    map[string]*Console
-	AutoConsole bool
+	HostName string
+	// MgmtInstance: routing instance mgmt_junos is the management instance.
+	MgmtInstance bool
+	DomainName   string
+	TimeZone     string
+	NameServers  []string
+	NTPServers   []NTPServer
+	Syslog       []SyslogHost
+	LogBuffer    int
+	Users        map[string]*User
+	Banner       string
+	SSH          SSHService
+	Web          WebService
+	Commit       CommitPolicy
+	Consoles     map[string]*Console
+	AutoConsole  bool
 	// ConsoleLogin: local consoles ask for credentials (default: autologin
 	// as root into the CLI).
 	ConsoleLogin bool
@@ -111,13 +114,12 @@ type Member struct {
 	HostName    string
 	Priority    int
 	Witness     bool
-	Mgmt        L3Interface
 	VTEPAddress string
 	Underlay    L3Interface
 }
 
-// L3Interface is an IP interface of a member, attached either to a VLAN of
-// the bridge (IRB-like) or to a dedicated non-switched port.
+// L3Interface is the VXLAN underlay IP interface of a member, attached
+// either to a VLAN of the bridge (IRB-like) or to a dedicated port.
 type L3Interface struct {
 	VLAN      int    // resolved VLAN id (0 = not VLAN based)
 	Interface string // dedicated port (<member>/<card>/<port>)
@@ -301,6 +303,7 @@ func (b *builder) build() {
 	c := &Config{
 		Members:    map[int]*Member{},
 		L3:         map[string]*L3Unit{},
+		Instances:  map[string]*RoutingInstance{},
 		Interfaces: map[string]*Interface{},
 		VLANs:      map[string]*VLAN{},
 		VLANByID:   map[int]*VLAN{},
@@ -313,6 +316,7 @@ func (b *builder) build() {
 	sys := r.Child("system")
 	s := &c.System
 	s.HostName = sys.Leaf("host-name")
+	s.MgmtInstance = sys.Has("management-instance")
 	s.DomainName = sys.Leaf("domain-name")
 	s.TimeZone = sys.Leaf("time-zone")
 	s.NameServers = sys.List("name-server")
@@ -394,7 +398,6 @@ func (b *builder) build() {
 			VTEPAddress: e.Leaf("vtep-address"),
 		}
 		path := fmt.Sprintf("virtual-chassis member %d", id)
-		m.Mgmt = b.buildL3(e.Get("management"), path+" management")
 		m.Underlay = b.buildL3(e.Get("underlay"), path+" underlay")
 		c.Members[id] = m
 	}
@@ -443,7 +446,8 @@ func (b *builder) build() {
 		b.buildSwitching(i, e)
 		b.buildUnits(i.Name, e, i)
 	}
-	b.buildRoutes()
+	c.Routes = b.buildRoutes(r.Get("routing-options"), "routing-options")
+	b.buildInstances()
 
 	// RSTP.
 	if rs := r.Get("protocols", "rstp"); rs != nil && !rs.Has("disable") {

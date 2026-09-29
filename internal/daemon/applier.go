@@ -179,13 +179,6 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, false); err != nil {
 		return fmt.Errorf("bridge VLANs: %w", err)
 	}
-	changed, err := a.kernel.SyncMgmt(desired.Mgmt)
-	if changed {
-		a.log.Log(context.Background(), level, "management interface updated", "reason", reason, "err", err)
-	}
-	if err != nil {
-		return fmt.Errorf("management interface: %w", err)
-	}
 	changed, warnings, err := a.kernel.SyncL3(desired.L3)
 	if changed {
 		a.log.Log(context.Background(), level, "routed interfaces updated", "reason", reason, "err", err)

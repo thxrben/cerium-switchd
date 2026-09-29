@@ -128,18 +128,11 @@ func (b *builder) validateMembers() {
 			}
 			names[m.HostName] = id
 		}
-		b.validateL3(id, path+" management", m.Mgmt)
 		b.validateL3(id, path+" underlay", m.Underlay)
-		if m.Mgmt.VLAN != 0 && m.Mgmt.VLAN == m.Underlay.VLAN {
-			b.errorf(path+" underlay vlan", "management and underlay cannot share a VLAN (they live in different VRFs)")
-		}
 		if m.Underlay.VLAN != 0 {
 			if v := c.VLANByID[m.Underlay.VLAN]; v != nil && v.VNI != 0 {
 				b.errorf(path+" underlay vlan", "vlan %s is extended over VXLAN and cannot carry the VXLAN underlay", v.Name)
 			}
-		}
-		if m.Underlay.Interface != "" && m.Underlay.Interface == m.Mgmt.Interface {
-			b.warnf(path+" underlay interface", "underlay shares the management interface")
 		}
 	}
 }
@@ -412,7 +405,7 @@ func (b *builder) validateDomains() {
 				b.errorf(path+" members", "member %d is already part of domain %d", m, o)
 			}
 			inDomain[m] = did
-			if !mem.Mgmt.Configured() || !mem.Mgmt.HasAddress() {
+			if len(c.MgmtAddrs(m)) == 0 {
 				b.warnf(path, "member %d has no management address; the BFD split-brain heartbeat is not possible", m)
 			}
 		}

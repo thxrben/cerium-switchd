@@ -82,8 +82,9 @@ type Hub struct {
 	ringFull bool
 	fwds     map[Host]*forwarder
 	hostName func() string
-	// VRF is the device outgoing connections are bound to if it exists.
-	VRF string
+	// vrf is the device outgoing connections are bound to if it exists
+	// (the management instance); see SetVRF.
+	vrf string
 }
 
 // NewHub returns a hub that also passes every record to next.
@@ -95,6 +96,21 @@ func NewHub(next slog.Handler, bufSize int) *Hub {
 
 // Configure sets the ring size and the forwarders. Unchanged forwarders keep
 // their queue and connection.
+// SetVRF sets the routing instance (VRF device) new connections to syslog
+// servers use ("" = the default routing table).
+func (h *Hub) SetVRF(vrf string) {
+	h.mu.Lock()
+	h.vrf = vrf
+	h.mu.Unlock()
+}
+
+// VRF returns the VRF device of outgoing connections.
+func (h *Hub) VRF() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.vrf
+}
+
 func (h *Hub) Configure(hosts []Host, hostName func() string, bufSize int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -329,7 +345,7 @@ func Format(m Message, host string) string {
 
 func (f *forwarder) dial() (net.Conn, error) {
 	d := net.Dialer{Timeout: 5 * time.Second}
-	if vrf := f.hub.VRF; vrf != "" {
+	if vrf := f.hub.VRF(); vrf != "" {
 		if _, err := net.InterfaceByName(vrf); err == nil {
 			d.Control = func(_, _ string, c syscall.RawConn) error {
 				var serr error

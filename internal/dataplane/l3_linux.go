@@ -28,7 +28,8 @@ const (
 // l3Owned is what switchd changed outside its own devices, so that it can
 // be undone (addresses on ports, IPv6 forwarding, accept_ra).
 type l3Owned struct {
-	Addrs    map[string][]string `json:"addrs,omitempty"` // port -> addresses switchd added
+	Addrs    map[string][]string `json:"addrs,omitempty"`  // port -> addresses switchd added
+	Tables   map[string]int      `json:"tables,omitempty"` // VRF (routing instance) -> routing table
 	IPv6Fwd  bool                `json:"ipv6_forwarding,omitempty"`
 	AcceptRA []string            `json:"accept_ra,omitempty"` // interfaces switched from accept_ra 1 to 2
 }
@@ -36,12 +37,15 @@ type l3Owned struct {
 func (k *Netlink) l3StatePath() string { return filepath.Join(k.StateDir, "l3-owned.json") }
 
 func (k *Netlink) loadL3() l3Owned {
-	st := l3Owned{Addrs: map[string][]string{}}
+	st := l3Owned{}
 	if raw, err := os.ReadFile(k.l3StatePath()); err == nil {
 		_ = json.Unmarshal(raw, &st)
-		if st.Addrs == nil {
-			st.Addrs = map[string][]string{}
-		}
+	}
+	if st.Addrs == nil {
+		st.Addrs = map[string][]string{}
+	}
+	if st.Tables == nil {
+		st.Tables = map[string]int{}
 	}
 	return st
 }
@@ -154,11 +158,39 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 	}
 
+	// Routing instances: one VRF device each, with a routing table that
+	// stays the same across restarts.
+	vrfs := map[string]VRF{}
+	tables := map[string]int{}
+	for _, v := range l.VRFs {
+		vrfs[v.Name] = v
+		t, c, err := k.syncVRF(v, &st)
+		note(c, err)
+		tables[v.Name] = t
+	}
+	if len(l.VRFs) > 0 {
+		// Services listening in the default VRF (e.g. the OS SSH server)
+		// accept connections that arrive through an instance.
+		for _, p := range l3mdevSysctls {
+			c, err := writeSysctl(p, "1")
+			note(c, err)
+		}
+	}
+
 	want := map[string]bool{}
+	var protect []string // data L3 interfaces: only ping/ND/replies reach the switch
 	for _, i := range l.Ifs {
 		want[i.Name] = true
-		c, err := k.syncL3If(i, &st)
+		c, err := k.syncL3If(i, &st, vrfs[i.VRF])
 		note(c, err)
+		if !vrfs[i.VRF].Mgmt {
+			protect = append(protect, i.Name)
+		}
+	}
+	for _, v := range l.VRFs {
+		if !v.Mgmt {
+			protect = append(protect, v.Name)
+		}
 	}
 	// Addresses switchd put on ports that are no longer routed.
 	for port, addrs := range st.Addrs {
@@ -177,7 +209,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		delete(st.Addrs, port)
 	}
 
-	c, warnings, err := syncRoutes(l.Routes)
+	c, warnings, err := syncRoutes(l.Routes, tables)
 	note(c, err)
 
 	// Devices that are no longer configured.
@@ -187,10 +219,36 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	}
 	for _, ln := range links {
 		name := ln.Attrs().Name
-		if isOwnL3Device(name) && ln.Type() == "vlan" && !want[name] {
+		if (isOwnL3Device(name) || name == legacyMgmtIRB) && ln.Type() == "vlan" && !want[name] {
 			note(true, netlink.LinkDel(ln))
 		}
 	}
+	// Routing instances that are no longer configured (and the management
+	// VRF of older versions): members leave, then the VRF goes. (Fresh list:
+	// devices were deleted above.)
+	if links, err = netlink.LinkList(); err != nil {
+		errs = append(errs, err)
+	}
+	for _, ln := range links {
+		name := ln.Attrs().Name
+		_, ours := st.Tables[name]
+		legacy := name == legacyMgmtVRF && ln.Type() == "vrf"
+		if (!ours && !legacy) || ln.Type() != "vrf" {
+			continue
+		}
+		if _, keep := vrfs[name]; keep {
+			continue
+		}
+		for _, m := range links {
+			if m.Attrs().MasterIndex == ln.Attrs().Index {
+				note(true, netlink.LinkSetNoMaster(m))
+			}
+		}
+		note(true, netlink.LinkDel(ln))
+		delete(st.Tables, name)
+	}
+	c, err = k.syncProtect(protect)
+	note(c, err)
 
 	if !l.IPv6() && st.IPv6Fwd {
 		c, err := writeSysctl("/proc/sys/net/ipv6/conf/all/forwarding", "0")
@@ -207,8 +265,68 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	return changed, warnings, errors.Join(errs...)
 }
 
+// Kernel objects of older versions (the management VRF before routing
+// instances), removed when found.
+const (
+	legacyMgmtVRF = "mgmt"
+	legacyMgmtIRB = "mgmt0"
+)
+
+// l3mdevSysctls let services listening in the default VRF accept
+// connections that arrive through a VRF.
+var l3mdevSysctls = []string{
+	"/proc/sys/net/ipv4/tcp_l3mdev_accept",
+	"/proc/sys/net/ipv4/udp_l3mdev_accept",
+}
+
+// syncVRF makes sure the VRF of a routing instance exists and is up; it
+// returns its routing table.
+func (k *Netlink) syncVRF(v VRF, st *l3Owned) (int, bool, error) {
+	table := st.Tables[v.Name]
+	if table == 0 {
+		used := map[int]bool{}
+		for _, t := range st.Tables {
+			used[t] = true
+		}
+		table = 1001
+		if v.Mgmt && !used[100] {
+			table = 100 // the management table of older versions
+		}
+		for used[table] {
+			table++
+		}
+		st.Tables[v.Name] = table
+	}
+	changed := false
+	ln, _ := netlink.LinkByName(v.Name)
+	if cur, ok := ln.(*netlink.Vrf); ln != nil && (!ok || int(cur.Table) != table) {
+		// Wrong type or table: recreate (its members re-join below).
+		if err := netlink.LinkDel(ln); err != nil {
+			return table, changed, err
+		}
+		ln, changed = nil, true
+	}
+	if ln == nil {
+		if err := netlink.LinkAdd(&netlink.Vrf{LinkAttrs: netlink.LinkAttrs{Name: v.Name}, Table: uint32(table)}); err != nil {
+			return table, changed, fmt.Errorf("creating VRF %s: %w", v.Name, err)
+		}
+		changed = true
+		var err error
+		if ln, err = netlink.LinkByName(v.Name); err != nil {
+			return table, changed, err
+		}
+	}
+	if ln.Attrs().Flags&net.FlagUp == 0 {
+		if err := netlink.LinkSetUp(ln); err != nil {
+			return table, changed, err
+		}
+		changed = true
+	}
+	return table, changed, nil
+}
+
 // syncL3If converges one routed interface.
-func (k *Netlink) syncL3If(i L3If, st *l3Owned) (bool, error) {
+func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	changed := false
 	ln, _ := netlink.LinkByName(i.Name)
 	if i.Own {
@@ -257,9 +375,43 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned) (bool, error) {
 		return false, fmt.Errorf("%s: no such device", i.Name)
 	}
 
-	// Forwarding only on switchd's own L3 interfaces; no redirects; loose
-	// reverse-path filter.
-	for f, v := range map[string]string{"forwarding": "1", "send_redirects": "0", "rp_filter": "2"} {
+	// Routing instance membership, before the addresses (their routes go
+	// into the instance's table).
+	master := 0
+	if i.VRF != "" {
+		v, err := netlink.LinkByName(i.VRF)
+		if err != nil {
+			return changed, fmt.Errorf("%s: routing instance %s: %w", i.Name, i.VRF, err)
+		}
+		master = v.Attrs().Index
+	}
+	if cur := ln.Attrs().MasterIndex; cur != master {
+		curIsVRF := false
+		if m, err := netlink.LinkByIndex(cur); err == nil && m.Type() == "vrf" {
+			curIsVRF = true
+		}
+		switch {
+		case master != 0:
+			v, _ := netlink.LinkByIndex(master)
+			if err := netlink.LinkSetMaster(ln, v); err != nil {
+				return changed, fmt.Errorf("%s: joining %s: %w", i.Name, i.VRF, err)
+			}
+			changed = true
+		case curIsVRF:
+			if err := netlink.LinkSetNoMaster(ln); err != nil {
+				return changed, err
+			}
+			changed = true
+		}
+	}
+
+	// Forwarding only on switchd's own data L3 interfaces (management
+	// interfaces are hosts); no redirects; loose reverse-path filter.
+	fwd := "1"
+	if vrf.Mgmt {
+		fwd = "0"
+	}
+	for f, v := range map[string]string{"forwarding": fwd, "send_redirects": "0", "rp_filter": "2"} {
 		c, err := writeSysctl("/proc/sys/net/ipv4/conf/"+i.Name+"/"+f, v)
 		changed = changed || c
 		if err != nil {
@@ -317,8 +469,9 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned) (bool, error) {
 // syncRoutes makes switchd's routes in the main table match want. A route
 // whose next hop is not reachable yet is skipped (it is retried on every
 // reconcile) and reported.
-func syncRoutes(want []Route) (bool, []string, error) {
-	cur, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: RouteProto}, netlink.RT_FILTER_PROTOCOL)
+func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
+	cur, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: RouteProto, Table: unix.RT_TABLE_UNSPEC},
+		netlink.RT_FILTER_PROTOCOL|netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return false, nil, err
 	}
@@ -327,7 +480,13 @@ func syncRoutes(want []Route) (bool, []string, error) {
 	var warnings []string
 	keep := map[string]bool{}
 	for _, r := range want {
-		nr := &netlink.Route{Protocol: RouteProto, Priority: RouteMetric, Table: unix.RT_TABLE_MAIN,
+		table := unix.RT_TABLE_MAIN
+		if r.VRF != "" {
+			if table = tables[r.VRF]; table == 0 {
+				continue // the instance could not be created (reported)
+			}
+		}
+		nr := &netlink.Route{Protocol: RouteProto, Priority: RouteMetric, Table: table,
 			Dst: &net.IPNet{IP: r.Prefix.Addr().AsSlice(), Mask: net.CIDRMask(r.Prefix.Bits(), r.Prefix.Addr().BitLen())}}
 		if r.Prefix.Addr().Is6() {
 			nr.Family = netlink.FAMILY_V6
@@ -344,7 +503,7 @@ func syncRoutes(want []Route) (bool, []string, error) {
 				nr.MultiPath = append(nr.MultiPath, &netlink.NexthopInfo{Gw: h.AsSlice()})
 			}
 		}
-		keep[r.Prefix.String()] = true
+		keep[fmt.Sprintf("%d %s", table, r.Prefix)] = true
 		if routePresent(cur, nr) {
 			continue
 		}
@@ -364,7 +523,7 @@ func syncRoutes(want []Route) (bool, []string, error) {
 		}
 		p, ok := netip.AddrFromSlice(c.Dst.IP)
 		ones, _ := c.Dst.Mask.Size()
-		if ok && keep[netip.PrefixFrom(p.Unmap(), ones).String()] {
+		if ok && keep[fmt.Sprintf("%d %s", c.Table, netip.PrefixFrom(p.Unmap(), ones))] {
 			continue
 		}
 		if err := netlink.RouteDel(&c); err != nil {
@@ -379,7 +538,7 @@ func syncRoutes(want []Route) (bool, []string, error) {
 // routePresent reports whether an identical route exists.
 func routePresent(cur []netlink.Route, r *netlink.Route) bool {
 	for _, c := range cur {
-		if c.Dst == nil || c.Dst.String() != r.Dst.String() || c.Type != r.Type || c.Priority != r.Priority {
+		if c.Dst == nil || c.Table != r.Table || c.Dst.String() != r.Dst.String() || c.Type != r.Type || c.Priority != r.Priority {
 			continue
 		}
 		if len(r.MultiPath) == 0 {

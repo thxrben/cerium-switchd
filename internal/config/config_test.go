@@ -103,9 +103,9 @@ func TestLeafReplaceAndGroups(t *testing.T) {
 	if lacp.Child("active") != nil || lacp.Child("passive") == nil {
 		t.Fatalf("group exclusion failed: %s", FormatNode(lacp))
 	}
-	set(t, tr, "set virtual-chassis member 1 management interface 1/3/0")
-	set(t, tr, "set virtual-chassis member 1 management vlan 10")
-	if tr.Root.Has("virtual-chassis", "member", "1", "management", "interface") {
+	set(t, tr, "set virtual-chassis member 1 underlay interface 1/3/0")
+	set(t, tr, "set virtual-chassis member 1 underlay vlan 10")
+	if tr.Root.Has("virtual-chassis", "member", "1", "underlay", "interface") {
 		t.Fatalf("interface should have been replaced by vlan")
 	}
 }

@@ -189,6 +189,27 @@ var (
 		return p.String(), nil
 	}}
 
+	// InstanceName names a routing instance (also the kernel VRF name, so
+	// at most 15 characters).
+	InstanceName = String("<instance-name>", 15, `^[A-Za-z][A-Za-z0-9_-]*$`)
+
+	// UnitName references a logical unit: "irb.<n>", "1/0/5.0", "ae1.0".
+	UnitName = &Type{Name: "<unit-name>", Ref: "unit", Check: func(s string) (string, error) {
+		i := strings.LastIndexByte(s, '.')
+		if i <= 0 {
+			return "", fmt.Errorf("invalid unit %q (expecting <interface>.<unit>, e.g. irb.10 or 1/0/5.0)", s)
+		}
+		n, err := strconv.Atoi(s[i+1:])
+		if err != nil || n < 0 || n > MaxUnit || strconv.Itoa(n) != s[i+1:] {
+			return "", fmt.Errorf("invalid unit number in %q", s)
+		}
+		ifn, err := CheckInterfaceName(s[:i])
+		if err != nil {
+			return "", err
+		}
+		return ifn + s[i:], nil
+	}}
+
 	// IrbUnit references a VLAN IP interface "irb.<n>".
 	IrbUnit = &Type{Name: "<irb-unit>", Ref: "irb-unit", Check: func(s string) (string, error) {
 		n, ok := strings.CutPrefix(s, "irb.")

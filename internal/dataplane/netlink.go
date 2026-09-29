@@ -22,6 +22,10 @@ type Netlink struct {
 
 	mlOnce sync.Once
 	macl   *macLimits
+
+	protMu    sync.Mutex
+	protected string // nftables rules last installed by syncProtect
+	protInit  bool
 }
 
 func (k *Netlink) sysRoot() string {
@@ -44,7 +48,11 @@ func (k *Netlink) Read() (*State, error) {
 	}
 	byIndex := map[int]string{}
 	for _, l := range links {
-		byIndex[l.Attrs().Index] = l.Attrs().Name
+		// A VRF as master (routing instances) is managed by SyncL3, not by
+		// the planner: it is reported as no master.
+		if l.Type() != "vrf" {
+			byIndex[l.Attrs().Index] = l.Attrs().Name
+		}
 	}
 	s := &State{Links: map[string]*Link{}}
 	maxes := maxMTUs()

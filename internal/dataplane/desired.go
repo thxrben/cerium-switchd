@@ -108,25 +108,7 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			self[i.VID] = true
 		}
 	}
-	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.VLAN != 0 {
-		self[mem.Mgmt.VLAN] = true
-	}
 	s.SelfVLANs = slices.Sorted(maps.Keys(self))
-	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.Configured() {
-		port := ""
-		if mem.Mgmt.Interface != "" {
-			var ok bool
-			if port, ok = names(mem.Mgmt.Interface); !ok {
-				port = ""
-				notes = append(notes, fmt.Sprintf("management: port %s does not exist", mem.Mgmt.Interface))
-			}
-		}
-		s.Mgmt = &Mgmt{VLAN: mem.Mgmt.VLAN, Port: port,
-			Addrs: slices.Clone(mem.Mgmt.Addresses), Gateways: slices.Clone(mem.Mgmt.Gateways), DHCP: mem.Mgmt.DHCP}
-		if s.Mgmt.DHCP {
-			notes = append(notes, "management: DHCP is not implemented yet; configure a static address")
-		}
-	}
 	return s, notes
 }
 
@@ -190,7 +172,10 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	units := slices.Sorted(maps.Keys(cfg.L3))
 	for _, n := range units {
 		u := cfg.L3[n]
-		i := L3If{Up: !u.Disabled, Addrs: slices.Clone(u.Addrs)}
+		if !u.OnMember(m) {
+			continue // an irb whose addresses all belong to other members
+		}
+		i := L3If{Up: !u.Disabled, Addrs: u.AddrsOn(m), VRF: u.Instance}
 		switch {
 		case u.IRB():
 			if u.VLAN == 0 {
@@ -227,6 +212,13 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	}
 	for _, r := range cfg.Routes {
 		l.Routes = append(l.Routes, Route{Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Instances)) {
+		in := cfg.Instances[name]
+		l.VRFs = append(l.VRFs, VRF{Name: name, Mgmt: name == model.MgmtInstance})
+		for _, r := range in.Routes {
+			l.Routes = append(l.Routes, Route{VRF: name, Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
+		}
 	}
 	return l
 }

@@ -33,6 +33,14 @@ type Operational interface {
 	CancelPower(user string) error
 	// Offload lists the hardware capabilities per port (reference 1.7).
 	Offload() ([]OffloadPort, error)
+	// Routes lists a routing table ("" = the default instance).
+	Routes(instance string) ([]Route, error)
+}
+
+// Route is one line of "show route".
+type Route struct {
+	Dest, Via, Proto string
+	Metric           int
 }
 
 // OffloadPort is one line of "show system offload". Feature values are
@@ -371,6 +379,56 @@ func (sh *Shell) showHardware(c *call) error {
 	return nil
 }
 
+// showRoute implements "show route [instance <name>]".
+func (sh *Shell) showRoute(c *call) error {
+	instance := ""
+	switch {
+	case len(c.args) == 0:
+	case len(c.args) == 2 && prefixOf(c.args[0].Text, "instance"):
+		instance = c.args[1].Text
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'instance <name>'"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("routing information is not available")
+	}
+	rs, err := sh.env.Ops.Routes(instance)
+	if err != nil {
+		return err
+	}
+	name := instance
+	if name == "" {
+		name = "default"
+	}
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := strings.Contains(rs[i].Dest, ":"), strings.Contains(rs[j].Dest, ":")
+		if a != b {
+			return !a // IPv4 first
+		}
+		return config.NaturalLess(rs[i].Dest, rs[j].Dest)
+	})
+	fmt.Fprintf(c.out, "Routing instance %s: %d routes\n", name, len(rs))
+	fmt.Fprintf(c.out, "%-28s %-8s %-7s %s\n", "Destination", "Source", "Metric", "Next hop")
+	for _, r := range rs {
+		fmt.Fprintf(c.out, "%-28s %-8s %-7d %s\n", r.Dest, r.Proto, r.Metric, r.Via)
+	}
+	return nil
+}
+
+func completeRoute(sh *Shell, args []config.Token, partial string) []Completion {
+	switch len(args) {
+	case 0:
+		return filter([]Completion{enter, {Text: "instance", Help: "Routing instance"}}, partial)
+	case 1:
+		var out []Completion
+		for _, e := range sh.env.Engine.Active().Root.Entries("routing-instances") {
+			out = append(out, Completion{Text: e.Key, Help: "Routing instance"})
+		}
+		return filter(out, partial)
+	}
+	return []Completion{enter}
+}
+
 func (sh *Shell) showARP(c *call) error {
 	if len(c.args) > 1 || (len(c.args) == 1 && !prefixOf(c.args[0].Text, "no-resolve")) {
 		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'no-resolve'"}
@@ -584,6 +642,7 @@ func registerOperational() {
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},
 				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
+				&command{name: "route", help: "Show a routing table", class: commit.ReadOnly, run: (*Shell).showRoute, complete: completeRoute},
 				&command{name: "arp", help: "Show the IPv4 neighbour (ARP) table", class: commit.ReadOnly, run: (*Shell).showARP,
 					complete: words(Completion{Text: "no-resolve", Help: "Do not resolve host names"})},
 				&command{name: "ipv6", help: "Show IPv6 information", class: commit.ReadOnly, sub: []*command{

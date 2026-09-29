@@ -95,21 +95,18 @@ type BridgeOpts struct {
 	AgeingSeconds int
 }
 
-// Mgmt is the member's management IP interface in VRF "mgmt": on a VLAN
-// of the bridge (interface mgmt0) or on a dedicated port.
-type Mgmt struct {
-	VLAN     int    // IRB-like: VLAN id on the bridge
-	Port     string // dedicated port (Linux name)
-	Addrs    []string
-	Gateways []string
-	DHCP     bool
-}
-
 // L3 is the routed part of the default instance (reference 5.3.2, 5.3.3,
 // 5.8): IP interfaces and static routes.
 type L3 struct {
+	VRFs   []VRF // routing instances
 	Ifs    []L3If
 	Routes []Route
+}
+
+// VRF is a routing instance in the kernel.
+type VRF struct {
+	Name string
+	Mgmt bool // the management instance: its interfaces never forward
 }
 
 // L3If is one routed interface in the kernel.
@@ -121,18 +118,28 @@ type L3If struct {
 	Up     bool
 	MTU    int // kernel MTU of an own device (0 = default)
 	Addrs  []netip.Prefix
+	VRF    string // routing instance ("" = default)
 }
 
 // Route is a static route of the default instance.
 type Route struct {
+	VRF      string // routing instance ("" = default)
 	Prefix   netip.Prefix
 	NextHops []netip.Addr
 	Discard  bool
 }
 
-// IPv6 reports whether any interface has an IPv6 address (IPv6 routing).
+// IPv6 reports whether any data interface (not management) has an IPv6
+// address, i.e. IPv6 routing is needed.
 func (l *L3) IPv6() bool {
+	mgmt := map[string]bool{}
+	for _, v := range l.VRFs {
+		mgmt[v.Name] = v.Mgmt
+	}
 	for _, i := range l.Ifs {
+		if mgmt[i.VRF] {
+			continue
+		}
 		for _, a := range i.Addrs {
 			if a.Addr().Is6() {
 				return true
@@ -146,30 +153,22 @@ func (l *L3) IPv6() bool {
 type State struct {
 	Bridge *BridgeOpts // nil: no bridge
 	Links  map[string]*Link
-	// Mgmt is nil when the configuration has no management block: the
-	// host's network configuration is then left alone.
-	Mgmt *Mgmt
 	// L3 holds the routed interfaces (never nil in a desired state).
 	L3 *L3
 	// SelfVLANs are the VLANs the bridge device itself joins (delivered to
-	// the CPU): the management VLAN and the irb VLANs.
+	// the CPU): the VLANs of irb interfaces.
 	SelfVLANs []int
 }
 
 // Clone returns a deep copy.
 func (s *State) Clone() *State {
 	c := &State{Links: map[string]*Link{}}
-	if s.Mgmt != nil {
-		m := *s.Mgmt
-		m.Addrs, m.Gateways = slices.Clone(s.Mgmt.Addrs), slices.Clone(s.Mgmt.Gateways)
-		c.Mgmt = &m
-	}
 	if s.Bridge != nil {
 		b := *s.Bridge
 		c.Bridge = &b
 	}
 	if s.L3 != nil {
-		l := &L3{Routes: slices.Clone(s.L3.Routes)}
+		l := &L3{Routes: slices.Clone(s.L3.Routes), VRFs: slices.Clone(s.L3.VRFs)}
 		for _, i := range s.L3.Ifs {
 			i.Addrs = slices.Clone(i.Addrs)
 			l.Ifs = append(l.Ifs, i)

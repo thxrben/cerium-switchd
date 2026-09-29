@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	"mclag/internal/config"
 	"mclag/internal/schema"
@@ -128,14 +129,20 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 	return out
 }
 
-// reservedPort reports whether a port is a member's dedicated management or
-// underlay port.
+// reservedPort reports whether a port is a member's management port (a
+// unit in the management instance) or dedicated underlay port.
 func (b *builder) reservedPort(member int, name string) bool {
-	for _, e := range b.root.Get("virtual-chassis").Entries("member") {
-		if e.Key != strconv.Itoa(member) {
-			continue
+	if e := b.root.Entry("routing-instances", MgmtInstance); e != nil {
+		for _, u := range e.List("interface") {
+			if strings.HasPrefix(u, name+".") {
+				return true
+			}
 		}
-		return e.Leaf("management", "interface") == name || e.Leaf("underlay", "interface") == name
+	}
+	for _, e := range b.root.Get("virtual-chassis").Entries("member") {
+		if e.Key == strconv.Itoa(member) && e.Leaf("underlay", "interface") == name {
+			return true
+		}
 	}
 	return false
 }

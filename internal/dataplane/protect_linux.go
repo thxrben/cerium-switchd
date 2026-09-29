@@ -1,0 +1,72 @@
+//go:build linux
+
+package dataplane
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os/exec"
+	"slices"
+	"strings"
+)
+
+// protectTable is switchd's nftables table protecting the switch's own
+// addresses on data L3 interfaces (reference 1.5): only ping, neighbour
+// discovery (ICMPv6) and replies to connections the switch opened reach
+// the switch there. ARP is not affected (it is not IP).
+const protectTable = "switchd_protect"
+
+// syncProtect installs the protection for the given interfaces (none:
+// removes it). The table is replaced atomically on every run, which also
+// repairs it if something else flushed the ruleset.
+func (k *Netlink) syncProtect(ifs []string) (bool, error) {
+	slices.Sort(ifs)
+	var b strings.Builder
+	// Adding and then deleting makes the delete succeed whether or not the
+	// table exists; the whole file is one transaction.
+	fmt.Fprintf(&b, "table inet %s\ndelete table inet %s\n", protectTable, protectTable)
+	if len(ifs) > 0 {
+		quoted := make([]string, len(ifs))
+		for i, n := range ifs {
+			quoted[i] = `"` + n + `"`
+		}
+		fmt.Fprintf(&b, `table inet %s {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname != { %s } accept
+		ct state established,related accept
+		meta l4proto { icmp, ipv6-icmp } accept
+		counter drop
+	}
+}
+`, protectTable, strings.Join(quoted, ", "))
+	}
+	rules := b.String()
+	k.protMu.Lock()
+	defer k.protMu.Unlock()
+	if len(ifs) == 0 && k.protected == "" && k.protInit {
+		return false, nil // nothing installed
+	}
+	k.protInit = true // the first run also removes a table left from before a restart
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		if len(ifs) == 0 {
+			return false, nil
+		}
+		return false, errors.New("nftables (the nft program) is required to protect routed interfaces; install the nftables package")
+	}
+	cmd := exec.Command(nft, "-f", "-")
+	cmd.Stdin = strings.NewReader(rules)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("nft: %v: %s", err, strings.TrimSpace(out.String()))
+	}
+	changed := k.protected != rules
+	k.protected = rules
+	if len(ifs) == 0 {
+		k.protected = ""
+	}
+	return changed, nil
+}
