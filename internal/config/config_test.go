@@ -44,9 +44,9 @@ set system login user alice class super-user
 set system login user alice authentication ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx alice@laptop"
 set stack member 1 host-name sw-a
 set stack member 2 host-name sw-b
-set interfaces 1/eth2 mtu 9216
-set interfaces 1/eth10 description "uplink to core"
-set interfaces 1/eth10 disable
+set interfaces 1/0/2 mtu 9216
+set interfaces 1/0/10 description "uplink to core"
+set interfaces 1/0/10 disable
 set interfaces ae1 aggregated-ether-options lacp active
 set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
@@ -73,15 +73,15 @@ func TestSetAndOrdering(t *testing.T) {
 	tr := sampleTree(t)
 	got := FormatSet(tr)
 	// Natural sort: eth2 before eth10, schema order: system before stack.
-	i2 := strings.Index(got, "1/eth2")
-	i10 := strings.Index(got, "1/eth10")
+	i2 := strings.Index(got, "1/0/2")
+	i10 := strings.Index(got, "1/0/10")
 	if i2 < 0 || i10 < 0 || i2 > i10 {
 		t.Errorf("natural ordering broken:\n%s", got)
 	}
 	if strings.Index(got, "set system") > strings.Index(got, "set stack") {
 		t.Errorf("schema ordering broken")
 	}
-	if tr.Root.Leaf("interfaces", "1/eth2", "mtu") != "9216" {
+	if tr.Root.Leaf("interfaces", "1/0/2", "mtu") != "9216" {
 		t.Errorf("mtu not set")
 	}
 	if !tr.Root.Has("protocols", "rstp") {
@@ -94,8 +94,8 @@ func TestSetAndOrdering(t *testing.T) {
 
 func TestLeafReplaceAndGroups(t *testing.T) {
 	tr := sampleTree(t)
-	set(t, tr, "set interfaces 1/eth2 mtu 1500")
-	if v := tr.Root.Leaf("interfaces", "1/eth2", "mtu"); v != "1500" {
+	set(t, tr, "set interfaces 1/0/2 mtu 1500")
+	if v := tr.Root.Leaf("interfaces", "1/0/2", "mtu"); v != "1500" {
 		t.Fatalf("mtu = %s", v)
 	}
 	set(t, tr, "set interfaces ae1 aggregated-ether-options lacp passive")
@@ -103,7 +103,7 @@ func TestLeafReplaceAndGroups(t *testing.T) {
 	if lacp.Child("active") != nil || lacp.Child("passive") == nil {
 		t.Fatalf("group exclusion failed: %s", FormatNode(lacp))
 	}
-	set(t, tr, "set stack member 1 management interface eno1")
+	set(t, tr, "set stack member 1 management interface 1/3/0")
 	set(t, tr, "set stack member 1 management vlan 10")
 	if tr.Root.Has("stack", "member", "1", "management", "interface") {
 		t.Fatalf("interface should have been replaced by vlan")
@@ -135,13 +135,13 @@ func TestLeafListBrackets(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	tr := sampleTree(t)
-	if err := del(t, tr, "delete interfaces 1/eth10 disable"); err != nil {
+	if err := del(t, tr, "delete interfaces 1/0/10 disable"); err != nil {
 		t.Fatal(err)
 	}
-	if tr.Root.Has("interfaces", "1/eth10", "disable") {
+	if tr.Root.Has("interfaces", "1/0/10", "disable") {
 		t.Fatal("flag not deleted")
 	}
-	if !tr.Root.Has("interfaces", "1/eth10") {
+	if !tr.Root.Has("interfaces", "1/0/10") {
 		t.Fatal("list entries must not be pruned")
 	}
 	if err := del(t, tr, "delete vlans"); err != nil {
@@ -170,12 +170,12 @@ func TestResolveErrors(t *testing.T) {
 	}{
 		{"set foo", ModeSet, 0, "syntax error"},
 		{"s", ModeSet, 0, "ambiguous"},
-		{"interfaces 1/eth0 mtu", ModeSet, 3, "missing argument"},
-		{"interfaces 1/eth0 mtu 99999", ModeSet, 3, "out of range"},
-		{"interfaces 1/eth0 mtu 1500 extra", ModeSet, 4, "syntax error"},
+		{"interfaces 1/0/0 mtu", ModeSet, 3, "missing argument"},
+		{"interfaces 1/0/0 mtu 99999", ModeSet, 3, "out of range"},
+		{"interfaces 1/0/0 mtu 1500 extra", ModeSet, 4, "syntax error"},
 		{"interfaces bogus mtu 1500", ModeSet, 1, "invalid interface"},
 		{"interfaces", ModeSet, 1, "missing"},
-		{"interfaces 1/eth0 disable now", ModeSet, 3, "syntax error"},
+		{"interfaces 1/0/0 disable now", ModeSet, 3, "syntax error"},
 		{"system name-server [ 1.1.1.1 bad ]", ModeSet, 4, "invalid IP"},
 		{"system name-server [ 1.1.1.1", ModeSet, 4, "missing ']'"},
 		{"system name-server [ ]", ModeSet, 2, "empty"},
@@ -231,7 +231,7 @@ func TestFormatsRoundTrip(t *testing.T) {
 	if !Equal(tr, fromCurly) {
 		t.Fatalf("curly round trip differs:\n%s\n%s", Diff(tr, fromCurly), curly)
 	}
-	if !strings.Contains(curly, "interfaces {\n    1/eth2 {\n        mtu 9216;") {
+	if !strings.Contains(curly, "interfaces {\n    1/0/2 {\n        mtu 9216;") {
 		t.Errorf("wrapped list rendering unexpected:\n%s", curly)
 	}
 	if !strings.Contains(curly, "rstp;") || !strings.Contains(curly, "    empty;") {
@@ -257,7 +257,7 @@ func TestParseCurlyErrors(t *testing.T) {
 		"system { host-name x; ",
 		"system { host-name x }",
 		"}",
-		"interfaces { 1/eth0 { mtu 99999999; } }",
+		"interfaces { 1/0/0 { mtu 99999999; } }",
 		"system { host-name { } }",
 		"; ",
 		"bogus;",
@@ -277,14 +277,14 @@ func TestParseCurlyErrors(t *testing.T) {
 
 func TestParseCurlyAtEditPath(t *testing.T) {
 	tr := New()
-	base, err := Resolve(schema.Root(), mustLex(t, "interfaces 1/eth0"), ModeNav)
+	base, err := Resolve(schema.Root(), mustLex(t, "interfaces 1/0/0"), ModeNav)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := ParseCurly(tr, "mtu 9000; unit 0 { family { ethernet-switching { vlan { members [ 10 20 ]; } } } }", base); err != nil {
 		t.Fatal(err)
 	}
-	if tr.Root.Leaf("interfaces", "1/eth0", "mtu") != "9000" {
+	if tr.Root.Leaf("interfaces", "1/0/0", "mtu") != "9000" {
 		t.Fatalf("got:\n%s", FormatSet(tr))
 	}
 }
@@ -292,8 +292,8 @@ func TestParseCurlyAtEditPath(t *testing.T) {
 func TestDiff(t *testing.T) {
 	a := sampleTree(t)
 	b := a.Clone()
-	set(t, b, "set interfaces 1/eth2 mtu 1500")
-	set(t, b, "set interfaces 1/eth3 mtu 9000")
+	set(t, b, "set interfaces 1/0/2 mtu 1500")
+	set(t, b, "set interfaces 1/0/3 mtu 9000")
 	if err := del(t, b, "delete vlans users"); err != nil {
 		t.Fatal(err)
 	}
@@ -301,8 +301,8 @@ func TestDiff(t *testing.T) {
 	d := Diff(a, b)
 	want := []string{
 		"[edit system]\n-   name-server [ 1.1.1.1 9.9.9.9 ];\n+   name-server [ 1.1.1.1 9.9.9.9 8.8.8.8 ];",
-		"[edit interfaces]\n+   1/eth3 {\n+       mtu 9000;\n+   }",
-		"[edit interfaces 1/eth2]\n-   mtu 9216;\n+   mtu 1500;",
+		"[edit interfaces]\n+   1/0/3 {\n+       mtu 9000;\n+   }",
+		"[edit interfaces 1/0/2]\n-   mtu 9216;\n+   mtu 1500;",
 		"[edit vlans]\n-   users {\n-       vlan-id 10;",
 	}
 	for _, w := range want {
@@ -314,7 +314,7 @@ func TestDiff(t *testing.T) {
 		t.Error("identical trees must not differ")
 	}
 	// The clone must be independent.
-	if a.Root.Leaf("interfaces", "1/eth2", "mtu") != "9216" {
+	if a.Root.Leaf("interfaces", "1/0/2", "mtu") != "9216" {
 		t.Error("clone shares state with original")
 	}
 }
@@ -326,8 +326,8 @@ func TestNaturalLess(t *testing.T) {
 	}{
 		{"ae2", "ae10", true},
 		{"ae10", "ae2", false},
-		{"1/eth9", "1/eth10", true},
-		{"2/eth0", "10/eth0", true},
+		{"1/0/9", "1/0/10", true},
+		{"2/0/0", "10/0/0", true},
 		{"a", "b", true},
 		{"a", "a", false},
 		{"a", "a1", true},
@@ -398,7 +398,7 @@ func FuzzParseCurly(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(FormatCurly(tr.Root))
-	f.Add("interfaces { 1/eth0; }")
+	f.Add("interfaces { 1/0/0; }")
 	f.Add("a { b { c; } }}")
 	f.Add("vlans { inactive: v { vlan-id 3; } replace: w { inactive: mtu 9000; } delete: x; }")
 	f.Add("inactive: protocols { rstp { inactive: disable; } }")
@@ -431,20 +431,20 @@ func FuzzParseCurly(f *testing.F) {
 }
 
 func TestMergeDefaults(t *testing.T) {
-	tr, err := ParseSet(`set interfaces 1/eth0 mtu 9216
-set interfaces 1/eth0 ether-options no-flow-control
-set interfaces 1/eth0 unit 0 family ethernet-switching vlan members a
-set interfaces 1/eth1 description template
-set interfaces 1/eth1 mtu 1514
-set interfaces 1/eth1 ether-options flow-control
-set interfaces 1/eth1 unit 0 family ethernet-switching interface-mode trunk
-set interfaces 1/eth1 unit 0 family ethernet-switching vlan members [ b c ]
+	tr, err := ParseSet(`set interfaces 1/0/0 mtu 9216
+set interfaces 1/0/0 ether-options no-flow-control
+set interfaces 1/0/0 unit 0 family ethernet-switching vlan members a
+set interfaces 1/0/1 description template
+set interfaces 1/0/1 mtu 1514
+set interfaces 1/0/1 ether-options flow-control
+set interfaces 1/0/1 unit 0 family ethernet-switching interface-mode trunk
+set interfaces 1/0/1 unit 0 family ethernet-switching vlan members [ b c ]
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dst := tr.Root.Entry("interfaces", "1/eth0")
-	dst.MergeDefaults(tr.Root.Entry("interfaces", "1/eth1"))
+	dst := tr.Root.Entry("interfaces", "1/0/0")
+	dst.MergeDefaults(tr.Root.Entry("interfaces", "1/0/1"))
 	if dst.Leaf("mtu") != "9216" {
 		t.Error("explicit leaf must win")
 	}

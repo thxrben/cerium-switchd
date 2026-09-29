@@ -394,7 +394,8 @@ In this order (the user's priorities; each step is spec first, then implementati
    port that is not a switch port) and routed subinterfaces (`vlan-tagging; unit <n> { vlan-id <v>; family inet … }`).
    Junos rule kept: `family ethernet-switching` only on unit 0. `routing-options static route …`.
    The management plane (VRF mgmt) moves onto the same model (`routing-instances mgmt`, irb in it).
-3. **Operational quick wins**: `show system rollback <n> [compare <m>]` (`show | compare` already works in
+3. **Operational quick wins**: `show system rollback <n>` (the complete configuration of revision n)
+   and `show system rollback <n> compare <m>` (`show | compare` already works in
    configuration mode, and `show configuration | compare rollback <n>` in operational mode), `show arp` /
    `show ipv6 neighbors` (all instances, including addresses the OS manages), `show system uptime` (clock, boot
    time, switchd uptime, last commit), `system host-name` also written to /etc/hostname and /etc/hosts (no reboot),
@@ -468,9 +469,11 @@ In this order (the user's priorities; each step is spec first, then implementati
    and VXLAN ports are excluded from RSTP.
 6. `show vxlan`, `show vxlan remote-vteps`, `show ethernet-switching table vni …`.
 
-### Phase 9b: BGP (EVPN) via FRR
-BGP is not written from scratch: switchd renders the FRR configuration from `protocols bgp …` and runs FRR in the
-right VRF. Use: EVPN control plane for VXLAN towards non-stack VTEPs, and simple BGP routing for irbs.
+### Phase 9b: BGP (EVPN) via GoBGP
+BGP is not written from scratch: GoBGP is embedded as a Go library in switchd (no external daemon; FRR was
+considered and rejected as less predictable to drive). `protocols bgp …` configures it; routes it learns are
+installed via netlink in the right VRF. Use: EVPN control plane for VXLAN towards non-stack VTEPs, and simple BGP
+routing for irbs.
 
 ### Phase 10: Data-plane encryption (opt-in per link)
 1. **MACsec** on the peer link. Keys (SAKs) are generated and rotated by switchd and exchanged over the mTLS channel,
@@ -498,6 +501,14 @@ Authenticator on switch ports (hostapd wired driver, per port, EAP → RADIUS or
 dynamic VLAN) and supplicant (wpa_supplicant, for uplinks into a secured network). Off by default: ports need
 no authentication unless configured.
 
+### Phase 13: System diagnostics (`request system diagnose` / `show system bottlenecks`)
+An overall check that lists what limits the switch, with a recommendation per finding:
+* **PCIe**: per NIC the negotiated link speed/width vs. the card's maximum and vs. what its ports need at line rate
+  (`current_link_speed/width` vs. `max_link_*` in sysfs; e.g. a 4×10G card in a PCIe 2.0 x4 slot).
+* CPU: cores vs. NIC queues, IRQ affinity and RPS/XPS spread, frequency scaling governor, NUMA locality of NICs.
+* NIC: offloads not active that the NIC supports, ring sizes, drops/overruns from the counters, flow control.
+* Memory and softirq load under traffic, and the throughput the forwarding path reached (from the counters).
+
 ### VM needs by phase
 | Phase | VMs needed |
 |---|---|
@@ -508,7 +519,7 @@ no authentication unless configured.
 | 8–9 | all five |
 
 ## 9. Known limits / non-goals
-* Routing is basic: irb and routed ports, static routes, and (Phase 9b) BGP via FRR. No other routing
+* Routing is basic: irb and routed ports, static routes, and (Phase 9b) BGP via GoBGP. No other routing
   protocols, no policy routing, no MPLS.
 * Throughput is bounded by the host/NIC (kernel bridge). Expect roughly 10–40 Gbit/s on decent x86 with large frames, and lower with small packets. Hardware offload is only available where switchdev drivers exist.
 * Target scale: 2–4 members typical, **up to 16** supported (Raft: up to 7 voters, the rest are non-voting

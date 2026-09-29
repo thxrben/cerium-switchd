@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,7 +25,39 @@ import (
 
 const sw1 = "10.5.176.95"
 
-// A test host: the VM and its NIC towards sw1, and the sw1 port it is on.
+// sw1Names maps sw1's Linux interface names to switch names ("ens19" ->
+// "1/1/0"), from 'show chassis hardware' the first time it is needed (all
+// NICs are present then).
+var (
+	sw1NamesOnce sync.Once
+	sw1Names     map[string]string
+	oldName      = regexp.MustCompile(`\b1/(ens[0-9]+)\b`)
+)
+
+// portNames rewrites "1/<linux-name>" in s to sw1's switch names, so the
+// tests can refer to the cabling by Linux name.
+func portNames(t *testing.T, s string) string {
+	t.Helper()
+	sw1NamesOnce.Do(func() {
+		sw1Names = map[string]string{}
+		out := mustSSH(t, sw1, "swcli -c 'show chassis hardware'")
+		for _, l := range strings.Split(out, "\n") {
+			if f := strings.Fields(l); len(f) >= 2 && strings.Count(f[0], "/") == 2 {
+				sw1Names[f[1]] = f[0]
+			}
+		}
+	})
+	return oldName.ReplaceAllStringFunc(s, func(m string) string {
+		if n, ok := sw1Names[m[2:]]; ok {
+			return n
+		}
+		t.Fatalf("sw1 has no port %s", m[2:])
+		return m
+	})
+}
+
+// A test host: the VM and its NIC towards sw1, and the sw1 port it is on
+// (by Linux name; see portNames).
 type host struct {
 	name, vm, nic, sw1Port string
 	n                      int // host number in 192.168.x.n
@@ -139,7 +172,7 @@ func configure(t *testing.T, setLines string) {
 	if !strings.Contains(setLines, "system services ssh") {
 		base += keptServices(t)
 	}
-	mustSSH(t, sw1, "cat > /root/lab.set <<'EOF'\n"+base+setLines+"\nEOF")
+	mustSSH(t, sw1, "cat > /root/lab.set <<'EOF'\n"+base+portNames(t, setLines)+"\nEOF")
 	out := mustSSH(t, sw1, `swcli -c "configure
 load override lab.set
 commit
@@ -531,7 +564,7 @@ func TestManagementPlane(t *testing.T) {
 	}
 
 	// Dedicated port instead.
-	configure(t, base+"set stack member 1 management interface ens19\nset stack member 1 management address 192.168.98.1/24\n")
+	configure(t, base+"set stack member 1 management interface 1/ens19\nset stack member 1 management address 192.168.98.1/24\n")
 	if _, err := ssh(hSw2.vm, "ip netns exec h ping -c2 -W1 192.168.98.1"); err != nil {
 		t.Error("management address on the dedicated port not reachable")
 	}

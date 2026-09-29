@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"github.com/vishvananda/netlink"
+	"mclag/internal/inventory"
 
 	"mclag/internal/dataplane"
 	"mclag/internal/model"
@@ -11,6 +12,7 @@ import (
 // members are unknown until stacking exists.
 type kernelInventory struct {
 	kernel dataplane.Kernel
+	names  *inventory.Naming
 	member int
 }
 
@@ -23,10 +25,12 @@ func (k *kernelInventory) Ports(member int) (map[string]model.PortInfo, bool) {
 		return nil, false
 	}
 	out := map[string]model.PortInfo{}
-	for n, l := range st.Links {
-		if l.Kind == dataplane.Physical && l.Present {
-			out[n] = model.PortInfo{MTU: l.MTU, MaxMTU: l.MaxMTU, HasIP: hasIP(n)}
+	for _, p := range k.names.Ports() {
+		info := model.PortInfo{Linux: p.Linux, HasIP: hasIP(p.Linux)}
+		if l := st.Links[p.Linux]; l != nil {
+			info.MTU, info.MaxMTU = l.MTU, l.MaxMTU
 		}
+		out[p.Name] = info
 	}
 	return out, true
 }

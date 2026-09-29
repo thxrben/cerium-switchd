@@ -51,7 +51,7 @@ func build() *Node {
 
 	management := C("management", "Management IP interface of this member (management VRF)",
 		g("mgmt-attach", V("vlan", "Attach the management IP to this VLAN (IRB-like)", VlanSingle)),
-		g("mgmt-attach", V("interface", "Dedicated, non-switched management port (Linux name)", LinuxIfName)),
+		g("mgmt-attach", V("interface", "Dedicated, non-switched management port", PhysInterface)),
 		LL("address", "Static addresses (IPv4 and/or IPv6)", IPPrefix),
 		F("dhcp", "Obtain the IPv4 address via DHCP"),
 		LL("gateway", "Default gateway, at most one per address family", IP),
@@ -159,7 +159,7 @@ func build() *Node {
 			V("vtep-address", "Local VXLAN tunnel endpoint address", IP),
 			C("underlay", "Layer 3 interface carrying VXLAN tunnels (default VRF)",
 				g("ul-attach", V("vlan", "Attach the underlay IP to this VLAN (IRB-like)", VlanSingle)),
-				g("ul-attach", V("interface", "Dedicated, non-switched underlay port (Linux name)", LinuxIfName)),
+				g("ul-attach", V("interface", "Dedicated, non-switched underlay port", PhysInterface)),
 				LL("address", "Underlay addresses", IPPrefix),
 				LL("gateway", "Next hop towards remote VTEPs, at most one per address family", IP),
 			),
@@ -222,8 +222,8 @@ func build() *Node {
 	iface := L("interfaces", "Interface configuration", Interface, ifaceChildren()...)
 	ifRange := L("interface-range", "Apply one configuration to many ports", Identifier,
 		append([]*Node{
-			LL("member", "Ports by pattern, e.g. 1/enp1s* or */eth? (* and ? wildcards)", IfPattern),
-			L("member-range", "Contiguous ports, e.g. 1/eth0 to 1/eth23", PhysInterface,
+			LL("member", "Ports by pattern, e.g. 1/0/* or */1/[0-3]", IfPattern),
+			L("member-range", "Contiguous ports on one card, e.g. 1/0/0 to 1/0/23", PhysInterface,
 				V("to", "Last port of the range", PhysInterface),
 			),
 		}, ifaceChildren()...)...,

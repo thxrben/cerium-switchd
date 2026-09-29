@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"mclag/internal/schema"
 	"slices"
 	"sort"
 	"strings"
@@ -58,9 +59,10 @@ func (is Issues) String() string {
 
 // PortInfo holds hardware facts about a physical port.
 type PortInfo struct {
-	MTU       int  // current kernel (Linux) MTU
-	MaxMTU    int  // kernel (Linux) maximum MTU, 0 = unknown
-	StackPort bool // designated stacking port (never a data port)
+	Linux     string // kernel interface name
+	MTU       int    // current kernel (Linux) MTU
+	MaxMTU    int    // kernel (Linux) maximum MTU, 0 = unknown
+	StackPort bool   // designated stacking port (never a data port)
 	// HasIP: the operating system has configured IP addresses on the port
 	// (typically the installer's management NIC).
 	HasIP bool
@@ -68,13 +70,14 @@ type PortInfo struct {
 
 // Inventory supplies hardware facts for validation.
 type Inventory interface {
-	// Ports returns the ports of a member keyed by Linux name. known is
-	// false if nothing is known about the member (e.g. not joined yet).
+	// Ports returns the ports of a member keyed by interface name
+	// ("<member>/<card>/<port>"). known is false if nothing is known about
+	// the member (e.g. not joined yet).
 	Ports(member int) (ports map[string]PortInfo, known bool)
 }
 
 // port looks up one port. known is false if the member is unknown.
-func (b *builder) port(member int, linux string) (info PortInfo, ok, known bool) {
+func (b *builder) port(member int, name string) (info PortInfo, ok, known bool) {
 	if b.inv == nil {
 		return PortInfo{}, false, false
 	}
@@ -82,7 +85,7 @@ func (b *builder) port(member int, linux string) (info PortInfo, ok, known bool)
 	if !known {
 		return PortInfo{}, false, false
 	}
-	info, ok = ports[linux]
+	info, ok = ports[name]
 	return info, ok, true
 }
 
@@ -174,7 +177,10 @@ func (b *builder) validateL3(member int, path string, l L3Interface) {
 		b.errorf(path+" gateway", "at most one gateway per address family")
 	}
 	if l.Interface != "" {
-		name := fmt.Sprintf("%d/%s", member, l.Interface)
+		name := l.Interface
+		if p, ok := schema.ParsePhysical(name); ok && p.Member != member {
+			b.errorf(path+" interface", "%s belongs to member %d, not %d", name, p.Member, member)
+		}
 		if i, ok := c.Interfaces[name]; ok && (i.Switching || i.Parent != "") {
 			b.errorf(path+" interface", "%s is used as a switch port and cannot carry an IP interface", i.Name)
 		}
@@ -233,12 +239,12 @@ func (b *builder) validateInterfaces() {
 		} else if m.Witness {
 			b.errorf(path, "member %d is a witness and has no switch ports", i.Member)
 		}
-		if info, ok, known := b.port(i.Member, i.Linux); known && !ok {
-			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", i.Linux, i.Member)
+		if info, ok, known := b.port(i.Member, name); known && !ok {
+			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", name, i.Member)
 		} else if ok && info.StackPort {
-			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", i.Linux, i.Member)
-		} else if ok && info.HasIP && !b.reservedPort(i.Member, i.Linux) {
-			b.warnf(path, "%s has IP addresses configured by the operating system (management port?); managing it may cut access to member %d", i.Linux, i.Member)
+			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", name, i.Member)
+		} else if ok && info.HasIP && !b.reservedPort(i.Member, name) {
+			b.warnf(path, "%s (%s) has IP addresses configured by the operating system (management port?); managing it may cut access to member %d", name, info.Linux, i.Member)
 		}
 		if i.Parent == "" {
 			continue
@@ -346,8 +352,8 @@ func (b *builder) validateMTU() {
 		i := c.Interfaces[name]
 		path := "interfaces " + name
 		if !i.AE {
-			if info, ok, _ := b.port(i.Member, i.Linux); ok && info.MaxMTU > 0 && LinuxMTU(i.MTU) > info.MaxMTU {
-				b.errorf(path+" mtu", "MTU %d exceeds the hardware maximum of %d on %s", i.MTU, info.MaxMTU+EthHeader, i.Linux)
+			if info, ok, _ := b.port(i.Member, i.Name); ok && info.MaxMTU > 0 && LinuxMTU(i.MTU) > info.MaxMTU {
+				b.errorf(path+" mtu", "MTU %d exceeds the hardware maximum of %d on %s", i.MTU, info.MaxMTU+EthHeader, i.Name)
 			}
 		}
 		for _, vid := range i.VLANs {
@@ -463,8 +469,8 @@ func (b *builder) validateVXLAN() {
 		var mtu int
 		var where string
 		if m.Underlay.Interface != "" {
-			where = fmt.Sprintf("interfaces %d/%s mtu", id, m.Underlay.Interface)
-			if i, ok := c.Interfaces[fmt.Sprintf("%d/%s", id, m.Underlay.Interface)]; ok {
+			where = fmt.Sprintf("interfaces %s mtu", m.Underlay.Interface)
+			if i, ok := c.Interfaces[m.Underlay.Interface]; ok {
 				mtu = i.MTU
 			} else if info, ok, _ := b.port(id, m.Underlay.Interface); ok && info.MTU > 0 {
 				mtu = info.MTU + EthHeader // unmanaged port: its current MTU

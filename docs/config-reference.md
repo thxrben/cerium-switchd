@@ -44,7 +44,7 @@ Statement kinds:
 |---|---|---|
 | container | `system { … }` | Groups statements. It disappears automatically when its last child is deleted. |
 | presence container | `protocols rstp;` | Its **existence** has meaning, even when empty (e.g. RSTP is enabled). |
-| list | `interfaces 1/eth0 { … }` | Keyed entries. Entries are sorted naturally (`1/eth2` before `1/eth10`). |
+| list | `interfaces 1/0/0 { … }` | Keyed entries. Entries are sorted naturally (`1/0/2` before `1/0/10`). |
 | leaf | `mtu 9216;` | One value. Setting it again replaces the value. |
 | leaf-list | `members [ 10 20 ];` | A set of values. `set` **adds** values (duplicates are ignored), `delete … <value>` removes one value, and `delete …` without a value removes all. The order of insertion is kept. |
 | flag | `disable;` | Present or absent. |
@@ -53,14 +53,14 @@ Statement kinds:
 setting one silently removes the other.
 
 **Abbreviations:** keywords may be abbreviated to any unique prefix (`sh int` → `show interfaces`,
-`set int 1/eth0 unit 0 fam eth` → `family ethernet-switching`). Keyword enum values may also be abbreviated
+`set int 1/0/0 unit 0 fam eth` → `family ethernet-switching`). Keyword enum values may also be abbreviated
 (`interface-mode tr` → `trunk`). User-chosen names and numbers are never abbreviated.
 
 ### 1.2 Value types
 
 | Type | Format | Notes |
 |---|---|---|
-| `<interface-name>` | `<member>/<linux-name>` or `ae<N>` | `1/enp3s0`, `2/eth0`, `ae0`…`ae4095`. The member is the stack member id (1–16). The Linux name is the kernel name, up to 15 characters. |
+| `<interface-name>` | `<member>/<card>/<port>` or `ae<N>` | `1/0/3`, `2/1/0`, `ae0`…`ae4095`. Junos-style numbering without a `ge-`/`xe-` prefix: the member is the stack member id (1–16), card and port are numbered from 0 (1.6). |
 | `<vlan>` | VLAN name, id (`10`), range (`10-20`) or `all` | Where only one VLAN is allowed, ranges and `all` are rejected. |
 | `<vlan-id>` | 1–4094 | |
 | `<vni>` | 1–16777214 | |
@@ -132,6 +132,23 @@ Rules that follow from this:
 
 ---
 
+### 1.6 Interface numbering
+
+Physical ports are named `<member>/<card>/<port>`, like Junos (`ge-0/1/2` becomes `1/1/2`):
+* **card**: the NIC the port belongs to. On PCI systems this is the PCI device (the address without the function
+  number): the card at `01:00` is card 0, the one at `04:00` card 1, the onboard NIC at `07:00` card 2. Cards are
+  numbered in PCI address order. USB and other non-PCI NICs (e.g. the SoC ports of ARM boards) come after the PCI cards.
+* **port**: the port on that card, from 0, in the order of the PCI function and then the port number the driver
+  reports (`01:00.0` → `1/0/0`, `01:00.1` → `1/0/1`).
+* Card numbers are **fixed on first sight** and stored on the member. A card added later gets the next free number,
+  even in a lower PCI slot, so existing port names never change. A card that is replaced in the same PCI slot keeps
+  its number. SR-IOV virtual functions are not switch ports.
+* In a VM every virtual NIC is its own PCI device, so every port is `…/<card>/0`.
+* `show chassis hardware` lists every port with its Linux name, PCI address, driver and MAC address.
+* Linux interface names are not used in the configuration. A configuration that still uses the older form
+  `<member>/<linux-name>` (e.g. `1/ens19`) is converted automatically when it is loaded from the member's storage
+  (active configuration, rollback revisions and the shared candidate), as long as the port exists.
+
 ## 2. Configuration formats
 
 The same configuration can be shown and loaded in three equivalent formats. All three round-trip
@@ -145,7 +162,7 @@ system {
     name-server [ 1.1.1.1 9.9.9.9 ];
 }
 interfaces {
-    1/eth1 {
+    1/0/1 {
         description "server A";
         mtu 9000;
         unit 0 {
@@ -186,10 +203,10 @@ Rules:
 set system host-name core
 set system name-server 1.1.1.1
 set system name-server 9.9.9.9
-set interfaces 1/eth1 description "server A"
-set interfaces 1/eth1 mtu 9000
-set interfaces 1/eth1 unit 0 family ethernet-switching interface-mode access
-set interfaces 1/eth1 unit 0 family ethernet-switching vlan members storage
+set interfaces 1/0/1 description "server A"
+set interfaces 1/0/1 mtu 9000
+set interfaces 1/0/1 unit 0 family ethernet-switching interface-mode access
+set interfaces 1/0/1 unit 0 family ethernet-switching vlan members storage
 set vlans storage vlan-id 20
 set vlans storage mtu 9000
 set protocols rstp
@@ -205,7 +222,7 @@ set protocols rstp
 {
   "system": { "host-name": "core", "name-server": ["1.1.1.1", "9.9.9.9"] },
   "interfaces": {
-    "1/eth1": {
+    "1/0/1": {
       "description": "server A",
       "mtu": "9000",
       "unit": { "0": { "family": { "ethernet-switching": {
@@ -267,7 +284,7 @@ set protocols rstp
 | `edit <path>` | Move the edit level to a container or list entry (it is created on the first `set` below it). |
 | `up [<n>]`, `top`, `exit` | Move up one or n levels, go to the top, or leave the level (at the top: leave configuration mode). |
 | `show [<path>]` | Show the candidate below the current level. |
-| `copy <path> to <key>` | Duplicate a list entry: `copy interfaces 1/eth1 to 1/eth2`. |
+| `copy <path> to <key>` | Duplicate a list entry: `copy interfaces 1/0/1 to 1/0/2`. |
 | `rename <path> to <key>` | Rename a list entry: `rename vlans storage to san`. References elsewhere are **not** renamed, so `commit check` reports broken references. |
 | `deactivate <path>` / `activate <path>` | Mark a statement inactive/active (3.3). |
 | `status` | List users editing the configuration. |
@@ -288,12 +305,12 @@ Several pipes can be chained: `show | display set | match vlan`.
 off temporarily without losing its settings.
 ```
 interfaces {
-    inactive: 1/eth7 {
+    inactive: 1/0/7 {
         mtu 9000;
     }
 }
 ```
-In set format: `set interfaces 1/eth7 mtu 9000` followed by `deactivate interfaces 1/eth7`.
+In set format: `set interfaces 1/0/7 mtu 9000` followed by `deactivate interfaces 1/0/7`.
 Deactivating a parent deactivates everything below it. Children keep their own inactive markers, so they
 return to their previous state when the parent is activated again.
 
@@ -325,6 +342,22 @@ vlans {
 
 ---
 
+### 3.5 Operational commands
+
+| Command | Shows / does |
+|---|---|
+| `show interfaces [terse\|extensive] [<interface>]` | Status, role, VLANs and counters of the ports and bundles. |
+| `show chassis hardware` | Every physical port with Linux name, bus address, driver and MAC address (1.6). |
+| `show vlans` | VLANs with their ports (`*` = tagged). |
+| `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
+| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default and `mgmt`), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
+| `show ipv6 neighbors` | The same for IPv6. |
+| `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
+| `show system commit`, `show system rollback …` | See 4.1. |
+| `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
+| `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first moves its traffic to the peers (LACP out of sync, stacking links drained); until then it simply shuts down. |
+| `start shell` | A Linux shell (4.3); `exit` returns to the CLI. |
+
 ## 4. Commit model
 
 ### 4.1 Candidate, commit check, commit
@@ -342,6 +375,8 @@ Changes are made to a *candidate configuration* and have **no effect** until com
 | `confirm` | Confirm a pending commit (both modes). |
 | `rollback [<n>]` | Replace the candidate with revision n (0 = active configuration, the default; so `rollback` alone discards all uncommitted changes). It still has to be committed. |
 | `show system commit` | Revision history: number, time, user, comment and confirmation state. The last 50 revisions are kept. |
+| `show system rollback <n>` | The complete configuration of revision n (see `show system commit`), with a `## Revision` header line (left out with `\| display set\|json`, so the output can be loaded again). |
+| `show system rollback <n> compare <m>` | The changes from revision n to revision m, e.g. `show system rollback 1 compare 0` shows what the last commit changed. |
 
 Commit steps:
 1. **Validation** (the same as `commit check`): schema rules, cross-references, and hardware limits of every member
@@ -422,16 +457,27 @@ Each statement lists **behaviour**, **interactions** with related statements, an
 #### `system host-name <hostname>`
 Name of the stack as a whole. It appears in syslog messages as the application name prefix, and in the CLI
 prompt for members that have no `stack member <id> host-name`. Default: `switch`.
+* The member's host name (its `stack member <id> host-name`, else `system host-name`) is also the operating system's
+  host name: it is set at once (no reboot) and written to `/etc/hostname`, and `/etc/hosts` gets the line
+  `127.0.1.1 <host>.<domain-name> <host>` (Debian convention). Shells that are already open show the new name
+  in their prompt only when started again.
+* Without either statement the operating system's host name is left alone. When the statements are removed, the
+  host name stays as it is.
 
 #### `system domain-name <hostname>`
-DNS search domain written to the resolver configuration of every member (management VRF).
+DNS search domain, written to the resolver configuration of every member together with `name-server`.
 
 #### `system time-zone <tz>`
 IANA time zone (e.g. `Europe/Berlin`). It sets the system time zone on all members, and CLI output shows local time.
 An unknown zone is a runtime alarm, and UTC stays in effect. Default: UTC.
 
 #### `system name-server [ <ip> … ]`
-DNS resolvers. They are queried from the management VRF.
+DNS resolvers.
+* switchd writes `/etc/resolv.conf` on every member (`nameserver` lines, and `search` from `domain-name`). The file it
+  replaces is kept and restored when `name-server` is removed again. Without `name-server`, the file is not touched.
+* If another program rewrites the file (e.g. a DHCP client), switchd restores it within 30 seconds and logs a
+  warning naming the problem. Disable the other program's resolver handling (OS takeover, plan 4.15).
+* switchd's own lookups (e.g. syslog server names) go through the management VRF when it is configured.
 * W: more than 3 servers (only the first 3 are used).
 
 #### `system ntp server <host> [prefer]`
@@ -583,13 +629,14 @@ members are rejected (E).
 * `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
   it is added to a loopback interface and must be routable in the underlay.
 
-#### `stack member <id> management { vlan <vlan> | interface <linux-name>; address [ … ]; dhcp; gateway [ … ]; }`
+#### `stack member <id> management { vlan <vlan> | interface <interface-name>; address [ … ]; dhcp; gateway [ … ]; }`
 The member's management IP interface, in VRF `mgmt` (1.5). SSH, the web interface, syslog, NTP, DNS and the MC-LAG
 BFD heartbeat use it.
 * `vlan <vlan>` (IRB-like): an IP interface on this VLAN of the member's bridge. The VLAN is switched normally as
   well. Hosts in it reach the switch and each other. W: no switch port of this member carries the VLAN
   (the address would be unreachable). E: the VLAN is not defined.
-* `interface <linux-name>`: a dedicated port that is **not** switched. E: the port is a switch port, a bundle member or a stacking port.
+* `interface <interface-name>`: a dedicated port of this member that is **not** switched. E: the port is a switch
+  port, a bundle member or a stacking port, or it belongs to another member.
 * `vlan` and `interface` are mutually exclusive.
 * `address [ <address/prefix> … ]`: static IPv4 and/or IPv6 addresses.
 * `dhcp`: IPv4 address via DHCP. E: together with a static IPv4 address (a static IPv6 address is fine).
@@ -600,7 +647,7 @@ BFD heartbeat use it.
   default for the first installation. Once you configure it, switchd takes over, and commit confirmation protects you
   against locking yourself out.
 
-#### `stack member <id> underlay { vlan <vlan> | interface <linux-name>; address [ … ]; gateway [ … ]; }`
+#### `stack member <id> underlay { vlan <vlan> | interface <interface-name>; address [ … ]; gateway [ … ]; }`
 The IP interface that carries this member's VXLAN tunnels, in the default VRF (not `mgmt`). It has the same structure
 as `management`, and the same rules apply for `vlan`/`interface`, addresses and gateways.
 * `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
@@ -615,11 +662,10 @@ as `management`, and the same rules apply for `vlan`/`interface`, addresses and 
 #### 5.3.1 `interface-range <name> { member [ <pattern> … ]; member-range <from> to <to>; <interface statements> }`
 Applies one block of interface statements to many ports. It takes every statement that is valid below
 `interfaces <if>` (described in 5.3.2). Use it for large port counts and for NICs that are added later.
-* `member-range 1/eth0 to 1/eth23`: every name between the two ends. Both ends must be on the same member, share
-  the name prefix and end in a number. Zero padding is kept (`eth08 … eth11`). At most 4096 ports.
+* `member-range 1/0/0 to 1/0/23`: every port between the two ends. Both ends must be on the same member and card.
   Ports that do not exist yet are configured when they appear.
-* `member "<m>/<glob>"`: a wildcard on the Linux name. `*` matches any characters and `?` one character. `<m>` is a
-  member id or `*` for all members (quote the value: `member "1/enp1s*"`).
+* `member "<m>/<c>/<p>"`: a wildcard. Each of the three parts is a number, `*` (any) or a range `[<a>-<b>]`:
+  `1/0/*` (all ports of card 0 on member 1), `*/1/[0-3]`, `*/*/*`. Quote the value: `member "1/0/*"`.
   * Wildcards are evaluated against the ports that exist, **at commit time and whenever a NIC appears**. A newly
     plugged NIC matching a wildcard is configured immediately, without a commit, and this is logged.
   * If the new port cannot take the configuration (e.g. the MTU exceeds its hardware maximum), it stays unconfigured
@@ -636,7 +682,7 @@ Applies one block of interface statements to many ports. It takes every statemen
 * `show interfaces` shows which range configured a port.
 
 #### 5.3.2 `interfaces <interface-name> { … }`
-`interfaces <interface-name> { … }` configures a physical port (`<member>/<linux-name>`) or an aggregated
+`interfaces <interface-name> { … }` configures a physical port (`<member>/<card>/<port>`) or an aggregated
 interface (`ae<N>`). As described in 1.4, only listed interfaces are managed. A listed interface is brought
 administratively up unless it has `disable`.
 
@@ -997,14 +1043,14 @@ stack {
     member 1 {
         host-name lab-sw;
         management {
-            interface eno1;
+            interface 1/3/0;
             address 192.168.1.20/24;
             gateway 192.168.1.1;
         }
     }
 }
 interfaces {
-    1/enp1s0 {
+    1/1/0 {
         description "server A";
         unit 0 {
             family {
@@ -1016,7 +1062,7 @@ interfaces {
             }
         }
     }
-    1/enp1s1 {
+    1/1/1 {
         description "uplink";
         mtu 9216;
         native-vlan-id users;
@@ -1043,13 +1089,13 @@ vlans {
 }
 protocols {
     rstp {
-        interface 1/enp1s0 {
+        interface 1/1/0 {
             edge;
         }
     }
     layer2-control {
         bpdu-block {
-            interface 1/enp1s0;
+            interface 1/1/0;
         }
     }
 }
@@ -1065,26 +1111,26 @@ set stack member 1 management vlan mgmt
 set stack member 1 management address 192.168.1.11/24
 set stack member 1 management gateway 192.168.1.1
 set stack member 1 vtep-address 10.255.0.1
-set stack member 1 underlay interface enp5s0
+set stack member 1 underlay interface 1/5/0
 set stack member 1 underlay address 10.99.0.1/24
 set stack member 2 host-name sw-b
 set stack member 2 management vlan mgmt
 set stack member 2 management address 192.168.1.12/24
 set stack member 2 management gateway 192.168.1.1
 set stack member 2 vtep-address 10.255.0.2
-set stack member 2 underlay interface enp5s0
+set stack member 2 underlay interface 2/5/0
 set stack member 2 underlay address 10.99.0.2/24
-set interfaces 1/enp5s0 mtu 9216
-set interfaces 2/enp5s0 mtu 9216
-set interfaces 1/enp2s0 ether-options 802.3ad ae0
-set interfaces 1/enp2s1 ether-options 802.3ad ae0
-set interfaces 2/enp2s0 ether-options 802.3ad ae0
-set interfaces 2/enp2s1 ether-options 802.3ad ae0
+set interfaces 1/5/0 mtu 9216
+set interfaces 2/5/0 mtu 9216
+set interfaces 1/2/0 ether-options 802.3ad ae0
+set interfaces 1/2/1 ether-options 802.3ad ae0
+set interfaces 2/2/0 ether-options 802.3ad ae0
+set interfaces 2/2/1 ether-options 802.3ad ae0
 set interfaces ae0 description peer-link
 set interfaces ae0 mtu 9216
 set interfaces ae0 aggregated-ether-options lacp active
-set interfaces 1/enp1s0 ether-options 802.3ad ae1
-set interfaces 2/enp1s0 ether-options 802.3ad ae1
+set interfaces 1/1/0 ether-options 802.3ad ae1
+set interfaces 2/1/0 ether-options 802.3ad ae1
 set interfaces ae1 description "server A (dual-homed)"
 set interfaces ae1 mtu 9216
 set interfaces ae1 aggregated-ether-options lacp active
@@ -1092,12 +1138,12 @@ set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 native-vlan-id users
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members [ storage mgmt ]
-set interface-range edge-ports member "*/enp4s*"
+set interface-range edge-ports member "*/4/*"
 set interface-range edge-ports mtu 9014
 set interface-range edge-ports unit 0 family ethernet-switching vlan members users
-set interfaces 1/enp3s0 description "mirror to analyzer laptop"
-set interfaces 1/eno3 description "management access (1G)"
-set interfaces 1/eno3 unit 0 family ethernet-switching vlan members mgmt
+set interfaces 1/3/0 description "mirror to analyzer laptop"
+set interfaces 1/3/1 description "management access (1G)"
+set interfaces 1/3/1 unit 0 family ethernet-switching vlan members mgmt
 set vlans mgmt vlan-id 99
 set vlans users vlan-id 10
 set vlans users vxlan vni 10010
@@ -1108,7 +1154,7 @@ set mclag domain 1 peer-link ae0
 set protocols rstp
 set forwarding-options analyzer debug input ingress interface ae1
 set forwarding-options analyzer debug input egress interface ae1
-set forwarding-options analyzer debug output interface 1/enp3s0
+set forwarding-options analyzer debug output interface 1/3/0
 ```
 
 ---
@@ -1204,19 +1250,19 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `stack member <member-id> role` | leaf | switch \\| witness | switch | Member role |
 | `stack member <member-id> management` | container |  |  | Management IP interface of this member (management VRF) |
 | `stack member <member-id> management vlan` | leaf (excl. mgmt-attach) | &lt;vlan&gt; |  | Attach the management IP to this VLAN (IRB-like) |
-| `stack member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;linux-interface&gt; |  | Dedicated, non-switched management port (Linux name) |
+| `stack member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched management port |
 | `stack member <member-id> management address` | leaf-list | &lt;address/prefix&gt; |  | Static addresses (IPv4 and/or IPv6) |
 | `stack member <member-id> management dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
 | `stack member <member-id> management gateway` | leaf-list | &lt;ip-address&gt; |  | Default gateway, at most one per address family |
 | `stack member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
 | `stack member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
 | `stack member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
-| `stack member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;linux-interface&gt; |  | Dedicated, non-switched underlay port (Linux name) |
+| `stack member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched underlay port |
 | `stack member <member-id> underlay address` | leaf-list | &lt;address/prefix&gt; |  | Underlay addresses |
 | `stack member <member-id> underlay gateway` | leaf-list | &lt;ip-address&gt; |  | Next hop towards remote VTEPs, at most one per address family |
 | `interface-range <name>` | list | &lt;name&gt; |  | Apply one configuration to many ports |
-| `interface-range <name> member` | leaf-list | &lt;pattern&gt; |  | Ports by pattern, e.g. 1/enp1s* or */eth? (* and ? wildcards) |
-| `interface-range <name> member-range <interface-name>` | list | &lt;interface-name&gt; |  | Contiguous ports, e.g. 1/eth0 to 1/eth23 |
+| `interface-range <name> member` | leaf-list | &lt;pattern&gt; |  | Ports by pattern, e.g. 1/0/* or */1/[0-3] |
+| `interface-range <name> member-range <interface-name>` | list | &lt;interface-name&gt; |  | Contiguous ports on one card, e.g. 1/0/0 to 1/0/23 |
 | `interface-range <name> member-range <interface-name> to` | leaf | &lt;interface-name&gt; |  | Last port of the range |
 | `interface-range <name> description` | leaf | &lt;text&gt; |  | Interface description |
 | `interface-range <name> disable` | flag |  |  | Administratively disable the interface |

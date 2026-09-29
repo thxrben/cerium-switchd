@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mclag/internal/inventory"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,7 @@ type kernelApplier struct {
 	stateFile string // links managed by the last apply
 	log       *slog.Logger
 	inv       model.Inventory
+	names     *inventory.Naming
 	// last is the configuration applied last; reconciliation restores it.
 	last *config.Tree
 	// onApplied is called with each successfully applied configuration
@@ -142,13 +144,18 @@ func (a *kernelApplier) watch(ctx context.Context) {
 }
 
 func (a *kernelApplier) apply(to *config.Tree, reason string) error {
+	if changed, err := a.names.Refresh(); err != nil {
+		a.log.Warn("port numbering", "err", err)
+	} else if changed {
+		a.log.Info("ports changed", "ports", len(a.names.Ports()))
+	}
 	cfg, issues := model.Build(to.Active(), a.inv)
 	if issues.HasErrors() {
 		// Validation happened before; this only guards startup with a
 		// stored configuration that newer rules reject.
 		return fmt.Errorf("configuration is invalid:\n%s", issues)
 	}
-	desired, notes := dataplane.Compute(cfg, a.member)
+	desired, notes := dataplane.Compute(cfg, a.member, a.names.Linux)
 	for _, n := range notes {
 		a.log.Warn("data plane", "note", n)
 	}

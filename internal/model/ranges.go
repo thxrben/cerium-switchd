@@ -2,9 +2,8 @@ package model
 
 import (
 	"fmt"
-	"path"
+	"slices"
 	"strconv"
-	"strings"
 
 	"mclag/internal/config"
 	"mclag/internal/schema"
@@ -96,22 +95,32 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 	if b.inv == nil {
 		return out
 	}
+	var pats []schema.PortPattern
+	for _, p := range patterns {
+		pp, err := schema.ParsePortPattern(p)
+		if err != nil {
+			b.errorf(rpath+" member", "%v", err)
+			continue
+		}
+		pats = append(pats, pp)
+	}
 	for id := 1; id <= 16; id++ {
 		ports, known := b.inv.Ports(id)
 		if !known {
 			continue
 		}
-		for _, linux := range sortedKeys(ports) {
-			if ports[linux].StackPort || ports[linux].HasIP || b.reservedPort(id, linux) {
+		for _, name := range sortedPortNames(ports) {
+			if ports[name].StackPort || ports[name].HasIP || b.reservedPort(id, name) {
 				continue // never swallowed by wildcards
 			}
-			for _, p := range patterns {
-				mem, glob, _ := strings.Cut(p, "/")
-				if mem != "*" && mem != strconv.Itoa(id) {
-					continue
-				}
-				if ok, _ := path.Match(glob, linux); ok {
-					add(fmt.Sprintf("%d/%s", id, linux))
+			port, ok := schema.ParsePhysical(name)
+			if !ok {
+				continue
+			}
+			for _, pp := range pats {
+				if pp.Match(port) {
+					add(name)
+					break
 				}
 			}
 		}
@@ -121,64 +130,50 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 
 // reservedPort reports whether a port is a member's dedicated management or
 // underlay port.
-func (b *builder) reservedPort(member int, linux string) bool {
+func (b *builder) reservedPort(member int, name string) bool {
 	for _, e := range b.root.Get("stack").Entries("member") {
 		if e.Key != strconv.Itoa(member) {
 			continue
 		}
-		return e.Leaf("management", "interface") == linux || e.Leaf("underlay", "interface") == linux
+		return e.Leaf("management", "interface") == name || e.Leaf("underlay", "interface") == name
 	}
 	return false
 }
 
-// expandMemberRange expands "1/eth0" .. "1/eth23".
+// sortedPortNames returns port names in numeric order.
+func sortedPortNames(ports map[string]PortInfo) []string {
+	names := sortedKeys(ports)
+	slices.SortFunc(names, func(a, b string) int {
+		if config.NaturalLess(a, b) {
+			return -1
+		}
+		if config.NaturalLess(b, a) {
+			return 1
+		}
+		return 0
+	})
+	return names
+}
+
+// expandMemberRange expands "1/0/0" .. "1/0/23".
 func expandMemberRange(from, to string) ([]string, error) {
 	if to == "" {
 		return nil, fmt.Errorf("'to' is required")
 	}
-	m1, l1, _ := schema.SplitPhysical(from)
-	m2, l2, _ := schema.SplitPhysical(to)
-	if m1 != m2 {
-		return nil, fmt.Errorf("both ends must be on the same member")
+	a, ok1 := schema.ParsePhysical(from)
+	z, ok2 := schema.ParsePhysical(to)
+	if !ok1 || !ok2 {
+		return nil, fmt.Errorf("both ends must be physical ports")
 	}
-	p1, n1, w1, ok1 := splitNum(l1)
-	p2, n2, _, ok2 := splitNum(l2)
-	if !ok1 || !ok2 || p1 != p2 {
-		return nil, fmt.Errorf("%s and %s must share a name prefix and end in a number", from, to)
+	if a.Member != z.Member || a.Card != z.Card {
+		return nil, fmt.Errorf("both ends must be on the same member and card")
 	}
-	if n2 < n1 {
+	if z.Port < a.Port {
 		return nil, fmt.Errorf("%s comes before %s", to, from)
 	}
-	if n2-n1+1 > maxRangePorts {
-		return nil, fmt.Errorf("range covers more than %d ports", maxRangePorts)
-	}
 	var out []string
-	for n := n1; n <= n2; n++ {
-		num := strconv.Itoa(n)
-		// Keep zero padding such as eth00..eth23.
-		if w1 > len(strconv.Itoa(n1)) {
-			num = fmt.Sprintf("%0*d", w1, n)
-		}
-		name := p1 + num
-		if len(name) > 15 {
-			return nil, fmt.Errorf("%s is not a valid Linux interface name", name)
-		}
-		out = append(out, fmt.Sprintf("%d/%s", m1, name))
+	for n := a.Port; n <= z.Port; n++ {
+		out = append(out, schema.Port{Member: a.Member, Card: a.Card, Port: n}.String())
 	}
 	return out, nil
-}
-
-func splitNum(s string) (prefix string, n, width int, ok bool) {
-	i := len(s)
-	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
-		i--
-	}
-	if i == len(s) {
-		return "", 0, 0, false
-	}
-	v, err := strconv.Atoi(s[i:])
-	if err != nil {
-		return "", 0, 0, false
-	}
-	return s[:i], v, len(s) - i, true
 }

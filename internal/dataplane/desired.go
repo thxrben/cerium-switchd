@@ -7,9 +7,15 @@ import (
 	"mclag/internal/model"
 )
 
+// PortNames maps an interface name ("1/0/3") of this member to its Linux
+// name; ok is false while the port does not exist.
+type PortNames func(name string) (linux string, ok bool)
+
 // Compute returns the desired state of member m for cfg, plus notes about
 // configuration that is accepted but not (yet) effective on this member.
-func Compute(cfg *model.Config, m int) (*State, []string) {
+// Ports that do not exist are left out; they are configured when they
+// appear (the caller recomputes on link events).
+func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 	s := &State{
 		Bridge: &BridgeOpts{AgeingSeconds: cfg.Switch.MACAging},
 		Links:  map[string]*Link{},
@@ -62,8 +68,12 @@ func Compute(cfg *model.Config, m int) (*State, []string) {
 		if i.AE || i.Member != m {
 			continue
 		}
+		linux, ok := names(i.Name)
+		if !ok {
+			continue
+		}
 		l := &Link{
-			Name:        i.Linux,
+			Name:        linux,
 			Kind:        Physical,
 			Up:          !i.Disabled,
 			MTU:         model.LinuxMTU(i.MTU),
@@ -90,7 +100,15 @@ func Compute(cfg *model.Config, m int) (*State, []string) {
 		s.Links[l.Name] = l
 	}
 	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.Configured() {
-		s.Mgmt = &Mgmt{VLAN: mem.Mgmt.VLAN, Port: mem.Mgmt.Interface,
+		port := ""
+		if mem.Mgmt.Interface != "" {
+			var ok bool
+			if port, ok = names(mem.Mgmt.Interface); !ok {
+				port = ""
+				notes = append(notes, fmt.Sprintf("management: port %s does not exist", mem.Mgmt.Interface))
+			}
+		}
+		s.Mgmt = &Mgmt{VLAN: mem.Mgmt.VLAN, Port: port,
 			Addrs: slices.Clone(mem.Mgmt.Addresses), Gateways: slices.Clone(mem.Mgmt.Gateways), DHCP: mem.Mgmt.DHCP}
 		if s.Mgmt.DHCP {
 			notes = append(notes, "management: DHCP is not implemented yet; configure a static address")

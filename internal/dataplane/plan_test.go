@@ -3,6 +3,7 @@ package dataplane
 import (
 	"fmt"
 	"math/rand/v2"
+	"mclag/internal/schema"
 	"reflect"
 	"slices"
 	"strings"
@@ -56,6 +57,17 @@ func subset(a, b map[string]bool) bool {
 	return true
 }
 
+// testNames maps "<m>/0/<n>" to "eth<n>" (every name resolves; whether the
+// port is present is up to the kernel state, like hardware that is not
+// plugged in).
+func testNames(name string) (string, bool) {
+	p, ok := schema.ParsePhysical(name)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("eth%d", p.Port), true
+}
+
 var testPorts = []string{"eth0", "eth1", "eth2", "eth3", "eth4", "eth5", "eth7"} // eth7 is not plugged in
 
 func baseKernel(r *rand.Rand) *State {
@@ -100,7 +112,7 @@ func randConfig(r *rand.Rand) *model.Config {
 		if role == 0 {
 			continue // not configured
 		}
-		i := &model.Interface{Name: "1/" + p, Member: 1, Linux: p, MTU: pick(r, 1514, 9014),
+		i := &model.Interface{Name: "1/0/" + strings.TrimPrefix(p, "eth"), Member: 1, MTU: pick(r, 1514, 9014),
 			Disabled: r.IntN(6) == 0, Description: pick(r, "", "a", "b"), MACLimit: pick(r, 0, 100, 200),
 			StormControl: model.StormControl{Broadcast: pick(r, 0, 50, 500), Multicast: pick(r, 0, 100)}}
 		if r.IntN(3) == 0 {
@@ -184,7 +196,7 @@ func TestPlanProperties(t *testing.T) {
 		k := NewFake(baseKernel(r))
 
 		// Converge to configuration A.
-		a, _ := Compute(randConfig(r), 1)
+		a, _ := Compute(randConfig(r), 1, testNames)
 		cur, _ := k.Read()
 		if err := Execute(k, Plan(cur, a, nil)); err != nil {
 			t.Fatalf("seed %d: apply A: %v", seed, err)
@@ -196,7 +208,7 @@ func TestPlanProperties(t *testing.T) {
 		}
 
 		// Change to configuration B, checking every intermediate state.
-		b, _ := Compute(randConfig(r), 1)
+		b, _ := Compute(randConfig(r), 1, testNames)
 		before, _ := k.Read()
 		ops := Plan(before, b, names(a))
 		final := NewFake(before)
@@ -258,7 +270,7 @@ func TestPlanProperties(t *testing.T) {
 
 func TestPlanExamples(t *testing.T) {
 	access := func(vid int) *model.Interface {
-		return &model.Interface{Name: "1/eth0", Member: 1, Linux: "eth0", MTU: 1514, Switching: true, Mode: "access", AccessVLAN: vid, VLANs: []int{vid}}
+		return &model.Interface{Name: "1/0/0", Member: 1, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: vid, VLANs: []int{vid}}
 	}
 	cfg := func(is ...*model.Interface) *model.Config {
 		c := &model.Config{Interfaces: map[string]*model.Interface{}}
@@ -268,7 +280,7 @@ func TestPlanExamples(t *testing.T) {
 		return c
 	}
 	k := NewFake(&State{Links: map[string]*Link{"eth0": {Name: "eth0", Kind: Physical, MTU: 1500, Present: true}}})
-	a, _ := Compute(cfg(access(10)), 1)
+	a, _ := Compute(cfg(access(10)), 1, testNames)
 	cur, _ := k.Read()
 	ops := Plan(cur, a, nil)
 	want := []string{
@@ -285,7 +297,7 @@ func TestPlanExamples(t *testing.T) {
 	Execute(k, ops)
 
 	// Access VLAN 10 -> 20: remove first, then add (never both).
-	b, _ := Compute(cfg(access(20)), 1)
+	b, _ := Compute(cfg(access(20)), 1, testNames)
 	cur, _ = k.Read()
 	ops = Plan(cur, b, names(a))
 	want = []string{"vlan-del eth0 10", "vlan-set eth0 20 pvid=true untagged=true"}
@@ -296,7 +308,7 @@ func TestPlanExamples(t *testing.T) {
 	// Only the description changes: one alias op, no flap.
 	c := access(10)
 	c.Description = "server"
-	d, _ := Compute(cfg(c), 1)
+	d, _ := Compute(cfg(c), 1, testNames)
 	cur, _ = k.Read()
 	Execute(k, Plan(cur, a, names(a)))
 	cur, _ = k.Read()
@@ -307,12 +319,12 @@ func TestPlanExamples(t *testing.T) {
 
 func TestComputeNotes(t *testing.T) {
 	cfg := &model.Config{Interfaces: map[string]*model.Interface{
-		"ae1":    {Name: "ae1", AE: true, MTU: 9014, MemberIDs: []int{1}, LACP: &model.LACP{Active: true}},
-		"1/eth0": {Name: "1/eth0", Member: 1, Linux: "eth0", MTU: 1514, Parent: "ae1"},
-		"1/eth1": {Name: "1/eth1", Member: 1, Linux: "eth1", MTU: 1514, Parent: "ae9"},
-		"2/eth0": {Name: "2/eth0", Member: 2, Linux: "eth0", MTU: 1514},
+		"ae1":   {Name: "ae1", AE: true, MTU: 9014, MemberIDs: []int{1}, LACP: &model.LACP{Active: true}},
+		"1/0/0": {Name: "1/0/0", Member: 1, MTU: 1514, Parent: "ae1"},
+		"1/0/1": {Name: "1/0/1", Member: 1, MTU: 1514, Parent: "ae9"},
+		"2/0/0": {Name: "2/0/0", Member: 2, MTU: 1514},
 	}}
-	s, notes := Compute(cfg, 1)
+	s, notes := Compute(cfg, 1, testNames)
 	if s.Links["ae1"].Up || s.Links["eth0"].MTU != 9000 || s.Links["eth0"].Master != "ae1" {
 		t.Errorf("ae1/eth0: %s %s", s.Links["ae1"], s.Links["eth0"])
 	}

@@ -197,16 +197,17 @@ var (
 	VNI    = Uint("<vni>", 1, 16777214)
 	MTU    = Uint("<mtu>", 256, 16000)
 
-	// Interface is a switch interface name: "<member>/<linux-name>" for
+	// Interface is a switch interface name: "<member>/<card>/<port>" for
 	// physical ports or "ae<N>" for aggregated interfaces.
 	Interface = &Type{Name: "<interface-name>", Ref: "interface", Check: CheckInterfaceName}
 
-	// PhysInterface only accepts "<member>/<linux-name>".
+	// PhysInterface only accepts "<member>/<card>/<port>".
 	PhysInterface = &Type{Name: "<interface-name>", Ref: "physical-interface", Check: func(s string) (string, error) {
-		if _, _, ok := SplitPhysical(s); !ok {
-			return "", fmt.Errorf("invalid physical interface name %q (expecting <member>/<name>, e.g. 1/eth0)", s)
+		p, ok := ParsePhysical(s)
+		if !ok {
+			return "", fmt.Errorf("invalid physical interface name %q (expecting <member>/<card>/<port>, e.g. 1/0/0)", s)
 		}
-		return s, nil
+		return p.String(), nil
 	}}
 
 	// AEInterface only accepts "ae<N>".
@@ -242,12 +243,14 @@ var (
 		return Identifier.Check(s)
 	}}
 
-	// IfPattern matches physical ports: "<member>/<glob>" where member is a
-	// number or "*" and the glob uses * and ?.
-	IfPattern = String("<pattern>", 32, `^([1-9][0-9]?|\*)/[A-Za-z0-9._@*?-]{1,15}$`)
-
-	// LinuxIfName is a raw kernel interface name.
-	LinuxIfName = String("<linux-interface>", 15, `^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
+	// IfPattern selects physical ports: "<m>/<c>/<p>" where each part is
+	// a number, "*" or a range "[a-b]".
+	IfPattern = &Type{Name: "<pattern>", Check: func(s string) (string, error) {
+		if _, err := ParsePortPattern(s); err != nil {
+			return "", err
+		}
+		return s, nil
+	}}
 
 	// TTY is a serial device name below /dev.
 	TTY = String("<tty>", 32, `^tty[A-Za-z0-9]+$`)
@@ -256,22 +259,86 @@ var (
 	MemberID = Uint("<member-id>", 1, 16)
 )
 
-var (
-	aeRe   = regexp.MustCompile(`^ae(0|[1-9][0-9]{0,3})$`)
-	physRe = regexp.MustCompile(`^([1-9][0-9]?)/([A-Za-z0-9][A-Za-z0-9._@-]{0,14})$`)
+var aeRe = regexp.MustCompile(`^ae(0|[1-9][0-9]{0,3})$`)
+
+// Port is a physical port name "<member>/<card>/<port>".
+type Port struct{ Member, Card, Port int }
+
+func (p Port) String() string { return fmt.Sprintf("%d/%d/%d", p.Member, p.Card, p.Port) }
+
+// Card limits: enough for any chassis, small enough to keep names short.
+const (
+	MaxCard = 99
+	MaxPort = 999
 )
 
-// SplitPhysical splits "<member>/<linux-name>".
-func SplitPhysical(s string) (member int, linux string, ok bool) {
-	m := physRe.FindStringSubmatch(s)
-	if m == nil {
-		return 0, "", false
+// ParsePhysical parses "<member>/<card>/<port>". Leading zeros are
+// accepted and normalised away.
+func ParsePhysical(s string) (Port, bool) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 3 {
+		return Port{}, false
 	}
-	n, _ := strconv.Atoi(m[1])
-	if n < 1 || n > 16 {
-		return 0, "", false
+	var v [3]int
+	lim := [3]int{16, MaxCard, MaxPort}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || part == "" || part[0] == '+' || part[0] == '-' || len(part) > 3 || n < 0 || n > lim[i] {
+			return Port{}, false
+		}
+		v[i] = n
 	}
-	return n, m[2], true
+	if v[0] < 1 {
+		return Port{}, false
+	}
+	return Port{v[0], v[1], v[2]}, true
+}
+
+// PortPattern selects physical ports; each part is a range (lo..hi).
+type PortPattern [3][2]int
+
+// ParsePortPattern parses "<m>/<c>/<p>" with numbers, "*" or "[a-b]".
+func ParsePortPattern(s string) (PortPattern, error) {
+	var pp PortPattern
+	parts := strings.Split(s, "/")
+	bad := fmt.Errorf("invalid port pattern %q (expecting <member>/<card>/<port>, each a number, * or [a-b], e.g. 1/0/*)", s)
+	if len(parts) != 3 {
+		return pp, bad
+	}
+	lim := [3][2]int{{1, 16}, {0, MaxCard}, {0, MaxPort}}
+	for i, part := range parts {
+		lo, hi := lim[i][0], lim[i][1]
+		switch {
+		case part == "*":
+		case strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]"):
+			a, b, ok := strings.Cut(part[1:len(part)-1], "-")
+			x, err1 := strconv.Atoi(a)
+			y, err2 := strconv.Atoi(b)
+			if !ok || err1 != nil || err2 != nil || x > y || x < lo || y > hi {
+				return pp, bad
+			}
+			lo, hi = x, y
+		default:
+			n, err := strconv.Atoi(part)
+			if err != nil || n < lo || n > hi {
+				return pp, bad
+			}
+			lo, hi = n, n
+		}
+		pp[i] = [2]int{lo, hi}
+	}
+	return pp, nil
+}
+
+// Match reports whether p is selected.
+func (pp PortPattern) Match(p Port) bool {
+	v := [3]int{p.Member, p.Card, p.Port}
+	for i := range v {
+		if v[i] < pp[i][0] || v[i] > pp[i][1] {
+			return false
+		}
+	}
+	return true
 }
 
 // IsAE reports whether s names an aggregated interface.
@@ -282,10 +349,10 @@ func CheckInterfaceName(s string) (string, error) {
 	if IsAE(s) {
 		return s, nil
 	}
-	if _, _, ok := SplitPhysical(s); ok {
-		return s, nil
+	if p, ok := ParsePhysical(s); ok {
+		return p.String(), nil
 	}
-	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<name> like 1/eth0, or ae<N>)", s)
+	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, or ae<N>)", s)
 }
 
 // ParseVlanRange parses "10" or "10-20".

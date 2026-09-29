@@ -48,7 +48,10 @@ func init() {
 		}},
 		{name: "show", help: "Show information about the switch", class: commit.ReadOnly, sub: []*command{
 			showConfig,
-			{name: "system", help: "Show system information", class: commit.ReadOnly, sub: []*command{showCommit}},
+			{name: "system", help: "Show system information", class: commit.ReadOnly, sub: []*command{showCommit,
+				{name: "rollback", help: "Show a previous configuration, or the changes between two", display: true,
+					class: commit.ReadOnly, run: (*Shell).showRollback, complete: completeRollback},
+			}},
 			{name: "version", help: "Show the software version", class: commit.ReadOnly, run: (*Shell).showVersion},
 		}},
 	}
@@ -168,6 +171,80 @@ func (sh *Shell) opShowConfiguration(c *call) error {
 		return c.pathErr(c.args, err)
 	}
 	return sh.show(c, sh.env.Engine.Active(), steps, nil)
+}
+
+// showRollback implements "show system rollback <n> [compare <m>]": the
+// complete configuration of revision n, or the changes from revision n to
+// revision m.
+func (sh *Shell) showRollback(c *call) error {
+	num := func(i int) (int, error) {
+		if i >= len(c.args) {
+			return 0, &posError{pos: c.argPos(i), msg: "missing argument: revision number (see 'show system commit')"}
+		}
+		n, err := strconv.Atoi(c.args[i].Text)
+		if err != nil || n < 0 {
+			return 0, &posError{pos: c.argPos(i), msg: "expecting a revision number"}
+		}
+		return n, nil
+	}
+	n, err := num(0)
+	if err != nil {
+		return err
+	}
+	old, err := sh.env.Engine.Revision(n)
+	if err != nil {
+		return &posError{pos: c.argPos(0), msg: fmt.Sprintf("revision %d does not exist", n)}
+	}
+	switch {
+	case len(c.args) == 1:
+	case len(c.args) == 3 && prefixOf(c.args[1].Text, "compare"):
+		m, err := num(2)
+		if err != nil {
+			return err
+		}
+		cur, err := sh.env.Engine.Revision(m)
+		if err != nil {
+			return &posError{pos: c.argPos(2), msg: fmt.Sprintf("revision %d does not exist", m)}
+		}
+		if c.pipes.display != "" || c.pipes.compare {
+			return errors.New("'compare' shows changes; it cannot be combined with '| display' or '| compare'")
+		}
+		c.out.WriteString(config.Diff(old, cur))
+		return nil
+	default:
+		return &posError{pos: c.argPos(1), msg: "syntax error, expecting 'compare <n>'"}
+	}
+	if c.pipes.display == "" && !c.pipes.compare {
+		for _, r := range sh.env.Engine.History() {
+			if r.Number == n {
+				fmt.Fprintf(c.out, "## Revision %d: %s by %s", n, r.Time.UTC().Format("2006-01-02 15:04:05 UTC"), r.User)
+				if r.Comment != "" {
+					fmt.Fprintf(c.out, ": %s", r.Comment)
+				}
+				c.out.WriteString("\n")
+			}
+		}
+	}
+	return sh.show(c, old, nil, nil)
+}
+
+func completeRollback(sh *Shell, args []config.Token, partial string) []Completion {
+	var out []Completion
+	switch len(args) {
+	case 0, 2:
+		for _, r := range sh.env.Engine.History() {
+			help := r.Time.UTC().Format("2006-01-02 15:04:05") + " by " + r.User
+			if r.Comment != "" {
+				help += ": " + r.Comment
+			}
+			out = append(out, Completion{Text: strconv.Itoa(r.Number), Help: help})
+		}
+	case 1:
+		out = []Completion{enter, {Text: "compare", Help: "Show the changes to another revision"}}
+	default:
+		out = []Completion{enter}
+	}
+	return filter(out, partial)
 }
 
 func (sh *Shell) showCommitHistory(c *call) error {

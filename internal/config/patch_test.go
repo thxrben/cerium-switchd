@@ -20,7 +20,7 @@ func TestPatch(t *testing.T) {
 	if err := Load(b, LoadReplace, `
 system { host-name edge; replace: name-server [ 8.8.8.8 9.9.9.9 ]; }
 vlans { delete: users; new { vlan-id 44; } }
-interfaces { 1/eth10 { delete: disable; } }`, nil); err != nil {
+interfaces { 1/0/10 { delete: disable; } }`, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, pair := range [][2]*Tree{{a, b}, {b, a}, {New(), b}, {b, New()}, {a, a}} {

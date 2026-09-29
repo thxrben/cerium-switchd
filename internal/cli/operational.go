@@ -20,11 +20,38 @@ type Operational interface {
 	MACTable() ([]MACEntry, error)
 	// ClearMACTable removes learned entries (vlan 0 / iface "" = all).
 	ClearMACTable(vlan int, iface string) (int, error)
+	// Hardware lists the physical ports of this member (reference 1.6).
+	Hardware() ([]HardwarePort, error)
+	// Neighbors returns the ARP (ipv6=false) or IPv6 neighbour table.
+	Neighbors(ipv6 bool) ([]Neighbor, error)
+	// Uptime returns boot and start times and the load averages.
+	Uptime() (Uptime, error)
+	// Power reboots ("reboot"), halts ("halt") or powers off ("power-off")
+	// the member after minutes (0 = now); user is who asked.
+	Power(action string, minutes int, user string) error
+	// CancelPower cancels a scheduled reboot/halt/power-off.
+	CancelPower(user string) error
+}
+
+// Neighbor is one entry of "show arp" / "show ipv6 neighbors".
+type Neighbor struct {
+	MAC, IP, Interface, Instance, State string
+}
+
+// Uptime is what "show system uptime" needs from the host.
+type Uptime struct {
+	Booted, Started time.Time
+	Load            [3]float64
+}
+
+// HardwarePort is one line of "show chassis hardware".
+type HardwarePort struct {
+	Name, Linux, Bus, Driver, MAC string
 }
 
 // IfStatus is one interface as shown by "show interfaces".
 type IfStatus struct {
-	Name        string // configuration name (1/ens19, ae1)
+	Name        string // configuration name (1/0/3, ae1)
 	Linux       string
 	Configured  bool
 	Role        string // e.g. "access v10", "trunk", "member of ae1", "plain"
@@ -310,6 +337,156 @@ func (sh *Shell) clearMACTable(c *call) error {
 }
 
 // showVLANs lists VLANs and their ports from the active configuration.
+func (sh *Shell) showHardware(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("hardware information is not available")
+	}
+	ports, err := sh.env.Ops.Hardware()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", "Interface", "Linux name", "Bus address", "Driver", "MAC address")
+	for _, p := range ports {
+		fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", p.Name, p.Linux, p.Bus, p.Driver, p.MAC)
+	}
+	return nil
+}
+
+func (sh *Shell) showARP(c *call) error {
+	if len(c.args) > 1 || (len(c.args) == 1 && !prefixOf(c.args[0].Text, "no-resolve")) {
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'no-resolve'"}
+	}
+	return sh.showNeighbors(c, false)
+}
+
+func (sh *Shell) showNDP(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	return sh.showNeighbors(c, true)
+}
+
+// showNeighbors prints the neighbour table (host names are never
+// resolved, so "no-resolve" is the only behaviour).
+func (sh *Shell) showNeighbors(c *call, ipv6 bool) error {
+	if sh.env.Ops == nil {
+		return errors.New("neighbour information is not available")
+	}
+	ns, err := sh.env.Ops.Neighbors(ipv6)
+	if err != nil {
+		return err
+	}
+	sort.Slice(ns, func(i, j int) bool {
+		if ns[i].Instance != ns[j].Instance {
+			return ns[i].Instance < ns[j].Instance
+		}
+		if ns[i].Interface != ns[j].Interface {
+			return config.NaturalLess(ns[i].Interface, ns[j].Interface)
+		}
+		return config.NaturalLess(ns[i].IP, ns[j].IP)
+	})
+	w := 16
+	for _, n := range ns {
+		w = max(w, len(n.IP))
+	}
+	fmt.Fprintf(c.out, "%-18s %-*s %-12s %-10s %s\n", "MAC Address", w, "Address", "Interface", "Instance", "State")
+	for _, n := range ns {
+		fmt.Fprintf(c.out, "%-18s %-*s %-12s %-10s %s\n", n.MAC, w, n.IP, n.Interface, n.Instance, n.State)
+	}
+	fmt.Fprintf(c.out, "Total entries: %d\n", len(ns))
+	return nil
+}
+
+func (sh *Shell) showUptime(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("system information is not available")
+	}
+	u, err := sh.env.Ops.Uptime()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	ts := func(t time.Time) string {
+		return fmt.Sprintf("%s (%s ago)", t.Format("2006-01-02 15:04:05 MST"), fmtDuration(now.Sub(t)))
+	}
+	fmt.Fprintf(c.out, "Current time: %s\n", now.Format("2006-01-02 15:04:05 MST"))
+	if !u.Booted.IsZero() {
+		fmt.Fprintf(c.out, "System booted: %s\n", ts(u.Booted))
+	}
+	if !u.Started.IsZero() {
+		fmt.Fprintf(c.out, "switchd started: %s\n", ts(u.Started))
+	}
+	if h := sh.env.Engine.History(); len(h) > 0 {
+		fmt.Fprintf(c.out, "Last configured: %s by %s\n", ts(h[0].Time.Local()), h[0].User)
+	}
+	fmt.Fprintf(c.out, "Load averages: %.2f %.2f %.2f (1, 5, 15 minutes)\n", u.Load[0], u.Load[1], u.Load[2])
+	return nil
+}
+
+// fmtDuration renders "3d 04:05" / "04:05:06".
+func fmtDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	days := int(d.Hours()) / 24
+	h, m, s := int(d.Hours())%24, int(d.Minutes())%60, int(d.Seconds())%60
+	if days > 0 {
+		return fmt.Sprintf("%dd %02d:%02d", days, h, m)
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+}
+
+// power implements "request system reboot|halt|power-off [in <minutes>]".
+func (sh *Shell) power(c *call, action string) error {
+	minutes := 0
+	switch {
+	case len(c.args) == 0:
+	case len(c.args) == 2 && prefixOf(c.args[0].Text, "in"):
+		n, err := strconv.Atoi(c.args[1].Text)
+		if err != nil || n < 0 || n > 24*60 {
+			return &posError{pos: c.argPos(1), msg: "expecting minutes (0-1440)"}
+		}
+		minutes = n
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'in <minutes>'"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	what := map[string]string{"reboot": "Reboot", "halt": "Halt", "power-off": "Power off"}[action]
+	a, err := c.term.Ask(what+" the system ? [yes,no] (no) ", true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	if err := sh.env.Ops.Power(action, minutes, sh.env.User); err != nil {
+		return err
+	}
+	if minutes > 0 {
+		fmt.Fprintf(c.out, "%s scheduled in %d minutes ('clear system reboot' cancels it)\n", what, minutes)
+	} else {
+		fmt.Fprintf(c.out, "%s requested\n", what)
+	}
+	return nil
+}
+
+func (sh *Shell) cancelPower(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	if err := sh.env.Ops.CancelPower(sh.env.User); err != nil {
+		return err
+	}
+	c.out.WriteString("scheduled reboot/halt/power-off cancelled\n")
+	return nil
+}
+
 func (sh *Shell) showVLANs(c *call) error {
 	if err := noArgs(c); err != nil {
 		return err
@@ -365,11 +542,20 @@ func registerOperational() {
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},
 				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
+				&command{name: "arp", help: "Show the IPv4 neighbour (ARP) table", class: commit.ReadOnly, run: (*Shell).showARP,
+					complete: words(Completion{Text: "no-resolve", Help: "Do not resolve host names"})},
+				&command{name: "ipv6", help: "Show IPv6 information", class: commit.ReadOnly, sub: []*command{
+					{name: "neighbors", help: "Show the IPv6 neighbour table", class: commit.ReadOnly, run: (*Shell).showNDP},
+				}},
+				&command{name: "chassis", help: "Show chassis information", class: commit.ReadOnly, sub: []*command{
+					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
+				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
 			)
 			for _, sc := range cmd.sub {
 				if sc.name == "system" {
-					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog})
+					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog},
+						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })
@@ -378,6 +564,20 @@ func registerOperational() {
 	operational = append(operational, &command{name: "clear", help: "Clear information", class: commit.Operator, sub: []*command{
 		{name: "ethernet-switching", help: "Clear switching information", class: commit.Operator, sub: []*command{
 			{name: "table", help: "Remove learned MAC addresses", class: commit.Operator, run: (*Shell).clearMACTable, complete: completeMACArgs},
+		}},
+		{name: "system", help: "Clear system state", class: commit.SuperUser, sub: []*command{
+			{name: "reboot", help: "Cancel a scheduled reboot, halt or power-off", class: commit.SuperUser, run: (*Shell).cancelPower},
+		}},
+	}})
+	power := func(action, help string) *command {
+		return &command{name: action, help: help, class: commit.SuperUser, run: func(sh *Shell, c *call) error { return sh.power(c, action) },
+			complete: words(Completion{Text: "in", Help: "Delay in minutes"})}
+	}
+	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.SuperUser, sub: []*command{
+		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
+			power("reboot", "Reboot this member"),
+			power("halt", "Halt this member"),
+			power("power-off", "Power off this member"),
 		}},
 	}})
 	sort.Slice(operational, func(i, j int) bool { return operational[i].name < operational[j].name })

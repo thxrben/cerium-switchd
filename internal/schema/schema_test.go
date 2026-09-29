@@ -55,10 +55,10 @@ func TestTypes(t *testing.T) {
 		{VlanID, "abc", "", false},
 		{MTU, "9216", "9216", true},
 		{MTU, "16001", "", false},
-		{Interface, "1/eth0", "1/eth0", true},
-		{Interface, "16/enp3s0f1", "16/enp3s0f1", true},
-		{Interface, "17/eth0", "", false},
-		{Interface, "0/eth0", "", false},
+		{Interface, "1/0/0", "1/0/0", true},
+		{Interface, "16/3/1", "16/3/1", true},
+		{Interface, "17/0/0", "", false},
+		{Interface, "0/0/0", "", false},
 		{Interface, "ae0", "ae0", true},
 		{Interface, "ae01", "", false},
 		{Interface, "eth0", "", false},
@@ -115,5 +115,32 @@ func TestLookupPrefix(t *testing.T) {
 	}
 	if m := r.Lookup("nothing"); len(m) != 0 {
 		t.Fatalf("Lookup(nothing) = %v", m)
+	}
+}
+
+func TestPortNames(t *testing.T) {
+	for s, want := range map[string]string{"1/0/0": "1/0/0", "16/99/999": "16/99/999", "01/002/3": "1/2/3"} {
+		if p, ok := ParsePhysical(s); !ok || p.String() != want {
+			t.Errorf("ParsePhysical(%q) = %v %v", s, p, ok)
+		}
+	}
+	for _, s := range []string{"0/0/0", "17/0/0", "1/0", "1/eth0", "1/0/-1", "1/100/0", "1/0/1000", "1/+1/0", "1/0/0/0", "ae0"} {
+		if _, ok := ParsePhysical(s); ok {
+			t.Errorf("ParsePhysical(%q) accepted", s)
+		}
+	}
+	pp, err := ParsePortPattern("*/1/[2-4]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[Port]bool{{1, 1, 2}: true, {16, 1, 4}: true, {1, 1, 5}: false, {1, 0, 2}: false} {
+		if pp.Match(p) != want {
+			t.Errorf("match %v = %v", p, !want)
+		}
+	}
+	for _, s := range []string{"1/eth*", "1/*", "1/[3-1]/0", "1/[0-x]/0", "*/*/*/*", "0/0/0", "1/0/[0-1000]"} {
+		if _, err := ParsePortPattern(s); err == nil {
+			t.Errorf("ParsePortPattern(%q) accepted", s)
+		}
 	}
 }

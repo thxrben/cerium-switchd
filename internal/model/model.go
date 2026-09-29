@@ -118,7 +118,7 @@ type Member struct {
 // the bridge (IRB-like) or to a dedicated non-switched port.
 type L3Interface struct {
 	VLAN      int    // resolved VLAN id (0 = not VLAN based)
-	Interface string // Linux name of a dedicated port
+	Interface string // dedicated port (<member>/<card>/<port>)
 	Addresses []string
 	DHCP      bool
 	Gateways  []string
@@ -143,8 +143,7 @@ func LinuxMTU(mtu int) int { return mtu - EthHeader }
 // Interface is a physical port or aggregated interface.
 type Interface struct {
 	Name        string
-	Member      int    // physical ports only
-	Linux       string // physical ports only
+	Member      int // physical ports only
 	AE          bool
 	Description string
 	Disabled    bool
@@ -401,7 +400,9 @@ func (b *builder) build() {
 	for _, e := range b.effectiveInterfaces() {
 		i := &Interface{Name: e.Key, AE: schema.IsAE(e.Key)}
 		if !i.AE {
-			i.Member, i.Linux, _ = schema.SplitPhysical(e.Key)
+			if p, ok := schema.ParsePhysical(e.Key); ok {
+				i.Member = p.Member
+			}
 		}
 		i.Description = e.Leaf("description")
 		i.Disabled = e.Has("disable")

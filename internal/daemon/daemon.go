@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"log/slog"
+	"mclag/internal/osconf"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"mclag/internal/access"
 	"mclag/internal/cli"
@@ -47,9 +50,13 @@ func Run(ctx context.Context, o Options) error {
 	}
 	srv := &rpc.Server{Log: log}
 	kernel := &dataplane.Netlink{}
-	inv := &kernelInventory{kernel: kernel, member: 1}
+	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: 1}
+	if _, err := names.Refresh(); err != nil {
+		log.Warn("port numbering", "err", err)
+	}
+	inv := &kernelInventory{kernel: kernel, names: names, member: 1}
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
-	applier.inv = inv
+	applier.inv, applier.names = inv, names
 	var hostName func() string
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	systemctl := func(args ...string) error { return command("systemctl", args...) }
@@ -57,6 +64,8 @@ func Run(ctx context.Context, o Options) error {
 		StateFile: filepath.Join(o.StateDir, "consoles.json"), Log: log, Systemctl: systemctl, MainComm: access.SystemdMainComm}
 	sshd := &access.SSH{Dir: "/etc/switchd", UnitPath: "/etc/systemd/system/switchd-sshd.service",
 		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
+	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
+		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	applier.onApplied = func(cfg *model.Config) {
 		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
 		if !o.DryRun {
@@ -69,11 +78,15 @@ func Run(ctx context.Context, o Options) error {
 			if err := sshd.Sync(cfg); err != nil {
 				log.Error("ssh", "err", err)
 			}
+			if err := osHost.Sync(cfg, 1); err != nil {
+				log.Error("host name / resolver", "err", err)
+			}
 		}
 	}
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
-		Checks: []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
+		Upgrade: upgradeNames(names, 1),
+		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
 	})
 	if err != nil {
 		return err
@@ -86,7 +99,11 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	hostName = func() string {
-		if h := engine.Active().Active().Root.Leaf("system", "host-name"); h != "" {
+		root := engine.Active().Active().Root
+		if h := root.Leaf("stack", "member", "1", "host-name"); h != "" {
+			return h
+		}
+		if h := root.Leaf("system", "host-name"); h != "" {
 			return h
 		}
 		if h, err := os.Hostname(); err == nil {
@@ -96,12 +113,13 @@ func Run(ctx context.Context, o Options) error {
 	}
 	ports := func() []string {
 		var out []string
-		for _, p := range inventory.PhysicalPorts("/sys") {
-			out = append(out, "1/"+p)
+		for _, p := range names.Ports() {
+			out = append(out, p.Name)
 		}
 		return out
 	}
-	liveOps := &ops{kernel: kernel, engine: engine, member: 1}
+	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: 1, started: time.Now(), log: log, dryRun: o.DryRun,
+		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
 			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}

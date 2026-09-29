@@ -91,6 +91,11 @@ type Options struct {
 	// OS accounts with the same name as a configured user).
 	Checks []func(*model.Config) model.Issues
 	Clock  Clock // nil: real time
+	// Upgrade converts a stored configuration (JSON) written by an older
+	// version, e.g. old interface names. It is applied to everything read
+	// from the store before it is parsed: active configuration, revisions
+	// and the shared candidate.
+	Upgrade func(json.RawMessage) json.RawMessage
 	// Notify broadcasts a message to the logged-in CLI sessions. ctx is the
 	// context of the operation that caused it (the originating session is
 	// identified through it and not notified); automatic events use
@@ -168,14 +173,14 @@ func New(o Options) (*Engine, error) {
 		revs = o.Store.Revisions()
 	}
 	last := revs[len(revs)-1]
-	t, err := last.Tree()
+	t, err := e.tree(last)
 	if err != nil {
 		return nil, err
 	}
 	e.active, e.activeSeq = t, last.Seq
 	e.shared = t.Clone()
 	if cs, ok := o.Store.(CandidateStore); ok {
-		c, err := cs.Candidate()
+		c, err := e.parse(cs.Candidate())
 		switch {
 		case err != nil:
 			o.Log.Warn("stored shared candidate is unreadable; starting from the active configuration", "err", err)
@@ -284,7 +289,27 @@ func (e *Engine) Revision(n int) (*config.Tree, error) {
 	if n < 0 || n >= len(revs) {
 		return nil, ErrNoRevision
 	}
-	return revs[len(revs)-1-n].Tree()
+	return e.tree(revs[len(revs)-1-n])
+}
+
+// tree decodes a stored revision, upgrading it first.
+func (e *Engine) tree(r *Revision) (*config.Tree, error) {
+	t, err := e.parse(r.Config, nil)
+	if err != nil {
+		return nil, fmt.Errorf("revision %d: %w", r.Seq, err)
+	}
+	return t, nil
+}
+
+// parse decodes a stored configuration (nil raw: none).
+func (e *Engine) parse(raw json.RawMessage, err error) (*config.Tree, error) {
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	if e.o.Upgrade != nil {
+		raw = e.o.Upgrade(raw)
+	}
+	return config.FromJSON(raw)
 }
 
 // SessionInfo describes a configuration session for "status".
@@ -755,7 +780,7 @@ func (e *Engine) rollbackPending(ctx context.Context, from *config.Tree) []Membe
 	var target *config.Tree
 	for _, r := range e.o.Store.Revisions() {
 		if r.Seq == p.Target {
-			target, _ = r.Tree()
+			target, _ = e.tree(r)
 		}
 	}
 	oldActive, lastSeq := e.active, e.activeSeq

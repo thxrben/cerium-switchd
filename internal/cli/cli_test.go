@@ -80,7 +80,7 @@ type tester struct {
 func newTester(t *testing.T, e *commit.Engine, user string, class commit.Class) *tester {
 	sh := New(Env{Engine: e, User: user, Class: class, Version: "test", Log: quiet,
 		HostName: func() string { return "sw1" },
-		Ports:    func() []string { return []string{"1/eth0", "1/eth1", "1/eth2"} }})
+		Ports:    func() []string { return []string{"1/0/0", "1/0/1", "1/0/2"} }})
 	return &tester{t: t, sh: sh, term: &scriptTerm{files: map[string]string{}}}
 }
 
@@ -141,8 +141,8 @@ func TestConfigureSetShowCommit(t *testing.T) {
 	}
 	ts.ok("set system host-name core")
 	ts.ok("set vlans users vlan-id 10")
-	ts.ok("set interfaces 1/eth1 unit 0 family ethernet-switching interface-mode access")
-	ts.ok("set interfaces 1/eth1 unit 0 family ethernet-switching vlan members users")
+	ts.ok("set interfaces 1/0/1 unit 0 family ethernet-switching interface-mode access")
+	ts.ok("set interfaces 1/0/1 unit 0 family ethernet-switching vlan members users")
 	contains(t, ts.ok("show system"), "host-name core;")
 	contains(t, ts.ok("show | display set"), "set vlans users vlan-id 10\n", "set system host-name core\n")
 	contains(t, ts.ok("show | compare"), "[edit]\n+   system {\n+       host-name core;")
@@ -157,8 +157,8 @@ func TestConfigureSetShowCommit(t *testing.T) {
 	}
 	contains(t, ts.ok("run show system commit"), "0   ", "by alice", "first one")
 	contains(t, ts.ok("exit"), "Exiting configuration mode")
-	contains(t, ts.ok("show configuration interfaces 1/eth1 | display set"),
-		"set interfaces 1/eth1 unit 0 family ethernet-switching vlan members users")
+	contains(t, ts.ok("show configuration interfaces 1/0/1 | display set"),
+		"set interfaces 1/0/1 unit 0 family ethernet-switching vlan members users")
 	contains(t, ts.ok("show configuration vlans"), "users {\n    vlan-id 10;\n}")
 	contains(t, ts.ok("show configuration system host-name"), "host-name core;")
 	contains(t, ts.ok("show configuration | display json"), `"host-name": "core"`)
@@ -181,8 +181,8 @@ func TestSetErrors(t *testing.T) {
 func TestEditLevels(t *testing.T) {
 	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
 	ts.ok("configure")
-	ts.ok("edit interfaces 1/eth3")
-	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3]\n" {
+	ts.ok("edit interfaces 1/0/3")
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/0/3]\n" {
 		t.Errorf("banner %q", b)
 	}
 	ts.ok("set mtu 9014")
@@ -190,27 +190,27 @@ func TestEditLevels(t *testing.T) {
 	ts.ok("set interface-mode trunk")
 	contains(t, ts.ok("show"), "interface-mode trunk;")
 	contains(t, ts.ok("show | display set relative"), "set interface-mode trunk\n")
-	contains(t, ts.ok("show | display set"), "set interfaces 1/eth3 unit 0 family ethernet-switching interface-mode trunk\n")
+	contains(t, ts.ok("show | display set"), "set interfaces 1/0/3 unit 0 family ethernet-switching interface-mode trunk\n")
 	ts.ok("up 2")
-	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3 unit 0]\n" {
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/0/3 unit 0]\n" {
 		t.Errorf("after up 2: %q", b)
 	}
 	ts.ok("exit") // back to the previous level
-	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3 unit 0 family ethernet-switching]\n" {
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/0/3 unit 0 family ethernet-switching]\n" {
 		t.Errorf("after exit: %q", b)
 	}
 	ts.ok("top")
-	contains(t, ts.ok("show interfaces 1/eth3"), "mtu 9014;")
+	contains(t, ts.ok("show interfaces 1/0/3"), "mtu 9014;")
 	contains(t, ts.run("edit system host-name"), "needs a container")
 	contains(t, ts.run("edit system syslog host"), "missing")
 	ts.ok("edit interfaces") // list level, like Junos
 	if b := ts.sh.Banner(); b != "[edit interfaces]\n" {
 		t.Errorf("banner %q", b)
 	}
-	contains(t, ts.ok("show"), "1/eth3 {")
-	ts.ok("set 1/eth4 mtu 1600")
+	contains(t, ts.ok("show"), "1/0/3 {")
+	ts.ok("set 1/0/4 mtu 1600")
 	ts.ok("top")
-	contains(t, ts.ok("show interfaces 1/eth4"), "mtu 1600;")
+	contains(t, ts.ok("show interfaces 1/0/4"), "mtu 1600;")
 	contains(t, ts.ok("up"), "already at the top")
 	ts.ok("edit vlans v")
 	ts.ok("exit configuration-mode")
@@ -395,10 +395,10 @@ func TestCompletion(t *testing.T) {
 	check("set sys", "system")
 	check("set system ", "host-name")
 	check("set system syslog host 1.2.3.4 transport ", "tls")
-	check("set interfaces ", "1/eth1")
+	check("set interfaces ", "1/0/1")
 	check("set interfaces ", "<interface-name>")
 	ts.ok("set vlans users vlan-id 10")
-	check("set interfaces 1/eth0 unit 0 family ethernet-switching vlan members ", "users")
+	check("set interfaces 1/0/0 unit 0 family ethernet-switching vlan members ", "users")
 	check("set vlans ", "users")
 	check("set protocols rstp ", "<[Enter]>")
 	check("show | ", "display")
@@ -437,7 +437,7 @@ func TestPanicRecovery(t *testing.T) {
 // may panic (an internal error counts as a failure).
 func FuzzShell(f *testing.F) {
 	for _, s := range []string{
-		"set system host-name x", "show | display set | match a", "edit interfaces 1/eth1",
+		"set system host-name x", "show | display set | match a", "edit interfaces 1/0/1",
 		"delete", "commit check", "load merge terminal", "set system name-server [ 1.1.1.1", "up 3",
 		"copy vlans a to b", "rollback 0", "run show system commit", "show | compare rollback 2",
 		"deactivate system", "exit", "configure private", `set system login message "a|b"`,
@@ -460,21 +460,52 @@ func FuzzShell(f *testing.F) {
 	})
 }
 
-type fakeOps struct{ cleared []string }
+type fakeOps struct {
+	cleared []string
+	power   []string
+}
+
+func (f *fakeOps) Neighbors(ipv6 bool) ([]Neighbor, error) {
+	if ipv6 {
+		return []Neighbor{{MAC: "02:00:00:00:00:09", IP: "fe80::1", Interface: "mgmt0", Instance: "mgmt", State: "reachable"}}, nil
+	}
+	return []Neighbor{
+		{MAC: "02:00:00:00:00:02", IP: "10.5.0.1", Interface: "1/2/0", Instance: "default", State: "reachable"},
+		{MAC: "02:00:00:00:00:01", IP: "192.168.98.2", Interface: "mgmt0", Instance: "mgmt", State: "stale"},
+	}, nil
+}
+
+func (f *fakeOps) Uptime() (Uptime, error) {
+	return Uptime{Booted: time.Now().Add(-26 * time.Hour), Started: time.Now().Add(-90 * time.Second), Load: [3]float64{0.5, 0.25, 0.125}}, nil
+}
+
+func (f *fakeOps) Power(action string, minutes int, user string) error {
+	f.power = append(f.power, fmt.Sprintf("%s %d %s", action, minutes, user))
+	return nil
+}
+
+func (f *fakeOps) CancelPower(user string) error {
+	f.power = append(f.power, "cancel "+user)
+	return nil
+}
 
 func (f *fakeOps) Interfaces() ([]IfStatus, error) {
 	return []IfStatus{
-		{Name: "1/ens19", Linux: "ens19", Configured: true, Role: "access v10", AdminUp: true, OperUp: true, MTU: 1514,
+		{Name: "1/1/0", Linux: "ens19", Configured: true, Role: "access v10", AdminUp: true, OperUp: true, MTU: 1514,
 			SpeedMbps: 10000, Description: "server", VLANs: []string{"v10 (10, untagged)"}, TaggedDrops: 7,
 			Counters: IfCounters{RxPackets: 5, RxErrors: 1}},
-		{Name: "1/ens2", Linux: "ens2", MTU: 1514},
+		{Name: "1/2/0", Linux: "ens2", MTU: 1514},
 	}, nil
+}
+
+func (f *fakeOps) Hardware() ([]HardwarePort, error) {
+	return []HardwarePort{{Name: "1/1/0", Linux: "ens19", Bus: "0000:00:13.0", Driver: "virtio_net", MAC: "02:00:00:00:00:13"}}, nil
 }
 
 func (f *fakeOps) MACTable() ([]MACEntry, error) {
 	return []MACEntry{
-		{VLAN: 20, VLANName: "v20", MAC: "02:00:00:00:00:02", Interface: "1/ens2", Age: 3},
-		{VLAN: 10, VLANName: "v10", MAC: "02:00:00:00:00:01", Interface: "1/ens19", Age: 1},
+		{VLAN: 20, VLANName: "v20", MAC: "02:00:00:00:00:02", Interface: "1/2/0", Age: 3},
+		{VLAN: 10, VLANName: "v10", MAC: "02:00:00:00:00:01", Interface: "1/1/0", Age: 1},
 	}, nil
 }
 
@@ -491,28 +522,29 @@ func TestOperationalCommands(t *testing.T) {
 	ts.ok("configure")
 	ts.ok("set vlans v10 vlan-id 10")
 	ts.ok("set vlans v20 vlan-id 20")
-	ts.ok("set interfaces 1/ens19 unit 0 family ethernet-switching vlan members v10")
-	ts.ok("set interfaces 1/ens2 unit 0 family ethernet-switching interface-mode trunk")
-	ts.ok("set interfaces 1/ens2 unit 0 family ethernet-switching vlan members [ v10 v20 ]")
+	ts.ok("set interfaces 1/1/0 unit 0 family ethernet-switching vlan members v10")
+	ts.ok("set interfaces 1/2/0 unit 0 family ethernet-switching interface-mode trunk")
+	ts.ok("set interfaces 1/2/0 unit 0 family ethernet-switching vlan members [ v10 v20 ]")
 	ts.ok("commit")
 	ts.ok("exit")
 
 	out := ts.ok("show interfaces terse")
-	contains(t, out, "1/ens19        up    up    1514   10G    access v10", "1/ens2         down  down", "(not configured)")
-	contains(t, ts.run("show interfaces 1/ens19 extensive"), "Description: server", "VLANs: v10 (10, untagged)",
+	contains(t, out, "1/1/0          up    up    1514   10G    access v10", "1/2/0          down  down", "(not configured)")
+	contains(t, ts.run("show interfaces 1/1/0 extensive"), "Description: server", "VLANs: v10 (10, untagged)",
 		"Input errors: 1", "Tagged frames dropped (access port): 7")
 	contains(t, ts.run("show interfaces nope"), "not found")
+	contains(t, ts.ok("show chassis hardware"), "1/1/0      ens19            0000:00:13.0   virtio_net   02:00:00:00:00:13")
 	out = ts.ok("show ethernet-switching table")
 	if i, j := strings.Index(out, "02:00:00:00:00:01"), strings.Index(out, "02:00:00:00:00:02"); i < 0 || j < i {
 		t.Errorf("mac table not sorted by VLAN:\n%s", out)
 	}
 	contains(t, out, "2 entries")
-	contains(t, ts.ok("show ethernet-switching table vlan v20"), "1 entries", "1/ens2")
-	contains(t, ts.ok("show ethernet-switching table interface 1/ens19"), "1 entries")
+	contains(t, ts.ok("show ethernet-switching table vlan v20"), "1 entries", "1/2/0")
+	contains(t, ts.ok("show ethernet-switching table interface 1/1/0"), "1 entries")
 	contains(t, ts.run("show ethernet-switching table vlan nope"), "unknown VLAN")
-	contains(t, ts.ok("show vlans"), "v10            10", "1/ens2*, 1/ens19", "v20            20", "* = tagged")
-	contains(t, ts.ok("clear ethernet-switching table vlan 10 interface 1/ens19"), "1 entries cleared")
-	if len(ops.cleared) != 1 || ops.cleared[0] != "10/1/ens19" {
+	contains(t, ts.ok("show vlans"), "v10            10", "1/1/0, 1/2/0*", "v20            20", "* = tagged")
+	contains(t, ts.ok("clear ethernet-switching table vlan 10 interface 1/1/0"), "1 entries cleared")
+	if len(ops.cleared) != 1 || ops.cleared[0] != "10/1/1/0" {
 		t.Errorf("clear: %v", ops.cleared)
 	}
 	ro := newTester(t, e, "ro", commit.ReadOnly)
@@ -585,4 +617,63 @@ func TestStartShell(t *testing.T) {
 	if rep := op.sh.Execute(context.Background(), "start shell", op.term); rep.Shell || !strings.Contains(rep.Output, "permission denied") {
 		t.Errorf("operator start shell: %+v", rep)
 	}
+}
+
+func TestShowSystemRollback(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.ok("set system host-name first")
+	ts.ok("commit comment \"one\"")
+	ts.ok("set system host-name second")
+	ts.ok("set vlans v10 vlan-id 10")
+	ts.ok("commit")
+	ts.ok("exit")
+	out := ts.ok("show system rollback 1")
+	contains(t, out, "## Revision 1: ", "by alice: one", "host-name first;")
+	if strings.Contains(out, "v10") {
+		t.Errorf("revision 1 shows later changes:\n%s", out)
+	}
+	contains(t, ts.ok("show system rollback 1 | display set"), "set system host-name first")
+	if out := ts.ok("show system rollback 1 | display set"); strings.Contains(out, "##") {
+		t.Errorf("display set must stay loadable:\n%s", out)
+	}
+	contains(t, ts.ok("show system rollback 1 compare 0"), "-   host-name first;", "+   host-name second;", "+   v10 {")
+	contains(t, ts.ok("show system rollback 0 compare 1"), "+   host-name first;")
+	contains(t, ts.run("show system rollback 99"), "revision 99 does not exist")
+	contains(t, ts.run("show system rollback"), "missing argument")
+	contains(t, ts.run("show system rollback 1 compare"), "syntax error")
+	contains(t, ts.run("show system rollback x"), "expecting a revision number")
+	if cs := ts.sh.Complete("show system rollback "); len(cs) < 3 || cs[0].Text != "0" {
+		t.Errorf("completion: %v", cs)
+	}
+}
+
+func TestSystemOperationalCommands(t *testing.T) {
+	e := newEngine(t)
+	ops := &fakeOps{}
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.sh.env.Ops = ops
+	out := ts.ok("show arp no-resolve")
+	contains(t, out, "02:00:00:00:00:02  10.5.0.1         1/2/0        default    reachable", "mgmt0        mgmt       stale", "Total entries: 2")
+	if strings.Index(out, "10.5.0.1") > strings.Index(out, "192.168.98.2") {
+		t.Errorf("not sorted by instance:\n%s", out)
+	}
+	contains(t, ts.ok("show ipv6 neighbors"), "fe80::1")
+	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")
+
+	ts.term.answers = []string{"no"}
+	ts.ok("request system reboot")
+	ts.term.answers = []string{"yes"}
+	contains(t, ts.ok("request system reboot in 5"), "scheduled in 5 minutes")
+	ts.term.answers = []string{"yes"}
+	contains(t, ts.ok("request system power-off"), "Power off requested")
+	contains(t, ts.ok("clear system reboot"), "cancelled")
+	if strings.Join(ops.power, ",") != "reboot 5 alice,power-off 0 alice,cancel alice" {
+		t.Errorf("power: %v", ops.power)
+	}
+	contains(t, ts.run("request system reboot in x"), "expecting minutes")
+	op := newTester(t, e, "bob", commit.Operator)
+	op.sh.env.Ops = ops
+	contains(t, op.run("request system reboot"), "permission denied")
 }

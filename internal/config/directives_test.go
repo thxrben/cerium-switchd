@@ -20,10 +20,10 @@ func inactiveSample(t *testing.T) *Tree {
 	t.Helper()
 	tr := sampleTree(t)
 	for _, p := range []string{
-		"interfaces 1/eth2",           // wrapped list entry
+		"interfaces 1/0/2",            // wrapped list entry
 		"system syslog host 10.0.0.5", // keyword list entry
 		"system name-server",          // leaf-list
-		"interfaces 1/eth10 disable",  // flag
+		"interfaces 1/0/10 disable",   // flag
 		"vlans storage mtu",           // leaf
 		"protocols rstp",              // presence container
 		"vlans users vxlan",           // container
@@ -40,7 +40,7 @@ func TestInactiveRoundTrip(t *testing.T) {
 
 	set := FormatSet(tr)
 	for _, want := range []string{
-		"\ndeactivate interfaces 1/eth2\n", "\ndeactivate system syslog host 10.0.0.5\n",
+		"\ndeactivate interfaces 1/0/2\n", "\ndeactivate system syslog host 10.0.0.5\n",
 		"\ndeactivate system name-server\n", "\ndeactivate protocols rstp\n",
 	} {
 		if !strings.Contains(set, want) {
@@ -60,7 +60,7 @@ func TestInactiveRoundTrip(t *testing.T) {
 
 	curly := FormatCurly(tr.Root)
 	for _, want := range []string{
-		"    inactive: 1/eth2 {", "inactive: host 10.0.0.5 {", "inactive: name-server [ 1.1.1.1 9.9.9.9 ];",
+		"    inactive: 1/0/2 {", "inactive: host 10.0.0.5 {", "inactive: name-server [ 1.1.1.1 9.9.9.9 ];",
 		"inactive: disable;", "inactive: mtu 9000;", "inactive: rstp;", "inactive: vxlan {",
 	} {
 		if !strings.Contains(curly, want) {
@@ -102,28 +102,28 @@ func TestActiveView(t *testing.T) {
 	tr := inactiveSample(t)
 	a := tr.Active()
 	for _, p := range [][]string{
-		{"interfaces", "1/eth2"}, {"system", "syslog"}, {"system", "name-server"},
-		{"interfaces", "1/eth10", "disable"}, {"vlans", "storage", "mtu"}, {"protocols"}, {"vlans", "users", "vxlan"},
+		{"interfaces", "1/0/2"}, {"system", "syslog"}, {"system", "name-server"},
+		{"interfaces", "1/0/10", "disable"}, {"vlans", "storage", "mtu"}, {"protocols"}, {"vlans", "users", "vxlan"},
 	} {
 		if a.Root.Has(p...) {
 			t.Errorf("active view still has %v", p)
 		}
 	}
-	if !a.Root.Has("interfaces", "1/eth10", "description") || !a.Root.Has("vlans", "storage", "vlan-id") {
+	if !a.Root.Has("interfaces", "1/0/10", "description") || !a.Root.Has("vlans", "storage", "vlan-id") {
 		t.Error("active view lost active statements")
 	}
 	if !tr.HasInactive() || a.HasInactive() {
 		t.Error("HasInactive wrong")
 	}
 	// Reactivation restores everything, and child markers survive the parent.
-	set(t, tr, "set interfaces 1/eth2 description x")
-	if err := tr.SetActive(resolve(t, ModeNav, "interfaces 1/eth2 description"), false); err != nil {
+	set(t, tr, "set interfaces 1/0/2 description x")
+	if err := tr.SetActive(resolve(t, ModeNav, "interfaces 1/0/2 description"), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := tr.SetActive(resolve(t, ModeNav, "interfaces 1/eth2"), true); err != nil {
+	if err := tr.SetActive(resolve(t, ModeNav, "interfaces 1/0/2"), true); err != nil {
 		t.Fatal(err)
 	}
-	if !tr.Active().Root.Has("interfaces", "1/eth2", "mtu") || tr.Active().Root.Has("interfaces", "1/eth2", "description") {
+	if !tr.Active().Root.Has("interfaces", "1/0/2", "mtu") || tr.Active().Root.Has("interfaces", "1/0/2", "description") {
 		t.Error("child inactive marker not kept on parent activation")
 	}
 	if err := tr.SetActive(resolve(t, ModeNav, "system ntp"), false); err != ErrNotFound {
@@ -146,7 +146,7 @@ func TestInactiveDiff(t *testing.T) {
 	b := inactiveSample(t)
 	d := Diff(a, b)
 	for _, want := range []string{
-		"[edit interfaces]\n!   inactive: 1/eth2\n",
+		"[edit interfaces]\n!   inactive: 1/0/2\n",
 		"[edit protocols]\n!   inactive: rstp\n",
 		"[edit vlans storage]\n-   mtu 9000;\n+   inactive: mtu 9000;\n",
 		"[edit vlans users]\n!   inactive: vxlan\n",
@@ -156,25 +156,25 @@ func TestInactiveDiff(t *testing.T) {
 			t.Errorf("diff lacks %q:\n%s", want, d)
 		}
 	}
-	if back := Diff(b, a); !strings.Contains(back, "!   active: 1/eth2") {
+	if back := Diff(b, a); !strings.Contains(back, "!   active: 1/0/2") {
 		t.Errorf("reverse diff:\n%s", back)
 	}
 }
 
 func TestApplySetLinesVerbs(t *testing.T) {
 	tr := New()
-	base := resolve(t, ModeNav, "interfaces 1/eth3")
+	base := resolve(t, ModeNav, "interfaces 1/0/3")
 	err := ApplySetLinesAt(tr, "set mtu 9014\nset description x\ndeactivate description\n", base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := FormatSet(tr); got != "set interfaces 1/eth3 description x\nset interfaces 1/eth3 mtu 9014\ndeactivate interfaces 1/eth3 description\n" {
+	if got := FormatSet(tr); got != "set interfaces 1/0/3 description x\nset interfaces 1/0/3 mtu 9014\ndeactivate interfaces 1/0/3 description\n" {
 		t.Errorf("relative set lines:\n%s", got)
 	}
 	if err := ApplySetLinesAt(tr, "activate description\ndelete\n", base); err != nil {
 		t.Fatal(err)
 	}
-	if tr.Root.Has("interfaces", "1/eth3", "mtu") {
+	if tr.Root.Has("interfaces", "1/0/3", "mtu") {
 		t.Error("bare delete at an edit level did not clear it")
 	}
 	for _, bad := range []string{"deactivate system ntp", "deactivate", "activate system host-name x", "frobnicate system"} {
@@ -301,14 +301,14 @@ func TestDirectiveWordsAreQuoted(t *testing.T) {
 
 func TestCopyRename(t *testing.T) {
 	tr := sampleTree(t)
-	if err := tr.Copy(resolve(t, ModeNav, "interfaces 1/eth2"), "1/eth3"); err != nil {
+	if err := tr.Copy(resolve(t, ModeNav, "interfaces 1/0/2"), "1/0/3"); err != nil {
 		t.Fatal(err)
 	}
-	if tr.Root.Leaf("interfaces", "1/eth3", "mtu") != "9216" {
+	if tr.Root.Leaf("interfaces", "1/0/3", "mtu") != "9216" {
 		t.Error("copy lost contents")
 	}
-	set(t, tr, "set interfaces 1/eth3 mtu 1514")
-	if tr.Root.Leaf("interfaces", "1/eth2", "mtu") != "9216" {
+	set(t, tr, "set interfaces 1/0/3 mtu 1514")
+	if tr.Root.Leaf("interfaces", "1/0/2", "mtu") != "9216" {
 		t.Error("copy is not deep")
 	}
 	if err := tr.Rename(resolve(t, ModeNav, "vlans storage"), "san"); err != nil {
