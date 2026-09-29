@@ -50,6 +50,9 @@ Last updated: 2026-09-29.
   switchd created; conflicts are commit errors; root never managed), root-owned authorized_keys, SHA-512 crypt
   (matches spec vectors and openssl), `plain-text-password`, `start shell` (super-user). Lab: key and password
   SSH logins, classes enforced, removal ends sessions. 16 lab tests pass.
+- CLI SSH server: own sshd instance (switchd-sshd, /etc/switchd/sshd_config, group switchd-cli, root via
+  ForceCommand swcli); the OS sshd is never modified; port conflicts are commit errors. Lab uses port 2222
+  (Proxmox firewall opened for 2222). Serial consoles: auto-detected UARTs/USB adapters get serial-getty.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)

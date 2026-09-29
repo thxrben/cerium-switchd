@@ -34,6 +34,11 @@ func Main(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// With sshd's ForceCommand (root on the CLI SSH server) the requested
+	// command arrives in SSH_ORIGINAL_COMMAND.
+	if *cmd == "" {
+		*cmd = os.Getenv("SSH_ORIGINAL_COMMAND")
+	}
 	ui := &ui{in: os.Stdin, out: os.Stdout}
 	ui.tty = term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 

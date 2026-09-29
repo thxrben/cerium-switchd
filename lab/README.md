@@ -84,6 +84,13 @@ together with the peer-link, for RSTP tests.
 10.5.0.0/16, gateway 10.5.0.1, DNS/DHCP server 10.5.150.1. The VMs use their addresses **statically**
 (`static-ip.yml`, applied 2026-09-29; the DHCP pool should exclude or reserve them). IPv6 stays on SLAAC.
 
+## Ports
+
+- 22: the OS SSH server (root with the dev machine's key; Ansible). switchd never modifies it.
+- 2222: switchd's CLI SSH server when `system services ssh port 2222` is configured (reachable through the
+  Proxmox firewall). Other ports are filtered from outside the lab subnet; use a jump host
+  (`ssh -J root@10.5.176.96 ...`) if needed.
+
 ## Usage
 
 ```

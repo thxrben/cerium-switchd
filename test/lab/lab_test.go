@@ -625,3 +625,67 @@ exit configuration-mode"; true`)
 		t.Error("unmanaged account touched")
 	}
 }
+
+func TestSerialConsoles(t *testing.T) {
+	configure(t, "")
+	unit := "systemctl is-active serial-getty@ttyS0; systemctl show -p ExecStart serial-getty@ttyS0"
+	if !waitFor(t, unit, "--noclear 115200 ttyS0", 10*time.Second) {
+		t.Fatalf("no auto-detected login on ttyS0:\n%s", mustSSH(t, sw1, unit+"; true"))
+	}
+	configure(t, "set system ports console ttyS0 speed 9600\n")
+	if !waitFor(t, unit, "--noclear 9600 ttyS0", 10*time.Second) {
+		t.Errorf("speed not applied:\n%s", mustSSH(t, sw1, unit+"; true"))
+	}
+	configure(t, "set system ports console ttyS0 disable\n")
+	if out := mustSSH(t, sw1, "systemctl is-active serial-getty@ttyS0; systemctl is-enabled serial-getty@ttyS0; true"); !strings.Contains(out, "inactive") || !strings.Contains(out, "masked") {
+		t.Errorf("console not disabled: %s", out)
+	}
+	configure(t, "")
+	if !waitFor(t, unit, "--noclear 115200 ttyS0", 10*time.Second) {
+		t.Error("console not restored after removing the configuration")
+	}
+}
+
+func TestCLISSHServer(t *testing.T) {
+	key, err := os.ReadFile(os.Getenv("HOME") + "/.ssh/id_ed25519.pub")
+	if err != nil {
+		t.Skip("no ed25519 key")
+	}
+	alice := fmt.Sprintf("set system login user alice class super-user\nset system login user alice authentication ssh-key \"%s\"\n", strings.TrimSpace(string(key)))
+	osSSHD := mustSSH(t, sw1, "md5sum /etc/ssh/sshd_config; ls /etc/ssh/sshd_config.d/")
+
+	// Port 22 belongs to the OS SSH server: a commit error, nothing changes.
+	mustSSH(t, sw1, "printf 'set system host-name sw1\\nset system services ssh\\n' > /root/lab.set")
+	out := mustSSH(t, sw1, "swcli -c 'configure\nload override lab.set\ncommit check\nexit configuration-mode'; true")
+	if !strings.Contains(out, "port 22 is already used") {
+		t.Errorf("port conflict not reported:\n%s", out)
+	}
+
+	configure(t, alice+"set system services ssh port 2222\nset system login message \"lab switch\"\n")
+	on2222 := func(user, cmd string) (string, error) {
+		out, err := exec.Command("ssh", "-p", "2222", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+			"-o", "StrictHostKeyChecking=accept-new", user+"@"+sw1, cmd).CombinedOutput()
+		return string(out), err
+	}
+	if !waitFor(t, "systemctl is-active switchd-sshd", "active", 10*time.Second) {
+		t.Fatal(mustSSH(t, sw1, "systemctl status switchd-sshd --no-pager; true"))
+	}
+	if out, err := on2222("alice", "show version"); err != nil || !strings.Contains(out, "mclag switchd") || !strings.Contains(out, "lab switch") {
+		t.Errorf("alice on the CLI port: %v\n%s", err, out)
+	}
+	if out, err := on2222("root", "show version"); err == nil {
+		t.Errorf("root admitted with root-login deny:\n%s", out)
+	}
+	configure(t, alice+"set system services ssh port 2222\nset system services ssh root-login key-only\n")
+	if out, err := on2222("root", "show version"); err != nil || !strings.Contains(out, "mclag switchd") {
+		t.Errorf("root (key-only) did not land in the CLI: %v\n%s", err, out)
+	}
+	// The OS SSH server was never modified.
+	if now := mustSSH(t, sw1, "md5sum /etc/ssh/sshd_config; ls /etc/ssh/sshd_config.d/"); now != osSSHD {
+		t.Errorf("OS SSH configuration changed:\n%s\n%s", osSSHD, now)
+	}
+	configure(t, "")
+	if !waitFor(t, "systemctl is-active switchd-sshd; test -e /etc/switchd/sshd_config || echo gone", "gone", 10*time.Second) {
+		t.Error("CLI SSH server not removed")
+	}
+}

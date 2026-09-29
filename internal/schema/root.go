@@ -99,7 +99,7 @@ func build() *Node {
 			),
 		),
 		C("services", "System services",
-			C("ssh", "SSH access to the CLI",
+			P("ssh", "SSH access to the CLI (present: switchd manages the SSH server configuration)",
 				VD("port", "Listening port", Uint("<port>", 1, 65535), "22"),
 				VD("root-login", "Root login policy", Enum(
 					E("deny", "Do not allow root login"),

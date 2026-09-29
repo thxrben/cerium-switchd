@@ -263,13 +263,19 @@ func run(name string, args ...string) error {
 }
 
 func (o *OS) Add(e Entry) error {
-	return run("useradd", "--create-home", "--user-group", "--uid", strconv.Itoa(e.UID),
+	if err := run("groupadd", "--force", "--system", CLIGroup); err != nil {
+		return err
+	}
+	return run("useradd", "--create-home", "--user-group", "--groups", CLIGroup, "--uid", strconv.Itoa(e.UID),
 		"--shell", e.Shell, "--comment", e.FullName, "--password", e.Hash, e.Name)
 }
 
 func (o *OS) Modify(e Entry) error {
-	return run("usermod", "--uid", strconv.Itoa(e.UID), "--shell", e.Shell, "--comment", e.FullName,
-		"--password", e.Hash, e.Name)
+	if err := run("groupadd", "--force", "--system", CLIGroup); err != nil {
+		return err
+	}
+	return run("usermod", "--append", "--groups", CLIGroup, "--uid", strconv.Itoa(e.UID), "--shell", e.Shell,
+		"--comment", e.FullName, "--password", e.Hash, e.Name)
 }
 
 // Delete ends the user's sessions (a removed user must not stay logged in)

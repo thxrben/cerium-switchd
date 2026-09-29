@@ -69,8 +69,11 @@ type User struct {
 }
 
 type SSHService struct {
-	Port      int
-	RootLogin string
+	// Configured: 'system services ssh' is present (otherwise switchd
+	// leaves the SSH server configuration alone).
+	Configured bool
+	Port       int
+	RootLogin  string
 }
 
 type WebService struct {
@@ -337,7 +340,7 @@ func (b *builder) build() {
 		}
 	}
 	s.Banner = sys.Leaf("login", "message")
-	s.SSH = SSHService{Port: atoi(sys.Leaf("services", "ssh", "port"), 22), RootLogin: orDefault(sys.Leaf("services", "ssh", "root-login"), "deny")}
+	s.SSH = SSHService{Configured: sys.Has("services", "ssh"), Port: atoi(sys.Leaf("services", "ssh", "port"), 22), RootLogin: orDefault(sys.Leaf("services", "ssh", "root-login"), "deny")}
 	web := sys.Get("services", "web-management")
 	s.Web = WebService{Enabled: !web.Has("disable"), Port: atoi(web.Leaf("port"), 443), CertFile: web.Leaf("certificate"), KeyFile: web.Leaf("key")}
 	conf := sys.Get("commit", "confirmation")

@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"mclag/internal/access"
 	"mclag/internal/cli"
@@ -50,17 +52,28 @@ func Run(ctx context.Context, o Options) error {
 	applier.inv = inv
 	var hostName func() string
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
+	systemctl := func(args ...string) error { return command("systemctl", args...) }
+	consoles := &access.Consoles{SysRoot: "/sys", UnitDir: "/etc/systemd/system",
+		StateFile: filepath.Join(o.StateDir, "consoles.json"), Log: log, Systemctl: systemctl}
+	sshd := &access.SSH{Dir: "/etc/switchd", UnitPath: "/etc/systemd/system/switchd-sshd.service",
+		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
 	applier.onApplied = func(cfg *model.Config) {
 		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
 		if !o.DryRun {
 			if err := accounts.Sync(cfg); err != nil {
 				log.Error("accounts", "facility", "authorization", "err", err)
 			}
+			if err := consoles.Sync(cfg); err != nil {
+				log.Error("consoles", "err", err)
+			}
+			if err := sshd.Sync(cfg); err != nil {
+				log.Error("ssh", "err", err)
+			}
 		}
 	}
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
-		Checks: []func(*model.Config) model.Issues{accounts.Check},
+		Checks: []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
 	})
 	if err != nil {
 		return err
@@ -136,4 +149,13 @@ func listen(path string) (*net.UnixListener, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// command runs a system tool and returns its output in the error.
+func command(name string, args ...string) error {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

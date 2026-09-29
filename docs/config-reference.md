@@ -459,12 +459,20 @@ console lands directly in the CLI.
 * W: a user with neither password nor key (they cannot log in).
 
 #### `system services ssh { port <n>; root-login deny|allow|key-only; }`
-switchd manages a drop-in configuration for the system's OpenSSH server. It listens in the management VRF
-(including an in-band management VLAN). Password authentication is offered only to users with an `encrypted-password`.
-Default: port 22, `root-login deny`.
-* **Without `system services ssh`, switchd does not change the SSH server configuration** (like `management`: the
-  safe default for the first installation, so the installer's root access keeps working). Managed users can still
-  log in: their keys are installed in `~/.ssh/authorized_keys` (owned by root, so users cannot change them).
+SSH access to the CLI. switchd runs **its own SSH server instance** for this (unit `switchd-sshd`, configuration in
+`/etc/switchd/`). The operating system's SSH server is never modified, so no CLI setting can cut off root or
+automation access on the OS port.
+* Without `system services ssh`, no CLI SSH server runs. Managed users can still log in through the OS SSH server
+  (their login shell is the CLI).
+* `port <n>`: default 22. E: the port is already used by another program, e.g. the OS SSH server before the
+  takeover (4.15 of the plan masks it). Use another port, such as 2222, until then.
+* Only managed users (`system login user`) are admitted, plus `root` according to `root-login`:
+  `deny` (default), `key-only` (public key only) or `allow`. `root` also lands in the CLI (as super-user).
+* It uses the host's SSH host keys, so the fingerprint is the same as on the OS port.
+* Passwords are accepted for users with an `encrypted-password`; keys come from `authentication ssh-key`.
+* The pre-login banner is `system login message`.
+* It accepts connections from the management VRF (and, before a management interface is configured, from any
+  interface of the host).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
 HTTPS web interface and REST API in the management VRF. Default: port 443 with a self-signed certificate generated
@@ -1088,7 +1096,8 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
 | `stack member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
-| `system services ssh` drop-in, serial console management, web interface | not implemented yet |
+| `system services ssh` (own sshd instance for the CLI), `system ports` (serial console logins) | implemented and lab tested |
+| `system services web-management`, `system login message` on serial consoles | not implemented yet |
 | `system syslog` (UDP/TCP/TLS from VRF mgmt, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
@@ -1131,7 +1140,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system login user <username> authentication encrypted-password` | leaf | &lt;hash&gt; |  | Crypt(3) password hash ($6$/$y$) |
 | `system login user <username> authentication ssh-key` | leaf-list | &lt;public-key&gt; |  | SSH public key ("ssh-ed25519 AAAA... comment") |
 | `system services` | container |  |  | System services |
-| `system services ssh` | container |  |  | SSH access to the CLI |
+| `system services ssh` | presence |  |  | SSH access to the CLI (present: switchd manages the SSH server configuration) |
 | `system services ssh port` | leaf | &lt;port&gt; 1..65535 | 22 | Listening port |
 | `system services ssh root-login` | leaf | deny \\| allow \\| key-only | deny | Root login policy |
 | `system services web-management` | container |  |  | Web interface and REST API |
