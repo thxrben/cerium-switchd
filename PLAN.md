@@ -402,6 +402,15 @@ In this order (the user's priorities; each step is spec first, then implementati
    time, switchd uptime, last commit), `system host-name` also written to /etc/hostname and /etc/hosts (no reboot),
    `system name-server` / `domain-name` → resolver configuration, `request system reboot|halt|power-off [at|in]`
    (single member now; with stacking and MC-LAG, a reboot first drains: LACP out-of-sync, peer takes over).
+   **Card number lifecycle (follow-up, requested 2026-09-29)**: numbers are bound to the PCI slot address and never
+   shift when a card is removed (implemented). Still to do:
+   * `show chassis hardware` also lists known cards that are absent (their reserved numbers and last seen model).
+   * A card in a known slot that changed model (other driver or port count) raises an alarm; its configuration stays
+     on the same names, but ports that no longer exist are reported, and commit check names the change.
+   * A card that moved to another slot (recognised by its MAC addresses) is reported with a hint instead of silently
+     becoming a new card: `request chassis card <new> renumber <old>` moves it back to its old number.
+   * `request chassis card <n> forget` releases the number of a card that was removed for good.
+   * These commands change names, so they show which configured interfaces are affected and need confirmation.
 4. **NIC capability checks at commit**: per port capabilities from ethtool (link modes/speeds, pause, VLAN and tc
    offload, max MTU) in the inventory; `commit check` reports settings a NIC cannot do. `show system offload`
    (hardware acceleration per port, §4.11).

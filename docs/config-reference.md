@@ -613,9 +613,11 @@ Stacking ports connect members **directly** (1:1 cables, no switch in between). 
 supported. Messages between members that are not directly connected are relayed hop by hop along the shortest
 working path, so a ring survives one broken cable.
 
-* **Designation**: stacking ports are set per switch with the operational command `request stack port add <linux-if>`
-  (and `… delete`). The setting is stored locally, like Junos VC ports, because a switch needs its stacking ports *before*
-  it can receive the stack configuration. `show stack ports` and `show stack topology` display them.
+* **Designation**: stacking ports are set per switch with the operational command `request stack port add <card>/<port>`
+  (and `… delete`), e.g. `request stack port add 0/2`. The member part of the name is left out because a switch that
+  has not joined yet does not know its member id. The setting is stored locally, like Junos VC ports, because a switch
+  needs its stacking ports *before* it can receive the stack configuration. `show stack ports` and
+  `show stack topology` display them.
 * A stacking port is never a data or management port. E: the port is configured under `interfaces`, or as a
   management/underlay interface. Wildcard `interface-range`s skip stacking ports.
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
