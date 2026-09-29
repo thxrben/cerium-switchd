@@ -157,7 +157,10 @@ func TestLossyCable(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ea, eb := newCable(7, c.loss, c.dup, c.reorder)
-			a, b := New(ea, Options{}), New(eb, Options{})
+			// Stream correctness under loss; a real cable this bad would
+			// (correctly) be declared down by the default 100 ms x 3.
+			o := Options{Multiplier: 20}
+			a, b := New(ea, o), New(eb, o)
 			defer a.Close()
 			defer b.Close()
 			waitUp(t, a, b)
@@ -169,7 +172,7 @@ func TestLossyCable(t *testing.T) {
 // A small receive window must not stall or corrupt the stream.
 func TestSmallWindow(t *testing.T) {
 	ea, eb := newCable(3, 0.05, 0, 0.05)
-	a, b := New(ea, Options{RecvWindow: 3000}), New(eb, Options{RecvWindow: 3000})
+	a, b := New(ea, Options{RecvWindow: 3000, Multiplier: 20}), New(eb, Options{RecvWindow: 3000, Multiplier: 20})
 	defer a.Close()
 	defer b.Close()
 	waitUp(t, a, b)
@@ -204,7 +207,7 @@ func TestRestart(t *testing.T) {
 
 func TestCloseAndDeadTime(t *testing.T) {
 	ea, eb := newCable(9, 0, 0, 0)
-	a, b := New(ea, Options{DeadTime: 300 * time.Millisecond}), New(eb, Options{DeadTime: 300 * time.Millisecond})
+	a, b := New(ea, Options{Interval: 50 * time.Millisecond, Multiplier: 3}), New(eb, Options{Interval: 50 * time.Millisecond, Multiplier: 3})
 	waitUp(t, a, b)
 	a.Close()
 	select {
@@ -221,7 +224,7 @@ func TestCloseAndDeadTime(t *testing.T) {
 
 	// A cable that goes dead ends the link after DeadTime.
 	ec, ed := newCable(10, 0, 0, 0)
-	c, d := New(ec, Options{DeadTime: 300 * time.Millisecond}), New(ed, Options{DeadTime: 300 * time.Millisecond})
+	c, d := New(ec, Options{Interval: 50 * time.Millisecond, Multiplier: 3}), New(ed, Options{Interval: 50 * time.Millisecond, Multiplier: 3})
 	waitUp(t, c, d)
 	ec.c.mu.Lock()
 	ec.c.down = true
@@ -294,7 +297,7 @@ func TestTLSOverLink(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	ea, eb := newCable(13, 0.05, 0.02, 0.05)
-	a, b := New(ea, Options{}), New(eb, Options{})
+	a, b := New(ea, Options{Multiplier: 20}), New(eb, Options{Multiplier: 20})
 	defer a.Close()
 	defer b.Close()
 	srv := tls.Server(b, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert("member-2")},
@@ -346,4 +349,31 @@ func testCert(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, name 
 		t.Fatal(err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// The larger interval of both sides is used, so a slow member is not
+// declared dead by a fast one.
+func TestIntervalNegotiation(t *testing.T) {
+	ea, eb := newCable(14, 0, 0, 0)
+	a := New(ea, Options{Interval: 20 * time.Millisecond, Multiplier: 3})
+	b := New(eb, Options{Interval: 200 * time.Millisecond, Multiplier: 5})
+	defer a.Close()
+	defer b.Close()
+	waitUp(t, a, b)
+	time.Sleep(50 * time.Millisecond)
+	for _, l := range []*Link{a, b} {
+		l.mu.Lock()
+		iv, m := l.interval, l.multiplier
+		l.mu.Unlock()
+		if iv != 200*time.Millisecond || m != 5 {
+			t.Errorf("effective %v x %d", iv, m)
+		}
+	}
+	// b sends only every 200 ms; a (20 ms x 3 on its own) must not drop it.
+	time.Sleep(700 * time.Millisecond)
+	select {
+	case <-a.Done():
+		t.Fatalf("a dropped the slow peer: %v", a.Err())
+	default:
+	}
 }

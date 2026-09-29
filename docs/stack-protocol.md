@@ -34,7 +34,10 @@ Payload (all integers big-endian):
 * **Loss**: retransmission timeout starts at 50 ms (stacking cables are short), adapts to the measured round trip
   (RFC 6298 style, minimum 10 ms, maximum 1 s), and doubles on each timeout. Three duplicate ACKs trigger a fast
   retransmit. Frames beyond the window or already acknowledged are dropped (duplicates are harmless).
-* **Close**: RESET, or no frames for the BFD detection time.
+* **Liveness (BFD)**: when a side has sent nothing for its interval, it sends an ACK frame. HELLO payload carries
+  the sender's interval and multiplier (2 bytes each, big-endian, milliseconds / count); both sides use the larger
+  interval and multiplier. No frame for interval × multiplier ends the link.
+* **Close**: RESET, or the liveness timeout.
 * A link never delivers bytes twice or out of order, and never delivers bytes across an epoch change.
 
 ## Keys and joining

@@ -648,8 +648,10 @@ working path, so a ring survives one broken cable.
   committed configuration, and only commits are blocked.
 
 #### `virtual-chassis bfd { minimum-interval <ms>; multiplier <n>; }`
-BFD (RFC 5880 state machine, carried IP-less inside the stacking protocol) on every stacking link. A link is declared
-down after `minimum-interval × multiplier` without packets. Defaults: 100 ms × 3 = 300 ms.
+Failure detection on every stacking link, BFD-style inside the stacking protocol (IP-less): each side sends a frame
+at least every `minimum-interval` (data frames count), and a link is declared down after `minimum-interval ×
+multiplier` without any frame from the peer. Defaults: 100 ms × 3 = 300 ms. Both sides use the larger of the two
+configured intervals (they announce theirs in the handshake), so a slow member is not declared dead by a fast one.
 * BFD runs with real-time scheduling priority, so CPU load does not cause false detections.
 * Values below 100 ms can still cause false detections on small ARM boards. A false detection makes stacking paths
   re-route, but never drops data traffic by itself.

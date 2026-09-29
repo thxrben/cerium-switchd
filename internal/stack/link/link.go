@@ -25,11 +25,12 @@ type Options struct {
 	RecvWindow    int           // bytes buffered for Read; default 256 KiB
 	SendBuffer    int           // bytes buffered for Write; default 1 MiB
 	HelloInterval time.Duration // default 100 ms
-	// DeadTime closes an established link after this long without any frame
-	// from the peer. Default 3 s (BFD detects failures much faster and
-	// closes the link itself).
-	DeadTime time.Duration
-	Name     string // for Addr, e.g. "0/2"
+	// Liveness (BFD-style, reference 5.2 virtual-chassis bfd): a frame at
+	// least every Interval, the link ends after Interval x Multiplier
+	// without frames. Both sides use the larger values. Defaults 100 ms, 3.
+	Interval   time.Duration
+	Multiplier int
+	Name       string // for Addr, e.g. "0/2"
 }
 
 // Errors that end a link.
@@ -48,7 +49,6 @@ func (timeoutError) Temporary() bool { return true }
 const (
 	tick       = 5 * time.Millisecond
 	ackDelay   = 10 * time.Millisecond
-	keepalive  = 200 * time.Millisecond
 	minRTO     = 10 * time.Millisecond
 	initialRTO = 50 * time.Millisecond
 	maxRTO     = time.Second
@@ -80,6 +80,8 @@ type Link struct {
 	dupAcks        int
 	lastSent       time.Time
 	lastHello      time.Time
+	interval       time.Duration // effective liveness interval
+	multiplier     int
 
 	// Receive side.
 	rcvNxt     uint32
@@ -105,10 +107,14 @@ func New(io FrameIO, o Options) *Link {
 	if o.HelloInterval == 0 {
 		o.HelloInterval = 100 * time.Millisecond
 	}
-	if o.DeadTime == 0 {
-		o.DeadTime = 3 * time.Second
+	if o.Interval == 0 {
+		o.Interval = 100 * time.Millisecond
 	}
-	l := &Link{io: io, o: o, rto: initialRTO, upCh: make(chan struct{}), done: make(chan struct{}), peerWin: 64 << 10}
+	if o.Multiplier == 0 {
+		o.Multiplier = 3
+	}
+	l := &Link{io: io, o: o, rto: initialRTO, upCh: make(chan struct{}), done: make(chan struct{}), peerWin: 64 << 10,
+		interval: o.Interval, multiplier: o.Multiplier}
 	l.cond = sync.NewCond(&l.mu)
 	var b [4]byte
 	for l.epoch == 0 {
@@ -170,6 +176,11 @@ func (l *Link) failLocked(err error) {
 // send transmits a frame; caller holds l.mu (sending on a cable never
 // blocks for long).
 func (l *Link) send(typ byte, seq uint32, payload []byte) {
+	if typ == tHello {
+		payload = make([]byte, 4)
+		binary.BigEndian.PutUint16(payload, uint16(min(l.o.Interval.Milliseconds(), 0xffff)))
+		binary.BigEndian.PutUint16(payload[2:], uint16(min(l.o.Multiplier, 0xffff)))
+	}
 	f := frame{Type: typ, Epoch: l.epoch, PeerEpoch: l.peer, Seq: seq, Ack: l.rcvNxt, Payload: payload}
 	if w := l.o.RecvWindow - len(l.rbuf); w > 0 {
 		f.Window = uint32(w)
@@ -204,6 +215,11 @@ func (l *Link) receive(b []byte) {
 	}
 	l.peer = f.Epoch
 	l.lastRecv = now
+	if f.Type == tHello && len(f.Payload) >= 4 {
+		pi := time.Duration(binary.BigEndian.Uint16(f.Payload)) * time.Millisecond
+		pm := int(binary.BigEndian.Uint16(f.Payload[2:]))
+		l.interval, l.multiplier = max(l.o.Interval, pi), max(l.o.Multiplier, pm)
+	}
 	if f.Type == tReset {
 		l.failLocked(ErrPeerReset)
 		return
@@ -327,7 +343,7 @@ func (l *Link) timers() {
 		}
 		return
 	}
-	if now.Sub(l.lastRecv) > l.o.DeadTime {
+	if now.Sub(l.lastRecv) > l.interval*time.Duration(l.multiplier) {
 		l.failLocked(ErrDead)
 		return
 	}
@@ -341,8 +357,8 @@ func (l *Link) timers() {
 	switch {
 	case l.ackPending > 0 && now.After(l.ackAt):
 		l.send(tAck, l.sndNxt, nil)
-	case now.Sub(l.lastSent) > keepalive:
-		l.send(tAck, l.sndNxt, nil) // keepalive, also re-advertises the window
+	case now.Sub(l.lastSent) >= l.interval-tick:
+		l.send(tAck, l.sndNxt, nil) // liveness, also re-advertises the window
 	}
 }
 
