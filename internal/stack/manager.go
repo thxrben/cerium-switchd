@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -38,6 +39,12 @@ type Manager struct {
 	Linux func(local string) (string, bool)
 	// HostName is this member's host name (shown to neighbours).
 	HostName func() string
+	// ActiveConfig returns the active configuration (JSON) for a joining
+	// member.
+	ActiveConfig func() json.RawMessage
+	// OnJoined is called after this switch joined another stack: member id
+	// and the stack's configuration. switchd then restarts.
+	OnJoined func(member int, config json.RawMessage) error
 
 	mu         sync.Mutex
 	stack      *pki.Stack
@@ -46,6 +53,35 @@ type Manager struct {
 	memberCert *x509.Certificate
 	ports      map[string]*vcPort
 	ctx        context.Context
+	join       *joinReq
+	pending    map[string]pendingMember // normalized token -> member
+	kick       chan struct{}            // wakes waiting sessions (join started, member added)
+}
+
+type joinReq struct {
+	token string
+	done  chan joinResult
+}
+
+type pendingMember struct {
+	id      int
+	expires time.Time
+}
+
+// joinAnswer is what the stack sends a joining switch.
+type joinAnswer struct {
+	Error      string          `json:"error,omitempty"`
+	Member     int             `json:"member,omitempty"`
+	MemberCert []byte          `json:"member_cert,omitempty"`
+	StackKey   []byte          `json:"stack_key,omitempty"`
+	StackCert  []byte          `json:"stack_cert,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
+	Admit      []byte          `json:"admit,omitempty"`
+}
+
+type joinResult struct {
+	answer *joinAnswer
+	err    error
 }
 
 // PortStatus is one line of "show virtual-chassis vc-port".
@@ -70,6 +106,27 @@ type vcState struct {
 	Ports []string `json:"ports"`
 }
 
+// errJoinDone ends a session that carried a join exchange.
+var errJoinDone = errors.New("join exchange done")
+
+// kicked returns a channel closed on the next kick.
+func (m *Manager) kicked() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.kick
+}
+
+// wake wakes all sessions waiting on another stack.
+func (m *Manager) wake() {
+	m.mu.Lock()
+	close(m.kick)
+	m.kick = make(chan struct{})
+	m.mu.Unlock()
+}
+
+// errOtherStack: the neighbour's certificate is not from this stack.
+var errOtherStack = errors.New("neighbour belongs to another stack (not joined)")
+
 // hello is exchanged once a stacking session is authenticated.
 type hello struct {
 	Member int    `json:"member"`
@@ -79,19 +136,23 @@ type hello struct {
 
 func (m *Manager) path(n string) string { return filepath.Join(m.Dir, n) }
 
-// Start loads (or, on first start, creates) the keys and starts the VC
-// ports.
-func (m *Manager) Start(ctx context.Context) error {
+// Load reads (or, on first start, creates) the keys; afterwards Member is
+// known.
+func (m *Manager) Load() error {
 	if m.Log == nil {
 		m.Log = slog.Default()
 	}
 	if err := os.MkdirAll(m.Dir, 0o700); err != nil {
 		return err
 	}
-	if err := m.loadKeys(); err != nil {
-		return err
-	}
+	return m.loadKeys()
+}
+
+// Start starts the VC ports (after Load).
+func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
+	m.pending = map[string]pendingMember{}
+	m.kick = make(chan struct{})
 	m.ctx = ctx
 	m.ports = map[string]*vcPort{}
 	m.mu.Unlock()
@@ -309,9 +370,27 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 		case <-l.Up():
 		}
 		err := m.session(ctx, p, l, pio, linux)
+		if errors.Is(err, errJoinDone) {
+			l.Close()
+			sleep(ctx, time.Second)
+			continue
+		}
+		if errors.Is(err, errOtherStack) {
+			// The cable works, the neighbour belongs to another stack: keep
+			// showing it and try again now and then (it may join us).
+			p.set(func(s *PortStatus) { s.PeerPort, s.UpSince, s.LastError = "", time.Time{}, err.Error() })
+			select {
+			case <-ctx.Done():
+			case <-l.Done():
+			case <-m.kicked():
+			case <-time.After(10 * time.Second):
+			}
+			l.Close()
+			continue
+		}
 		l.Close()
 		p.set(func(s *PortStatus) {
-			s.State, s.PeerPort, s.UpSince = "down", "", time.Time{}
+			s.State, s.Neighbor, s.PeerPort, s.UpSince = "down", "-", "", time.Time{}
 			if err != nil {
 				s.LastError = err.Error()
 			}
@@ -333,12 +412,41 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 		return true
 	})
 	me := m.member
+	join := m.join
 	m.mu.Unlock()
-	// Roles by MAC address: the lower one is the TLS client.
 	own, err := net.InterfaceByName(linux)
 	if err != nil {
 		return err
 	}
+	// Session mode: M (member) or J (joining with a token).
+	mode := []byte{'M'}
+	if join != nil {
+		mode[0] = 'J'
+	}
+	l.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := l.Write(mode); err != nil {
+		return err
+	}
+	var peer [1]byte
+	if _, err := io.ReadFull(l, peer[:]); err != nil {
+		return err
+	}
+	l.SetDeadline(time.Time{})
+	switch {
+	case mode[0] == 'J' && peer[0] == 'M':
+		res := m.joinClient(l, join.token)
+		select {
+		case join.done <- res:
+		default:
+		}
+		return errJoinDone
+	case mode[0] == 'M' && peer[0] == 'J':
+		m.joinServer(l, p.local)
+		return errJoinDone
+	case peer[0] != 'M':
+		return fmt.Errorf("neighbour session mode %q", peer[0])
+	}
+	// Roles by MAC address: the lower one is the TLS client.
 	var conn *tls.Conn
 	if bytes.Compare(own.HardwareAddr, pio.Peer()) < 0 {
 		conn = tls.Client(l, cfg)
@@ -348,7 +456,7 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := conn.Handshake(); err != nil {
 		p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
-		return fmt.Errorf("neighbour not authenticated (another stack?): %w", err)
+		return fmt.Errorf("%w: %v", errOtherStack, err)
 	}
 	host := ""
 	if m.HostName != nil {

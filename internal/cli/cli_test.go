@@ -514,6 +514,9 @@ func (f *fakeOps) SetVCPort(local string, add bool, user string) error {
 	return nil
 }
 
+func (f *fakeOps) AddVCMember(id int, user string) (string, error) { return "AAAA-BBBB", nil }
+func (f *fakeOps) JoinVC(token, user string) (int, error)          { return 2, nil }
+
 func (f *fakeOps) CancelPower(user string) error {
 	f.power = append(f.power, "cancel "+user)
 	return nil
@@ -705,6 +708,10 @@ func TestSystemOperationalCommands(t *testing.T) {
 	ops.power = nil
 	contains(t, ts.run("request virtual-chassis vc-port set pic-slot 0"), "syntax error")
 	contains(t, ts.run("request virtual-chassis vc-port set pic-slot x port 1"), "expecting a card number")
+	contains(t, ts.ok("request virtual-chassis member add 2"), "Join token for member 2", "request virtual-chassis join token AAAA-BBBB")
+	contains(t, ts.run("request virtual-chassis member add 17"), "expecting a member id")
+	ts.term.answers = []string{"yes"}
+	contains(t, ts.ok("request virtual-chassis join token AAAA-BBBB"), "Joined as member 2")
 	contains(t, ts.run("show route instance nope"), "does not exist")
 	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")

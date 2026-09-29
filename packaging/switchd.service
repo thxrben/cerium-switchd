@@ -3,6 +3,8 @@ Description=mclag switch daemon
 Documentation=file:///usr/share/doc/switchd/config-reference.md
 Before=network-pre.target
 Wants=network-pre.target
+# Never give up restarting: a switch without switchd has no control plane.
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec

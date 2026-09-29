@@ -63,3 +63,15 @@ Minimal on purpose (nothing expires, nothing depends on the clock):
   3. The stack answers with the member certificate, the stack key and certificate, the configuration and the
      member id, plus `HMAC-SHA256(token, "admit" | …)` so the new switch knows it talks to the stack that issued the token.
   4. The token is used up. The member reconnects with its signed certificate.
+
+## Sessions
+
+When a link is up, each side first writes one byte: `M` (member session) or `J` (this switch is joining with a token).
+* `M`/`M`: TLS 1.3 between members; the side with the lower MAC address is the TLS client. Then each side sends a
+  hello (JSON line: member id, host name, local port). Stack messages follow on the same connection.
+* `J`/`M`: the joining side is the TLS client with its self-signed certificate; the stack side presents the stack
+  certificate. The join exchange of "Keys and joining" follows (JSON lines). Afterwards the link is closed; the new
+  member reconnects with `M` once switchd has restarted with its new identity.
+* A switch that joins gets the stack's current configuration with the answer (continuous replication follows with
+  Raft). Its own previous configuration is kept in `/var/lib/switchd/config.pre-join-<time>`; switchd restarts to take
+  the new member id (interface names change from `1/…` to `<id>/…`).

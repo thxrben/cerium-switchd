@@ -465,3 +465,16 @@ func (o *ops) SetVCPort(local string, add bool, user string) error {
 	o.log.Info("VC port "+what, "facility", "change-log", "port", local, "user", user)
 	return nil
 }
+
+func (o *ops) AddVCMember(id int, user string) (string, error) {
+	tok, err := o.vc.AddMember(id)
+	if err == nil {
+		o.log.Info("virtual chassis join token issued", "facility", "change-log", "member", id, "user", user)
+	}
+	return tok, err
+}
+
+func (o *ops) JoinVC(token, user string) (int, error) {
+	o.log.Warn("joining a virtual chassis", "facility", "change-log", "user", user)
+	return o.vc.Join(token)
+}

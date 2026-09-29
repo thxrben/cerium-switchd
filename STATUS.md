@@ -79,11 +79,16 @@ Last updated: 2026-09-29 (late).
 - Spec: Junos VC syntax (request virtual-chassis vc-port set pic-slot <card> port <port>, show virtual-chassis),
   mastership switch + member remove (decommissioning).
 
+- Stack manager in switchd (internal/stack): VC ports, show virtual-chassis [vc-port], authenticated member
+  sessions per stacking link, join with one-time tokens (member add / join token; config handed over, old one
+  kept, switchd restarts with the new member id). Lab: sw1, sw2, sw3 form one virtual chassis
+  (3d643177f94057f8) over the stk ring; test hosts moved off stacking links (hSw2 on underlay ens1, hotplug on
+  ens21).
+
 ## Next (in order)
-1. Phase 5: stack manager in switchd (VC ports, show virtual-chassis [vc-port]; stacking ports: up, no IP,
-   no bridge), join (tokens), topology + relay, Raft store (with leadership transfer), per-member apply,
-   stack-wide show commands. Lab cabling: hSw2 uses stk-12 (sw1 ens19 / sw2 ens19) and TestHotplug uses
-   stk-13 (sw1 ens20); move them before the stacking lab tests.
+1. Phase 5: message layer over the sessions (link-state topology, hop-by-hop relay), Raft (config store,
+   leader = master, leadership transfer, member remove), per-member apply with results, stack-wide show
+   commands; lab tests for the stack (join, ring cut, master switch, member remove under traffic).
 2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
 

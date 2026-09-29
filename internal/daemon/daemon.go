@@ -4,16 +4,19 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"log/slog"
+	"mclag/internal/config"
 	"mclag/internal/osconf"
 	"mclag/internal/stack"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +42,10 @@ type Options struct {
 
 // Run serves until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
+	// restart ends Run so that systemd starts switchd again (after joining a
+	// virtual chassis, the member id changes).
+	ctx, restart := context.WithCancel(ctx)
+	defer restart()
 	// Every record goes to the local buffer, the remote syslog servers and
 	// the journal (stderr).
 	hub := syslog.NewHub(o.Log.Handler(), 5000)
@@ -50,16 +57,43 @@ func Run(ctx context.Context, o Options) error {
 	}
 	srv := &rpc.Server{Log: log}
 	kernel := &dataplane.Netlink{StateDir: o.StateDir}
-	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: 1}
+	// The stack identity decides this switch's member id (interface names
+	// <member>/<card>/<port>).
+	var hostName func() string
+	var engine *commit.Engine
+	vc := &stack.Manager{Dir: filepath.Join(o.StateDir, "stack"), Log: log,
+		HostName: func() string { return hostName() },
+		ActiveConfig: func() json.RawMessage {
+			raw, _ := json.Marshal(config.ToJSON(engine.Active().Root))
+			return raw
+		},
+		OnJoined: func(member int, cfg json.RawMessage) error {
+			if err := replaceConfig(o.StateDir, member, cfg); err != nil {
+				return err
+			}
+			log.Warn("joined a virtual chassis; switchd restarts as member "+strconv.Itoa(member), "facility", "change-log")
+			go func() {
+				time.Sleep(time.Second) // let the CLI answer first
+				restart()
+			}()
+			return nil
+		}}
+	member := 1
+	if !o.DryRun {
+		if err := vc.Load(); err != nil {
+			log.Error("stack keys", "err", err)
+		} else {
+			member = vc.Member()
+		}
+	}
+	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: member}
 	if _, err := names.Refresh(); err != nil {
 		log.Warn("port numbering", "err", err)
 	}
-	var hostName func() string
-	vc := &stack.Manager{Dir: filepath.Join(o.StateDir, "stack"), Log: log,
-		Linux:    func(local string) (string, bool) { return names.Linux("1/" + local) },
-		HostName: func() string { return hostName() }}
-	inv := &kernelInventory{kernel: kernel, names: names, member: 1, vc: vc}
+	vc.Linux = func(local string) (string, bool) { return names.Linux(strconv.Itoa(member) + "/" + local) }
+	inv := &kernelInventory{kernel: kernel, names: names, member: member, vc: vc}
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
+	applier.member = member
 	applier.inv, applier.names = inv, names
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	systemctl := func(args ...string) error { return command("systemctl", args...) }
@@ -87,12 +121,12 @@ func Run(ctx context.Context, o Options) error {
 			if err := sshd.Sync(cfg); err != nil {
 				log.Error("ssh", "err", err)
 			}
-			if err := osHost.Sync(cfg, 1); err != nil {
+			if err := osHost.Sync(cfg, member); err != nil {
 				log.Error("host name / resolver", "err", err)
 			}
 		}
 	}
-	engine, err := commit.New(commit.Options{
+	engine, err = commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
 		Upgrade: newUpgrader(names, 1, log).Upgrade,
 		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
@@ -101,11 +135,6 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	defer engine.Close()
-	if !o.DryRun {
-		if err := vc.Start(ctx); err != nil {
-			log.Error("stack", "err", err)
-		}
-	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
@@ -114,7 +143,7 @@ func Run(ctx context.Context, o Options) error {
 
 	hostName = func() string {
 		root := engine.Active().Active().Root
-		if h := root.Leaf("virtual-chassis", "member", "1", "host-name"); h != "" {
+		if h := root.Leaf("virtual-chassis", "member", strconv.Itoa(member), "host-name"); h != "" {
 			return h
 		}
 		if h := root.Leaf("system", "host-name"); h != "" {
@@ -132,8 +161,15 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return out
 	}
-	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: 1, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
+	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
+	// Stacking sessions start once everything they use (host name, active
+	// configuration) is set up.
+	if !o.DryRun {
+		if err := vc.Start(ctx); err != nil {
+			log.Error("stack", "err", err)
+		}
+	}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
 			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
@@ -190,4 +226,27 @@ func command(name string, args ...string) error {
 		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// replaceConfig makes the stack's configuration this member's configuration
+// after joining: the previous one is kept in config.pre-join-<time>.
+func replaceConfig(stateDir string, member int, cfg json.RawMessage) error {
+	dir := filepath.Join(stateDir, "config")
+	keep := filepath.Join(stateDir, "config.pre-join-"+time.Now().UTC().Format("20060102T150405"))
+	if err := os.Rename(dir, keep); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	st, err := commit.OpenFileStore(dir, 50)
+	if err != nil {
+		return err
+	}
+	tree := config.New()
+	if len(cfg) > 0 {
+		if tree, err = config.FromJSON(cfg); err != nil {
+			return fmt.Errorf("configuration from the stack: %w", err)
+		}
+	}
+	raw, _ := json.Marshal(config.ToJSON(tree.Root))
+	return st.Put(&commit.Revision{Seq: 1, Time: time.Now().UTC(), User: "system",
+		Comment: fmt.Sprintf("joined the virtual chassis as member %d", member), Config: raw}, 0)
 }

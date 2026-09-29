@@ -41,6 +41,11 @@ type Operational interface {
 	VirtualChassis() (VCStatus, error)
 	// SetVCPort designates (add) or releases a VC port "<card>/<port>".
 	SetVCPort(local string, add bool, user string) error
+	// AddVCMember returns a one-time join token for member id.
+	AddVCMember(id int, user string) (string, error)
+	// JoinVC joins the stack that issued token; it returns the new member id
+	// (switchd restarts afterwards).
+	JoinVC(token, user string) (int, error)
 }
 
 // VCStatus is what "show virtual-chassis" shows.
@@ -429,6 +434,47 @@ func (sh *Shell) setVCPort(c *call, add bool) error {
 		}
 	}
 	return sh.env.Ops.SetVCPort(local, add, sh.env.User)
+}
+
+func (sh *Shell) addVCMember(c *call) error {
+	if len(c.args) != 1 {
+		return &posError{pos: c.argPos(0), msg: "expecting the member id"}
+	}
+	id, err := strconv.Atoi(c.args[0].Text)
+	if err != nil || id < 1 || id > 16 {
+		return &posError{pos: c.argPos(0), msg: "expecting a member id (1-16)"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	tok, err := sh.env.Ops.AddVCMember(id, sh.env.User)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Join token for member %d (valid for one hour, usable once):\n\n    %s\n\n", id, tok)
+	fmt.Fprintf(c.out, "On the new switch (with its VC ports cabled to this stack):\n    request virtual-chassis join token %s\n", tok)
+	return nil
+}
+
+func (sh *Shell) joinVC(c *call) error {
+	if len(c.args) != 2 || !prefixOf(c.args[0].Text, "token") {
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'token <token>'"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	a, err := c.term.Ask("This switch's configuration is replaced by the virtual chassis configuration (the current one is kept\n"+
+		"as a file) and switchd restarts with its new member id. Continue? [yes,no] (no) ", true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	c.out.WriteString("Joining (up to a minute)...\n")
+	id, err := sh.env.Ops.JoinVC(c.args[1].Text, sh.env.User)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Joined as member %d. switchd restarts now; interface names become %d/<card>/<port>.\n", id, id)
+	return nil
 }
 
 func completeVCPort(_ *Shell, args []config.Token, partial string) []Completion {
@@ -847,6 +893,12 @@ func registerOperational() {
 		}},
 		{name: "virtual-chassis", help: "Virtual chassis (stack) requests", class: commit.SuperUser, sub: []*command{
 			{name: "vc-port", help: "Stacking ports of this switch", class: commit.SuperUser, sub: []*command{vcPort(true), vcPort(false)}},
+			{name: "member", help: "Stack members", class: commit.SuperUser, sub: []*command{
+				{name: "add", help: "Allow a switch to join as this member (prints a one-time token)", class: commit.SuperUser,
+					run: (*Shell).addVCMember, complete: words(Completion{Text: "<member-id>", Help: "Member id 1-16", Placeholder: true})},
+			}},
+			{name: "join", help: "Join a virtual chassis over the VC ports", class: commit.SuperUser, run: (*Shell).joinVC,
+				complete: words(Completion{Text: "token", Help: "Token from 'request virtual-chassis member add' on the stack"})},
 		}},
 	}})
 	sort.Slice(operational, func(i, j int) bool { return operational[i].name < operational[j].name })
