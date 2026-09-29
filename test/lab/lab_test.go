@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -355,5 +356,41 @@ func TestHotplug(t *testing.T) {
 	t.Logf("port configured %v after it appeared", time.Since(start).Round(time.Millisecond))
 	if !waitFor(t, "ip -o link show ens20", ",UP", 5*time.Second) {
 		t.Error("appearing port not brought up")
+	}
+}
+
+func TestMACLimit(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	base := vlans + access(hSrv1.sw1Port, "v10") + access(hSw3.sw1Port, "v10")
+	configure(t, base+"set interfaces 1/ens23 mac-limit 3\n")
+	mustSSH(t, sw1, "bridge fdb flush dev ens23 dynamic 2>/dev/null; true")
+	// Six source MACs behind srv1's port.
+	var cmds []string
+	for i := 1; i <= 6; i++ {
+		cmds = append(cmds, fmt.Sprintf("ip -n h link add m%[1]d link ens19 type macvlan mode bridge; ip -n h addr add 192.168.1.%[2]d/24 dev m%[1]d; ip -n h link set m%[1]d up", i, 100+i))
+	}
+	mustSSH(t, hSrv1.vm, strings.Join(cmds, "; "))
+	defer ssh(hSrv1.vm, "for i in 1 2 3 4 5 6; do ip -n h link del m$i; done")
+	ok := 0
+	for i := 1; i <= 6; i++ {
+		if _, err := ssh(hSrv1.vm, fmt.Sprintf("ip netns exec h ping -c2 -W1 -I m%d 192.168.1.3", i)); err == nil {
+			ok++
+		}
+	}
+	if ok != 6 {
+		t.Errorf("only %d of 6 sources reached sw3: the limit must never drop traffic", ok)
+	}
+	out := mustSSH(t, sw1, "bridge -d link show dev ens23; bridge fdb show dev ens23 | grep -v permanent | grep -c vlan")
+	if !strings.Contains(out, "learning off") {
+		t.Errorf("learning not switched off at the limit:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if n, _ := strconv.Atoi(lines[len(lines)-1]); n > 5 {
+		t.Errorf("%d addresses learned with mac-limit 3", n)
+	}
+	configure(t, base)
+	if !waitFor(t, "bridge -d link show dev ens23", "learning on", 10*time.Second) {
+		t.Error("learning not re-enabled after the limit was removed")
 	}
 }

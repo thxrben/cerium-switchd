@@ -661,9 +661,12 @@ It uses hardware policers where available and is enforced in software otherwise.
 lookup, which a reliable ingress policer cannot see.)
 
 #### `mac-limit <n>`
-Maximum number of MAC addresses **learned** on this port (kernel bridge learning limit). Once reached, new source
-addresses are *not learned*, but their frames are **still forwarded**: replies to them are flooded instead of switched.
-An alarm is raised. The switch never drops traffic because of the limit. Default: unlimited.
+Maximum number of MAC addresses **learned** on this port. Once reached, new source addresses are *not learned*,
+but their frames are **still forwarded**: replies to them are flooded instead of switched. An alarm is raised.
+The switch never drops traffic because of the limit. Default: unlimited.
+* Linux has no per-port learning limit (only a bridge-wide one), so switchd enforces it: it counts the learned
+  entries of the port and switches learning off on the port when the limit is reached, and on again when entries
+  have aged out. Because this reaction is not instantaneous, the count can briefly exceed the limit by a few entries.
 
 #### `offload disable`
 Forces software forwarding for this port: no switchdev or tc hardware offload. See `system offload`.

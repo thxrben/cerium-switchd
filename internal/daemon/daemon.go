@@ -38,7 +38,7 @@ func Run(ctx context.Context, o Options) error {
 	srv := &rpc.Server{Log: log}
 	kernel := &dataplane.Netlink{}
 	inv := &kernelInventory{kernel: kernel, member: 1}
-	applier := newKernelApplier(o.StateDir, o.DryRun, log)
+	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.inv = inv
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
@@ -49,6 +49,9 @@ func Run(ctx context.Context, o Options) error {
 	defer engine.Close()
 	engine.Start(ctx)
 	go applier.watch(ctx)
+	if !o.DryRun {
+		go kernel.EnforceMACLimits(ctx, log)
+	}
 
 	hostName := func() string {
 		if h := engine.Active().Active().Root.Leaf("system", "host-name"); h != "" {

@@ -168,9 +168,9 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	return a.saveOwned(desired)
 }
 
-func newKernelApplier(stateDir string, dryRun bool, log *slog.Logger) *kernelApplier {
+func newKernelApplier(kernel dataplane.Kernel, stateDir string, dryRun bool, log *slog.Logger) *kernelApplier {
 	return &kernelApplier{
-		kernel:    &dataplane.Netlink{},
+		kernel:    kernel,
 		member:    1, // standalone until stacking (Phase 5)
 		dryRun:    dryRun,
 		stateFile: filepath.Join(stateDir, "dataplane-owned.json"),

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -16,6 +17,9 @@ import (
 type Netlink struct {
 	// SysRoot is normally "/sys" (used to tell physical ports apart).
 	SysRoot string
+
+	mlOnce sync.Once
+	macl   *macLimits
 }
 
 func (k *Netlink) sysRoot() string {
@@ -81,6 +85,7 @@ func (k *Netlink) Read() (*State, error) {
 			}
 		}
 		if ln.Kind == Physical || ln.Kind == Bond {
+			ln.MaxLearned = k.maxLearned(a.Name)
 			p := ingressPrios(l)
 			ln.DropTagged = p[prioDropTagged] && p[prioPassPrioTagged]
 		}
@@ -178,7 +183,10 @@ func (k *Netlink) Apply(op Op) error {
 		return netlink.BridgeVlanAdd(l, op.VID, op.Flags.PVID, op.Flags.Untagged, false, true)
 	case OpSetDropTagged:
 		return setDropTagged(l, op.Bool)
-	case OpSetFlowControl, OpSetMaxLearned:
+	case OpSetMaxLearned:
+		k.setMaxLearned(op.Link, op.Int)
+		return nil
+	case OpSetFlowControl:
 		return fmt.Errorf("%s: %w", op, ErrUnsupported)
 	}
 	return fmt.Errorf("unknown op %d", op.Kind)
