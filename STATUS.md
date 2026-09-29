@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-29.
+Last updated: 2026-09-29 (late).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -55,10 +55,16 @@ Last updated: 2026-09-29.
   (Proxmox firewall opened for 2222). Serial consoles: auto-detected UARTs/USB adapters get serial-getty.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
-## Next (in order)
-1. VLAN MTU filter, flow control (ethtool ioctl), storm-drop counters in show interfaces; hardware-offload watchdog.
-2. Management plane (VRF mgmt, IRB-like VLAN interface, static/DHCP), syslog.
-3. `set … authentication plain-text-password`; `start shell`; swcli as login shell (Phase 4).
+- Multi-user notices (commit/confirm/rollback), shared candidate persisted, swcli survives switchd
+  restarts (offline prompt, reconnect) and its own crashes (supervisor, crash report, shell for super-users),
+  local consoles (serial + display) autologin root into the CLI; `system ports login-required`. 17 lab tests pass.
+
+## Next (in order) — see PLAN.md Phase 4b
+1. Junos interface names x/y/z (member/card/port, pinned), `show chassis hardware`; test on physw4 (10.5.20.76).
+2. irb + L3 units, routed ports/subinterfaces, static routes; management onto routing-instances.
+3. show system rollback, show arp, show system uptime, host-name → OS, name servers, request system reboot.
+4. NIC capability checks at commit, show system offload.
+Then Phase 5 stacking.
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

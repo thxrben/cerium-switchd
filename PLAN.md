@@ -63,7 +63,15 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 * Config and CLI/web work from any member. Writes go through the Raft leader over the stacking plane, and each
   member applies only its own part of the tree.
 * Joining: a new switch with designated stacking ports announces itself on them. `request stack member add <id>
-  token <t>` authorises it → it gets a certificate from the stack CA → it joins Raft (≤5 voters, the rest non-voting).
+  token <t>` authorises it → it gets a certificate from the stack CA → it joins Raft (≤7 voters, the rest non-voting).
+* **Why Raft, and why a voter limit.** The stack needs one agreed configuration and must never let two halves of a
+  split stack both accept commits (split brain). That requires a majority vote, which is what Raft does; it is
+  used as a library (hashicorp/raft) rather than written by hand. Raft only guards configuration changes and the
+  choice of the stack leader: the data plane, MC-LAG and LACP never wait for it. Voters: every member up to 7
+  (always an odd number); beyond 7, extra members are non-voting replicas that receive everything but do not
+  vote. More voters make every commit wait for more members and do not improve availability much: 7 voters
+  survive 3 simultaneous failures. When a voter fails permanently, a replica is promoted automatically (possible
+  while a majority of voters is alive), spread across different stacking links where possible.
 * Raft needs a majority to commit. With 2 members, a third lightweight **witness** is recommended (e.g. a small board
   with 2 NICs, cabled with stacking links to both). Without quorum, the data plane **keeps running** on the last
   committed config and only config changes are blocked.
@@ -113,7 +121,8 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 * Per member: **one IP interface in VRF `mgmt`**, attached to any VLAN of the bridge (IRB-like) or to a dedicated,
   non-switched port. Static IPv4/IPv6 and/or DHCPv4, with a default gateway per family.
 * A dedicated 1G management port is just an access port in the mgmt VLAN, or a dedicated port.
-* No routing between VLANs, and none between mgmt and data. SSH, web, syslog, NTP and DNS bind into VRF `mgmt`.
+* No routing between mgmt and data. SSH, web, syslog, NTP and DNS bind into VRF `mgmt`. Routing between VLANs
+  (irb interfaces in the default instance) is Phase 4b.
 * Without a `management` block, the host's existing network config is left untouched (safe first install).
 
 ### 4.6 CLI (Junos-like)
@@ -372,6 +381,29 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    `/healthz`, `/readyz`, `/metrics` (Prometheus).
 5. Minimal web UI: login, dashboard, interfaces, FDB search, config editor (text + diff + commit).
 
+### Phase 4b: Junos parity basics (VMs: sw1; hardware: physw4) — requested 2026-09-29
+In this order (the user's priorities; each step is spec first, then implementation and lab tests):
+1. **Junos interface names `x/y/z`**: x = stack member, y = NIC card (PCI device, numbered in PCI address order),
+   z = port on the card (PCI function / `dev_port`). Example physw4: 01:00.0–.3 → `1/0/0`–`1/0/3`,
+   04:00.0–.1 → `1/1/0`–`1/1/1`, 07:00.0 → `1/2/0`. No `ge-`/`xe-` prefixes. Numbers are pinned in the state
+   on first sight, so adding a card in a lower slot does not renumber existing ports (new cards get the next free y).
+   Non-PCI NICs (USB) get cards after the PCI ones. Logical units are `1/0/0.5`. `show chassis hardware` shows
+   name ↔ Linux name ↔ PCI address ↔ driver ↔ MAC.
+2. **Units and L3 interfaces**: `interfaces irb unit <n> family inet|inet6 address …` with `vlans <v> l3-interface
+   irb.<n>` (IP on a VLAN, routing between irbs in the default instance), routed ports (`unit 0 family inet` on a
+   port that is not a switch port) and routed subinterfaces (`vlan-tagging; unit <n> { vlan-id <v>; family inet … }`).
+   Junos rule kept: `family ethernet-switching` only on unit 0. `routing-options static route …`.
+   The management plane (VRF mgmt) moves onto the same model (`routing-instances mgmt`, irb in it).
+3. **Operational quick wins**: `show system rollback <n> [compare <m>]` (`show | compare` already works in
+   configuration mode, and `show configuration | compare rollback <n>` in operational mode), `show arp` /
+   `show ipv6 neighbors` (all instances, including addresses the OS manages), `show system uptime` (clock, boot
+   time, switchd uptime, last commit), `system host-name` also written to /etc/hostname and /etc/hosts (no reboot),
+   `system name-server` / `domain-name` → resolver configuration, `request system reboot|halt|power-off [at|in]`
+   (single member now; with stacking and MC-LAG, a reboot first drains: LACP out-of-sync, peer takes over).
+4. **NIC capability checks at commit**: per port capabilities from ethtool (link modes/speeds, pause, VLAN and tc
+   offload, max MTU) in the inventory; `commit check` reports settings a NIC cannot do. `show system offload`
+   (hardware acceleration per port, §4.11).
+
 ### Phase 5: Stacking (VMs: sw1, sw2, sw3 with stacking NICs in a ring)
 1. **PKI**: stack CA created on the first member, join tokens, CSR signing, automatic cert renewal.
 2. **Stacking transport**: stacking-port designation (local state), AF_PACKET sockets bound *only* to stacking ports,
@@ -382,7 +414,7 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 4. **Plane separation test**: stacking-EtherType frames injected on data ports are forwarded untouched and never
    reach the stack code.
 5. **Raft store** (over the stacking transport) replaces the local store. Config locks work across the whole stack. Voter management is automatic
-   (max 5 voters, the rest are non-voters). Witness mode (a member without a data plane).
+   (up to 7 voters, the rest are non-voters). Witness mode (a member without a data plane).
 6. Per-member apply with results reported back: `commit` prints the result per member (like Junos VC).
 7. Stack-wide operational commands: `show interfaces` / `show stack` for all members, `request … member N`.
    CLI and web work from any member.
@@ -401,7 +433,10 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    only on peer-link ports). **BFD heartbeat** over mgmt (UDP, RFC 5881/5883, authenticated). Primary/secondary role
    election (priority, then member ID).
 2. Shared LACP system ID and disjoint port-number ranges, so srv1 sees one partner.
-3. Consistency checks (VLANs, MTU, LACP parameters). On a mismatch the bond is set to proto-down with a reason.
+3. Consistency checks (VLANs, MTU, LACP parameters, **port speed class**: both legs of an MC-LAG bundle must
+   be able to run at the same speed, e.g. not 1G copper on one chassis and 10G SFP+ on the other). Checked at
+   commit where possible (both members' inventories are known through the stack) and at runtime. On a mismatch
+   the bond is set to proto-down with a reason. Config syntax follows Junos `multi-chassis` / `mc-ae` where it fits.
 4. **MAC sync**: learned MACs, moves, coordinated ageing and flush on link down.
 5. **Split horizon** via nftables, updated dynamically with each leg's state.
 6. Failure handling (matrix over stacking path, peer-link and heartbeat): leg down, peer-link down with the peer alive (the secondary shuts its ports), peer dead,
@@ -417,6 +452,12 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    leg are relayed over the peer link. The peer link is never blocked. When the peer fails, the survivor keeps the bridge ID.
 5. Interop tests against mstpd on a srv VM, plus loop tests (sw1–sw3–sw2 triangle).
 
+### Phase 8b: Multicast (IGMP/MLD snooping)
+1. `protocols igmp-snooping vlan <v|all> { querier; immediate-leave; version 2|3; }`, MLD likewise. Default:
+   snooping **on** for all VLANs (unknown multicast then only goes to router ports and interested receivers, the
+   usual switch default), querier off. Kernel bridge snooping per VLAN, querier where no router is present.
+2. `show igmp snooping membership`, MC-LAG sync of group state.
+
 ### Phase 9: VXLAN (VMs: sw1, sw2, sw3, srv2)
 1. One vxlan device per member in vnifilter mode, VLAN↔VNI mapping, underlay source interface, MTU checks.
 2. Control plane over the stack channel: VTEP and MAC advertisements per VNI, head-end replication (flood) lists,
@@ -427,6 +468,10 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    and VXLAN ports are excluded from RSTP.
 6. `show vxlan`, `show vxlan remote-vteps`, `show ethernet-switching table vni …`.
 
+### Phase 9b: BGP (EVPN) via FRR
+BGP is not written from scratch: switchd renders the FRR configuration from `protocols bgp …` and runs FRR in the
+right VRF. Use: EVPN control plane for VXLAN towards non-stack VTEPs, and simple BGP routing for irbs.
+
 ### Phase 10: Data-plane encryption (opt-in per link)
 1. **MACsec** on the peer link. Keys (SAKs) are generated and rotated by switchd and exchanged over the mTLS channel,
    so no wpa_supplicant/MKA is needed. Hardware offload is used where the NIC supports it.
@@ -436,8 +481,22 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 
 ### Phase 11: Polish and packaging
 1. Full web UI: stack view, port grid per member, live graphs, MC-LAG/RSTP/VXLAN status, alarms.
-2. `show system alarms`, `request system software add` (rolling upgrade across the stack), config archival.
-3. `.deb` packages (Debian first) and a bootstrap script. Docs: user guide and a CLI reference generated from the schema.
+2. `show system alarms`, config archival.
+3. **Software update**: `request system software add <usb:|http(s):|ftp:|file>`; a SHA-256 hash is always
+   verified, a signature (stack signing key) is verified when present and can be required; `force` overrides a
+   missing signature only. Rolling upgrade across the stack (one member at a time, drained first).
+4. **USB storage**: `save usb:<file>` / `load … usb:<file>`, `request system storage usb eject`; automount
+   read/write only while in use.
+5. **chassisd** (environment): temperatures, fans (speed control with a curve), PSUs from hwmon/IPMI/PMBus;
+   `show chassis environment`, alarms and syslog on thresholds.
+6. **SFP diagnostics**: `show interfaces diagnostics optics <if>` via the ethtool module EEPROM (SFF-8472
+   DOM: temperature, voltage, bias, TX/RX power with thresholds). Works on most 10G SFP+ NICs.
+7. `.deb` packages (Debian first) and a bootstrap script. Docs: user guide and a CLI reference generated from the schema.
+
+### Phase 12: Port authentication (802.1X)
+Authenticator on switch ports (hostapd wired driver, per port, EAP → RADIUS or local users; MAB fallback;
+dynamic VLAN) and supplicant (wpa_supplicant, for uplinks into a secured network). Off by default: ports need
+no authentication unless configured.
 
 ### VM needs by phase
 | Phase | VMs needed |
@@ -449,10 +508,11 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 | 8–9 | all five |
 
 ## 9. Known limits / non-goals
-* No inter-VLAN routing (only mgmt IP).
+* Routing is basic: irb and routed ports, static routes, and (Phase 9b) BGP via FRR. No other routing
+  protocols, no policy routing, no MPLS.
 * Throughput is bounded by the host/NIC (kernel bridge). Expect roughly 10–40 Gbit/s on decent x86 with large frames, and lower with small packets. Hardware offload is only available where switchdev drivers exist.
-* Target scale: 2–4 members typical, **up to 16** supported (Raft: max 5 voters, the rest are non-voting
-  replicas), ARM + x86 mixed, ≤10G today. 100G later → XDP/eBPF fast path and switchdev offload
+* Target scale: 2–4 members typical, **up to 16** supported (Raft: up to 7 voters, the rest are non-voting
+  replicas; see §3), ARM + x86 mixed, ≤10G today. 100G later → XDP/eBPF fast path and switchdev offload
   are kept as a future milestone. The dataplane package is an interface, so a fast path can be added.
 
 ## 10. Decisions taken (2026-09-29)
@@ -485,6 +545,7 @@ Take a Proxmox **snapshot "clean"** of every VM right after this, so tests can s
 | sw3 | 3rd stack member (Raft quorum, VXLAN remote, RSTP loop) | mgmt, stk-13, stk-23, underlay, srv2, loop-13, loop-23 |
 | srv1 | dual-homed server (LACP bond to sw1+sw2) | mgmt, srv1-a, srv1-b |
 | srv2 | single-homed server on sw3 | mgmt, srv2 |
+| physw4 (10.5.20.76) | physical box: 4× BCM5719 (01:00), 2× Intel 82576 (04:00), onboard r8169 mgmt (07:00) | real NICs, offload/ethtool behaviour |
 
 `stk-*` are the stacking links (a ring sw1–sw2–sw3). Each non-mgmt link is its own point-to-point bridge on Proxmox (the `underlay` bridge is shared by sw1/2/3), with **MTU 9000+**.
 **Important:** Proxmox *Linux* bridges never forward LACP (01:80:C2:00:00:02) and drop
