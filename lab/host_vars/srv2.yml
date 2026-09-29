@@ -1,0 +1,5 @@
+# srv-dev-2: NIC role -> MAC (Proxmox bridge name = role)
+vm_name: srv-dev-2
+mgmt_mac: "bc:24:11:64:6a:ce"
+nics:
+  srv2: "bc:24:11:d5:40:52"

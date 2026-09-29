@@ -1,0 +1,11 @@
+# switchd-dev-2: NIC role -> MAC (Proxmox bridge name = role)
+vm_name: switchd-dev-2
+mgmt_mac: "bc:24:11:15:69:b4"
+nics:
+  stk-12: "bc:24:11:45:4c:63"
+  stk-23: "bc:24:11:0e:54:f5"
+  peer1: "bc:24:11:6d:85:ee"
+  peer2: "bc:24:11:21:45:b7"
+  srv1-b: "bc:24:11:af:3a:43"
+  underlay: "bc:24:11:ec:f0:43"
+  loop-23: "bc:24:11:b4:ce:3a"
