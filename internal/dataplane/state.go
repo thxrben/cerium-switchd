@@ -94,15 +94,33 @@ type BridgeOpts struct {
 	AgeingSeconds int
 }
 
+// Mgmt is the member's management IP interface in VRF "mgmt": on a VLAN
+// of the bridge (interface mgmt0) or on a dedicated port.
+type Mgmt struct {
+	VLAN     int    // IRB-like: VLAN id on the bridge
+	Port     string // dedicated port (Linux name)
+	Addrs    []string
+	Gateways []string
+	DHCP     bool
+}
+
 // State is the managed part of a member's kernel configuration.
 type State struct {
 	Bridge *BridgeOpts // nil: no bridge
 	Links  map[string]*Link
+	// Mgmt is nil when the configuration has no management block: the
+	// host's network configuration is then left alone.
+	Mgmt *Mgmt
 }
 
 // Clone returns a deep copy.
 func (s *State) Clone() *State {
 	c := &State{Links: map[string]*Link{}}
+	if s.Mgmt != nil {
+		m := *s.Mgmt
+		m.Addrs, m.Gateways = slices.Clone(s.Mgmt.Addrs), slices.Clone(s.Mgmt.Gateways)
+		c.Mgmt = &m
+	}
 	if s.Bridge != nil {
 		b := *s.Bridge
 		c.Bridge = &b

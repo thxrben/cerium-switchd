@@ -1076,6 +1076,7 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
+| `stack member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |

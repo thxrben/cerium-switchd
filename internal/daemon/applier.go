@@ -141,6 +141,27 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		return fmt.Errorf("reading kernel state: %w", err)
 	}
 	ops := dataplane.Plan(actual, desired, a.loadOwned())
+	if err := a.execute(ops, reason, actual, desired); err != nil {
+		return err
+	}
+	if a.dryRun {
+		return nil
+	}
+	changed, err := a.kernel.SyncMgmt(desired.Mgmt)
+	if changed {
+		level := slog.LevelInfo
+		if reason != "commit" {
+			level = slog.LevelWarn
+		}
+		a.log.Log(context.Background(), level, "management interface updated", "reason", reason, "err", err)
+	}
+	if err != nil {
+		return fmt.Errorf("management interface: %w", err)
+	}
+	return a.saveOwned(desired)
+}
+
+func (a *kernelApplier) execute(ops []dataplane.Op, reason string, actual, desired *dataplane.State) error {
 	if len(ops) == 0 {
 		if reason == "commit" {
 			a.log.Info("data plane: nothing to change")
@@ -159,13 +180,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		k = dataplane.NewFake(actual)
 	}
 	warn := func(op dataplane.Op, err error) { a.log.Warn("data plane: skipped", "op", op.String(), "err", err) }
-	if err := dataplane.ExecuteLenient(k, ops, warn); err != nil {
-		return err
-	}
-	if a.dryRun {
-		return nil
-	}
-	return a.saveOwned(desired)
+	return dataplane.ExecuteLenient(k, ops, warn)
 }
 
 func newKernelApplier(kernel dataplane.Kernel, stateDir string, dryRun bool, log *slog.Logger) *kernelApplier {

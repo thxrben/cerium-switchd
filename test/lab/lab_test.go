@@ -452,3 +452,48 @@ func TestStormControl(t *testing.T) {
 		t.Errorf("policer left behind:\n%s", out)
 	}
 }
+
+func TestManagementPlane(t *testing.T) {
+	for _, h := range hosts {
+		setupHost(t, h)
+	}
+	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
+	mustSSH(t, hSw3.vm, "ip -n h addr add 192.168.99.3/24 dev ens23")
+	mustSSH(t, hSw2.vm, "ip -n h addr add 192.168.98.2/24 dev ens19")
+	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") + access(hSw3.sw1Port, "v10")
+
+	// IRB-like: management address on VLAN 99.
+	configure(t, base+"set stack member 1 management vlan mgmt\nset stack member 1 management address 192.168.99.1/24\n")
+	if _, err := ssh(hSrv1.vm, "ip netns exec h ping -c2 -W1 192.168.99.1"); err != nil {
+		t.Error("management address not reachable from its VLAN")
+	}
+	if _, err := ssh(hSrv1.vm, "ip netns exec h timeout 3 bash -c '</dev/tcp/192.168.99.1/22'"); err != nil {
+		t.Error("sshd (default VRF) not reachable through the management VRF")
+	}
+	if _, err := ssh(hSw3.vm, "ip netns exec h ping -c2 -W1 192.168.99.1"); err == nil {
+		t.Error("management address reachable from another VLAN")
+	}
+	out := mustSSH(t, sw1, "ip -d link show mgmt0; bridge vlan show dev swbr0; ip vrf show")
+	for _, want := range []string{"vlan protocol 802.1Q id 99", "master mgmt", "mgmt 100"} {
+		if !strings.Contains(strings.Join(strings.Fields(out), " "), want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+
+	// Dedicated port instead.
+	configure(t, base+"set stack member 1 management interface ens19\nset stack member 1 management address 192.168.98.1/24\n")
+	if _, err := ssh(hSw2.vm, "ip netns exec h ping -c2 -W1 192.168.98.1"); err != nil {
+		t.Error("management address on the dedicated port not reachable")
+	}
+	out = mustSSH(t, sw1, "ip link show mgmt0 2>&1; bridge vlan show dev swbr0 | grep -c 99; true")
+	if !strings.Contains(out, "does not exist") || !strings.HasSuffix(strings.TrimSpace(out), "0") {
+		t.Errorf("IRB not removed after switching to a dedicated port:\n%s", out)
+	}
+
+	// No management block: switchd removes what it created.
+	configure(t, base)
+	out = mustSSH(t, sw1, "ip vrf show; ip -o link show ens19")
+	if strings.Contains(out, "mgmt") || strings.Contains(out, ",UP") {
+		t.Errorf("management not torn down:\n%s", out)
+	}
+}

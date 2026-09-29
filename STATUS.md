@@ -40,6 +40,9 @@ Last updated: 2026-09-29.
   select ports with OS IP addresses, explicit use warns). 10 lab tests pass.
 - mac-limit (userspace enforcement) and storm control (tc chains: link-local bypass, pps policers with
   goto chain; rate kept in flower classid; stale rules removed on read). 13 lab tests pass.
+- Management plane: VRF mgmt (table 100), IRB mgmt0 on a bridge VLAN (bridge self VLAN = only that VLAN
+  reaches the CPU) or dedicated port, static addresses + default routes, l3mdev_accept for sshd; torn down
+  when unconfigured. 14 lab tests pass.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)

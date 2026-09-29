@@ -89,6 +89,13 @@ func Compute(cfg *model.Config, m int) (*State, []string) {
 		}
 		s.Links[l.Name] = l
 	}
+	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.Configured() {
+		s.Mgmt = &Mgmt{VLAN: mem.Mgmt.VLAN, Port: mem.Mgmt.Interface,
+			Addrs: slices.Clone(mem.Mgmt.Addresses), Gateways: slices.Clone(mem.Mgmt.Gateways), DHCP: mem.Mgmt.DHCP}
+		if s.Mgmt.DHCP {
+			notes = append(notes, "management: DHCP is not implemented yet; configure a static address")
+		}
+	}
 	return s, notes
 }
 

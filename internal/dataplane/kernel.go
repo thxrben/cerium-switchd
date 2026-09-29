@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 )
 
 // ErrUnsupported marks operations that are not implemented on this kernel
@@ -17,6 +18,9 @@ type Kernel interface {
 	// tell what exists).
 	Read() (*State, error)
 	Apply(op Op) error
+	// SyncMgmt converges the management interface to m (nil: remove what
+	// switchd created for it). It reports whether it changed anything.
+	SyncMgmt(m *Mgmt) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -45,6 +49,18 @@ func NewFake(s *State) *Fake {
 }
 
 func (f *Fake) Read() (*State, error) { return f.S.Clone(), nil }
+
+// SyncMgmt records the management interface.
+func (f *Fake) SyncMgmt(m *Mgmt) (bool, error) {
+	changed := !reflect.DeepEqual(f.S.Mgmt, m)
+	if m == nil {
+		f.S.Mgmt = nil
+	} else {
+		c := *m
+		f.S.Mgmt = &c
+	}
+	return changed, nil
+}
 
 func (f *Fake) link(n string) (*Link, error) {
 	l := f.S.Links[n]
