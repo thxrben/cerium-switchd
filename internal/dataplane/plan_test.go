@@ -101,7 +101,8 @@ func randConfig(r *rand.Rand) *model.Config {
 			continue // not configured
 		}
 		i := &model.Interface{Name: "1/" + p, Member: 1, Linux: p, MTU: pick(r, 1514, 9014),
-			Disabled: r.IntN(6) == 0, Description: pick(r, "", "a", "b"), MACLimit: pick(r, 0, 100, 200)}
+			Disabled: r.IntN(6) == 0, Description: pick(r, "", "a", "b"), MACLimit: pick(r, 0, 100, 200),
+			StormControl: model.StormControl{Broadcast: pick(r, 0, 50, 500), Multicast: pick(r, 0, 100)}}
 		if r.IntN(3) == 0 {
 			fc := r.IntN(2) == 0
 			i.FlowControl = &fc
@@ -164,6 +165,7 @@ func checkConverged(t *testing.T, k *Fake, desired *State) {
 		}
 		if a.Up != d.Up || a.MTU != d.MTU || a.Master != d.Master || a.Alias != d.Alias ||
 			a.DropTagged != d.DropTagged || a.MaxLearned != d.MaxLearned ||
+			a.StormBroadcast != d.StormBroadcast || a.StormMulticast != d.StormMulticast ||
 			(d.Master == BridgeName && !reflect.DeepEqual(vlanSet(a.VLANs), vlanSet(d.VLANs))) ||
 			(d.FlowControl != nil && (a.FlowControl == nil || *a.FlowControl != *d.FlowControl)) ||
 			(d.Kind == Bond && *a.Bond != *d.Bond) {

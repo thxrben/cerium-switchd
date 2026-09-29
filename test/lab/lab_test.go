@@ -394,3 +394,61 @@ func TestMACLimit(t *testing.T) {
 		t.Error("learning not re-enabled after the limit was removed")
 	}
 }
+
+// blast sends n frames to dst from srv1's test host (as fast as possible)
+// and returns how many sw3's host received.
+func blast(t *testing.T, dst string, n int) int {
+	t.Helper()
+	capture := make(chan string, 1)
+	go func() {
+		out, _ := ssh(hSw3.vm, "timeout 4 ip netns exec h tcpdump -lnni ens23 ether proto 0x88b6 2>/dev/null | wc -l")
+		capture <- out
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	py := fmt.Sprintf(`import socket
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind(("ens19", 0))
+dst = bytes.fromhex("%s")
+f = dst + s.getsockname()[4] + b"\x88\xb6" + bytes(46)
+for i in range(%d):
+    s.send(f)
+`, strings.ReplaceAll(dst, ":", ""), n)
+	mustSSH(t, hSrv1.vm, "ip netns exec h python3 -c '"+py+"'")
+	got, _ := strconv.Atoi(strings.TrimSpace(<-capture))
+	return got
+}
+
+func TestStormControl(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	base := vlans + access(hSrv1.sw1Port, "v10") + access(hSw3.sw1Port, "v10")
+	configure(t, base)
+	if got := blast(t, "ff:ff:ff:ff:ff:ff", 3000); got < 2900 {
+		t.Fatalf("without storm control only %d of 3000 broadcasts arrived (test setup problem)", got)
+	}
+	configure(t, base+"set interfaces 1/ens23 storm-control broadcast 100\nset interfaces 1/ens23 storm-control multicast 100\n")
+	if got := blast(t, "ff:ff:ff:ff:ff:ff", 3000); got == 0 || got > 400 {
+		t.Errorf("broadcast limited to 100 pps: %d of 3000 arrived", got)
+	} else {
+		t.Logf("broadcast: %d of 3000 arrived", got)
+	}
+	if got := blast(t, "01:00:5e:00:00:01", 3000); got == 0 || got > 400 {
+		t.Errorf("multicast limited to 100 pps: %d of 3000 arrived", got)
+	}
+	// IEEE link-local (here the bridge group address, forwarded while STP is
+	// off) is never rate-limited.
+	if got := blast(t, "01:80:c2:00:00:00", 500); got < 490 {
+		t.Errorf("link-local frames were limited: %d of 500 arrived", got)
+	}
+	// Unicast is unaffected.
+	if !reach(t, hSrv1, hSw3, 1) {
+		t.Error("unicast broken by storm control")
+	}
+	configure(t, base)
+	if got := blast(t, "ff:ff:ff:ff:ff:ff", 3000); got < 2900 {
+		t.Errorf("after removing storm control only %d of 3000 broadcasts arrived", got)
+	}
+	if out := mustSSH(t, sw1, "tc filter show dev ens23 ingress"); strings.Contains(out, "police") {
+		t.Errorf("policer left behind:\n%s", out)
+	}
+}

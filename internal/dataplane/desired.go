@@ -36,7 +36,9 @@ func Compute(cfg *model.Config, m int) (*State, []string) {
 				MinLinks:   i.MinLinks,
 				MIIMon:     100,
 			},
-			MaxLearned: i.MACLimit,
+			MaxLearned:     i.MACLimit,
+			StormBroadcast: i.StormControl.Broadcast,
+			StormMulticast: i.StormControl.Multicast,
 		}
 		if i.MCLAG {
 			// minimum-links counts ports on both members; enforced by the
@@ -81,6 +83,9 @@ func Compute(cfg *model.Config, m int) (*State, []string) {
 			l.Master = BridgeName
 			l.VLANs, l.DropTagged = portVLANs(i)
 			l.MaxLearned = i.MACLimit
+		}
+		if i.Parent == "" {
+			l.StormBroadcast, l.StormMulticast = i.StormControl.Broadcast, i.StormControl.Multicast
 		}
 		s.Links[l.Name] = l
 	}

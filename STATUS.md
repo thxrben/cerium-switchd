@@ -38,10 +38,12 @@ Last updated: 2026-09-29.
 - Self-healing: link events + 30 s periodic reconcile against the last applied config (reverts foreign
   changes in ~1.2 s, configures appearing ports); inventory with IFLA_MAX_MTU and HasIP (wildcards never
   select ports with OS IP addresses, explicit use warns). 10 lab tests pass.
+- mac-limit (userspace enforcement) and storm control (tc chains: link-local bypass, pps policers with
+  goto chain; rate kept in flower classid; stale rules removed on read). 13 lab tests pass.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)
-1. VLAN MTU filter, storm control (tc police), mac-limit, flow control; hardware-offload watchdog.
+1. VLAN MTU filter, flow control (ethtool ioctl), storm-drop counters in show interfaces; hardware-offload watchdog.
 2. Management plane (VRF mgmt, IRB-like VLAN interface, static/DHCP), syslog.
 3. `set … authentication plain-text-password`; `start shell`; swcli as login shell (Phase 4).
 

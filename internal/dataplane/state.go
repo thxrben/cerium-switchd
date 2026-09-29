@@ -65,6 +65,9 @@ type Link struct {
 	MaxLearned int
 	// DropTagged drops 802.1Q-tagged frames on ingress (access ports).
 	DropTagged bool
+	// Storm control: received broadcast / multicast packets per second
+	// (0 = unlimited). IEEE link-local multicast is never limited.
+	StormBroadcast, StormMulticast int
 
 	// Actual state only.
 	Present bool // exists in the kernel

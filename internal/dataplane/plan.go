@@ -28,10 +28,13 @@ const (
 	OpSetFlowControl
 	OpSetMaxLearned
 	OpSetDropTagged
+	OpSetStormBroadcast
+	OpSetStormMulticast
 )
 
 var opNames = [...]string{"create-bridge", "set-bridge", "create-bond", "set-bond", "delete", "up", "down",
-	"master", "mtu", "alias", "vlan-del", "vlan-set", "flow-control", "max-learned", "drop-tagged"}
+	"master", "mtu", "alias", "vlan-del", "vlan-set", "flow-control", "max-learned", "drop-tagged",
+	"storm-broadcast", "storm-multicast"}
 
 // Op is one kernel operation.
 type Op struct {
@@ -63,7 +66,7 @@ func (o Op) String() string {
 		s += fmt.Sprintf(" %d pvid=%v untagged=%v", o.VID, o.Flags.PVID, o.Flags.Untagged)
 	case OpSetFlowControl, OpSetDropTagged:
 		s += fmt.Sprintf(" %v", o.Bool)
-	case OpSetMaxLearned:
+	case OpSetMaxLearned, OpSetStormBroadcast, OpSetStormMulticast:
 		s += fmt.Sprintf(" %d", o.Int)
 	case OpCreateBond, OpSetBond:
 		s += fmt.Sprintf(" %+v", *o.Bond)
@@ -186,8 +189,14 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		if d.DropTagged && !cur.DropTagged {
 			*restrict = append(*restrict, Op{Kind: OpSetDropTagged, Link: n, Bool: true})
 		}
-		if d.MaxLearned != cur.MaxLearned && d.MaxLearned != 0 && (cur.MaxLearned == 0 || d.MaxLearned < cur.MaxLearned) {
+		if stricter(d.MaxLearned, cur.MaxLearned) {
 			*restrict = append(*restrict, Op{Kind: OpSetMaxLearned, Link: n, Int: d.MaxLearned})
+		}
+		if stricter(d.StormBroadcast, cur.StormBroadcast) {
+			*restrict = append(*restrict, Op{Kind: OpSetStormBroadcast, Link: n, Int: d.StormBroadcast})
+		}
+		if stricter(d.StormMulticast, cur.StormMulticast) {
+			*restrict = append(*restrict, Op{Kind: OpSetStormMulticast, Link: n, Int: d.StormMulticast})
 		}
 
 		// Structure.
@@ -215,8 +224,14 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		if !d.DropTagged && cur.DropTagged {
 			loosen = append(loosen, Op{Kind: OpSetDropTagged, Link: n, Bool: false})
 		}
-		if d.MaxLearned != cur.MaxLearned && (d.MaxLearned == 0 || (cur.MaxLearned != 0 && d.MaxLearned > cur.MaxLearned)) {
+		if looser(d.MaxLearned, cur.MaxLearned) {
 			loosen = append(loosen, Op{Kind: OpSetMaxLearned, Link: n, Int: d.MaxLearned})
+		}
+		if looser(d.StormBroadcast, cur.StormBroadcast) {
+			loosen = append(loosen, Op{Kind: OpSetStormBroadcast, Link: n, Int: d.StormBroadcast})
+		}
+		if looser(d.StormMulticast, cur.StormMulticast) {
+			loosen = append(loosen, Op{Kind: OpSetStormMulticast, Link: n, Int: d.StormMulticast})
 		}
 		if d.Alias != cur.Alias {
 			loosen = append(loosen, Op{Kind: OpSetAlias, Link: n, Alias: d.Alias})
@@ -234,6 +249,11 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 	})
 	return slices.Concat(tighten, structure, loosen, up, cleanup)
 }
+
+// stricter reports whether limit want (0 = unlimited) is a new or lower
+// limit than have; looser whether it is higher or removed.
+func stricter(want, have int) bool { return want != have && want != 0 && (have == 0 || want < have) }
+func looser(want, have int) bool   { return want != have && !stricter(want, have) }
 
 // fewerFlags reports whether flags a are a strict restriction of b.
 func fewerFlags(a, b VlanFlags) bool {

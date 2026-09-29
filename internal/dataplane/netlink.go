@@ -86,8 +86,9 @@ func (k *Netlink) Read() (*State, error) {
 		}
 		if ln.Kind == Physical || ln.Kind == Bond {
 			ln.MaxLearned = k.maxLearned(a.Name)
-			p := ingressPrios(l)
-			ln.DropTagged = p[prioDropTagged] && p[prioPassPrioTagged]
+			tc := readTC(l)
+			ln.DropTagged = tc.dropTagged()
+			ln.StormBroadcast, ln.StormMulticast = tc.stormBroadcast, tc.stormMulticast
 		}
 		s.Links[a.Name] = ln
 	}
@@ -183,6 +184,10 @@ func (k *Netlink) Apply(op Op) error {
 		return netlink.BridgeVlanAdd(l, op.VID, op.Flags.PVID, op.Flags.Untagged, false, true)
 	case OpSetDropTagged:
 		return setDropTagged(l, op.Bool)
+	case OpSetStormBroadcast:
+		return setStorm(l, prioStormBroadcast, op.Int)
+	case OpSetStormMulticast:
+		return setStorm(l, prioStormMulticast, op.Int)
 	case OpSetMaxLearned:
 		k.setMaxLearned(op.Link, op.Int)
 		return nil

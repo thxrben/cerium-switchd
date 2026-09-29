@@ -45,7 +45,7 @@ func (k *Netlink) Status() ([]PortStatus, error) {
 		if sl.DropTagged {
 			if fs, err := netlink.FilterList(l, netlink.HANDLE_MIN_INGRESS); err == nil {
 				for _, f := range fs {
-					if f.Attrs().Priority == prioDropTagged {
+					if f.Attrs().Priority == prioDropTagged && f.Attrs().Chain != nil && *f.Attrs().Chain == chainTagged {
 						if m, ok := f.(*netlink.MatchAll); ok {
 							for _, act := range m.Actions {
 								if st := act.Attrs().Statistics; st != nil {

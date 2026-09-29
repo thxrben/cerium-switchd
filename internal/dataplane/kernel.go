@@ -173,6 +173,10 @@ func (f *Fake) Apply(op Op) error {
 		l.MaxLearned = op.Int
 	case OpSetDropTagged:
 		l.DropTagged = op.Bool
+	case OpSetStormBroadcast:
+		l.StormBroadcast = op.Int
+	case OpSetStormMulticast:
+		l.StormMulticast = op.Int
 	default:
 		return fmt.Errorf("unknown op %d", op.Kind)
 	}
