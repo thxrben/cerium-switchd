@@ -36,3 +36,27 @@ Payload (all integers big-endian):
   retransmit. Frames beyond the window or already acknowledged are dropped (duplicates are harmless).
 * **Close**: RESET, or no frames for the BFD detection time.
 * A link never delivers bytes twice or out of order, and never delivers bytes across an epoch change.
+
+## Keys and joining
+
+Minimal on purpose (nothing expires, nothing depends on the clock):
+
+* **Stack key**: an Ed25519 key pair created by the first member. Every member keeps a copy (it is replicated with
+  the configuration over TLS), so any leader can admit new members. Its self-signed certificate is the trust anchor.
+* **Member key**: every switch creates its own Ed25519 key pair at first start. When it joins, the stack key signs a
+  certificate for it: subject `member-<id>`, the member's public key.
+* Certificates are valid from 2000-01-01 to 9999-12-31 23:59:59 UTC (RFC 5280's "no expiry" date). Verification uses
+  the current time clamped into that range, so a switch whose clock is wrong (no battery-backed clock) still works.
+  There is no renewal and no revocation list.
+* **Who may talk**: after the TLS handshake (TLS 1.3, both sides present certificates signed by the stack key) the
+  peer's member id and public key must match the replicated member list. A removed member fails this check.
+* **Join tokens**: `request virtual-chassis member add <id> token` on the stack prints a one-time token (128 bits,
+  valid 1 hour). On the new switch, `request virtual-chassis join token <t>` starts the join over its stacking ports:
+  1. TLS 1.3 with the new switch's self-signed member certificate; the stack side presents its stack certificate.
+     The new switch cannot verify the stack yet, and the stack does not trust the new switch yet.
+  2. The new switch sends `HMAC-SHA256(token, "join" | member-public-key | stack-public-key-as-seen)`. The stack checks
+     it with the same token and the keys it saw in the handshake, so the token proves both sides saw the same keys
+     (no man in the middle) without ever being sent.
+  3. The stack answers with the member certificate, the stack key and certificate, the configuration and the
+     member id, plus `HMAC-SHA256(token, "admit" | …)` so the new switch knows it talks to the stack that issued the token.
+  4. The token is used up. The member reconnects with its signed certificate.
