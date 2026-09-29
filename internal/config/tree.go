@@ -575,3 +575,40 @@ func digitRun(s string) int {
 	}
 	return i
 }
+
+// MergeDefaults copies statements from src into n where n does not define
+// them itself. Explicit statements in n always win: leaves and leaf-lists
+// are never combined, and a statement is skipped if n already has a
+// mutually exclusive sibling. Nodes are matched by name (and key), so src
+// may come from a different but structurally identical schema subtree.
+func (n *Node) MergeDefaults(src *Node) {
+	for _, s := range src.Kids {
+		var d *Node
+		for _, k := range n.Kids {
+			if k.Schema.Name == s.Schema.Name && k.Key == s.Key {
+				d = k
+				break
+			}
+		}
+		if d != nil {
+			if s.Schema.Kind == schema.Container || s.Schema.Kind == schema.List {
+				d.MergeDefaults(s)
+			}
+			continue
+		}
+		if s.Schema.Group != "" && slices.ContainsFunc(n.Kids, func(k *Node) bool { return k.Schema.Group == s.Schema.Group }) {
+			continue
+		}
+		c := s.clone()
+		n.Kids = append(n.Kids, c)
+	}
+	slices.SortStableFunc(n.Kids, func(a, b *Node) int {
+		switch {
+		case nodeLess(a, b):
+			return -1
+		case nodeLess(b, a):
+			return 1
+		}
+		return 0
+	})
+}

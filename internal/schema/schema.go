@@ -61,6 +61,10 @@ type Node struct {
 	// block named after the list ("interfaces { 1/eth0 { ... } }"), the
 	// way Junos renders top level lists.
 	Wrapped bool
+	// MinAbbrev is the shortest prefix that may abbreviate this keyword.
+	// It keeps common abbreviations unambiguous ("int" = interfaces, not
+	// interface-range).
+	MinAbbrev int
 
 	parent *Node
 	index  int
@@ -95,7 +99,7 @@ func (n *Node) Lookup(word string) []*Node {
 	}
 	var out []*Node
 	for _, c := range n.Children {
-		if strings.HasPrefix(c.Name, word) {
+		if strings.HasPrefix(c.Name, word) && len(word) >= c.MinAbbrev {
 			out = append(out, c)
 		}
 	}

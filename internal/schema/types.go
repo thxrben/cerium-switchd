@@ -242,6 +242,10 @@ var (
 		return Identifier.Check(s)
 	}}
 
+	// IfPattern matches physical ports: "<member>/<glob>" where member is a
+	// number or "*" and the glob uses * and ?.
+	IfPattern = String("<pattern>", 32, `^([1-9][0-9]?|\*)/[A-Za-z0-9._@*?-]{1,15}$`)
+
 	// LinuxIfName is a raw kernel interface name.
 	LinuxIfName = String("<linux-interface>", 15, `^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
 

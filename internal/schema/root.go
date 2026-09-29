@@ -16,6 +16,14 @@ func Root() *Node {
 
 func g(group string, n *Node) *Node { n.Group = group; return n }
 
+// bfd builds a BFD timer container.
+func bfd(name, help, interval string) *Node {
+	return C(name, help,
+		VD("minimum-interval", "Transmit/receive interval in milliseconds", Uint("<ms>", 50, 10000), interval),
+		VD("multiplier", "Missed packets before the session goes down", Uint("<count>", 2, 255), "3"),
+	)
+}
+
 func build() *Node {
 	severity := Enum(
 		E("emergency", "System is unusable"),
@@ -41,12 +49,12 @@ func build() *Node {
 		E("local6", "Local facility 6"), E("local7", "Local facility 7"),
 	)
 
-	management := C("management", "Out-of-band management interface of this member",
-		V("interface", "Linux interface used for management (kept outside the switch bridge)", LinuxIfName),
-		g("mgmt-addr", V("address", "Static management address", IPPrefix)),
-		g("mgmt-addr", F("dhcp", "Obtain management address via DHCP")),
-		V("gateway", "Default gateway in the management VRF", IP),
-		V("vlan", "Use an in-band VLAN instead of a dedicated interface", VlanID),
+	management := C("management", "Management IP interface of this member (management VRF)",
+		g("mgmt-attach", V("vlan", "Attach the management IP to this VLAN (IRB-like)", VlanSingle)),
+		g("mgmt-attach", V("interface", "Dedicated, non-switched management port (Linux name)", LinuxIfName)),
+		LL("address", "Static addresses (IPv4 and/or IPv6)", IPPrefix),
+		F("dhcp", "Obtain the IPv4 address via DHCP"),
+		LL("gateway", "Default gateway, at most one per address family", IP),
 	)
 
 	system := C("system", "System parameters",
@@ -138,6 +146,7 @@ func build() *Node {
 	)
 
 	stack := C("stack", "Stack (virtual chassis) members",
+		bfd("bfd", "BFD on stacking ports (IP-less)", "100"),
 		L("member", "Stack member", MemberID,
 			V("host-name", "Host name of this member", Hostname),
 			VD("priority", "Priority for leader election (higher wins)", Uint("<priority>", 0, 255), "128"),
@@ -147,68 +156,83 @@ func build() *Node {
 			), "switch"),
 			management,
 			V("vtep-address", "Local VXLAN tunnel endpoint address", IP),
-			C("underlay", "Layer 3 interface used for VXLAN transport",
-				V("interface", "Linux interface", LinuxIfName),
-				V("address", "Underlay address", IPPrefix),
-				V("gateway", "Underlay gateway", IP),
+			C("underlay", "Layer 3 interface carrying VXLAN tunnels (default VRF)",
+				g("ul-attach", V("vlan", "Attach the underlay IP to this VLAN (IRB-like)", VlanSingle)),
+				g("ul-attach", V("interface", "Dedicated, non-switched underlay port (Linux name)", LinuxIfName)),
+				LL("address", "Underlay addresses", IPPrefix),
+				LL("gateway", "Next hop towards remote VTEPs, at most one per address family", IP),
 			),
 		),
 	)
 
 	stormLevel := Uint("<pps>", 1, 100000000)
-	iface := L("interfaces", "Interface configuration", Interface,
-		V("description", "Interface description", Text),
-		F("disable", "Administratively disable the interface"),
-		VD("mtu", "Maximum frame payload size (jumbo frames up to 16000)", MTU, "1500"),
-		C("ether-options", "Physical port options",
-			V("802.3ad", "Make this port a member of an aggregated interface", AEInterface),
-			g("flow", F("flow-control", "Enable pause frames (reduces drops under load)")),
-			g("flow", F("no-flow-control", "Disable pause frames")),
-		),
-		C("aggregated-ether-options", "Aggregated interface options",
-			P("lacp", "Link aggregation control protocol",
-				g("lacp-mode", F("active", "Actively send LACPDUs")),
-				g("lacp-mode", F("passive", "Only respond to LACPDUs")),
-				VD("periodic", "LACPDU interval", Enum(E("fast", "Every second"), E("slow", "Every 30 seconds")), "fast"),
-				VD("system-priority", "LACP system priority", Uint("<priority>", 1, 65535), "32768"),
+	// ifaceChildren builds the statements shared by interfaces and
+	// interface-range (a fresh copy each time, nodes must not be shared).
+	ifaceChildren := func() []*Node {
+		return []*Node{
+			V("description", "Interface description", Text),
+			F("disable", "Administratively disable the interface"),
+			VD("mtu", "Maximum frame size incl. Ethernet header, excl. FCS and VLAN tags", MTU, "1514"),
+			C("ether-options", "Physical port options",
+				V("802.3ad", "Make this port a member of an aggregated interface", AEInterface),
+				g("flow", F("flow-control", "Enable pause frames (reduces drops under load)")),
+				g("flow", F("no-flow-control", "Disable pause frames")),
 			),
-			VD("minimum-links", "Minimum active links for the bundle to be up", Uint("<links>", 1, 64), "1"),
-			VD("hash-policy", "Load-balancing hash", Enum(
-				E("layer2", "Source/destination MAC"),
-				E("layer2+3", "MAC and IP addresses"),
-				E("layer3+4", "IP addresses and ports"),
-			), "layer3+4"),
-			P("mclag", "Bundle spans the two members of an MC-LAG domain"),
-		),
-		C("storm-control", "Rate limit flooded traffic",
-			V("broadcast", "Broadcast packets per second", stormLevel),
-			V("multicast", "Multicast packets per second", stormLevel),
-		),
-		V("mac-limit", "Maximum learned MAC addresses", Uint("<count>", 1, 131072)),
-		C("offload", "Per-interface hardware acceleration",
-			F("disable", "Never offload this interface"),
-		),
-		V("native-vlan-id", "Untagged VLAN on a trunk port", VlanSingle),
-		L("unit", "Logical unit", Uint("<unit>", 0, 0),
-			V("description", "Unit description", Text),
-			C("family", "Protocol family",
-				P("ethernet-switching", "Layer 2 switching",
-					V("interface-mode", "Port mode", Enum(
-						E("access", "Untagged member of one VLAN"),
-						E("trunk", "Tagged member of several VLANs"),
-					)),
-					C("vlan", "VLAN membership",
-						LL("members", "VLAN names or ids (ranges like 10-20 allowed)", VlanRef),
+			C("aggregated-ether-options", "Aggregated interface options",
+				P("lacp", "Link aggregation control protocol",
+					g("lacp-mode", F("active", "Actively send LACPDUs")),
+					g("lacp-mode", F("passive", "Only respond to LACPDUs")),
+					VD("periodic", "LACPDU interval", Enum(E("fast", "Every second"), E("slow", "Every 30 seconds")), "fast"),
+					VD("system-priority", "LACP system priority", Uint("<priority>", 1, 65535), "32768"),
+				),
+				VD("minimum-links", "Minimum active links for the bundle to be up", Uint("<links>", 1, 64), "1"),
+				VD("hash-policy", "Load-balancing hash", Enum(
+					E("layer2", "Source/destination MAC"),
+					E("layer2+3", "MAC and IP addresses"),
+					E("layer3+4", "IP addresses and ports"),
+				), "layer3+4"),
+				P("mclag", "Bundle spans the two members of an MC-LAG domain"),
+			),
+			C("storm-control", "Rate limit flooded traffic",
+				V("broadcast", "Broadcast packets per second", stormLevel),
+				V("multicast", "Multicast packets per second", stormLevel),
+			),
+			V("mac-limit", "Maximum learned MAC addresses", Uint("<count>", 1, 131072)),
+			C("offload", "Per-interface hardware acceleration",
+				F("disable", "Never offload this interface"),
+			),
+			V("native-vlan-id", "Untagged VLAN on a trunk port", VlanSingle),
+			L("unit", "Logical unit", Uint("<unit>", 0, 0),
+				V("description", "Unit description", Text),
+				C("family", "Protocol family",
+					P("ethernet-switching", "Layer 2 switching",
+						V("interface-mode", "Port mode", Enum(
+							E("access", "Untagged member of one VLAN"),
+							E("trunk", "Tagged member of several VLANs"),
+						)),
+						C("vlan", "VLAN membership",
+							LL("members", "VLAN names or ids (ranges like 10-20 allowed)", VlanRef),
+						),
 					),
 				),
 			),
-		),
+		}
+	}
+	iface := L("interfaces", "Interface configuration", Interface, ifaceChildren()...)
+	ifRange := L("interface-range", "Apply one configuration to many ports", Identifier,
+		append([]*Node{
+			LL("member", "Ports by pattern, e.g. 1/enp1s* or */eth? (* and ? wildcards)", IfPattern),
+			L("member-range", "Contiguous ports, e.g. 1/eth0 to 1/eth23", PhysInterface,
+				V("to", "Last port of the range", PhysInterface),
+			),
+		}, ifaceChildren()...)...,
 	)
+	ifRange.MinAbbrev = len("interface-")
 
 	vlans := L("vlans", "VLAN configuration", Identifier,
 		V("vlan-id", "802.1Q VLAN id", VlanID),
 		V("description", "VLAN description", Text),
-		V("mtu", "Maximum frame payload size within this VLAN", MTU),
+		V("mtu", "Maximum frame size within this VLAN (same meaning as interface mtu)", MTU),
 		C("vxlan", "Extend this VLAN over VXLAN",
 			V("vni", "VXLAN network identifier", VNI),
 		),
@@ -247,10 +271,8 @@ func build() *Node {
 			V("system-mac", "Shared LACP system MAC (derived if unset)", MAC),
 			VD("system-priority", "Shared LACP system priority", Uint("<priority>", 1, 65535), "32768"),
 			V("anycast-vtep", "Shared VTEP address of the pair", IP),
-			C("keepalive", "Peer liveness detection over the management network",
-				VD("interval", "Milliseconds between keepalives", Uint("<ms>", 100, 10000), "1000"),
-				VD("timeout", "Missed keepalives before the peer is declared dead", Uint("<count>", 2, 30), "3"),
-			),
+			bfd("heartbeat", "BFD heartbeat over the management network (split-brain detection)", "300"),
+			bfd("peer-link-bfd", "Micro-BFD on every peer-link port (IP-less)", "100"),
 			VD("delay-restore", "Seconds to wait after reboot before enabling MC-LAG ports", Uint("<seconds>", 0, 3600), "300"),
 		),
 	)
@@ -291,6 +313,6 @@ func build() *Node {
 	vlans.Wrapped = true
 
 	return C("", "",
-		system, stack, iface, vlans, protocols, mclag, switchOpts, fwd,
+		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, fwd,
 	)
 }

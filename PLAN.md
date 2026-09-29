@@ -42,17 +42,31 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 
 ## 3. Stacking model (Junos Virtual-Chassis-like)
 
-* Every node is a **member** with an ID (`member 1`, `member 2`, …). Any number of members.
-* Interfaces are named `<member>/<linux-ifname>` in config, e.g. `1/enp3s0f0`.
-  An optional per-member alias map (`ge-1/0/0` → `enp3s0f0`) allows Junos-style names.
-  Interfaces are **discovered dynamically**: hot-plugged NICs show up in
-  `show interfaces` and can then be configured. There is no fixed port count.
-* Config and web UI can run from any member. Writes go through the Raft leader,
-  and each member applies only its own part of the tree.
-* Joining: `request stack join <addr> token <t>` → CSR is signed by the stack CA → the node becomes a Raft voter.
-* Raft needs a majority to commit. With 2 members, a third lightweight "witness"
-  (switchd in witness mode, e.g. on a VM/RPi) is recommended. Without quorum, the
-  data plane **keeps running** on the last committed config and only config changes are blocked.
+**Three separate planes** (see docs/config-reference.md §1.5):
+
+| Plane | Ports | Carries |
+|---|---|---|
+| Data | switch ports (e.g. 10G), peer-links, VXLAN | client traffic only, no IP on any port |
+| Stacking | dedicated stacking ports (e.g. 1G), direct 1:1 cables | Raft/config, state, MC-LAG sync, RSTP relay, BFD. IP-less (EtherType 0x88b5) |
+| Management | IP on any VLAN (IRB-like) or a dedicated port, VRF `mgmt` | SSH, web, syslog, NTP, DNS, MC-LAG BFD heartbeat |
+
+* Every switch is a **member** with an ID (1–16). Interfaces are named `<member>/<linux-ifname>`, plus
+  stack-global `ae<N>`. `interface-range` (member-range, wildcards) handles large and hot-plugged port sets.
+* **Stacking ports** are designated locally (`request stack port add <if>`), because a switch needs them before it
+  has any configuration. Each stacking link runs a reliable L2 stream (seq/ack/retransmit/fragmentation, exposed as a
+  `net.Conn`) with **TLS 1.3 mTLS** on top, plus IP-less **BFD** for fast failure detection.
+* **Topology**: chain, ring or mesh. Members exchange link-state (adjacency) over the stacking plane, and messages to
+  non-adjacent members are relayed hop by hop along the shortest live path. Each hop is TLS-protected, and all
+  members are authenticated stack members.
+* The stacking plane **never** listens on data ports. Stacking-EtherType frames on access, trunk or VXLAN ports are
+  client traffic and are switched normally. Tested explicitly.
+* Config and CLI/web work from any member. Writes go through the Raft leader over the stacking plane, and each
+  member applies only its own part of the tree.
+* Joining: a new switch with designated stacking ports announces itself on them. `request stack member add <id>
+  token <t>` authorises it → it gets a certificate from the stack CA → it joins Raft (≤5 voters, the rest non-voting).
+* Raft needs a majority to commit. With 2 members, a third lightweight **witness** is recommended (e.g. a small board
+  with 2 NICs, cabled with stacking links to both). Without quorum, the data plane **keeps running** on the last
+  committed config and only config changes are blocked.
 
 ## 4. Features and implementation
 
@@ -66,27 +80,24 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 * **Per VLAN**: the Linux bridge has no per-VLAN MTU. We enforce it with
   nftables `bridge` family rules (`vlan id X meta length > N drop`) plus a counter.
   The effective limit is min(port, VLAN).
+* MTU uses the Junos convention (frame size incl. the 14-byte Ethernet header, default 1514).
 * Commit-time validation catches mismatched MTUs (peer link < MC-LAG MTU,
   VXLAN underlay < overlay + 50, etc.).
 
 ### 4.3 MC-LAG
-* The pair is 2 members that share a **peer link** (a direct 1:1 LAG between them, **no IP and no reserved VLAN**:
-  control runs as untagged EtherType-0x88b5 frames carrying a reliable L2 stream with TLS 1.3 mTLS) and a
-  **keepalive** path (mgmt network, mTLS) for split-brain detection.
-* Both peers announce the same LACP system ID/priority and disjoint port-number
-  ranges, so the partner sees one LAG.
-* **MAC sync**: switchd watches netlink FDB events. MACs learned on an MC-LAG
-  bond are sent to the peer and installed as static FDB entries on the same
-  MC-LAG bond there. Ageing is coordinated, so an entry is removed only when both sides aged it out.
-* **Split horizon**: traffic arriving from the peer link must not leave on an
-  MC-LAG bond that is up locally (nft bridge rule). The rule is removed
-  when the local leg fails, so the peer can forward via the peer link.
-* **Failure handling** (Cumulus-clag style):
-  * Local MC-LAG leg down → peer link unblocked for that bond, MACs point to peer link.
-  * Peer link down, keepalive up → the *secondary* shuts its MC-LAG ports (LACP out of sync) to avoid a split-brain.
-  * Peer dead (both down) → the survivor carries everything.
-* Consistency checks: VLANs, MTU and LACP params must match on both peers, otherwise
-  the bond goes proto-down with a clear reason in `show mclag`.
+* The pair is 2 members sharing:
+  * a **peer-link**: a pure data bundle, all VLANs tagged, no IP, never blocked by RSTP, with IP-less **micro-BFD**
+    per port;
+  * the **stacking plane** for MAC sync, state and consistency;
+  * a **BFD heartbeat** over mgmt (RFC 5881/5883), for split-brain decisions only.
+* Both peers announce the same LACP system ID/priority and disjoint port-number ranges, so the partner sees one LAG.
+* **MAC sync**: switchd watches netlink FDB events. MACs learned on an MC-LAG bond are sent to the peer and installed
+  as static FDB entries on the same bond there. Ageing is coordinated.
+* **Split horizon**: traffic arriving from the peer-link must not leave on an MC-LAG bond that is up locally (tc/nft
+  rule). It is lifted per bond when the local leg fails.
+* **Failure matrix**: over the stacking path, peer-link and heartbeat (config reference §5.6). The secondary disables
+  its MC-LAG legs whenever the peer is alive but data can no longer flow via the peer-link.
+* Consistency checks (VLANs, MTU, LACP params). A mismatch takes the secondary's leg down with a reason in `show mclag`.
 
 ### 4.4 VXLAN
 * One kernel `vxlan` device per member in *vnifilter* (single-device, many VNIs) mode.
@@ -99,10 +110,11 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 * External, non-stack VTEP peers can be configured statically.
 
 ### 4.5 Management
-* Dedicated mgmt port (or a VLAN interface) inside a **mgmt VRF** (`vrf mgmt`),
-  so management traffic is separated from the switched data plane. This port has no routing between VLANs.
-* DHCP or static, default route in the VRF, DNS, NTP.
-* SSH, web and syslog bind into the mgmt VRF.
+* Per member: **one IP interface in VRF `mgmt`**, attached to any VLAN of the bridge (IRB-like) or to a dedicated,
+  non-switched port. Static IPv4/IPv6 and/or DHCPv4, with a default gateway per family.
+* A dedicated 1G management port is just an access port in the mgmt VLAN, or a dedicated port.
+* No routing between VLANs, and none between mgmt and data. SSH, web, syslog, NTP and DNS bind into VRF `mgmt`.
+* Without a `management` block, the host's existing network config is left untouched (safe first install).
 
 ### 4.6 CLI (Junos-like)
 * Operational mode: `show interfaces [terse|extensive]`, `show ethernet-switching table`,
@@ -307,15 +319,22 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    `/healthz`, `/readyz`, `/metrics` (Prometheus).
 5. Minimal web UI: login, dashboard, interfaces, FDB search, config editor (text + diff + commit).
 
-### Phase 5: Stacking (VMs: sw1, sw2, sw3)
+### Phase 5: Stacking (VMs: sw1, sw2, sw3 with stacking NICs in a ring)
 1. **PKI**: stack CA created on the first member, join tokens, CSR signing, automatic cert renewal.
-2. Member-to-member gRPC over mTLS 1.3 via the mgmt network (seed addresses in config / join command).
-3. **Raft store** replaces the local store. Config locks work across the whole stack. Voter management is automatic
+2. **Stacking transport**: stacking-port designation (local state), AF_PACKET sockets bound *only* to stacking ports,
+   a reliable L2 stream as `net.Conn` (fuzzed and loss-tested in-process with simulated lossy links), TLS 1.3 mTLS on
+   top, and IP-less BFD per link.
+3. **Stack topology**: adjacency discovery, link-state flooding, hop-by-hop relay with shortest live paths. Tests for
+   chain/ring/mesh and link loss, all in-process with simulated links.
+4. **Plane separation test**: stacking-EtherType frames injected on data ports are forwarded untouched and never
+   reach the stack code.
+5. **Raft store** (over the stacking transport) replaces the local store. Config locks work across the whole stack. Voter management is automatic
    (max 5 voters, the rest are non-voters). Witness mode (a member without a data plane).
-4. Per-member apply with results reported back: `commit` prints the result per member (like Junos VC).
-5. Stack-wide operational commands: `show interfaces` / `show stack` for all members, `request … member N`.
+6. Per-member apply with results reported back: `commit` prints the result per member (like Junos VC).
+7. Stack-wide operational commands: `show interfaces` / `show stack` for all members, `request … member N`.
    CLI and web work from any member.
-6. Failure tests: leader killed, network partition, member rejoin, and a check that the data plane keeps forwarding without quorum.
+8. Failure tests: leader killed, stacking link cut (ring re-route), partition, member rejoin, and a check that the
+   data plane keeps forwarding without quorum.
 
 ### Phase 6: LACP (VMs: sw1, srv1)
 1. 802.1AX LACP state machines (receive, periodic, selection, mux) in pure Go, unit-tested with simulated partners.
@@ -325,10 +344,9 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 4. Interop test against a normal Linux 802.3ad bond on srv1.
 
 ### Phase 7: MC-LAG (VMs: sw1, sw2, srv1)
-1. Peer session **without IP** on the peer-link: untagged frames with EtherType 0x88b5, captured with AF_PACKET
-   and filtered away from the bridge by a tc ingress rule. A reliable L2 stream (sequencing, acks, retransmit,
-   fragmentation) implemented as a `net.Conn`, with crypto/tls 1.3 mTLS on top. Per-port hellos.
-   Keepalive over mgmt (IP, mTLS). Primary/secondary role election (priority, then member ID).
+1. Peer session over the **stacking plane** (from Phase 5). **Micro-BFD** on the peer-link ports (IP-less, consumed
+   only on peer-link ports). **BFD heartbeat** over mgmt (UDP, RFC 5881/5883, authenticated). Primary/secondary role
+   election (priority, then member ID).
 2. Shared LACP system ID and disjoint port-number ranges, so srv1 sees one partner.
 3. Consistency checks (VLANs, MTU, LACP parameters). On a mismatch the bond is set to proto-down with a reason.
 4. **MAC sync**: learned MACs, moves, coordinated ageing and flush on link down.
@@ -387,6 +405,12 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 ## 10. Decisions taken (2026-09-29)
 * SSH: system OpenSSH, with swcli as login shell for config-defined users. The serial console uses the same flow (getty → login → swcli).
 * Data-plane encryption: opt-in per link (MACsec peer link, WireGuard underlay). The control plane always uses mTLS.
+* Three separate planes: data (switch ports, peer-link), stacking (dedicated 1:1 stacking ports, IP-less, TLS over an
+  L2 stream, multi-hop relay), and mgmt (IRB-like IP on any VLAN or a dedicated port, VRF `mgmt`).
+* Stack control runs **only** over stacking ports. The mgmt network carries just the MC-LAG BFD split-brain heartbeat.
+* BFD everywhere liveness matters: stacking links (IP-less), peer-link ports (IP-less micro-BFD), heartbeat (UDP over mgmt).
+* MTU follows Junos convention (frame size incl. 14-byte header, default 1514).
+* Bulk port config via `interface-range` (member-range and wildcards, also for hot-plugged NICs).
 * RSTP is required in v1, with MC-LAG-aware integration.
 * Dev machine = build and unit tests only. Integration tests run on Proxmox VMs running Debian 13 (see §11).
 
@@ -396,13 +420,13 @@ All VMs: **Debian 13 (trixie)**, 2 vCPU, 2 GB RAM, 16 GB disk, virtio NICs, plus
 
 | VM | Role | NICs |
 |---|---|---|
-| sw1 | MC-LAG peer A | mgmt, peer1, peer2, srv1-a, underlay, loop-13 |
-| sw2 | MC-LAG peer B | mgmt, peer1, peer2, srv1-b, underlay, loop-23 |
-| sw3 | 3rd stack member (Raft quorum, VXLAN remote, RSTP loop) | mgmt, underlay, srv2, loop-13, loop-23 |
+| sw1 | MC-LAG peer A | mgmt, stk-12, stk-13, peer1, peer2, srv1-a, underlay, loop-13 |
+| sw2 | MC-LAG peer B | mgmt, stk-12, stk-23, peer1, peer2, srv1-b, underlay, loop-23 |
+| sw3 | 3rd stack member (Raft quorum, VXLAN remote, RSTP loop) | mgmt, stk-13, stk-23, underlay, srv2, loop-13, loop-23 |
 | srv1 | dual-homed server (LACP bond to sw1+sw2) | mgmt, srv1-a, srv1-b |
 | srv2 | single-homed server on sw3 | mgmt, srv2 |
 
-Each non-mgmt link is its own point-to-point bridge on Proxmox (the `underlay` bridge is shared by sw1/2/3), with **MTU 9000+**.
+`stk-*` are the stacking links (a ring sw1–sw2–sw3). Each non-mgmt link is its own point-to-point bridge on Proxmox (the `underlay` bridge is shared by sw1/2/3), with **MTU 9000+**.
 **Important:** Proxmox *Linux* bridges never forward LACP (01:80:C2:00:00:02) and drop
 BPDUs when STP is on. The p2p link bridges must therefore be **OVS bridges with
 `other-config:forward-bpdu=true`**, or directly connected via something equally transparent.

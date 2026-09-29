@@ -24,6 +24,7 @@ type Config struct {
 	Switch     SwitchOptions
 	Analyzers  map[string]*Analyzer
 	BPDUBlock  BPDUBlock
+	StackBFD   BFD
 }
 
 type System struct {
@@ -102,24 +103,36 @@ type Member struct {
 	HostName    string
 	Priority    int
 	Witness     bool
-	Mgmt        Management
+	Mgmt        L3Interface
 	VTEPAddress string
-	Underlay    Underlay
+	Underlay    L3Interface
 }
 
-type Management struct {
-	Interface string
-	Address   string
+// L3Interface is an IP interface of a member, attached either to a VLAN of
+// the bridge (IRB-like) or to a dedicated non-switched port.
+type L3Interface struct {
+	VLAN      int    // resolved VLAN id (0 = not VLAN based)
+	Interface string // Linux name of a dedicated port
+	Addresses []string
 	DHCP      bool
-	Gateway   string
-	VLAN      int
+	Gateways  []string
 }
 
-type Underlay struct {
-	Interface string
-	Address   string
-	Gateway   string
-}
+// Configured reports whether the interface is attached anywhere.
+func (l L3Interface) Configured() bool { return l.VLAN != 0 || l.Interface != "" }
+
+// HasAddress reports whether the interface gets any address.
+func (l L3Interface) HasAddress() bool { return len(l.Addresses) > 0 || l.DHCP }
+
+// DefaultMTU is the default interface MTU: a standard Ethernet frame of
+// 1500 bytes payload plus the 14 byte header (Junos convention).
+const DefaultMTU = 1514
+
+// EthHeader is the Ethernet header length included in configured MTUs.
+const EthHeader = 14
+
+// LinuxMTU converts a configured (frame size) MTU into the kernel MTU.
+func LinuxMTU(mtu int) int { return mtu - EthHeader }
 
 // Interface is a physical port or aggregated interface.
 type Interface struct {
@@ -129,7 +142,9 @@ type Interface struct {
 	AE          bool
 	Description string
 	Disabled    bool
-	MTU         int
+	MTU         int    // frame size incl. Ethernet header (see LinuxMTU)
+	Range       string // interface-range that contributed configuration
+	Explicit    bool   // listed under 'interfaces' itself
 	// Physical port options.
 	Parent      string // ae this port belongs to
 	FlowControl *bool
@@ -193,6 +208,19 @@ type BPDUBlock struct {
 	DisableTimeout int // seconds, 0 = never re-enable automatically
 }
 
+// BFD holds BFD session timers.
+type BFD struct {
+	IntervalMS int
+	Multiplier int
+}
+
+// DetectionMS is the time until a silent peer is declared down.
+func (b BFD) DetectionMS() int { return b.IntervalMS * b.Multiplier }
+
+func buildBFD(n *config.Node, interval int) BFD {
+	return BFD{IntervalMS: atoi(n.Leaf("minimum-interval"), interval), Multiplier: atoi(n.Leaf("multiplier"), 3)}
+}
+
 type Domain struct {
 	ID             int
 	Members        []int
@@ -200,8 +228,8 @@ type Domain struct {
 	SystemMAC      string
 	SystemPriority int
 	AnycastVTEP    string
-	KeepaliveMS    int
-	KeepaliveCount int
+	Heartbeat      BFD
+	PeerLinkBFD    BFD
 	DelayRestore   int
 }
 
@@ -235,7 +263,7 @@ func atoi(s string, def int) int {
 // Build converts a tree into the typed model and runs all validation.
 // inv may be nil; it supplies hardware facts (e.g. maximum MTU).
 func Build(t *config.Tree, inv Inventory) (*Config, Issues) {
-	b := &builder{root: t.Root, inv: inv}
+	b := &builder{root: t.Root, inv: inv, rangeOf: map[string]string{}}
 	b.build()
 	b.validate()
 	sort.SliceStable(b.issues, func(i, j int) bool { return b.issues[i].Severity > b.issues[j].Severity })
@@ -243,10 +271,11 @@ func Build(t *config.Tree, inv Inventory) (*Config, Issues) {
 }
 
 type builder struct {
-	root   *config.Node
-	inv    Inventory
-	cfg    *Config
-	issues Issues
+	root    *config.Node
+	inv     Inventory
+	cfg     *Config
+	issues  Issues
+	rangeOf map[string]string // interface -> interface-range name
 }
 
 func (b *builder) errorf(path string, format string, args ...any) {
@@ -325,26 +354,6 @@ func (b *builder) build() {
 		WatchdogAlarmOnly: off.Has("watchdog", "alarm-only"),
 	}
 
-	// Stack members. Without explicit members the node is member 1.
-	for _, e := range r.Get("stack").Entries("member") {
-		id := atoi(e.Key, 0)
-		m := &Member{
-			ID:          id,
-			HostName:    e.Leaf("host-name"),
-			Priority:    atoi(e.Leaf("priority"), 128),
-			Witness:     e.Leaf("role") == "witness",
-			VTEPAddress: e.Leaf("vtep-address"),
-		}
-		mg := e.Get("management")
-		m.Mgmt = Management{Interface: mg.Leaf("interface"), Address: mg.Leaf("address"), DHCP: mg.Has("dhcp"), Gateway: mg.Leaf("gateway"), VLAN: atoi(mg.Leaf("vlan"), 0)}
-		ul := e.Get("underlay")
-		m.Underlay = Underlay{Interface: ul.Leaf("interface"), Address: ul.Leaf("address"), Gateway: ul.Leaf("gateway")}
-		c.Members[id] = m
-	}
-	if len(c.Members) == 0 {
-		c.Members[1] = &Member{ID: 1, Priority: 128}
-	}
-
 	// VLANs.
 	for _, e := range r.Entries("vlans") {
 		v := &VLAN{Name: e.Key, ID: atoi(e.Leaf("vlan-id"), 0), Description: e.Leaf("description"), MTU: atoi(e.Leaf("mtu"), 0), VNI: atoi(e.Leaf("vxlan", "vni"), 0)}
@@ -361,15 +370,36 @@ func (b *builder) build() {
 		c.VLANByID[v.ID] = v
 	}
 
-	// Interfaces.
-	for _, e := range r.Entries("interfaces") {
+	// Stack members. Without explicit members the node is member 1.
+	for _, e := range r.Get("stack").Entries("member") {
+		id := atoi(e.Key, 0)
+		m := &Member{
+			ID:          id,
+			HostName:    e.Leaf("host-name"),
+			Priority:    atoi(e.Leaf("priority"), 128),
+			Witness:     e.Leaf("role") == "witness",
+			VTEPAddress: e.Leaf("vtep-address"),
+		}
+		path := fmt.Sprintf("stack member %d", id)
+		m.Mgmt = b.buildL3(e.Get("management"), path+" management")
+		m.Underlay = b.buildL3(e.Get("underlay"), path+" underlay")
+		c.Members[id] = m
+	}
+	if len(c.Members) == 0 {
+		c.Members[1] = &Member{ID: 1, Priority: 128}
+	}
+
+	// Interfaces: explicit entries merged with interface-range templates.
+	for _, e := range b.effectiveInterfaces() {
 		i := &Interface{Name: e.Key, AE: schema.IsAE(e.Key)}
 		if !i.AE {
 			i.Member, i.Linux, _ = schema.SplitPhysical(e.Key)
 		}
 		i.Description = e.Leaf("description")
 		i.Disabled = e.Has("disable")
-		i.MTU = atoi(e.Leaf("mtu"), 1500)
+		i.MTU = atoi(e.Leaf("mtu"), DefaultMTU)
+		i.Range = b.rangeOf[i.Name]
+		i.Explicit = r.Entry("interfaces", i.Name) != nil
 		i.Parent = e.Leaf("ether-options", "802.3ad")
 		if e.Has("ether-options", "flow-control") {
 			t := true
@@ -422,8 +452,8 @@ func (b *builder) build() {
 			SystemMAC:      e.Leaf("system-mac"),
 			SystemPriority: atoi(e.Leaf("system-priority"), 32768),
 			AnycastVTEP:    e.Leaf("anycast-vtep"),
-			KeepaliveMS:    atoi(e.Leaf("keepalive", "interval"), 1000),
-			KeepaliveCount: atoi(e.Leaf("keepalive", "timeout"), 3),
+			Heartbeat:      buildBFD(e.Get("heartbeat"), 300),
+			PeerLinkBFD:    buildBFD(e.Get("peer-link-bfd"), 100),
 			DelayRestore:   atoi(e.Leaf("delay-restore"), 300),
 		}
 		for _, m := range e.List("members") {
@@ -448,6 +478,8 @@ func (b *builder) build() {
 		}
 		c.Switch.RemoteVTEPs[e.Key] = vnis
 	}
+
+	c.StackBFD = buildBFD(r.Get("stack", "bfd"), 100)
 
 	// BPDU protection.
 	bb := r.Get("protocols", "layer2-control", "bpdu-block")
@@ -585,6 +617,25 @@ func compactRanges(ids []int) string {
 		i = j + 1
 	}
 	return strings.Join(parts, ",")
+}
+
+// buildL3 builds a management or underlay IP interface.
+func (b *builder) buildL3(n *config.Node, path string) L3Interface {
+	l := L3Interface{
+		Interface: n.Leaf("interface"),
+		Addresses: n.List("address"),
+		DHCP:      n.Has("dhcp"),
+		Gateways:  n.List("gateway"),
+	}
+	if ref := n.Leaf("vlan"); ref != "" {
+		ids, err := b.resolveVLANRef(ref)
+		if err != nil {
+			b.errorf(path+" vlan", "%v", err)
+		} else {
+			l.VLAN = ids[0]
+		}
+	}
+	return l
 }
 
 func orDefault(s, def string) string {

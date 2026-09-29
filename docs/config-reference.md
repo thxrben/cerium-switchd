@@ -75,27 +75,54 @@ setting one silently removes the other.
 No value may contain control characters (including terminal escape sequences) or invalid UTF-8. This keeps
 every configuration printable and re-loadable, and prevents escape-sequence injection into `show` output.
 
-### 1.3 MTU semantics (differs from Junos)
+### 1.3 MTU semantics (Junos-style)
 
-`mtu` always means the **Linux MTU**: the maximum payload of an Ethernet frame, excluding the Ethernet header
-(14 bytes), 802.1Q tags (4 bytes each) and the FCS (4 bytes). A host that uses `mtu 9000` needs switch ports
-with `mtu 9000` too, not 9014 or 9018. The largest frame on the wire is `mtu + 14 + 4 × tags + 4`.
+`mtu` is the **maximum frame size in bytes including the 14-byte Ethernet header**, excluding the FCS and
+excluding 802.1Q tags. Each VLAN tag may add 4 bytes on top, so a trunk with `mtu 1514` carries tagged frames of 1518 bytes.
 
-Junos `mtu` includes the Ethernet header. A Junos `mtu 9216` corresponds to `mtu 9198` (untagged) here.
+* The default is `mtu 1514`, a standard Ethernet frame with 1500 bytes of payload.
+* The value on a server's NIC (the Linux MTU) is the payload only. A host with `mtu 9000` therefore needs switch ports
+  with at least `mtu 9014`. `mtu 9216` is the usual "maximum jumbo" setting and fits hosts up to 9202.
+* Internally, the kernel MTU of a port is `mtu − 14`. Hardware limits are reported in the same (frame) convention.
+* The same convention applies to `vlans <v> mtu`.
 
 ### 1.4 Stack members and interface ownership
 
 * Every switch is a **stack member** with an id from 1 to 16. A switch without any `stack` configuration is member 1.
 * Interface names carry the member id, so the whole stack is configured in one place.
-* **switchd only touches interfaces that appear under `interfaces`** (plus management and underlay interfaces
-  that are configured explicitly). A NIC that is not in the configuration stays exactly as the OS left it:
-  it is not brought up, not bridged, and its addresses are not changed. New NICs never start switching traffic
-  on their own.
-* **Switch ports never carry IP.** switchd disables IPv6 (and with it link-local addresses, router solicitations
-  and neighbour discovery) on every switch port, bundle member, `ae` and peer-link, and never assigns addresses to
-  them. IP exists only on the management interface/VLAN (5.2) and the VXLAN underlay interface.
-* An interface that is configured but not physically present (not plugged in, or on a member that has not joined yet)
-  keeps its configuration. The configuration is applied as soon as the interface appears. `commit check` warns about this.
+* **switchd only touches interfaces that appear under `interfaces`, or that an `interface-range` selects**, plus
+  management and underlay ports that are configured explicitly.
+  * A NIC that is not selected stays exactly as the OS left it: it is not brought up, not bridged, and its addresses are
+    not changed. New NICs never start switching traffic unless a wildcard `interface-range` selects them on purpose (5.3.1).
+  * An interface that is configured but not physically present (not plugged in, or on a member that has not joined yet)
+    keeps its configuration. The configuration is applied as soon as the interface appears. `commit check` warns about this.
+
+### 1.5 The three planes
+
+Every port belongs to exactly one plane. Traffic never crosses from one plane to another inside the switch.
+
+| Plane | Ports | Carries | IP |
+|---|---|---|---|
+| **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, MC-LAG peer-links, VXLAN tunnels | Client traffic only | none on any port |
+| **Stacking plane** | Dedicated **stacking ports** (e.g. 1G), direct 1:1 cables between members | Stack configuration, member state, MC-LAG synchronisation, RSTP coordination, BFD | none: IP-less protocol |
+| **Management plane** | One IP interface per member, on a VLAN (IRB-like) or a dedicated port, in VRF `mgmt` | SSH, web/API, syslog, NTP, DNS, MC-LAG BFD heartbeat | yes, in VRF `mgmt` only |
+
+Rules that follow from this:
+
+* **Stacking protocol frames on data ports are client traffic.** The stacking protocol uses untagged frames with
+  EtherType `0x88b5`. switchd receives these frames *only* on designated stacking ports (and peer-link ports, for
+  micro-BFD; see 5.6). On access, trunk or VXLAN ports, a frame with this EtherType is **never interpreted and never
+  influences stacking or MC-LAG**. It is switched like any other frame and is not dropped.
+* The protocols a switch port legitimately terminates are the data plane's own link-local protocols. LACP is consumed on
+  bundle members. BPDUs are consumed when RSTP runs, and trigger `bpdu-block`.
+* **No IP on data or stacking ports.** switchd disables IPv6 (link-local addresses, router solicitations, neighbour
+  discovery) on all of them and never assigns addresses. IP exists only on management interfaces (VRF `mgmt`) and the
+  VXLAN underlay interface (default VRF).
+* The management VRF has no route into the data plane's VLANs. The switch never routes between VLANs, or between
+  management and data traffic.
+* An in-band management VLAN on the data trunks is supported (`stack member <id> management vlan`). Management then
+  shares the fate of the data plane. Commit confirmation and the serial console are the safety nets. A separate port,
+  set as an access port in the management VLAN, avoids that.
 
 ---
 
@@ -454,44 +481,97 @@ Hardware acceleration policy (see also `interfaces <if> offload disable`).
 
 ### 5.2 stack
 
+#### Stacking ports (not part of the configuration)
+
+Stacking ports connect members **directly** (1:1 cables, no switch in between). Chain, ring and any mesh are
+supported. Messages between members that are not directly connected are relayed hop by hop along the shortest
+working path, so a ring survives one broken cable.
+
+* **Designation**: stacking ports are set per switch with the operational command `request stack port add <linux-if>`
+  (and `… delete`). The setting is stored locally, like Junos VC ports, because a switch needs its stacking ports *before*
+  it can receive the stack configuration. `show stack ports` and `show stack topology` display them.
+* A stacking port is never a data or management port. E: the port is configured under `interfaces`, or as a
+  management/underlay interface. Wildcard `interface-range`s skip stacking ports.
+* **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
+  reliable stream (sequence numbers, acknowledgements, retransmission, fragmentation to the link MTU). **TLS 1.3 with
+  mutual certificate authentication** runs on top, using the stack's own CA. Frames from unauthenticated devices are ignored.
+* **Joining**: a new switch with designated stacking ports announces itself on them. `request stack join token <t>`
+  on the new switch, or `request stack member add <id> token <t>` on the stack, authorises it. It then receives its
+  certificate and the configuration.
+* Stack control needs a majority of members (Raft). Without a majority, the data plane keeps forwarding with the last
+  committed configuration, and only commits are blocked.
+
+#### `stack bfd { minimum-interval <ms>; multiplier <n>; }`
+BFD (RFC 5880 state machine, carried IP-less inside the stacking protocol) on every stacking link. A link is declared
+down after `minimum-interval × multiplier` without packets. Defaults: 100 ms × 3 = 300 ms.
+* BFD runs with real-time scheduling priority, so CPU load does not cause false detections.
+* Values below 100 ms can still cause false detections on small ARM boards. A false detection makes stacking paths
+  re-route, but never drops data traffic by itself.
+
 #### `stack member <1-16> { … }`
-Declares a stack member and its per-member settings. Members join with a token (`request stack join …`). Their
-member id is assigned at join time and is **not** part of the configuration. Configuration for a member that has
-not joined yet is kept and applied when it joins. Without any `stack member` entry, the switch is standalone
-member 1, and interfaces of other members are rejected (E).
+Declares a stack member and its per-member settings. Configuration for a member that has not joined yet is kept and
+applied when it joins. Without any `stack member` entry the switch is standalone member 1, and interfaces of other
+members are rejected (E).
 * `host-name <hostname>`: sets the Linux host name and the CLI prompt of this member.
   E: the same host name on two members.
 * `priority <0-255>`: default 128. The highest priority healthy member becomes the stack leader (it coordinates
   commits). In an MC-LAG domain the higher priority member is *primary* (ties: lower member id).
-* `role switch|witness`: a `witness` member only takes part in stack quorum. Use one to keep a two-switch stack
-  able to commit when one switch is down. E: interfaces configured on a witness.
+* `role switch|witness`: a `witness` member only takes part in stack quorum, over its own stacking cables. It keeps
+  a two-switch stack able to commit when one switch is down. E: interfaces configured on a witness.
 * `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
   it is added to a loopback interface and must be routable in the underlay.
 
-#### `stack member <id> management { … }`
-Out-of-band management of this member. It is placed in a separate VRF (`mgmt`), so management traffic never mixes
-with switched traffic and the switch never routes between management and data networks. SSH, the web interface,
-syslog, NTP, DNS and stack communication all use this VRF.
-* `interface <linux-name>`: dedicated management NIC. It is kept out of the bridge.
-  E: the same port configured as a switch port under `interfaces`.
-* `vlan <vlan-id>`: in-band management instead: an IP interface on this VLAN of the bridge.
-  E: the VLAN is not defined. E: both `interface` and `vlan` are set.
-* `address <address/prefix>` **or** `dhcp` (mutually exclusive).
-* `gateway <ip>`: default route of the management VRF. W: `gateway` without `address`/`dhcp`.
-* **Without a `management` block, switchd does not touch the host's existing network configuration of that NIC.**
-  This is the safe default for first installation. Once you configure it, switchd takes over, and commit confirmation
-  protects you against locking yourself out.
+#### `stack member <id> management { vlan <vlan> | interface <linux-name>; address [ … ]; dhcp; gateway [ … ]; }`
+The member's management IP interface, in VRF `mgmt` (1.5). SSH, the web interface, syslog, NTP, DNS and the MC-LAG
+BFD heartbeat use it.
+* `vlan <vlan>` (IRB-like): an IP interface on this VLAN of the member's bridge. The VLAN is switched normally as
+  well. Hosts in it reach the switch and each other. W: no switch port of this member carries the VLAN
+  (the address would be unreachable). E: the VLAN is not defined.
+* `interface <linux-name>`: a dedicated port that is **not** switched. E: the port is a switch port, a bundle member or a stacking port.
+* `vlan` and `interface` are mutually exclusive.
+* `address [ <address/prefix> … ]`: static IPv4 and/or IPv6 addresses.
+* `dhcp`: IPv4 address via DHCP. E: together with a static IPv4 address (a static IPv6 address is fine).
+* `gateway [ <ip> … ]`: default route(s) of the management VRF, at most one per address family (E).
+  W: a gateway of a family without an address of that family.
+* E: `address`, `dhcp` or `gateway` without `vlan`/`interface`.
+* **Without a `management` block, switchd does not touch the host's existing network configuration.** This is the safe
+  default for the first installation. Once you configure it, switchd takes over, and commit confirmation protects you
+  against locking yourself out.
 
-#### `stack member <id> underlay { interface <linux-name>; address <address/prefix>; gateway <ip>; }`
-Layer 3 interface that carries VXLAN tunnels (default VRF, not the management VRF). `gateway` is used only for routes
-to remote VTEPs that are not directly connected; no default route is installed. The underlay NIC's MTU is set by
-configuring it under `interfaces <member>/<linux-name> mtu …` **without** `unit 0 family ethernet-switching`.
-* E: the underlay interface is configured as a switch port.
-* W: the underlay shares the management interface.
-* W: underlay MTU < largest VXLAN VLAN MTU + encapsulation overhead (5.7).
+#### `stack member <id> underlay { vlan <vlan> | interface <linux-name>; address [ … ]; gateway [ … ]; }`
+The IP interface that carries this member's VXLAN tunnels, in the default VRF (not `mgmt`). It has the same structure
+as `management`, and the same rules apply for `vlan`/`interface`, addresses and gateways.
+* `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
+* E: management and underlay on the same VLAN (they live in different VRFs).
+* E: the underlay VLAN is itself extended over VXLAN (tunnel traffic would loop into the tunnel).
+* W: underlay shares the management interface.
+* W: underlay MTU (the dedicated port's `mtu`, or the VLAN's `mtu`) is smaller than the largest VXLAN VLAN MTU plus
+  encapsulation overhead (5.7).
 
 ### 5.3 interfaces
 
+#### 5.3.1 `interface-range <name> { member [ <pattern> … ]; member-range <from> to <to>; <interface statements> }`
+Applies one block of interface statements to many ports. It takes every statement that is valid below
+`interfaces <if>` (described in 5.3.2). Use it for large port counts and for NICs that are added later.
+* `member-range 1/eth0 to 1/eth23`: every name between the two ends. Both ends must be on the same member, share
+  the name prefix and end in a number. Zero padding is kept (`eth08 … eth11`). At most 4096 ports.
+  Ports that do not exist yet are configured when they appear.
+* `member "<m>/<glob>"`: a wildcard on the Linux name. `*` matches any characters and `?` one character. `<m>` is a
+  member id or `*` for all members (quote the value: `member "1/enp1s*"`).
+  * Wildcards are evaluated against the ports that exist, **at commit time and whenever a NIC appears**. A newly
+    plugged NIC matching a wildcard is configured immediately, without a commit, and this is logged.
+  * If the new port cannot take the configuration (e.g. the MTU exceeds its hardware maximum), it stays unconfigured
+    and an alarm is raised.
+  * Wildcards **never** select stacking ports or the member's management/underlay port.
+* **Precedence**: a port that is also listed under `interfaces` uses its explicit statements. The range fills in only
+  what the explicit entry does not set:
+  * Leaves: the explicit value wins.
+  * Leaf-lists: the explicit list replaces the range list; they are not combined.
+  * Mutually exclusive statements: an explicit choice (e.g. `no-flow-control`) suppresses the range's alternative.
+* E: a port selected by two ranges. W: a range that selects no port.
+* `show interfaces` shows which range configured a port.
+
+#### 5.3.2 `interfaces <interface-name> { … }`
 `interfaces <interface-name> { … }` configures a physical port (`<member>/<linux-name>`) or an aggregated
 interface (`ae<N>`). As described in 1.4, only listed interfaces are managed. A listed interface is brought
 administratively up unless it has `disable`.
@@ -512,11 +592,12 @@ Administratively down: the link is taken down, so the neighbour sees link loss. 
 bundle. On an `ae`, the whole bundle is down on all members. The configuration below stays in place.
 
 #### `mtu <256-16000>`
-Linux MTU (1.3). Default 1500.
+Maximum frame size including the Ethernet header (1.3). Default 1514.
 * The same value is used for receiving and sending. Frames larger than the MTU are dropped: on receive by the NIC,
   on send by the bridge. Both are counted in `show interfaces extensive` (`mtu-exceeded`).
 * Bundle members always use the MTU of their `ae`. W: a different `mtu` on a member port (it is ignored).
-* E: MTU above the NIC's hardware maximum (known once the member has reported its inventory).
+* E: MTU above the NIC's hardware maximum (known once the member has reported its inventory). The maximum is
+  shown in the same convention (kernel maximum + 14).
 * W: the port belongs to a VLAN whose `mtu` is larger than the port MTU. Such frames are dropped at this port.
 * The effective limit for a frame is **min(ingress port MTU, VLAN MTU, egress port MTU)**. See also `vlans <v> mtu`.
 
@@ -611,8 +692,8 @@ A VLAN exists on a member's bridge only if a port of that member, the peer-link 
 Free text.
 
 #### `mtu <256-16000>`
-Maximum payload of frames **within this VLAN**, independent of port MTUs. Use it for example to allow jumbo
-frames only in a storage VLAN while trunks carry `mtu 9216`.
+Maximum frame size (1.3) **within this VLAN**, independent of port MTUs. Use it for example to allow jumbo frames
+only in a storage VLAN (`mtu 9014` for 9000-byte hosts) while the trunks carry `mtu 9216`.
 * Frames larger than this are dropped when they are **received** (on any port or tunnel), and counted per VLAN in `show vlans extensive`.
 * Implemented as an ingress filter (tc/nftables). It is offloaded where possible and costs a little CPU per frame in software.
   Without `mtu` no VLAN filter is installed, and only port MTUs apply.
@@ -676,35 +757,37 @@ BPDU protection. It works with or without RSTP. A listed port that receives any 
 An MC-LAG domain is a pair of stack members that act as one LACP partner towards devices connected to both
 (`aggregated-ether-options mclag`). Each member can be in at most one domain.
 
+The domain uses all three planes, each for its own purpose:
+* **Data plane**: the **peer-link**, a pure data link between the pair.
+* **Stacking plane**: MAC synchronisation, bundle state, consistency checks and RSTP relay between the two members.
+  If they are not cabled directly, messages are relayed by other members.
+* **Management plane**: the BFD **heartbeat**, which decides who stays active when the other paths fail.
+
+Statements:
 * `members [ <a> <b> ]`: exactly two configured, non-witness stack members.
   E: not exactly two. E: unknown member. E: witness. E: member already in another domain.
-* `peer-link <aeN>`: the bundle that connects the two members directly.
-  * It must have ports on both members (E). Each member's side is a local bundle between the two switches. With
-    `lacp`, each side uses its own LACP system id, not the shared one.
-  * The peer-link carries **all VLANs**, tagged. Its own ethernet-switching settings are ignored (W).
+* `peer-link <aeN>`: the data bundle that connects the two members directly.
+  * It must have ports on both members (E). Each member's side is a local bundle between the two switches. With `lacp`,
+    each side uses its own LACP system id, not the shared one.
+  * It carries **all VLANs, tagged**, and nothing else. Its own ethernet-switching settings are ignored (W). It has no IP.
   * The peer-link must be at least as large as every MC-LAG bundle (E: MTU smaller than an MC-LAG bundle of the domain).
   * It is never blocked by RSTP.
-  * The peer-link is a direct 1:1 cable between the two switches (one or more ports), with no switch in between.
-    It carries **no IP** and no reserved VLAN. The members' **control session** runs directly on Ethernet:
-    * Frames are untagged, with EtherType `0x88b5` (IEEE 802 local experimental). Switched traffic on the peer-link
-      is always tagged, so the two can never be confused.
-    * The session carries MAC synchronisation, port and bundle state, consistency checks, RSTP relay and peer hellos.
-    * An ingress filter on the peer-link passes these frames to switchd and drops them before the bridge, so they
-      never reach a VLAN or another port. Hardware offload is used where available.
-    * Security: a small reliable stream over Ethernet (sequence numbers, acknowledgements, retransmission,
-      fragmentation to the link MTU) carries **TLS 1.3 with mutual certificate authentication**, using the
-      stack's own certificates. Frames from anything that is not an authenticated peer are ignored.
-    * Hellos are also sent on each physical port of the peer-link, so a failed cable inside the peer-link bundle is
-      detected per port.
-  * Traffic that arrives over the peer-link is never sent out of an MC-LAG bundle that is up on the receiving member
-    (split horizon), because the peer already delivered it on its own leg. When a member's leg of a bundle fails,
+  * **Split horizon**: traffic that arrives over the peer-link is never sent out of an MC-LAG bundle that is up on the
+    receiving member, because the peer already delivered it on its own leg. When a member's leg of a bundle fails,
     this filter is lifted for that bundle, and the peer's traffic reaches the device via the peer-link.
+* `peer-link-bfd { minimum-interval <ms>; multiplier <n>; }`: micro-BFD on **each physical port** of the peer-link.
+  It is IP-less (stacking-protocol EtherType, authenticated with keys agreed over the stacking plane) and is consumed
+  only on peer-link ports.
+  * A port that stops forwarding while its link stays up (for example a broken media converter) leaves the bundle after
+    `interval × multiplier` (default 100 ms × 3). LACP alone would need 3 seconds.
+  * The port rejoins when BFD is up again.
+* `heartbeat { minimum-interval <ms>; multiplier <n>; }`: BFD over UDP (RFC 5881/5883) between the members'
+  management addresses, authenticated. Default 300 ms × 3.
+  * It carries no configuration or state. Its only job is to tell "peer dead" apart from "paths to the peer cut" (split-brain).
+  * W: a member without a management address.
 * `system-mac <mac>` / `system-priority <n>`: the shared LACP system id presented by both members on MC-LAG bundles.
   If `system-mac` is unset, a stable locally administered MAC is derived from the stack id and domain id. It never
   changes, because a change would make partners re-negotiate. Default priority 32768.
-* `keepalive { interval <ms>; timeout <count>; }`: liveness check between the two members over the **management
-  network**, independent of the peer-link. Defaults: 1000 ms and 3 missed keepalives.
-  W: a member without a management address (split-brain detection is impossible).
 * `delay-restore <s>`: after a member boots or rejoins, its MC-LAG ports stay out of the bundle for this long
   (default 300 s). During that time the MAC table is synchronised and RSTP converges before traffic is attracted.
 * `anycast-vtep <ip>`: VXLAN source address shared by the pair. Remote VTEPs send traffic for devices behind MC-LAG
@@ -712,17 +795,20 @@ An MC-LAG domain is a pair of stack members that act as one LACP partner towards
 
 **Behaviour:**
 
-* **MAC synchronisation**
+* **MAC synchronisation** (stacking plane):
   * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle.
   * A MAC ages out only when it has aged out on **both** members.
   * MACs learned on single-homed ports are installed on the peer pointing to the peer-link.
-* **Failure handling**
-  | Situation | Behaviour |
-  |---|---|
-  | A member's leg of an MC-LAG bundle fails | The bundle continues on the other member. The receiving member lifts split horizon for that bundle, and MACs point to the peer-link. |
-  | Peer-link down (all ports), keepalive up | The **secondary** takes its MC-LAG ports out of the bundles (LACP out-of-sync) to avoid split-brain. The primary carries all traffic. |
-  | Peer-link down, keepalive down (peer dead) | The survivor carries all traffic, as the primary. |
-  | Member returns | `delay-restore` applies, then its legs rejoin. |
+* **Failure handling** (*primary* = higher `stack member priority`, ties: lower id):
+  | Stacking path | Peer-link | Heartbeat | Interpretation | Behaviour |
+  |---|---|---|---|---|
+  | down | down | down | peer dead | Survivor carries all traffic as primary. |
+  | down | down | **up** | peer alive, both paths cut | **Secondary** takes its MC-LAG ports out of the bundles (LACP out-of-sync). The primary carries all traffic. |
+  | up | down | any | peer-link cut | Same as above: the secondary disables its MC-LAG legs, because frames could no longer be delivered via the peer. |
+  | down | up | any | stacking path cut | MAC sync pauses. Forwarding continues. Learned MACs are flooded via the peer-link until the stacking path returns. An alarm is raised. |
+  | – | one port down | – | peer-link degraded | The port leaves the peer-link bundle (micro-BFD or link loss). The others continue. |
+  | A member's leg of an MC-LAG bundle fails | | | | The bundle continues on the other member. The receiving member lifts split horizon for that bundle, and MACs point to the peer-link. |
+  | Member returns | | | | `delay-restore` applies, then its legs rejoin. |
 * **Consistency checks** at runtime: VLAN membership, MTU, LACP mode and rate of each MC-LAG bundle are compared
   between the members. A mismatch (for example because a member runs an older software version) keeps the
   bundle's leg on the secondary down, with the reason shown in `show mclag consistency`.
@@ -754,8 +840,10 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
 * **Loop freedom**: frames received from a tunnel are never sent into another tunnel (split horizon), so the full
   mesh cannot loop. Tunnels do not run RSTP.
 * **MTU**:
-  * The tunnel accepts frames up to the largest `mtu` of the VXLAN VLANs (default 1500).
-  * The underlay needs 50 more bytes (IPv4) or 70 (IPv6), plus 80 with `encryption`. W: underlay MTU too small.
+  * The tunnel accepts frames up to the largest `mtu` of the VXLAN VLANs (default 1514).
+  * The underlay's `mtu` (frame size, 1.3) must be at least that plus 50 bytes (IPv4 underlay) or 70 (IPv6),
+    plus 80 with `encryption`. For example, VXLAN VLANs with `mtu 9014` need an underlay `mtu` of 9064 (IPv4).
+    W: underlay MTU too small.
   * Frames that do not fit are dropped at the tunnel and counted.
 * **MC-LAG with `anycast-vtep`**: traffic of devices behind MC-LAG bundles is sent from the anycast address, and
   both members accept traffic to it. Single-homed devices use the member's own `vtep-address`.
@@ -770,14 +858,16 @@ the original traffic. If the output port is congested, only mirrored copies are 
 * `input ingress vlan [ <vlan> … ]`: frames received in these VLANs, on any port of the output port's member.
 * `output interface <if>`: destination. A dedicated plain port (without `family ethernet-switching`) is recommended.
   Mirrored frames are sent unmodified. An `ae` output spreads copies by its hash policy.
-* Mirroring an `ae` mirrors all its member ports on that member.
+* Mirroring happens on the output port's member. Mirroring an `ae` mirrors its member ports on that member. For an
+  MC-LAG bundle, that is only the local leg; traffic on the other member's leg is not seen.
 * Several analyzers may share an output port, and one interface may be an input of several analyzers.
 * Implemented with tc (`matchall`/`flower` + `mirred`), offloaded to hardware where supported.
 * Commit check:
   * E: no output.
   * E: no input.
   * E: the output is also an input.
-  * E: inputs and output on different members (mirroring across the stack is not supported).
+  * E: an input has no ports on the output's member (mirroring across the stack is not supported).
+  * E: the output is a bundle spanning two members.
   * E: an input or output is not configured under `interfaces`, or is a bundle member (use the `ae`).
   * W: the output port is also a switch port.
 
@@ -878,7 +968,7 @@ interfaces {
 vlans {
     storage {
         vlan-id 20;
-        mtu 9000;
+        mtu 9014;
     }
     users {
         vlan-id 10;
@@ -898,18 +988,22 @@ protocols {
 }
 ```
 
-### 7.2 MC-LAG pair with a dual-homed server, mirroring and VXLAN (set format)
+### 7.2 MC-LAG pair: dual-homed server, in-band management VLAN, port ranges, mirroring, VXLAN (set format)
 
 ```
+# Stacking ports were designated locally beforehand, e.g. on both switches:
+#   request stack port add eno2
 set stack member 1 host-name sw-a
-set stack member 1 management interface eno1
+set stack member 1 management vlan mgmt
 set stack member 1 management address 192.168.1.11/24
+set stack member 1 management gateway 192.168.1.1
 set stack member 1 vtep-address 10.255.0.1
 set stack member 1 underlay interface enp5s0
 set stack member 1 underlay address 10.99.0.1/24
 set stack member 2 host-name sw-b
-set stack member 2 management interface eno1
+set stack member 2 management vlan mgmt
 set stack member 2 management address 192.168.1.12/24
+set stack member 2 management gateway 192.168.1.1
 set stack member 2 vtep-address 10.255.0.2
 set stack member 2 underlay interface enp5s0
 set stack member 2 underlay address 10.99.0.2/24
@@ -925,17 +1019,23 @@ set interfaces ae0 aggregated-ether-options lacp active
 set interfaces 1/enp1s0 ether-options 802.3ad ae1
 set interfaces 2/enp1s0 ether-options 802.3ad ae1
 set interfaces ae1 description "server A (dual-homed)"
-set interfaces ae1 mtu 9000
+set interfaces ae1 mtu 9216
 set interfaces ae1 aggregated-ether-options lacp active
 set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 native-vlan-id users
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
-set interfaces ae1 unit 0 family ethernet-switching vlan members storage
+set interfaces ae1 unit 0 family ethernet-switching vlan members [ storage mgmt ]
+set interface-range edge-ports member "*/enp4s*"
+set interface-range edge-ports mtu 9014
+set interface-range edge-ports unit 0 family ethernet-switching vlan members users
 set interfaces 1/enp3s0 description "mirror to analyzer laptop"
+set interfaces 1/eno3 description "management access (1G)"
+set interfaces 1/eno3 unit 0 family ethernet-switching vlan members mgmt
+set vlans mgmt vlan-id 99
 set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
-set vlans storage mtu 9000
+set vlans storage mtu 9014
 set mclag domain 1 members [ 1 2 ]
 set mclag domain 1 peer-link ae0
 set protocols rstp
@@ -952,10 +1052,12 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 |---|---|
 | Schema, formats (hierarchical, set, JSON), diff | implemented, tested and fuzzed |
 | Commit check (the validation rules in this document) | implemented and tested, except where noted below |
+| `interface-range` expansion (member-range, wildcards, precedence) | implemented and tested (hot-plug re-evaluation with the data plane) |
 | `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `save`, `copy`, `rename` | specified, next (CLI phase) |
 | Commit / confirmation / rollback engine, CLI | next |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
-| Data plane, services, stack, LACP, MC-LAG, RSTP, VXLAN | later phases (see PLAN.md §8) |
+| Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
+| Data plane, services, LACP, MC-LAG (incl. micro-BFD, heartbeat), RSTP, VXLAN | later phases (see PLAN.md §8) |
 
 ---
 
@@ -1017,25 +1119,63 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system offload watchdog threshold` | leaf | &lt;count&gt; 1..1000000 | 100 | Drops/errors per interval that trigger a software fallback |
 | `system offload watchdog alarm-only` | flag |  |  | Only raise alarms, never change offload settings |
 | `stack` | container |  |  | Stack (virtual chassis) members |
+| `stack bfd` | container |  |  | BFD on stacking ports (IP-less) |
+| `stack bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
+| `stack bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
 | `stack member <member-id>` | list | &lt;member-id&gt; 1..16 |  | Stack member |
 | `stack member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
 | `stack member <member-id> priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
 | `stack member <member-id> role` | leaf | switch \\| witness | switch | Member role |
-| `stack member <member-id> management` | container |  |  | Out-of-band management interface of this member |
-| `stack member <member-id> management interface` | leaf | &lt;linux-interface&gt; |  | Linux interface used for management (kept outside the switch bridge) |
-| `stack member <member-id> management address` | leaf (excl. mgmt-addr) | &lt;address/prefix&gt; |  | Static management address |
-| `stack member <member-id> management dhcp` | flag (excl. mgmt-addr) |  |  | Obtain management address via DHCP |
-| `stack member <member-id> management gateway` | leaf | &lt;ip-address&gt; |  | Default gateway in the management VRF |
-| `stack member <member-id> management vlan` | leaf | &lt;vlan-id&gt; 1..4094 |  | Use an in-band VLAN instead of a dedicated interface |
+| `stack member <member-id> management` | container |  |  | Management IP interface of this member (management VRF) |
+| `stack member <member-id> management vlan` | leaf (excl. mgmt-attach) | &lt;vlan&gt; |  | Attach the management IP to this VLAN (IRB-like) |
+| `stack member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;linux-interface&gt; |  | Dedicated, non-switched management port (Linux name) |
+| `stack member <member-id> management address` | leaf-list | &lt;address/prefix&gt; |  | Static addresses (IPv4 and/or IPv6) |
+| `stack member <member-id> management dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
+| `stack member <member-id> management gateway` | leaf-list | &lt;ip-address&gt; |  | Default gateway, at most one per address family |
 | `stack member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
-| `stack member <member-id> underlay` | container |  |  | Layer 3 interface used for VXLAN transport |
-| `stack member <member-id> underlay interface` | leaf | &lt;linux-interface&gt; |  | Linux interface |
-| `stack member <member-id> underlay address` | leaf | &lt;address/prefix&gt; |  | Underlay address |
-| `stack member <member-id> underlay gateway` | leaf | &lt;ip-address&gt; |  | Underlay gateway |
+| `stack member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
+| `stack member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
+| `stack member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;linux-interface&gt; |  | Dedicated, non-switched underlay port (Linux name) |
+| `stack member <member-id> underlay address` | leaf-list | &lt;address/prefix&gt; |  | Underlay addresses |
+| `stack member <member-id> underlay gateway` | leaf-list | &lt;ip-address&gt; |  | Next hop towards remote VTEPs, at most one per address family |
+| `interface-range <name>` | list | &lt;name&gt; |  | Apply one configuration to many ports |
+| `interface-range <name> member` | leaf-list | &lt;pattern&gt; |  | Ports by pattern, e.g. 1/enp1s* or */eth? (* and ? wildcards) |
+| `interface-range <name> member-range <interface-name>` | list | &lt;interface-name&gt; |  | Contiguous ports, e.g. 1/eth0 to 1/eth23 |
+| `interface-range <name> member-range <interface-name> to` | leaf | &lt;interface-name&gt; |  | Last port of the range |
+| `interface-range <name> description` | leaf | &lt;text&gt; |  | Interface description |
+| `interface-range <name> disable` | flag |  |  | Administratively disable the interface |
+| `interface-range <name> mtu` | leaf | &lt;mtu&gt; 256..16000 | 1514 | Maximum frame size incl. Ethernet header, excl. FCS and VLAN tags |
+| `interface-range <name> ether-options` | container |  |  | Physical port options |
+| `interface-range <name> ether-options 802.3ad` | leaf | &lt;ae-interface&gt; |  | Make this port a member of an aggregated interface |
+| `interface-range <name> ether-options flow-control` | flag (excl. flow) |  |  | Enable pause frames (reduces drops under load) |
+| `interface-range <name> ether-options no-flow-control` | flag (excl. flow) |  |  | Disable pause frames |
+| `interface-range <name> aggregated-ether-options` | container |  |  | Aggregated interface options |
+| `interface-range <name> aggregated-ether-options lacp` | presence |  |  | Link aggregation control protocol |
+| `interface-range <name> aggregated-ether-options lacp active` | flag (excl. lacp-mode) |  |  | Actively send LACPDUs |
+| `interface-range <name> aggregated-ether-options lacp passive` | flag (excl. lacp-mode) |  |  | Only respond to LACPDUs |
+| `interface-range <name> aggregated-ether-options lacp periodic` | leaf | fast \\| slow | fast | LACPDU interval |
+| `interface-range <name> aggregated-ether-options lacp system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | LACP system priority |
+| `interface-range <name> aggregated-ether-options minimum-links` | leaf | &lt;links&gt; 1..64 | 1 | Minimum active links for the bundle to be up |
+| `interface-range <name> aggregated-ether-options hash-policy` | leaf | layer2 \\| layer2+3 \\| layer3+4 | layer3+4 | Load-balancing hash |
+| `interface-range <name> aggregated-ether-options mclag` | presence |  |  | Bundle spans the two members of an MC-LAG domain |
+| `interface-range <name> storm-control` | container |  |  | Rate limit flooded traffic |
+| `interface-range <name> storm-control broadcast` | leaf | &lt;pps&gt; 1..100000000 |  | Broadcast packets per second |
+| `interface-range <name> storm-control multicast` | leaf | &lt;pps&gt; 1..100000000 |  | Multicast packets per second |
+| `interface-range <name> mac-limit` | leaf | &lt;count&gt; 1..131072 |  | Maximum learned MAC addresses |
+| `interface-range <name> offload` | container |  |  | Per-interface hardware acceleration |
+| `interface-range <name> offload disable` | flag |  |  | Never offload this interface |
+| `interface-range <name> native-vlan-id` | leaf | &lt;vlan&gt; |  | Untagged VLAN on a trunk port |
+| `interface-range <name> unit <unit>` | list | &lt;unit&gt; 0..0 |  | Logical unit |
+| `interface-range <name> unit <unit> description` | leaf | &lt;text&gt; |  | Unit description |
+| `interface-range <name> unit <unit> family` | container |  |  | Protocol family |
+| `interface-range <name> unit <unit> family ethernet-switching` | presence |  |  | Layer 2 switching |
+| `interface-range <name> unit <unit> family ethernet-switching interface-mode` | leaf | access \\| trunk |  | Port mode |
+| `interface-range <name> unit <unit> family ethernet-switching vlan` | container |  |  | VLAN membership |
+| `interface-range <name> unit <unit> family ethernet-switching vlan members` | leaf-list | &lt;vlan&gt; |  | VLAN names or ids (ranges like 10-20 allowed) |
 | `interfaces <interface-name>` | list | &lt;interface-name&gt; |  | Interface configuration |
 | `interfaces <interface-name> description` | leaf | &lt;text&gt; |  | Interface description |
 | `interfaces <interface-name> disable` | flag |  |  | Administratively disable the interface |
-| `interfaces <interface-name> mtu` | leaf | &lt;mtu&gt; 256..16000 | 1500 | Maximum frame payload size (jumbo frames up to 16000) |
+| `interfaces <interface-name> mtu` | leaf | &lt;mtu&gt; 256..16000 | 1514 | Maximum frame size incl. Ethernet header, excl. FCS and VLAN tags |
 | `interfaces <interface-name> ether-options` | container |  |  | Physical port options |
 | `interfaces <interface-name> ether-options 802.3ad` | leaf | &lt;ae-interface&gt; |  | Make this port a member of an aggregated interface |
 | `interfaces <interface-name> ether-options flow-control` | flag (excl. flow) |  |  | Enable pause frames (reduces drops under load) |
@@ -1066,7 +1206,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `vlans <name>` | list | &lt;name&gt; |  | VLAN configuration |
 | `vlans <name> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q VLAN id |
 | `vlans <name> description` | leaf | &lt;text&gt; |  | VLAN description |
-| `vlans <name> mtu` | leaf | &lt;mtu&gt; 256..16000 |  | Maximum frame payload size within this VLAN |
+| `vlans <name> mtu` | leaf | &lt;mtu&gt; 256..16000 |  | Maximum frame size within this VLAN (same meaning as interface mtu) |
 | `vlans <name> vxlan` | container |  |  | Extend this VLAN over VXLAN |
 | `vlans <name> vxlan vni` | leaf | &lt;vni&gt; 1..16777214 |  | VXLAN network identifier |
 | `protocols` | container |  |  | Protocol configuration |
@@ -1094,9 +1234,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `mclag domain <domain-id> system-mac` | leaf | &lt;mac-address&gt; |  | Shared LACP system MAC (derived if unset) |
 | `mclag domain <domain-id> system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | Shared LACP system priority |
 | `mclag domain <domain-id> anycast-vtep` | leaf | &lt;ip-address&gt; |  | Shared VTEP address of the pair |
-| `mclag domain <domain-id> keepalive` | container |  |  | Peer liveness detection over the management network |
-| `mclag domain <domain-id> keepalive interval` | leaf | &lt;ms&gt; 100..10000 | 1000 | Milliseconds between keepalives |
-| `mclag domain <domain-id> keepalive timeout` | leaf | &lt;count&gt; 2..30 | 3 | Missed keepalives before the peer is declared dead |
+| `mclag domain <domain-id> heartbeat` | container |  |  | BFD heartbeat over the management network (split-brain detection) |
+| `mclag domain <domain-id> heartbeat minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 300 | Transmit/receive interval in milliseconds |
+| `mclag domain <domain-id> heartbeat multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
+| `mclag domain <domain-id> peer-link-bfd` | container |  |  | Micro-BFD on every peer-link port (IP-less) |
+| `mclag domain <domain-id> peer-link-bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
+| `mclag domain <domain-id> peer-link-bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
 | `mclag domain <domain-id> delay-restore` | leaf | &lt;seconds&gt; 0..3600 | 300 | Seconds to wait after reboot before enabling MC-LAG ports |
 | `switch-options` | container |  |  | Global switching options |
 | `switch-options mac-table-aging-time` | leaf | &lt;seconds&gt; 10..1000000 | 300 | MAC table aging time in seconds |

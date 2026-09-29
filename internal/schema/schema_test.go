@@ -107,6 +107,9 @@ func TestLookupPrefix(t *testing.T) {
 	if m := r.Lookup("int"); len(m) != 1 || m[0].Name != "interfaces" {
 		t.Fatalf("Lookup(int) = %v", m)
 	}
+	if m := r.Lookup("interface-"); len(m) != 1 || m[0].Name != "interface-range" {
+		t.Fatalf("Lookup(interface-) = %v", m)
+	}
 	if m := r.Lookup("s"); len(m) < 2 {
 		t.Fatalf("Lookup(s) should be ambiguous, got %d", len(m))
 	}

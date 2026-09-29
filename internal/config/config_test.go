@@ -103,10 +103,10 @@ func TestLeafReplaceAndGroups(t *testing.T) {
 	if lacp.Child("active") != nil || lacp.Child("passive") == nil {
 		t.Fatalf("group exclusion failed: %s", FormatNode(lacp))
 	}
-	set(t, tr, "set stack member 1 management dhcp")
-	set(t, tr, "set stack member 1 management address 10.0.0.2/24")
-	if tr.Root.Has("stack", "member", "1", "management", "dhcp") {
-		t.Fatalf("dhcp should have been replaced by address")
+	set(t, tr, "set stack member 1 management interface eno1")
+	set(t, tr, "set stack member 1 management vlan 10")
+	if tr.Root.Has("stack", "member", "1", "management", "interface") {
+		t.Fatalf("interface should have been replaced by vlan")
 	}
 }
 
@@ -413,4 +413,34 @@ func FuzzParseCurly(f *testing.F) {
 			t.Fatalf("curly round trip differs")
 		}
 	})
+}
+
+func TestMergeDefaults(t *testing.T) {
+	tr, err := ParseSet(`set interfaces 1/eth0 mtu 9216
+set interfaces 1/eth0 ether-options no-flow-control
+set interfaces 1/eth0 unit 0 family ethernet-switching vlan members a
+set interfaces 1/eth1 description template
+set interfaces 1/eth1 mtu 1514
+set interfaces 1/eth1 ether-options flow-control
+set interfaces 1/eth1 unit 0 family ethernet-switching interface-mode trunk
+set interfaces 1/eth1 unit 0 family ethernet-switching vlan members [ b c ]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := tr.Root.Entry("interfaces", "1/eth0")
+	dst.MergeDefaults(tr.Root.Entry("interfaces", "1/eth1"))
+	if dst.Leaf("mtu") != "9216" {
+		t.Error("explicit leaf must win")
+	}
+	if dst.Leaf("description") != "template" {
+		t.Error("missing leaf must be filled in")
+	}
+	if dst.Has("ether-options", "flow-control") {
+		t.Error("mutually exclusive sibling must not be merged")
+	}
+	es := dst.Get("unit", "0", "family", "ethernet-switching")
+	if es.Leaf("interface-mode") != "trunk" || strings.Join(es.List("vlan", "members"), ",") != "a" {
+		t.Errorf("nested merge wrong:\n%s", FormatNode(dst))
+	}
 }

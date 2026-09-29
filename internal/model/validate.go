@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -57,21 +58,35 @@ func (is Issues) String() string {
 
 // PortInfo holds hardware facts about a physical port.
 type PortInfo struct {
-	MaxMTU int // 0 = unknown
+	MTU       int  // current kernel (Linux) MTU
+	MaxMTU    int  // kernel (Linux) maximum MTU, 0 = unknown
+	StackPort bool // designated stacking port (never a data port)
 }
 
 // Inventory supplies hardware facts for validation.
 type Inventory interface {
-	// Port returns information about a port on a member. ok is false if
-	// the member is known but the port does not exist. known is false if
-	// nothing is known about the member (e.g. not joined yet).
-	Port(member int, linux string) (info PortInfo, ok bool, known bool)
+	// Ports returns the ports of a member keyed by Linux name. known is
+	// false if nothing is known about the member (e.g. not joined yet).
+	Ports(member int) (ports map[string]PortInfo, known bool)
+}
+
+// port looks up one port. known is false if the member is unknown.
+func (b *builder) port(member int, linux string) (info PortInfo, ok, known bool) {
+	if b.inv == nil {
+		return PortInfo{}, false, false
+	}
+	ports, known := b.inv.Ports(member)
+	if !known {
+		return PortInfo{}, false, false
+	}
+	info, ok = ports[linux]
+	return info, ok, true
 }
 
 func (b *builder) validate() {
 	c := b.cfg
+	b.validateInterfaces() // attaches bundle member ports, needed below
 	b.validateMembers()
-	b.validateInterfaces()
 	b.validateMTU()
 	b.validateDomains()
 	b.validateVXLAN()
@@ -101,31 +116,97 @@ func (b *builder) validateMembers() {
 			}
 			names[m.HostName] = id
 		}
-		if m.Mgmt.Gateway != "" && m.Mgmt.Address == "" && !m.Mgmt.DHCP {
-			b.warnf(path+" management", "gateway without address")
+		b.validateL3(id, path+" management", m.Mgmt)
+		b.validateL3(id, path+" underlay", m.Underlay)
+		if m.Mgmt.VLAN != 0 && m.Mgmt.VLAN == m.Underlay.VLAN {
+			b.errorf(path+" underlay vlan", "management and underlay cannot share a VLAN (they live in different VRFs)")
 		}
-		if m.Mgmt.Interface != "" && m.Mgmt.VLAN != 0 {
-			b.errorf(path+" management", "use either a management interface or a management vlan, not both")
-		}
-		if m.Mgmt.VLAN != 0 {
-			if _, ok := c.VLANByID[m.Mgmt.VLAN]; !ok {
-				b.errorf(path+" management vlan", "vlan-id %d is not defined under 'vlans'", m.Mgmt.VLAN)
+		if m.Underlay.VLAN != 0 {
+			if v := c.VLANByID[m.Underlay.VLAN]; v != nil && v.VNI != 0 {
+				b.errorf(path+" underlay vlan", "vlan %s is extended over VXLAN and cannot carry the VXLAN underlay", v.Name)
 			}
 		}
-		if m.Mgmt.Interface != "" {
-			if i, ok := c.Interfaces[fmt.Sprintf("%d/%s", id, m.Mgmt.Interface)]; ok && (i.Switching || i.Parent != "") {
-				b.errorf(path+" management interface", "%s is used as a switch port and cannot be the management interface", i.Name)
+		if m.Underlay.Interface != "" && m.Underlay.Interface == m.Mgmt.Interface {
+			b.warnf(path+" underlay interface", "underlay shares the management interface")
+		}
+	}
+}
+
+// validateL3 checks a management or underlay IP interface.
+func (b *builder) validateL3(member int, path string, l L3Interface) {
+	c := b.cfg
+	if !l.Configured() {
+		if l.HasAddress() || len(l.Gateways) > 0 {
+			b.errorf(path, "addresses require 'vlan' or 'interface'")
+		}
+		return
+	}
+	if !l.HasAddress() {
+		b.warnf(path, "no address configured")
+	}
+	v4 := 0
+	for _, a := range l.Addresses {
+		if !strings.Contains(a, ":") {
+			v4++
+		}
+	}
+	if l.DHCP && v4 > 0 {
+		b.errorf(path, "use either 'dhcp' or a static IPv4 address, not both")
+	}
+	gw := map[bool]int{}
+	for _, g := range l.Gateways {
+		v6 := strings.Contains(g, ":")
+		gw[v6]++
+		hasFamily := l.DHCP && !v6
+		for _, a := range l.Addresses {
+			if strings.Contains(a, ":") == v6 {
+				hasFamily = true
 			}
 		}
-		if m.Underlay.Interface != "" {
-			if i, ok := c.Interfaces[fmt.Sprintf("%d/%s", id, m.Underlay.Interface)]; ok && (i.Switching || i.Parent != "") {
-				b.errorf(path+" underlay interface", "%s is used as a switch port and cannot be the underlay interface", i.Name)
+		if !hasFamily {
+			b.warnf(path+" gateway", "gateway %s has no address of its family on this interface", g)
+		}
+	}
+	if gw[false] > 1 || gw[true] > 1 {
+		b.errorf(path+" gateway", "at most one gateway per address family")
+	}
+	if l.Interface != "" {
+		name := fmt.Sprintf("%d/%s", member, l.Interface)
+		if i, ok := c.Interfaces[name]; ok && (i.Switching || i.Parent != "") {
+			b.errorf(path+" interface", "%s is used as a switch port and cannot carry an IP interface", i.Name)
+		}
+		if info, ok, _ := b.port(member, l.Interface); ok && info.StackPort {
+			b.errorf(path+" interface", "%s is a stacking port and never carries IP", l.Interface)
+		}
+	}
+	if l.VLAN != 0 && !b.memberHasVLAN(member, l.VLAN) {
+		b.warnf(path+" vlan", "no switch port of member %d carries vlan-id %d; the address is unreachable", member, l.VLAN)
+	}
+}
+
+// memberHasVLAN reports whether any switch port of a member (or an MC-LAG
+// bundle / peer-link with ports on it) carries the VLAN.
+func (b *builder) memberHasVLAN(member, vid int) bool {
+	for _, i := range b.cfg.Interfaces {
+		if !i.Switching {
+			continue
+		}
+		on := i.Member == member
+		for _, p := range i.MemberPorts {
+			if pi := b.cfg.Interfaces[p]; pi != nil && pi.Member == member {
+				on = true
 			}
-			if m.Underlay.Interface == m.Mgmt.Interface {
-				b.warnf(path+" underlay interface", "underlay shares the management interface")
+		}
+		if !on {
+			continue
+		}
+		for _, v := range i.VLANs {
+			if v == vid {
+				return true
 			}
 		}
 	}
+	return false
 }
 
 func (b *builder) validateInterfaces() {
@@ -149,10 +230,10 @@ func (b *builder) validateInterfaces() {
 		} else if m.Witness {
 			b.errorf(path, "member %d is a witness and has no switch ports", i.Member)
 		}
-		if b.inv != nil {
-			if _, ok, known := b.inv.Port(i.Member, i.Linux); known && !ok {
-				b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", i.Linux, i.Member)
-			}
+		if info, ok, known := b.port(i.Member, i.Linux); known && !ok {
+			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", i.Linux, i.Member)
+		} else if ok && info.StackPort {
+			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", i.Linux, i.Member)
 		}
 		if i.Parent == "" {
 			continue
@@ -249,7 +330,7 @@ func (b *builder) validateMTU() {
 		// Member ports inherit the MTU of their bundle.
 		if i.Parent != "" {
 			if ae, ok := c.Interfaces[i.Parent]; ok {
-				if i.MTU != 1500 && i.MTU != ae.MTU {
+				if i.MTU != DefaultMTU && i.MTU != ae.MTU {
 					b.warnf(path+" mtu", "member ports use the MTU of %s (%d); this setting is ignored", i.Parent, ae.MTU)
 				}
 				i.MTU = ae.MTU
@@ -259,9 +340,9 @@ func (b *builder) validateMTU() {
 	for _, name := range sortedKeys(c.Interfaces) {
 		i := c.Interfaces[name]
 		path := "interfaces " + name
-		if b.inv != nil && !i.AE {
-			if info, ok, known := b.inv.Port(i.Member, i.Linux); known && ok && info.MaxMTU > 0 && i.MTU > info.MaxMTU {
-				b.errorf(path+" mtu", "MTU %d exceeds the hardware maximum of %d on %s", i.MTU, info.MaxMTU, i.Linux)
+		if !i.AE {
+			if info, ok, _ := b.port(i.Member, i.Linux); ok && info.MaxMTU > 0 && LinuxMTU(i.MTU) > info.MaxMTU {
+				b.errorf(path+" mtu", "MTU %d exceeds the hardware maximum of %d on %s", i.MTU, info.MaxMTU+EthHeader, i.Linux)
 			}
 		}
 		for _, vid := range i.VLANs {
@@ -309,8 +390,8 @@ func (b *builder) validateDomains() {
 				b.errorf(path+" members", "member %d is already part of domain %d", m, o)
 			}
 			inDomain[m] = did
-			if mem.Mgmt.Address == "" && !mem.Mgmt.DHCP {
-				b.warnf(path, "member %d has no management address; split-brain detection via keepalive is not possible", m)
+			if !mem.Mgmt.Configured() || !mem.Mgmt.HasAddress() {
+				b.warnf(path, "member %d has no management address; the BFD split-brain heartbeat is not possible", m)
 			}
 		}
 		if d.PeerLink == "" {
@@ -356,7 +437,7 @@ func (b *builder) validateVXLAN() {
 		}
 	}
 	// The underlay must carry the largest extended frame plus encapsulation.
-	maxMTU := 1500
+	maxMTU := DefaultMTU
 	for _, v := range c.VLANs {
 		if v.VNI != 0 && v.MTU > maxMTU {
 			maxMTU = v.MTU
@@ -364,7 +445,7 @@ func (b *builder) validateVXLAN() {
 	}
 	for _, id := range sortedKeys(c.Members) {
 		m := c.Members[id]
-		if m.Underlay.Interface == "" {
+		if !m.Underlay.Configured() {
 			continue
 		}
 		overhead := 50 // IPv4 + UDP + VXLAN + inner Ethernet
@@ -374,15 +455,26 @@ func (b *builder) validateVXLAN() {
 		if c.Switch.VXLANEncrypt {
 			overhead += 80 // WireGuard over IPv6 worst case
 		}
-		name := fmt.Sprintf("%d/%s", id, m.Underlay.Interface)
-		mtu := 1500
-		if i, ok := c.Interfaces[name]; ok {
-			mtu = i.MTU
-		} else if b.inv == nil {
-			continue
+		var mtu int
+		var where string
+		if m.Underlay.Interface != "" {
+			where = fmt.Sprintf("interfaces %d/%s mtu", id, m.Underlay.Interface)
+			if i, ok := c.Interfaces[fmt.Sprintf("%d/%s", id, m.Underlay.Interface)]; ok {
+				mtu = i.MTU
+			} else if info, ok, _ := b.port(id, m.Underlay.Interface); ok && info.MTU > 0 {
+				mtu = info.MTU + EthHeader // unmanaged port: its current MTU
+			} else {
+				continue
+			}
+		} else {
+			v := c.VLANByID[m.Underlay.VLAN]
+			if v == nil || v.MTU == 0 {
+				continue
+			}
+			where, mtu = "vlans "+v.Name+" mtu", v.MTU
 		}
 		if mtu < maxMTU+overhead {
-			b.warnf("interfaces "+name+" mtu", "underlay MTU %d is below %d (largest VXLAN VLAN MTU %d + %d bytes encapsulation); larger frames are dropped at the tunnel", mtu, maxMTU+overhead, maxMTU, overhead)
+			b.warnf(where, "underlay MTU %d is below %d (largest VXLAN VLAN MTU %d + %d bytes encapsulation); larger frames are dropped at the tunnel", mtu, maxMTU+overhead, maxMTU, overhead)
 		}
 	}
 	for vtep, list := range c.Switch.RemoteVTEPs {
@@ -405,6 +497,20 @@ func (b *builder) validateAnalyzers() {
 		if len(a.IngressIfs)+len(a.EgressIfs)+len(a.IngressVLANs) == 0 {
 			b.errorf(path, "at least one input is required")
 		}
+		// Mirroring happens on the output's member. Bundles spanning two
+		// members (MC-LAG) contribute their local leg there.
+		outMember := 0
+		if o, ok := c.Interfaces[a.Output]; ok {
+			if o.AE {
+				if len(o.MemberIDs) == 1 {
+					outMember = o.MemberIDs[0]
+				} else if len(o.MemberIDs) > 1 {
+					b.errorf(path+" output", "%s spans several members and cannot be a mirror output", a.Output)
+				}
+			} else {
+				outMember = o.Member
+			}
+		}
 		members := map[int]bool{}
 		check := func(ifname, where string) {
 			i, ok := c.Interfaces[ifname]
@@ -415,12 +521,15 @@ func (b *builder) validateAnalyzers() {
 			if i.Parent != "" {
 				b.errorf(path+" "+where, "%s is a member of %s; mirror the aggregated interface instead", ifname, i.Parent)
 			}
-			if i.AE {
+			switch {
+			case !i.AE:
+				members[i.Member] = true
+			case outMember != 0 && slices.Contains(i.MemberIDs, outMember):
+				members[outMember] = true
+			default:
 				for _, m := range i.MemberIDs {
 					members[m] = true
 				}
-			} else {
-				members[i.Member] = true
 			}
 		}
 		for _, ifn := range a.IngressIfs {
@@ -442,7 +551,7 @@ func (b *builder) validateAnalyzers() {
 			}
 		}
 		if len(members) > 1 {
-			b.errorf(path, "inputs and output must be on the same stack member (got members %s)", joinInts(sortedKeys(members)))
+			b.errorf(path, "inputs must have ports on the output's member %d (got members %s)", outMember, joinInts(sortedKeys(members)))
 		}
 	}
 }
