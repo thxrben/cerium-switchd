@@ -202,29 +202,17 @@ a way that can drop traffic when the hardware misbehaves:
 * Later phases add post-commit health checks (mgmt still reachable, stack peers up, MC-LAG healthy). If a check fails
   inside the window, the commit is reverted automatically.
 
-## 5. Config example
-```
-set system host-name core
-set system syslog host 10.0.0.5 transport tls
-set stack member 1 hostname sw-a
-set stack member 2 hostname sw-b
-set interfaces 1/enp1s0 mtu 9216
-set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 member 1/enp1s0
-set interfaces ae1 member 2/enp1s0
-set interfaces ae1 mclag id 1
-set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk vlan members [ 10 20 ]
-set mclag peer-link ae0 keepalive via mgmt
-set vlans users vlan-id 10 mtu 1500 vxlan vni 10010
-set vlans storage vlan-id 20 mtu 9000
-set vxlan source-interface lo0 vtep 10.255.0.1 mode control-plane
-```
+## 5. Configuration
+
+The configuration language is specified in **docs/config-reference.md**. That covers syntax, formats, directives,
+the commit model, the semantics and interactions of every statement, and the validation rules. Its examples are
+parsed and validated by the test suite.
 
 ## 6. Security vs. performance (important)
 
 | Channel | Encryption | Cost |
 |---|---|---|
-| Control plane (Raft, MC-LAG sync, VXLAN control, keepalive) | mTLS 1.3 | Negligible (tiny traffic). **Always on.** |
+| Stacking plane (Raft, MC-LAG sync, VXLAN control) and mgmt heartbeat | TLS 1.3 over the L2 stream; BFD authenticated | Negligible (tiny traffic). **Always on.** |
 | Peer link data (MC-LAG) | Optional **MACsec** (GCM-AES-128/256) | 32 B/frame. With NIC offload (e.g. mlx5, some Intel) it runs at line rate. In software, AES-NI x86 gets roughly 5–20 Gbit/s per core; small ARM boards get much less. |
 | VXLAN underlay data | Optional **WireGuard** (or MACsec per hop, or IPsec) | Software only: roughly 5–10 Gbit/s per core on modern x86, far less on ARM. Adds 60 B on top of VXLAN's 50 B, so the underlay needs MTU ≥ overlay + 110. |
 
@@ -351,7 +339,7 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 3. Consistency checks (VLANs, MTU, LACP parameters). On a mismatch the bond is set to proto-down with a reason.
 4. **MAC sync**: learned MACs, moves, coordinated ageing and flush on link down.
 5. **Split horizon** via nftables, updated dynamically with each leg's state.
-6. Failure handling: leg down, peer link down with keepalive up (the secondary shuts its ports), peer dead,
+6. Failure handling (matrix over stacking path, peer-link and heartbeat): leg down, peer-link down with the peer alive (the secondary shuts its ports), peer dead,
    switchd crash, and reboot/rejoin (delay-restore timer).
 7. `show mclag`, `show mclag consistency`, alarms.
 8. Failure-matrix tests with measured convergence (high-rate ping and iperf3 from srv1).
