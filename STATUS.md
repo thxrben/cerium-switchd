@@ -8,18 +8,21 @@ Last updated: 2026-09-29.
 - Spec: `docs/config-reference.md` (tests keep index, prose coverage and examples valid).
 - Directives: `inactive:` / activate / deactivate (all formats, diff `!` lines, `Tree.Active()` used by
   `model.Build`), `load merge|replace|override|set` (atomic, `replace:`/`delete:`), `copy`, `rename`.
+- Commit engine (`internal/commit`): FileStore (atomic writes, 50 revisions, pending state written before the
+  revision it covers), sessions shared/private/exclusive, commit check incl. operator permissions,
+  apply with revert on failure, confirmation (required/optional, stricter policy, timer restart, rollback to
+  last confirmed, restart-safe), `config.Patch` for private `update`. Tested with fake clock/applier + race detector.
+- Lab: all five VMs bootstrapped via Ansible (lab/), root key login works.
 - Plan §4.15: OS ownership (takeover/release, masking conflicts, sysctls, foreign-change revert); lab install steps in §11.
 - Plan §4.14: hitless reconfiguration (diff-driven, no link down, tighten-before-loosen, planner property tests).
 
 ## Next (in order)
-1. `internal/version` package (Makefile LDFLAGS already reference it).
-2. Commit engine (`internal/commit`): revision store (50 revisions, file store first), candidates
-   shared/private/exclusive with locks, commit check, commit / comment / and-quit, confirmation
-   (mode required|optional, timer restart, rollback target = last confirmed, persisted pending state,
-   stricter-policy rule, automatic-rollback revision), rollback n, apply pipeline interface with
-   per-member results and revert on failure (validate → plan → apply, §4.14).
-3. CLI engine (server side): parsing, completion, `?`, pipes, permissions, panic recovery.
-4. JSON-lines RPC over a unix socket (SO_PEERCRED), `swcli` client, `switchd --dry-run` → Checkpoint A.
+1. CLI engine (server side, `internal/cli`): parsing on top of config.Resolve, completion, `?` help,
+   configuration-mode commands (set/delete/edit/up/top/show/copy/rename/activate/deactivate/load/save/
+   commit variants/rollback/confirm/status/update/run), pipes, permissions, panic recovery.
+2. JSON-lines RPC over a unix socket (SO_PEERCRED), `swcli` client (x/term, pager), `switchd --dry-run`
+   with a dry-run Applier → Checkpoint A (try it on sw1).
+3. Phase 3 data plane on the lab VMs.
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

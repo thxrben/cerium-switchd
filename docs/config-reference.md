@@ -228,7 +228,7 @@ set protocols rstp
   | Command | Effect |
   |---|---|
   | `configure` | Edit the **shared candidate**. Everyone in plain `configure` sees the same candidate, and on entry you get a message naming the other users who are editing. |
-  | `configure private` | Edit a private copy of the committed configuration. It is not allowed while the shared candidate has uncommitted changes. Your commit applies only your changes. If someone else committed in between, commit fails and asks you to run `update`. |
+  | `configure private` | Edit a private copy of the committed configuration. It is not allowed while the shared candidate has uncommitted changes. Your commit applies only your changes. If someone else committed in between, commit fails and asks you to run `update`, which replays your changes on top of the latest commit. A private candidate without changes follows other commits automatically. |
   | `configure exclusive` | Lock the configuration. Nobody else can commit or change the shared candidate until you leave. Uncommitted changes are discarded when you exit. |
 
   Leaving plain `configure` keeps uncommitted changes in the shared candidate, and you are warned about them.
@@ -1062,7 +1062,8 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | Commit check (the validation rules in this document) | implemented and tested, except where noted below |
 | `interface-range` expansion (member-range, wildcards, precedence) | implemented and tested (hot-plug re-evaluation with the data plane) |
 | `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `copy`, `rename` | implemented and tested (config package); CLI commands next |
-| Commit / confirmation / rollback engine, CLI | next |
+| Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
+| CLI | next |
 | Hitless apply (diff-driven, tighten before loosen) | specified, with the data plane (Phase 3) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
