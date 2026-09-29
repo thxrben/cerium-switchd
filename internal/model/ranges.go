@@ -131,7 +131,7 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 // reservedPort reports whether a port is a member's dedicated management or
 // underlay port.
 func (b *builder) reservedPort(member int, name string) bool {
-	for _, e := range b.root.Get("stack").Entries("member") {
+	for _, e := range b.root.Get("virtual-chassis").Entries("member") {
 		if e.Key != strconv.Itoa(member) {
 			continue
 		}

@@ -121,7 +121,7 @@ func (b *builder) validateMembers() {
 	names := map[string]int{}
 	for _, id := range sortedKeys(c.Members) {
 		m := c.Members[id]
-		path := fmt.Sprintf("stack member %d", id)
+		path := fmt.Sprintf("virtual-chassis member %d", id)
 		if m.HostName != "" {
 			if o, dup := names[m.HostName]; dup {
 				b.errorf(path+" host-name", "host-name %q is already used by member %d", m.HostName, o)
@@ -241,7 +241,7 @@ func (b *builder) validateInterfaces() {
 		}
 		m, ok := c.Members[i.Member]
 		if !ok {
-			b.errorf(path, "stack member %d is not configured", i.Member)
+			b.errorf(path, "virtual-chassis member %d is not configured", i.Member)
 		} else if m.Witness {
 			b.errorf(path, "member %d is a witness and has no switch ports", i.Member)
 		}
@@ -402,7 +402,7 @@ func (b *builder) validateDomains() {
 		for _, m := range d.Members {
 			mem, ok := c.Members[m]
 			if !ok {
-				b.errorf(path+" members", "stack member %d is not configured", m)
+				b.errorf(path+" members", "virtual-chassis member %d is not configured", m)
 				continue
 			}
 			if mem.Witness {
@@ -455,7 +455,7 @@ func (b *builder) validateVXLAN() {
 	for _, id := range sortedKeys(c.Members) {
 		m := c.Members[id]
 		if !m.Witness && m.VTEPAddress == "" {
-			b.errorf(fmt.Sprintf("stack member %d", id), "vtep-address is required when VLANs are extended over VXLAN")
+			b.errorf(fmt.Sprintf("virtual-chassis member %d", id), "vtep-address is required when VLANs are extended over VXLAN")
 		}
 	}
 	// The underlay must carry the largest extended frame plus encapsulation.

@@ -72,11 +72,11 @@ Last updated: 2026-09-29 (late).
 - Done: link protocol (docs/stack-protocol.md, internal/stack/link): reliable stream per stacking cable as
   net.Conn, epochs/restart detection, tested with lossy/duplicating/reordering cables and TLS 1.3 mTLS on top,
   fuzzed; AF_PACKET I/O bound to one port + EtherType 0x88b5; verified sw1 ens20 <-> sw3 ens19 (stk-13).
-- Spec: stacking ports are designated by local <card>/<port> (request stack port add 0/2).
+- Spec: stacking ports are designated by local <card>/<port> (request virtual-chassis vc-port set pic-slot 0 port 2).
 
 ## Next (in order)
 1. Phase 5: stack PKI (CA on first member, join tokens, CSR signing), BFD in the link, stack manager in
-   switchd (request stack port add/delete, show stack ports/topology; stacking ports: no IP, no bridge),
+   switchd (request virtual-chassis vc-port set/delete, show virtual-chassis [vc-port]; stacking ports: no IP, no bridge),
    topology + hop-by-hop relay, Raft store, per-member apply, stack-wide show commands.
    Lab cabling: test host hSw2 currently uses stk-12 (sw1 ens19 / sw2 ens19) and TestHotplug uses stk-13
    (sw1 ens20); move them to other links before the stacking lab tests.

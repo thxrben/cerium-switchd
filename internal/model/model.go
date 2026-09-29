@@ -384,16 +384,16 @@ func (b *builder) build() {
 	}
 
 	// Stack members. Without explicit members the node is member 1.
-	for _, e := range r.Get("stack").Entries("member") {
+	for _, e := range r.Get("virtual-chassis").Entries("member") {
 		id := atoi(e.Key, 0)
 		m := &Member{
 			ID:          id,
 			HostName:    e.Leaf("host-name"),
-			Priority:    atoi(e.Leaf("priority"), 128),
+			Priority:    atoi(e.Leaf("mastership-priority"), 128),
 			Witness:     e.Leaf("role") == "witness",
 			VTEPAddress: e.Leaf("vtep-address"),
 		}
-		path := fmt.Sprintf("stack member %d", id)
+		path := fmt.Sprintf("virtual-chassis member %d", id)
 		m.Mgmt = b.buildL3(e.Get("management"), path+" management")
 		m.Underlay = b.buildL3(e.Get("underlay"), path+" underlay")
 		c.Members[id] = m
@@ -500,7 +500,7 @@ func (b *builder) build() {
 		c.Switch.RemoteVTEPs[e.Key] = vnis
 	}
 
-	c.StackBFD = buildBFD(r.Get("stack", "bfd"), 100)
+	c.StackBFD = buildBFD(r.Get("virtual-chassis", "bfd"), 100)
 
 	// BPDU protection.
 	bb := r.Get("protocols", "layer2-control", "bpdu-block")

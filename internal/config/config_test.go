@@ -42,8 +42,8 @@ set system name-server 9.9.9.9
 set system syslog host 10.0.0.5 transport tls
 set system login user alice class super-user
 set system login user alice authentication ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx alice@laptop"
-set stack member 1 host-name sw-a
-set stack member 2 host-name sw-b
+set virtual-chassis member 1 host-name sw-a
+set virtual-chassis member 2 host-name sw-b
 set interfaces 1/0/2 mtu 9216
 set interfaces 1/0/10 description "uplink to core"
 set interfaces 1/0/10 disable
@@ -72,13 +72,13 @@ func sampleTree(t *testing.T) *Tree {
 func TestSetAndOrdering(t *testing.T) {
 	tr := sampleTree(t)
 	got := FormatSet(tr)
-	// Natural sort: eth2 before eth10, schema order: system before stack.
+	// Natural sort: eth2 before eth10, schema order: system before virtual-chassis.
 	i2 := strings.Index(got, "1/0/2")
 	i10 := strings.Index(got, "1/0/10")
 	if i2 < 0 || i10 < 0 || i2 > i10 {
 		t.Errorf("natural ordering broken:\n%s", got)
 	}
-	if strings.Index(got, "set system") > strings.Index(got, "set stack") {
+	if strings.Index(got, "set system") > strings.Index(got, "set virtual-chassis") {
 		t.Errorf("schema ordering broken")
 	}
 	if tr.Root.Leaf("interfaces", "1/0/2", "mtu") != "9216" {
@@ -103,9 +103,9 @@ func TestLeafReplaceAndGroups(t *testing.T) {
 	if lacp.Child("active") != nil || lacp.Child("passive") == nil {
 		t.Fatalf("group exclusion failed: %s", FormatNode(lacp))
 	}
-	set(t, tr, "set stack member 1 management interface 1/3/0")
-	set(t, tr, "set stack member 1 management vlan 10")
-	if tr.Root.Has("stack", "member", "1", "management", "interface") {
+	set(t, tr, "set virtual-chassis member 1 management interface 1/3/0")
+	set(t, tr, "set virtual-chassis member 1 management vlan 10")
+	if tr.Root.Has("virtual-chassis", "member", "1", "management", "interface") {
 		t.Fatalf("interface should have been replaced by vlan")
 	}
 }

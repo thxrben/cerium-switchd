@@ -101,7 +101,7 @@ func upgradeNames(names portNames, member int) func(json.RawMessage) json.RawMes
 					continue
 				}
 				if !strings.Contains(s, "/") && stackMember != "" {
-					// stack member <id> management|underlay interface <linux-name>
+					// virtual-chassis member <id> management|underlay interface <linux-name>
 					if stackMember == me {
 						if n, ok := names.Name(s); ok {
 							m[name] = n
@@ -144,11 +144,48 @@ func upgradeNames(names portNames, member int) func(json.RawMessage) json.RawMes
 		if json.Unmarshal(raw, &m) != nil {
 			return raw
 		}
+		renameStack(m)
 		walk(schema.Root(), m, "")
 		out, err := json.Marshal(m)
 		if err != nil {
 			return raw
 		}
 		return out
+	}
+}
+
+// renameStack converts the stack hierarchy of older versions to the Junos
+// Virtual Chassis names: "stack" -> "virtual-chassis", member "priority"
+// -> "mastership-priority" (reference 5.2).
+func renameStack(m map[string]any) {
+	st, ok := m["stack"]
+	if !ok {
+		return
+	}
+	if _, taken := m["virtual-chassis"]; taken {
+		return
+	}
+	delete(m, "stack")
+	m["virtual-chassis"] = st
+	for k, v := range m {
+		// Keep an inactive tag on the hierarchy.
+		if k == "@inactive:stack" {
+			delete(m, k)
+			m["@inactive:virtual-chassis"] = v
+		}
+	}
+	vc, _ := st.(map[string]any)
+	members, _ := vc["member"].(map[string]any)
+	for _, e := range members {
+		if mem, ok := e.(map[string]any); ok {
+			if p, ok := mem["priority"]; ok {
+				delete(mem, "priority")
+				mem["mastership-priority"] = p
+			}
+			if p, ok := mem["@inactive:priority"]; ok {
+				delete(mem, "@inactive:priority")
+				mem["@inactive:mastership-priority"] = p
+			}
+		}
 	}
 }

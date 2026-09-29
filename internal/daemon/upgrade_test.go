@@ -70,11 +70,27 @@ func TestUpgradeNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	if tr.Root.Leaf("interfaces", "1/1/0", "description") != "x" || !tr.Root.Get("interfaces", "1/2/0").Inactive ||
-		tr.Root.Leaf("stack", "member", "1", "management", "interface") != "1/0/0" {
+		tr.Root.Leaf("virtual-chassis", "member", "1", "management", "interface") != "1/0/0" {
 		t.Errorf("upgraded:\n%s", config.FormatSet(tr))
 	}
 	// New-style input is unchanged.
 	if s := string(up(json.RawMessage(`{"interfaces":{"1/1/0":{"disable":true}}}`))); !strings.Contains(s, `"1/1/0"`) {
 		t.Error(s)
+	}
+}
+
+// The stack hierarchy of older versions becomes virtual-chassis.
+func TestUpgradeStack(t *testing.T) {
+	up := upgradeNames(fakeNames{}, 1)
+	tr, err := config.FromJSON(up(json.RawMessage(`{"stack": {"bfd": {"multiplier": "5"},
+	  "member": {"1": {"priority": "200", "host-name": "a"}, "2": {"@inactive:priority": true, "priority": "10"}}},
+	  "protocols": {"rstp": {"interface": {"ae1": {"priority": "32"}}}}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := tr.Root
+	if r.Leaf("virtual-chassis", "member", "1", "mastership-priority") != "200" || r.Leaf("virtual-chassis", "bfd", "multiplier") != "5" ||
+		!r.Get("virtual-chassis", "member", "2", "mastership-priority").Inactive || r.Leaf("protocols", "rstp", "interface", "ae1", "priority") != "32" {
+		t.Errorf("converted:\n%s", config.FormatSet(tr))
 	}
 }

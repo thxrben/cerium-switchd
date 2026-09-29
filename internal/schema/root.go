@@ -146,11 +146,11 @@ func build() *Node {
 		),
 	)
 
-	stack := C("stack", "Stack (virtual chassis) members",
+	stack := C("virtual-chassis", "Stack members and stacking (like a Junos Virtual Chassis)",
 		bfd("bfd", "BFD on stacking ports (IP-less)", "100"),
 		L("member", "Stack member", MemberID,
 			V("host-name", "Host name of this member", Hostname),
-			VD("priority", "Priority for leader election (higher wins)", Uint("<priority>", 0, 255), "128"),
+			VD("mastership-priority", "Priority for leader election (higher wins)", Uint("<priority>", 0, 255), "128"),
 			VD("role", "Member role", Enum(
 				E("switch", "Regular switching member"),
 				E("witness", "Quorum-only member without data plane"),

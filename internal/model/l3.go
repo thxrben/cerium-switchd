@@ -250,7 +250,7 @@ func (b *builder) validateRouting() {
 			if ports[name].HasIP {
 				if _, managed := c.Interfaces[name]; !managed || !c.Interfaces[name].Switching {
 					b.warnf("interfaces", "member %d routes between its VLANs while its operating-system management port %s (%s) is in the same routing instance; "+
-						"data VLANs can reach the management network. Configure 'stack member %d management' to separate them", id, name, ports[name].Linux, id)
+						"data VLANs can reach the management network. Configure 'virtual-chassis member %d management' to separate them", id, name, ports[name].Linux, id)
 					break
 				}
 			}

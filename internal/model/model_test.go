@@ -11,14 +11,14 @@ const valid = `
 set system host-name core
 set system login user alice class super-user
 set system login user alice authentication encrypted-password "$6$abc$def"
-set stack member 1 host-name sw-a
-set stack member 1 management interface 1/9/0
-set stack member 1 management address 192.168.1.11/24
-set stack member 1 vtep-address 10.255.0.1
-set stack member 2 host-name sw-b
-set stack member 2 management interface 2/9/0
-set stack member 2 management address 192.168.1.12/24
-set stack member 2 vtep-address 10.255.0.2
+set virtual-chassis member 1 host-name sw-a
+set virtual-chassis member 1 management interface 1/9/0
+set virtual-chassis member 1 management address 192.168.1.11/24
+set virtual-chassis member 1 vtep-address 10.255.0.1
+set virtual-chassis member 2 host-name sw-b
+set virtual-chassis member 2 management interface 2/9/0
+set virtual-chassis member 2 management address 192.168.1.12/24
+set virtual-chassis member 2 vtep-address 10.255.0.2
 set interfaces 1/0/1 ether-options 802.3ad ae0
 set interfaces 2/0/1 ether-options 802.3ad ae0
 set interfaces 1/0/2 ether-options 802.3ad ae1
@@ -109,7 +109,7 @@ func TestInvalidConfigs(t *testing.T) {
 		{"dup vlan id", "set vlans dup vlan-id 10", "already used by vlan"},
 		{"vlan without id", "set vlans noid description x", "vlan-id is required"},
 		{"dup vni", "set vlans storage vxlan vni 10010", "vni 10010 is already used"},
-		{"vtep missing", "delete stack member 2 vtep-address", "vtep-address is required"},
+		{"vtep missing", "delete virtual-chassis member 2 vtep-address", "vtep-address is required"},
 		{"unknown ae", "set interfaces 1/0/5 ether-options 802.3ad ae9", "ae9 is not configured"},
 		{"member with family", "set interfaces 1/0/1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},
@@ -127,20 +127,20 @@ func TestInvalidConfigs(t *testing.T) {
 		{"analyzer mclag output", "set forwarding-options analyzer dbg output interface ae1", "cannot be a mirror output"},
 		{"rstp on member port", "set protocols rstp interface 1/0/1 edge", "configure RSTP on the aggregated interface"},
 		{"mgmt is switch port", "set interfaces 1/9/0 unit 0 family ethernet-switching vlan members storage", "cannot carry an IP interface"},
-		{"dup hostname", "set stack member 2 host-name sw-a", "already used by member 1"},
-		{"three members", "set stack member 3 host-name sw-c\nset interfaces 3/0/2 ether-options 802.3ad ae1", "at most two"},
-		{"witness ports", "set stack member 2 role witness", "is a witness"},
-		{"mgmt vlan undefined", "set stack member 1 management vlan 99", "vlan-id 99 is not defined"},
-		{"dhcp and static v4", "set stack member 1 management dhcp", "either 'dhcp' or a static IPv4"},
-		{"two v4 gateways", "set stack member 1 management gateway [ 192.168.1.1 192.168.1.2 ]", "at most one gateway"},
-		{"address without attach", "set stack member 3 host-name c\nset stack member 3 management address 10.1.1.1/24", "require 'vlan' or 'interface'"},
-		{"mgmt and underlay same vlan", "set stack member 1 management vlan storage\nset stack member 1 underlay vlan storage", "cannot share a VLAN"},
-		{"underlay in vxlan vlan", "set stack member 1 underlay vlan users", "cannot carry the VXLAN underlay"},
+		{"dup hostname", "set virtual-chassis member 2 host-name sw-a", "already used by member 1"},
+		{"three members", "set virtual-chassis member 3 host-name sw-c\nset interfaces 3/0/2 ether-options 802.3ad ae1", "at most two"},
+		{"witness ports", "set virtual-chassis member 2 role witness", "is a witness"},
+		{"mgmt vlan undefined", "set virtual-chassis member 1 management vlan 99", "vlan-id 99 is not defined"},
+		{"dhcp and static v4", "set virtual-chassis member 1 management dhcp", "either 'dhcp' or a static IPv4"},
+		{"two v4 gateways", "set virtual-chassis member 1 management gateway [ 192.168.1.1 192.168.1.2 ]", "at most one gateway"},
+		{"address without attach", "set virtual-chassis member 3 host-name c\nset virtual-chassis member 3 management address 10.1.1.1/24", "require 'vlan' or 'interface'"},
+		{"mgmt and underlay same vlan", "set virtual-chassis member 1 management vlan storage\nset virtual-chassis member 1 underlay vlan storage", "cannot share a VLAN"},
+		{"underlay in vxlan vlan", "set virtual-chassis member 1 underlay vlan users", "cannot carry the VXLAN underlay"},
 		{"range overlap", "set interface-range a member-range 1/0/10 to 1/0/12\nset interface-range b member-range 1/0/12 to 1/0/13", "already part of interface-range a"},
 		{"range bad ends", "set interface-range a member-range 1/0/10 to 2/0/12", "same member"},
 		{"range reversed", "set interface-range a member-range 1/0/12 to 1/0/10", "comes before"},
 		{"range across cards", "set interface-range a member-range 1/0/1 to 1/1/2", "same member and card"},
-		{"mgmt port of other member", "set stack member 1 management interface 2/0/0", "belongs to member 2"},
+		{"mgmt port of other member", "set virtual-chassis member 1 management interface 2/0/0", "belongs to member 2"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -162,9 +162,9 @@ func TestWarnings(t *testing.T) {
 		{"set system login user bob class operator", "cannot log in"},
 		{"set interfaces ae1 aggregated-ether-options lacp system-priority 100", "ignored on MC-LAG interfaces"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
-		{"set stack member 1 underlay interface 1/0/5\nset stack member 1 underlay address 10.9.0.1/24\nset interfaces 1/0/5 mtu 1514", "underlay MTU 1514 is below 1564"},
-		{"set stack member 1 management gateway 192.168.1.1\nset stack member 1 management gateway 2001:db8::1", "has no address of its family"},
-		{"set vlans lonely vlan-id 77\nset stack member 2 management vlan lonely", "no switch port of member 2 carries vlan-id 77"},
+		{"set virtual-chassis member 1 underlay interface 1/0/5\nset virtual-chassis member 1 underlay address 10.9.0.1/24\nset interfaces 1/0/5 mtu 1514", "underlay MTU 1514 is below 1564"},
+		{"set virtual-chassis member 1 management gateway 192.168.1.1\nset virtual-chassis member 1 management gateway 2001:db8::1", "has no address of its family"},
+		{"set vlans lonely vlan-id 77\nset virtual-chassis member 2 management vlan lonely", "no switch port of member 2 carries vlan-id 77"},
 		{"set protocols layer2-control bpdu-block interface ae1\nset protocols rstp interface ae1 cost 10\ndelete protocols rstp interface ae1 edge", "non-edge port"},
 		{"set interfaces 1/0/4 unit 0 family ethernet-switching vlan members storage", "carries switched traffic"},
 	}
@@ -394,7 +394,7 @@ set routing-options static route 2001:db8:99::/48 next-hop 2001:db8:10::fe
 		{"set routing-options static route 10.50.0.0/16 discard\nset routing-options static route 10.50.0.0/16 next-hop 10.1.1.2", "mutually exclusive"},
 		{"set routing-options static route 10.50.0.0/16", "needs 'next-hop' or 'discard'"},
 		{"set interfaces 1/0/2 ether-options 802.3ad ae1\nset interfaces 1/0/2 unit 0 family inet address 10.9.0.1/24", "configure routing on ae1"},
-		{"set stack member 1 management vlan v10\nset stack member 1 management address 10.7.0.1/24", "management VLAN of member 1"},
+		{"set virtual-chassis member 1 management vlan v10\nset virtual-chassis member 1 management address 10.7.0.1/24", "management VLAN of member 1"},
 	}
 	for _, cs := range cases {
 		_, issues := build(t, base+cs.mutate+"\n", nil)

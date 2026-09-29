@@ -519,7 +519,7 @@ func (s *Session) Close() (uncommitted bool) {
 }
 
 // forbidden lists the hierarchies an operator may not change (4.3).
-var forbidden = [][]string{{"system", "login"}, {"system", "services"}, {"stack"}}
+var forbidden = [][]string{{"system", "login"}, {"system", "services"}, {"virtual-chassis"}}
 
 // check validates cand for this session: permissions and model rules.
 // Caller must not hold e.mu.

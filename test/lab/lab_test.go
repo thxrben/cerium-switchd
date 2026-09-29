@@ -546,7 +546,7 @@ func TestManagementPlane(t *testing.T) {
 	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") + access(hSw3.sw1Port, "v10")
 
 	// IRB-like: management address on VLAN 99.
-	configure(t, base+"set stack member 1 management vlan mgmt\nset stack member 1 management address 192.168.99.1/24\n")
+	configure(t, base+"set virtual-chassis member 1 management vlan mgmt\nset virtual-chassis member 1 management address 192.168.99.1/24\n")
 	if _, err := ssh(hSrv1.vm, "ip netns exec h ping -c2 -W1 192.168.99.1"); err != nil {
 		t.Error("management address not reachable from its VLAN")
 	}
@@ -564,7 +564,7 @@ func TestManagementPlane(t *testing.T) {
 	}
 
 	// Dedicated port instead.
-	configure(t, base+"set stack member 1 management interface 1/ens19\nset stack member 1 management address 192.168.98.1/24\n")
+	configure(t, base+"set virtual-chassis member 1 management interface 1/ens19\nset virtual-chassis member 1 management address 192.168.98.1/24\n")
 	if _, err := ssh(hSw2.vm, "ip netns exec h ping -c2 -W1 192.168.98.1"); err != nil {
 		t.Error("management address on the dedicated port not reachable")
 	}
@@ -618,7 +618,7 @@ func TestSyslogOverManagementVRF(t *testing.T) {
 	setupHost(t, hSrv1)
 	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
 	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") +
-		"set stack member 1 management vlan mgmt\nset stack member 1 management address 192.168.99.1/24\n"
+		"set virtual-chassis member 1 management vlan mgmt\nset virtual-chassis member 1 management address 192.168.99.1/24\n"
 	configure(t, base)
 	for _, transport := range []string{"udp", "tcp"} {
 		ready := make(chan struct{})

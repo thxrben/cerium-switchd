@@ -100,7 +100,7 @@ func Run(ctx context.Context, o Options) error {
 
 	hostName = func() string {
 		root := engine.Active().Active().Root
-		if h := root.Leaf("stack", "member", "1", "host-name"); h != "" {
+		if h := root.Leaf("virtual-chassis", "member", "1", "host-name"); h != "" {
 			return h
 		}
 		if h := root.Leaf("system", "host-name"); h != "" {

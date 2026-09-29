@@ -15,7 +15,7 @@ Contents
 4. [Commit model](#4-commit-model)
 5. [Statement reference](#5-statement-reference)
    - [5.1 system](#51-system)
-   - [5.2 stack](#52-stack)
+   - [5.2 virtual-chassis](#52-virtual-chassis)
    - [5.3 interfaces](#53-interfaces)
    - [5.4 vlans](#54-vlans)
    - [5.5 protocols](#55-protocols)
@@ -90,7 +90,7 @@ excluding 802.1Q tags. Each VLAN tag may add 4 bytes on top, so a trunk with `mt
 
 ### 1.4 Stack members and interface ownership
 
-* Every switch is a **stack member** with an id from 1 to 16. A switch without any `stack` configuration is member 1.
+* Every switch is a **stack member** with an id from 1 to 16. A switch without any `virtual-chassis` configuration is member 1.
 * Interface names carry the member id, so the whole stack is configured in one place.
 * **switchd only touches interfaces that appear under `interfaces`, or that an `interface-range` selects**, plus
   management and underlay ports that are configured explicitly.
@@ -128,7 +128,7 @@ Rules that follow from this:
   VXLAN underlay interface (default VRF).
 * The management VRF has no route into the data plane's VLANs. The switch never routes between VLANs, or between
   management and data traffic.
-* An in-band management VLAN on the data trunks is supported (`stack member <id> management vlan`). Management then
+* An in-band management VLAN on the data trunks is supported (`virtual-chassis member <id> management vlan`). Management then
   shares the fate of the data plane. Commit confirmation and the serial console are the safety nets. A separate port,
   set as an access port in the management VLAN, avoids that.
 
@@ -457,8 +457,8 @@ When confirmation is needed:
 | `show`, `monitor`, `ping` | ✔ | ✔ | ✔ |
 | `clear …` (counters, MAC table, errors) | ✔ | ✔ | – |
 | `configure`, `commit`, `confirm`, `rollback` | ✔ | ✔ | – |
-| change `system login`, `system services`, `stack` | ✔ | – | – |
-| `request system reboot/halt`, `request stack …` | ✔ | – | – |
+| change `system login`, `system services`, `virtual-chassis` | ✔ | – | – |
+| `request system reboot/halt`, `request virtual-chassis …` | ✔ | – | – |
 | `start shell` (Linux shell as the logged-in user; `exit` returns to the CLI) | ✔ | – | – |
 
 An operator whose candidate touches a forbidden hierarchy gets an error at commit time naming the forbidden paths.
@@ -474,8 +474,8 @@ Each statement lists **behaviour**, **interactions** with related statements, an
 
 #### `system host-name <hostname>`
 Name of the stack as a whole. It appears in syslog messages as the application name prefix, and in the CLI
-prompt for members that have no `stack member <id> host-name`. Default: `switch`.
-* The member's host name (its `stack member <id> host-name`, else `system host-name`) is also the operating system's
+prompt for members that have no `virtual-chassis member <id> host-name`. Default: `switch`.
+* The member's host name (its `virtual-chassis member <id> host-name`, else `system host-name`) is also the operating system's
   host name: it is set at once (no reboot) and written to `/etc/hostname`, and `/etc/hosts` gets the line
   `127.0.1.1 <host>.<domain-name> <host>` (Debian convention). Shells that are already open show the new name
   in their prompt only when started again.
@@ -605,7 +605,10 @@ Hardware acceleration policy (see also `interfaces <if> offload disable`).
 * At startup, switchd also tunes NICs to avoid drops: RX/TX rings at their maximum and RSS across all queues. Pause frames are left
   at the driver default unless `ether-options flow-control` is set.
 
-### 5.2 stack
+### 5.2 virtual-chassis
+
+The stack is configured like a Junos Virtual Chassis. Members are numbered 1–16 (Junos uses 0–9); the member
+number is the first part of every port name (1.6).
 
 #### Stacking ports (not part of the configuration)
 
@@ -613,11 +616,12 @@ Stacking ports connect members **directly** (1:1 cables, no switch in between). 
 supported. Messages between members that are not directly connected are relayed hop by hop along the shortest
 working path, so a ring survives one broken cable.
 
-* **Designation**: stacking ports are set per switch with the operational command `request stack port add <card>/<port>`
-  (and `… delete`), e.g. `request stack port add 0/2`. The member part of the name is left out because a switch that
-  has not joined yet does not know its member id. The setting is stored locally, like Junos VC ports, because a switch
-  needs its stacking ports *before* it can receive the stack configuration. `show stack ports` and
-  `show stack topology` display them.
+* **Designation**: stacking ports (VC ports) are set per switch with the operational command
+  `request virtual-chassis vc-port set pic-slot <card> port <port>` (and `… vc-port delete …`), e.g.
+  `request virtual-chassis vc-port set pic-slot 0 port 2` for the port 1/0/2. The member number is left out because a
+  switch that has not joined yet does not know it. The setting is stored locally, as in Junos, because a switch needs
+  its stacking ports *before* it can receive the stack configuration. `show virtual-chassis vc-port` lists them, and
+  `show virtual-chassis` shows the members, their roles and the topology.
 * A stacking port is never a data or management port. E: the port is configured under `interfaces`, or as a
   management/underlay interface. Wildcard `interface-range`s skip stacking ports.
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
@@ -625,33 +629,33 @@ working path, so a ring survives one broken cable.
   mutual certificate authentication** runs on top, using the stack's own key. Frames from unauthenticated devices are ignored.
   Member certificates never expire and do not depend on the clock (a member with a wrong clock still joins); a member
   that is removed from the stack is rejected because its key is no longer listed, not because a certificate ran out.
-* **Joining**: a new switch with designated stacking ports announces itself on them. `request stack join token <t>`
-  on the new switch, or `request stack member add <id> token <t>` on the stack, authorises it. It then receives its
+* **Joining**: a new switch with designated stacking ports announces itself on them. `request virtual-chassis join token <t>`
+  on the new switch, or `request virtual-chassis member add <id> token <t>` on the stack, authorises it. It then receives its
   certificate and the configuration.
 * Stack control needs a majority of members (Raft). Without a majority, the data plane keeps forwarding with the last
   committed configuration, and only commits are blocked.
 
-#### `stack bfd { minimum-interval <ms>; multiplier <n>; }`
+#### `virtual-chassis bfd { minimum-interval <ms>; multiplier <n>; }`
 BFD (RFC 5880 state machine, carried IP-less inside the stacking protocol) on every stacking link. A link is declared
 down after `minimum-interval × multiplier` without packets. Defaults: 100 ms × 3 = 300 ms.
 * BFD runs with real-time scheduling priority, so CPU load does not cause false detections.
 * Values below 100 ms can still cause false detections on small ARM boards. A false detection makes stacking paths
   re-route, but never drops data traffic by itself.
 
-#### `stack member <1-16> { … }`
+#### `virtual-chassis member <1-16> { … }`
 Declares a stack member and its per-member settings. Configuration for a member that has not joined yet is kept and
-applied when it joins. Without any `stack member` entry the switch is standalone member 1, and interfaces of other
+applied when it joins. Without any `virtual-chassis member` entry the switch is standalone member 1, and interfaces of other
 members are rejected (E).
 * `host-name <hostname>`: sets the Linux host name and the CLI prompt of this member.
   E: the same host name on two members.
-* `priority <0-255>`: default 128. The highest priority healthy member becomes the stack leader (it coordinates
+* `mastership-priority <0-255>`: default 128. The highest priority healthy member becomes the stack leader (it coordinates
   commits). In an MC-LAG domain the higher priority member is *primary* (ties: lower member id).
 * `role switch|witness`: a `witness` member only takes part in stack quorum, over its own stacking cables. It keeps
   a two-switch stack able to commit when one switch is down. E: interfaces configured on a witness.
 * `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
   it is added to a loopback interface and must be routable in the underlay.
 
-#### `stack member <id> management { vlan <vlan> | interface <interface-name>; address [ … ]; dhcp; gateway [ … ]; }`
+#### `virtual-chassis member <id> management { vlan <vlan> | interface <interface-name>; address [ … ]; dhcp; gateway [ … ]; }`
 The member's management IP interface, in VRF `mgmt` (1.5). SSH, the web interface, syslog, NTP, DNS and the MC-LAG
 BFD heartbeat use it.
 * `vlan <vlan>` (IRB-like): an IP interface on this VLAN of the member's bridge. The VLAN is switched normally as
@@ -669,7 +673,7 @@ BFD heartbeat use it.
   default for the first installation. Once you configure it, switchd takes over, and commit confirmation protects you
   against locking yourself out.
 
-#### `stack member <id> underlay { vlan <vlan> | interface <interface-name>; address [ … ]; gateway [ … ]; }`
+#### `virtual-chassis member <id> underlay { vlan <vlan> | interface <interface-name>; address [ … ]; gateway [ … ]; }`
 The IP interface that carries this member's VXLAN tunnels, in the default VRF (not `mgmt`). It has the same structure
 as `management`, and the same rules apply for `vlan`/`interface`, addresses and gateways.
 * `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
@@ -841,7 +845,7 @@ address in that VLAN and **routes between VLANs** (and routed ports) in the defa
 * In a stack, the irb interface exists on **every member that has the VLAN**, with the same addresses and the same MAC
   address (derived from the stack), so every member routes locally (anycast gateway). With MC-LAG, both peers
   answer for the gateway address.
-* The management address is **not** an irb interface: it stays per member in `stack member <id> management` (5.2),
+* The management address is **not** an irb interface: it stays per member in `virtual-chassis member <id> management` (5.2),
   in VRF `mgmt`, with no routing to or from the data VLANs.
 * In the kernel, `irb.<n>` is a VLAN device on the bridge, and the bridge itself joins the VLAN (bridge self VLAN).
 
@@ -850,7 +854,7 @@ enabled per interface on them only. Interfaces the operating system manages (e.g
 do not forward. For IPv6, Linux can only enable forwarding for the whole system, so switchd sets `accept_ra 2` on the
 OS-managed interfaces that use router advertisements first (they keep their SLAAC addresses and default routes).
 * W: routed interfaces exist while the operating system's management NIC is in the default instance (not moved to
-  `stack member <id> management`): data VLANs can then reach the management network through the OS routes.
+  `virtual-chassis member <id> management`): data VLANs can then reach the management network through the OS routes.
 * ICMP redirects are not sent. Reverse-path filtering is loose (`rp_filter 2`) on routed interfaces.
 
 ### 5.4 vlans
@@ -875,7 +879,7 @@ only in a storage VLAN (`mtu 9014` for 9000-byte hosts) while the trunks carry `
 
 #### `l3-interface irb.<n>`
 Attaches the VLAN IP interface `irb.<n>` (5.3.3) to this VLAN. E: the irb unit is not configured. E: the same irb unit
-on two VLANs. E: the management VLAN of a member (`stack member <id> management vlan`) has an l3-interface (management
+on two VLANs. E: the management VLAN of a member (`virtual-chassis member <id> management vlan`) has an l3-interface (management
 and data routing are kept apart).
 
 #### `vxlan vni <vni>`
@@ -977,7 +981,7 @@ Statements:
   * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle.
   * A MAC ages out only when it has aged out on **both** members.
   * MACs learned on single-homed ports are installed on the peer pointing to the peer-link.
-* **Failure handling** (*primary* = higher `stack member priority`, ties: lower id):
+* **Failure handling** (*primary* = higher `virtual-chassis member mastership-priority`, ties: lower id):
   | Stacking path | Peer-link | Heartbeat | Interpretation | Behaviour |
   |---|---|---|---|---|
   | down | down | down | peer dead | Survivor carries all traffic as primary. |
@@ -1030,7 +1034,7 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
 
 #### `routing-options static route <prefix> { next-hop [ <ip> … ]; discard; }`
 Static routes of the default routing instance (the data plane, not management; management routes are
-`stack member <id> management gateway`).
+`virtual-chassis member <id> management gateway`).
 * `next-hop`: one or more gateway addresses. Several next hops share the traffic (ECMP). A next hop must be inside
   a subnet of an L3 interface of the default instance, else the route is inactive (W at commit; it becomes active
   once such an interface exists and is up).
@@ -1116,7 +1120,7 @@ system {
         }
     }
 }
-stack {
+virtual-chassis {
     member 1 {
         host-name lab-sw;
         management {
@@ -1182,21 +1186,21 @@ protocols {
 
 ```
 # Stacking ports were designated locally beforehand, e.g. on both switches:
-#   request stack port add eno2
-set stack member 1 host-name sw-a
-set stack member 1 management vlan mgmt
-set stack member 1 management address 192.168.1.11/24
-set stack member 1 management gateway 192.168.1.1
-set stack member 1 vtep-address 10.255.0.1
-set stack member 1 underlay interface 1/5/0
-set stack member 1 underlay address 10.99.0.1/24
-set stack member 2 host-name sw-b
-set stack member 2 management vlan mgmt
-set stack member 2 management address 192.168.1.12/24
-set stack member 2 management gateway 192.168.1.1
-set stack member 2 vtep-address 10.255.0.2
-set stack member 2 underlay interface 2/5/0
-set stack member 2 underlay address 10.99.0.2/24
+#   request virtual-chassis vc-port set pic-slot 2 port 1
+set virtual-chassis member 1 host-name sw-a
+set virtual-chassis member 1 management vlan mgmt
+set virtual-chassis member 1 management address 192.168.1.11/24
+set virtual-chassis member 1 management gateway 192.168.1.1
+set virtual-chassis member 1 vtep-address 10.255.0.1
+set virtual-chassis member 1 underlay interface 1/5/0
+set virtual-chassis member 1 underlay address 10.99.0.1/24
+set virtual-chassis member 2 host-name sw-b
+set virtual-chassis member 2 management vlan mgmt
+set virtual-chassis member 2 management address 192.168.1.12/24
+set virtual-chassis member 2 management gateway 192.168.1.1
+set virtual-chassis member 2 vtep-address 10.255.0.2
+set virtual-chassis member 2 underlay interface 2/5/0
+set virtual-chassis member 2 underlay address 10.99.0.2/24
 set interfaces 1/5/0 mtu 9216
 set interfaces 2/5/0 mtu 9216
 set interfaces 1/2/0 ether-options 802.3ad ae0
@@ -1247,12 +1251,12 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `stack member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
+| `virtual-chassis member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
 | `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
 | L3: `interfaces irb`, routed ports and subinterfaces, `vlans <v> l3-interface`, `routing-options static` | implemented, unit and lab tested (IPv4 and IPv6); anycast MAC across the stack with Phase 5 |
-| `system host-name` / `stack member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through VRF mgmt not yet |
+| `system host-name` / `virtual-chassis member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through VRF mgmt not yet |
 | Hardware capability checks (1.7), `show system offload` | implemented, unit tested and checked on physical NICs (tg3, igb, r8169) and virtio |
 | Operational commands of 3.5 (`show arp`, `show system uptime`, `show system rollback`, `request system reboot` …) | implemented and tested; stack drain before reboot with Phase 5/7 |
 | Multi-user notices, persistent shared candidate, CLI surviving switchd restarts and its own crashes | implemented, unit and lab tested |
@@ -1323,26 +1327,26 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system offload watchdog interval` | leaf | &lt;seconds&gt; 1..300 | 5 | Seconds between counter checks |
 | `system offload watchdog threshold` | leaf | &lt;count&gt; 1..1000000 | 100 | Drops/errors per interval that trigger a software fallback |
 | `system offload watchdog alarm-only` | flag |  |  | Only raise alarms, never change offload settings |
-| `stack` | container |  |  | Stack (virtual chassis) members |
-| `stack bfd` | container |  |  | BFD on stacking ports (IP-less) |
-| `stack bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
-| `stack bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
-| `stack member <member-id>` | list | &lt;member-id&gt; 1..16 |  | Stack member |
-| `stack member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
-| `stack member <member-id> priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
-| `stack member <member-id> role` | leaf | switch \\| witness | switch | Member role |
-| `stack member <member-id> management` | container |  |  | Management IP interface of this member (management VRF) |
-| `stack member <member-id> management vlan` | leaf (excl. mgmt-attach) | &lt;vlan&gt; |  | Attach the management IP to this VLAN (IRB-like) |
-| `stack member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched management port |
-| `stack member <member-id> management address` | leaf-list | &lt;address/prefix&gt; |  | Static addresses (IPv4 and/or IPv6) |
-| `stack member <member-id> management dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
-| `stack member <member-id> management gateway` | leaf-list | &lt;ip-address&gt; |  | Default gateway, at most one per address family |
-| `stack member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
-| `stack member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
-| `stack member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
-| `stack member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched underlay port |
-| `stack member <member-id> underlay address` | leaf-list | &lt;address/prefix&gt; |  | Underlay addresses |
-| `stack member <member-id> underlay gateway` | leaf-list | &lt;ip-address&gt; |  | Next hop towards remote VTEPs, at most one per address family |
+| `virtual-chassis` | container |  |  | Stack members and stacking (like a Junos Virtual Chassis) |
+| `virtual-chassis bfd` | container |  |  | BFD on stacking ports (IP-less) |
+| `virtual-chassis bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
+| `virtual-chassis bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
+| `virtual-chassis member <member-id>` | list | &lt;member-id&gt; 1..16 |  | Stack member |
+| `virtual-chassis member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
+| `virtual-chassis member <member-id> mastership-priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
+| `virtual-chassis member <member-id> role` | leaf | switch \\| witness | switch | Member role |
+| `virtual-chassis member <member-id> management` | container |  |  | Management IP interface of this member (management VRF) |
+| `virtual-chassis member <member-id> management vlan` | leaf (excl. mgmt-attach) | &lt;vlan&gt; |  | Attach the management IP to this VLAN (IRB-like) |
+| `virtual-chassis member <member-id> management interface` | leaf (excl. mgmt-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched management port |
+| `virtual-chassis member <member-id> management address` | leaf-list | &lt;address/prefix&gt; |  | Static addresses (IPv4 and/or IPv6) |
+| `virtual-chassis member <member-id> management dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
+| `virtual-chassis member <member-id> management gateway` | leaf-list | &lt;ip-address&gt; |  | Default gateway, at most one per address family |
+| `virtual-chassis member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
+| `virtual-chassis member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
+| `virtual-chassis member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
+| `virtual-chassis member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched underlay port |
+| `virtual-chassis member <member-id> underlay address` | leaf-list | &lt;address/prefix&gt; |  | Underlay addresses |
+| `virtual-chassis member <member-id> underlay gateway` | leaf-list | &lt;ip-address&gt; |  | Next hop towards remote VTEPs, at most one per address family |
 | `interface-range <name>` | list | &lt;name&gt; |  | Apply one configuration to many ports |
 | `interface-range <name> member` | leaf-list | &lt;pattern&gt; |  | Ports by pattern, e.g. 1/0/* or */1/[0-3] |
 | `interface-range <name> member-range <interface-name>` | list | &lt;interface-name&gt; |  | Contiguous ports on one card, e.g. 1/0/0 to 1/0/23 |
