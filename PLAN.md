@@ -393,7 +393,8 @@ In this order (the user's priorities; each step is spec first, then implementati
    irb.<n>` (IP on a VLAN, routing between irbs in the default instance), routed ports (`unit 0 family inet` on a
    port that is not a switch port) and routed subinterfaces (`vlan-tagging; unit <n> { vlan-id <v>; family inet … }`).
    Junos rule kept: `family ethernet-switching` only on unit 0. `routing-options static route …`.
-   The management plane (VRF mgmt) moves onto the same model (`routing-instances mgmt`, irb in it).
+   irb addresses are stack-wide (anycast gateway on every member). The per-member management IP stays in
+   `stack member <id> management` (VRF mgmt), because each member needs its own address there.
 3. **Operational quick wins**: `show system rollback <n>` (the complete configuration of revision n)
    and `show system rollback <n> compare <m>` (`show | compare` already works in
    configuration mode, and `show configuration | compare rollback <n>` in operational mode), `show arp` /

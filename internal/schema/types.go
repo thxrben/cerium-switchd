@@ -177,6 +177,28 @@ var (
 	// IPPrefix is an interface address with prefix length, e.g. 10.0.0.1/24.
 	IPPrefix = &Type{Name: "<address/prefix>", Check: checkPrefix}
 
+	// RoutePrefix is a destination network (no host bits).
+	RoutePrefix = &Type{Name: "<prefix>", Check: func(s string) (string, error) {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return "", fmt.Errorf("invalid prefix %q", s)
+		}
+		if m := p.Masked(); m != p {
+			return "", fmt.Errorf("%s has host bits set; the network is %s", s, m)
+		}
+		return p.String(), nil
+	}}
+
+	// IrbUnit references a VLAN IP interface "irb.<n>".
+	IrbUnit = &Type{Name: "<irb-unit>", Ref: "irb-unit", Check: func(s string) (string, error) {
+		n, ok := strings.CutPrefix(s, "irb.")
+		v, err := strconv.Atoi(n)
+		if !ok || err != nil || v < 0 || v > MaxUnit || strconv.Itoa(v) != n {
+			return "", fmt.Errorf("invalid irb unit %q (expecting irb.<0-%d>, e.g. irb.10)", s, MaxUnit)
+		}
+		return s, nil
+	}}
+
 	// Host is an IP address or DNS name.
 	Host = &Type{Name: "<host>", Check: func(s string) (string, error) {
 		if v, err := checkIP(0)(s); err == nil {
@@ -267,9 +289,11 @@ type Port struct{ Member, Card, Port int }
 func (p Port) String() string { return fmt.Sprintf("%d/%d/%d", p.Member, p.Card, p.Port) }
 
 // Card limits: enough for any chassis, small enough to keep names short.
+// MaxUnit follows Junos (logical units 0-16385).
 const (
 	MaxCard = 99
 	MaxPort = 999
+	MaxUnit = 16385
 )
 
 // ParsePhysical parses "<member>/<card>/<port>". Leading zeros are
@@ -344,15 +368,16 @@ func (pp PortPattern) Match(p Port) bool {
 // IsAE reports whether s names an aggregated interface.
 func IsAE(s string) bool { return aeRe.MatchString(s) }
 
-// CheckInterfaceName validates a physical or aggregated interface name.
+// CheckInterfaceName validates a physical, aggregated or irb interface
+// name.
 func CheckInterfaceName(s string) (string, error) {
-	if IsAE(s) {
+	if IsAE(s) || s == "irb" {
 		return s, nil
 	}
 	if p, ok := ParsePhysical(s); ok {
 		return p.String(), nil
 	}
-	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, or ae<N>)", s)
+	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, ae<N> or irb)", s)
 }
 
 // ParseVlanRange parses "10" or "10-20".

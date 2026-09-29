@@ -337,3 +337,84 @@ func TestWildcardSkipsPortsWithIP(t *testing.T) {
 		t.Errorf("no warning for an explicit management NIC:\n%s", issues)
 	}
 }
+
+func TestL3(t *testing.T) {
+	base := `set vlans v10 vlan-id 10
+set vlans v10 l3-interface irb.10
+set vlans v20 vlan-id 20
+set vlans v20 l3-interface irb.20
+set interfaces irb unit 10 family inet address 10.0.10.1/24
+set interfaces irb unit 10 family inet6 address 2001:db8:10::1/64
+set interfaces irb unit 20 family inet address 10.0.20.1/24
+set interfaces 1/0/1 unit 0 family ethernet-switching interface-mode trunk
+set interfaces 1/0/1 unit 0 family ethernet-switching vlan members [ v10 v20 ]
+set interfaces 1/0/5 unit 0 family inet address 10.1.1.1/30
+set interfaces 1/0/6 vlan-tagging
+set interfaces 1/0/6 unit 0 family inet address 10.2.0.1/24
+set interfaces 1/0/6 unit 100 vlan-id 100
+set interfaces 1/0/6 unit 100 family inet address 10.3.0.1/24
+set routing-options static route 0.0.0.0/0 next-hop 10.1.1.2
+set routing-options static route 192.0.2.0/24 discard
+set routing-options static route 2001:db8:99::/48 next-hop 2001:db8:10::fe
+`
+	c, issues := build(t, base, nil)
+	if issues.HasErrors() || len(issues) > 0 {
+		t.Fatalf("unexpected issues:\n%s", issues)
+	}
+	irb := c.L3["irb.10"]
+	if irb == nil || irb.VLAN != 10 || !irb.IRB() || len(irb.Addrs) != 2 {
+		t.Errorf("irb.10: %+v", irb)
+	}
+	if u := c.L3["1/0/6.100"]; u == nil || u.Tag != 100 || u.Member != 1 || u.Parent != "1/0/6" {
+		t.Errorf("subinterface: %+v", u)
+	}
+	if u := c.L3["1/0/5.0"]; u == nil || u.Tag != 0 || c.Interfaces["1/0/5"].Switching {
+		t.Errorf("routed port: %+v", u)
+	}
+	if len(c.Routes) != 3 || !c.Routes[1].Discard {
+		t.Errorf("routes: %+v", c.Routes)
+	}
+	cases := []struct{ mutate, want string }{
+		{"set interfaces 1/0/1 unit 0 family inet address 10.9.0.1/24", "either switched"},
+		{"set interfaces 1/0/7 unit 3 family ethernet-switching", "only valid on unit 0"},
+		{"set interfaces 1/0/7 unit 3 family inet address 10.9.0.1/24", "need 'vlan-tagging'"},
+		{"set interfaces 1/0/6 unit 101 family inet address 10.9.0.1/24", "needs a vlan-id"},
+		{"set interfaces 1/0/6 unit 101 vlan-id 100", "already used by unit 100"},
+		{"set interfaces 1/0/1 vlan-tagging", "a switch port uses interface-mode trunk"},
+		{"set interfaces 1/0/7 unit 0 vlan-id 7", "needs 'vlan-tagging'"},
+		{"set interfaces irb unit 30 vlan-id 30", "attached to a VLAN"},
+		{"set interfaces irb mtu 9000", "only 'unit'"},
+		{"set vlans v30 vlan-id 30\nset vlans v30 l3-interface irb.30", "irb.30 is not configured"},
+		{"set vlans v30 vlan-id 30\nset vlans v30 l3-interface irb.10", "already the l3-interface of vlan v10"},
+		{"set interfaces irb unit 30 family inet address 10.0.10.9/16", "overlaps 10.0.10.1/24"},
+		{"set interfaces 1/0/7 unit 0 family inet address 10.8.0.0/24", "network address"},
+		{"set interfaces 1/0/7 unit 0 family inet address 10.8.0.255/24", "broadcast address"},
+		{"set interfaces 1/0/7 unit 0 family inet6 address 10.8.0.1/24", "not an address of family inet6"},
+		{"set routing-options static route 10.50.0.0/16 next-hop 2001:db8::1", "not of the prefix's address family"},
+		{"set routing-options static route 10.50.0.0/16 discard\nset routing-options static route 10.50.0.0/16 next-hop 10.1.1.2", "mutually exclusive"},
+		{"set routing-options static route 10.50.0.0/16", "needs 'next-hop' or 'discard'"},
+		{"set interfaces 1/0/2 ether-options 802.3ad ae1\nset interfaces 1/0/2 unit 0 family inet address 10.9.0.1/24", "configure routing on ae1"},
+		{"set stack member 1 management vlan v10\nset stack member 1 management address 10.7.0.1/24", "management VLAN of member 1"},
+	}
+	for _, cs := range cases {
+		_, issues := build(t, base+cs.mutate+"\n", nil)
+		if !issues.HasErrors() || !strings.Contains(issues.String(), cs.want) {
+			t.Errorf("%q: want error %q, got:\n%s", cs.mutate, cs.want, issues)
+		}
+	}
+	warnings := []struct{ mutate, want string }{
+		{"set interfaces irb unit 30 family inet address 10.0.30.1/24", "not the l3-interface of any VLAN"},
+		{"set routing-options static route 10.60.0.0/16 next-hop 172.16.0.1", "stays inactive"},
+	}
+	for _, cs := range warnings {
+		_, issues := build(t, base+cs.mutate+"\n", nil)
+		if issues.HasErrors() || !strings.Contains(issues.String(), cs.want) {
+			t.Errorf("%q: want warning %q, got:\n%s", cs.mutate, cs.want, issues)
+		}
+	}
+	// A routed data plane next to the OS management NIC in the same instance.
+	_, issues = build(t, base, fakeInv{"1/2/0": -2})
+	if !strings.Contains(issues.String(), "operating-system management port 1/2/0") {
+		t.Errorf("no management warning:\n%s", issues)
+	}
+}

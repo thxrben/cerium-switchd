@@ -92,6 +92,7 @@ func (b *builder) port(member int, name string) (info PortInfo, ok, known bool) 
 func (b *builder) validate() {
 	c := b.cfg
 	b.validateInterfaces() // attaches bundle member ports, needed below
+	b.validateRouting()
 	b.validateMembers()
 	b.validateMTU()
 	b.validateDomains()

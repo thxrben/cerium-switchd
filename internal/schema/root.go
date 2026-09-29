@@ -203,10 +203,13 @@ func build() *Node {
 				F("disable", "Never offload this interface"),
 			),
 			V("native-vlan-id", "Untagged VLAN on a trunk port", VlanSingle),
-			L("unit", "Logical unit", Uint("<unit>", 0, 0),
+			F("vlan-tagging", "Routed subinterfaces: each unit takes the frames with its vlan-id"),
+			L("unit", "Logical unit", Uint("<unit>", 0, MaxUnit),
 				V("description", "Unit description", Text),
+				F("disable", "Administratively disable the unit"),
+				V("vlan-id", "802.1Q tag of a routed subinterface (needs vlan-tagging)", VlanID),
 				C("family", "Protocol family",
-					P("ethernet-switching", "Layer 2 switching",
+					P("ethernet-switching", "Layer 2 switching (unit 0 only)",
 						V("interface-mode", "Port mode", Enum(
 							E("access", "Untagged member of one VLAN"),
 							E("trunk", "Tagged member of several VLANs"),
@@ -214,6 +217,12 @@ func build() *Node {
 						C("vlan", "VLAN membership",
 							LL("members", "VLAN names or ids (ranges like 10-20 allowed)", VlanRef),
 						),
+					),
+					P("inet", "IPv4 (routed interface)",
+						LL("address", "Interface addresses", IPPrefix),
+					),
+					P("inet6", "IPv6 (routed interface)",
+						LL("address", "Interface addresses", IPPrefix),
 					),
 				),
 			),
@@ -233,6 +242,7 @@ func build() *Node {
 	vlans := L("vlans", "VLAN configuration", Identifier,
 		V("vlan-id", "802.1Q VLAN id", VlanID),
 		V("description", "VLAN description", Text),
+		V("l3-interface", "VLAN IP interface (routing between VLANs)", IrbUnit),
 		V("mtu", "Maximum frame size within this VLAN (same meaning as interface mtu)", MTU),
 		C("vxlan", "Extend this VLAN over VXLAN",
 			V("vni", "VXLAN network identifier", VNI),
@@ -293,6 +303,14 @@ func build() *Node {
 		),
 	)
 
+	routing := C("routing-options", "Routing of the default instance",
+		C("static", "Static routes",
+			L("route", "Destination network", RoutePrefix,
+				LL("next-hop", "Gateway addresses (several: ECMP)", IP),
+				F("discard", "Drop matching traffic silently"),
+			),
+		),
+	)
 	fwd := C("forwarding-options", "Forwarding options",
 		L("analyzer", "Port mirroring session", Identifier,
 			C("input", "Traffic to mirror",
@@ -314,6 +332,6 @@ func build() *Node {
 	vlans.Wrapped = true
 
 	return C("", "",
-		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, fwd,
+		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, fwd,
 	)
 }

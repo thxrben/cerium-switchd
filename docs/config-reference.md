@@ -21,7 +21,8 @@ Contents
    - [5.5 protocols](#55-protocols)
    - [5.6 mclag](#56-mclag)
    - [5.7 switch-options](#57-switch-options)
-   - [5.8 forwarding-options](#58-forwarding-options)
+   - [5.8 routing-options](#58-routing-options)
+   - [5.9 forwarding-options](#59-forwarding-options)
 6. [Frame handling summary](#6-frame-handling-summary)
 7. [Complete examples](#7-complete-examples)
 8. [Implementation status](#8-implementation-status)
@@ -60,7 +61,8 @@ setting one silently removes the other.
 
 | Type | Format | Notes |
 |---|---|---|
-| `<interface-name>` | `<member>/<card>/<port>` or `ae<N>` | `1/0/3`, `2/1/0`, `ae0`…`ae4095`. Junos-style numbering without a `ge-`/`xe-` prefix: the member is the stack member id (1–16), card and port are numbered from 0 (1.6). |
+| `<interface-name>` | `<member>/<card>/<port>`, `ae<N>` or `irb` | `1/0/3`, `2/1/0`, `ae0`…`ae4095`. Junos-style numbering without a `ge-`/`xe-` prefix: the member is the stack member id (1–16), card and port are numbered from 0 (1.6). `irb` holds the VLAN IP interfaces (5.3.3). |
+| `<unit-name>` | `<interface-name>.<unit>` | A logical unit, e.g. `irb.10`, `1/0/6.100`. |
 | `<vlan>` | VLAN name, id (`10`), range (`10-20`) or `all` | Where only one VLAN is allowed, ranges and `all` are rejected. |
 | `<vlan-id>` | 1–4094 | |
 | `<vni>` | 1–16777214 | |
@@ -776,7 +778,8 @@ The **untagged VLAN of a trunk port** (one VLAN name or id).
 * Without `native-vlan-id`, a trunk **drops** all untagged frames.
 
 #### `unit 0 family ethernet-switching { interface-mode access|trunk; vlan members [ <vlan> … ]; }`
-Makes the port a switch port. Only unit 0 exists. It is kept for Junos-style syntax.
+Makes the port a switch port. As in Junos (ELS), `family ethernet-switching` exists only on unit 0; other units
+are routed subinterfaces (below).
 * `interface-mode access` (**default**): the port belongs to exactly **one** VLAN, untagged.
   * Received untagged or priority-tagged frames → the member VLAN. **Received tagged frames are dropped**
     (also when the tag equals the access VLAN, which is stricter than Linux' default).
@@ -792,6 +795,43 @@ Makes the port a switch port. Only unit 0 exists. It is kept for Junos-style syn
   * `all` means every VLAN defined under `vlans` at commit time, so later VLANs are added automatically.
 * Frames with an 802.1ad S-tag (`0x88a8`) are not interpreted and are treated as untagged payload.
 * Switch ports take part in RSTP when `protocols rstp` is configured (5.5).
+
+#### `unit <n> family inet|inet6 { address <address/prefix>; }`, `vlan-tagging`, `unit <n> vlan-id <id>`
+**Routed interfaces** (layer 3) on a physical port or `ae` interface, instead of switching:
+* **Routed port**: `unit 0 family inet address 10.1.1.1/30` on a port that is not a switch port. The port is not in
+  the bridge. Untagged frames are routed; tagged frames are dropped.
+* **Routed subinterfaces**: `vlan-tagging` on the port, then `unit <n> { vlan-id <id>; family inet { address …; } }`
+  for n = 1–16385. Each unit takes the frames with its tag. Untagged frames are dropped (unless unit 0 is also routed).
+* `family inet` and `family inet6` each take several `address` entries. `family inet6` also gets a link-local address.
+* E: `family ethernet-switching` together with `family inet|inet6` on the same unit, or `family ethernet-switching`
+  on a unit other than 0, or on a port with `vlan-tagging`.
+* E: a unit other than 0 without `vlan-tagging`, or without `vlan-id`. E: the same `vlan-id` on two units of a port.
+* E: a routed interface on a bundle member port (route on the `ae` instead).
+* E: the same address (or overlapping subnets) on two interfaces of the default instance. E: a network or broadcast
+  address as interface address (except /31, /32, /127, /128).
+* A unit's `mtu` is the port's `mtu` (the frame size); the IP MTU is 14 bytes less (18 on a subinterface).
+* In the kernel a routed subinterface is a VLAN device named `sw-<card>-<port>.<unit>` (Linux names cannot contain `/`).
+
+#### 5.3.3 `interfaces irb unit <n> { description <text>; disable; family inet|inet6 { address <address/prefix>; } }`
+**VLAN IP interfaces** (IRB, integrated routing and bridging): an IP interface inside a VLAN, so the switch has an
+address in that VLAN and **routes between VLANs** (and routed ports) in the default routing instance.
+* `irb.<n>` is attached to a VLAN with `vlans <v> l3-interface irb.<n>`. n is any number 0–16385; using the VLAN id
+  keeps it readable (`irb.10` for VLAN 10). W: an irb unit that no VLAN references (it has no effect).
+* Addresses follow the same rules as routed interfaces (above).
+* In a stack, the irb interface exists on **every member that has the VLAN**, with the same addresses and the same MAC
+  address (derived from the stack), so every member routes locally (anycast gateway). With MC-LAG, both peers
+  answer for the gateway address.
+* The management address is **not** an irb interface: it stays per member in `stack member <id> management` (5.2),
+  in VRF `mgmt`, with no routing to or from the data VLANs.
+* In the kernel, `irb.<n>` is a VLAN device on the bridge, and the bridge itself joins the VLAN (bridge self VLAN).
+
+**Routing** happens only between switchd's own L3 interfaces (irb, routed ports and subinterfaces): IPv4 forwarding is
+enabled per interface on them only. Interfaces the operating system manages (e.g. its installer management NIC)
+do not forward. For IPv6, Linux can only enable forwarding for the whole system, so switchd sets `accept_ra 2` on the
+OS-managed interfaces that use router advertisements first (they keep their SLAAC addresses and default routes).
+* W: routed interfaces exist while the operating system's management NIC is in the default instance (not moved to
+  `stack member <id> management`): data VLANs can then reach the management network through the OS routes.
+* ICMP redirects are not sent. Reverse-path filtering is loose (`rp_filter 2`) on routed interfaces.
 
 ### 5.4 vlans
 
@@ -812,6 +852,11 @@ only in a storage VLAN (`mtu 9014` for 9000-byte hosts) while the trunks carry `
   Without `mtu` no VLAN filter is installed, and only port MTUs apply.
 * W: a member port with a smaller MTU (frames that fit the VLAN are dropped at that port).
 * If the VLAN is extended over VXLAN, the tunnel MTU follows the largest VXLAN VLAN MTU (5.7).
+
+#### `l3-interface irb.<n>`
+Attaches the VLAN IP interface `irb.<n>` (5.3.3) to this VLAN. E: the irb unit is not configured. E: the same irb unit
+on two VLANs. E: the management VLAN of a member (`stack member <id> management vlan`) has an l3-interface (management
+and data routing are kept apart).
 
 #### `vxlan vni <vni>`
 Extends the VLAN over VXLAN to every other member that has the same VLAN, and to static remote VTEPs listing the VNI.
@@ -961,7 +1006,19 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
 * **MC-LAG with `anycast-vtep`**: traffic of devices behind MC-LAG bundles is sent from the anycast address, and
   both members accept traffic to it. Single-homed devices use the member's own `vtep-address`.
 
-### 5.8 forwarding-options
+### 5.8 routing-options
+
+#### `routing-options static route <prefix> { next-hop [ <ip> … ]; discard; }`
+Static routes of the default routing instance (the data plane, not management; management routes are
+`stack member <id> management gateway`).
+* `next-hop`: one or more gateway addresses. Several next hops share the traffic (ECMP). A next hop must be inside
+  a subnet of an L3 interface of the default instance, else the route is inactive (W at commit; it becomes active
+  once such an interface exists and is up).
+* `discard`: drop matching traffic silently (blackhole). E: `discard` together with `next-hop`. E: neither.
+* IPv4 and IPv6 prefixes can be mixed; a next hop must have the family of its prefix (E).
+* switchd installs the routes with its own protocol id and only ever removes routes it installed.
+
+### 5.9 forwarding-options
 
 #### `forwarding-options analyzer <name> { input { … }; output { interface <if>; } }`
 Port mirroring. Copies of the selected traffic are sent out of the output interface. Mirroring never affects
@@ -1287,13 +1344,20 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interface-range <name> offload` | container |  |  | Per-interface hardware acceleration |
 | `interface-range <name> offload disable` | flag |  |  | Never offload this interface |
 | `interface-range <name> native-vlan-id` | leaf | &lt;vlan&gt; |  | Untagged VLAN on a trunk port |
-| `interface-range <name> unit <unit>` | list | &lt;unit&gt; 0..0 |  | Logical unit |
+| `interface-range <name> vlan-tagging` | flag |  |  | Routed subinterfaces: each unit takes the frames with its vlan-id |
+| `interface-range <name> unit <unit>` | list | &lt;unit&gt; 0..16385 |  | Logical unit |
 | `interface-range <name> unit <unit> description` | leaf | &lt;text&gt; |  | Unit description |
+| `interface-range <name> unit <unit> disable` | flag |  |  | Administratively disable the unit |
+| `interface-range <name> unit <unit> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q tag of a routed subinterface (needs vlan-tagging) |
 | `interface-range <name> unit <unit> family` | container |  |  | Protocol family |
-| `interface-range <name> unit <unit> family ethernet-switching` | presence |  |  | Layer 2 switching |
+| `interface-range <name> unit <unit> family ethernet-switching` | presence |  |  | Layer 2 switching (unit 0 only) |
 | `interface-range <name> unit <unit> family ethernet-switching interface-mode` | leaf | access \\| trunk |  | Port mode |
 | `interface-range <name> unit <unit> family ethernet-switching vlan` | container |  |  | VLAN membership |
 | `interface-range <name> unit <unit> family ethernet-switching vlan members` | leaf-list | &lt;vlan&gt; |  | VLAN names or ids (ranges like 10-20 allowed) |
+| `interface-range <name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
+| `interface-range <name> unit <unit> family inet address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interface-range <name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
+| `interface-range <name> unit <unit> family inet6 address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
 | `interfaces <interface-name>` | list | &lt;interface-name&gt; |  | Interface configuration |
 | `interfaces <interface-name> description` | leaf | &lt;text&gt; |  | Interface description |
 | `interfaces <interface-name> disable` | flag |  |  | Administratively disable the interface |
@@ -1318,16 +1382,24 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interfaces <interface-name> offload` | container |  |  | Per-interface hardware acceleration |
 | `interfaces <interface-name> offload disable` | flag |  |  | Never offload this interface |
 | `interfaces <interface-name> native-vlan-id` | leaf | &lt;vlan&gt; |  | Untagged VLAN on a trunk port |
-| `interfaces <interface-name> unit <unit>` | list | &lt;unit&gt; 0..0 |  | Logical unit |
+| `interfaces <interface-name> vlan-tagging` | flag |  |  | Routed subinterfaces: each unit takes the frames with its vlan-id |
+| `interfaces <interface-name> unit <unit>` | list | &lt;unit&gt; 0..16385 |  | Logical unit |
 | `interfaces <interface-name> unit <unit> description` | leaf | &lt;text&gt; |  | Unit description |
+| `interfaces <interface-name> unit <unit> disable` | flag |  |  | Administratively disable the unit |
+| `interfaces <interface-name> unit <unit> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q tag of a routed subinterface (needs vlan-tagging) |
 | `interfaces <interface-name> unit <unit> family` | container |  |  | Protocol family |
-| `interfaces <interface-name> unit <unit> family ethernet-switching` | presence |  |  | Layer 2 switching |
+| `interfaces <interface-name> unit <unit> family ethernet-switching` | presence |  |  | Layer 2 switching (unit 0 only) |
 | `interfaces <interface-name> unit <unit> family ethernet-switching interface-mode` | leaf | access \\| trunk |  | Port mode |
 | `interfaces <interface-name> unit <unit> family ethernet-switching vlan` | container |  |  | VLAN membership |
 | `interfaces <interface-name> unit <unit> family ethernet-switching vlan members` | leaf-list | &lt;vlan&gt; |  | VLAN names or ids (ranges like 10-20 allowed) |
+| `interfaces <interface-name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
+| `interfaces <interface-name> unit <unit> family inet address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
+| `interfaces <interface-name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
+| `interfaces <interface-name> unit <unit> family inet6 address` | leaf-list | &lt;address/prefix&gt; |  | Interface addresses |
 | `vlans <name>` | list | &lt;name&gt; |  | VLAN configuration |
 | `vlans <name> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q VLAN id |
 | `vlans <name> description` | leaf | &lt;text&gt; |  | VLAN description |
+| `vlans <name> l3-interface` | leaf | &lt;irb-unit&gt; |  | VLAN IP interface (routing between VLANs) |
 | `vlans <name> mtu` | leaf | &lt;mtu&gt; 256..16000 |  | Maximum frame size within this VLAN (same meaning as interface mtu) |
 | `vlans <name> vxlan` | container |  |  | Extend this VLAN over VXLAN |
 | `vlans <name> vxlan vni` | leaf | &lt;vni&gt; 1..16777214 |  | VXLAN network identifier |
@@ -1371,6 +1443,11 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `switch-options vxlan remote-vtep <ip-address>` | list | &lt;ip-address&gt; |  | Static VTEP outside the stack |
 | `switch-options vxlan remote-vtep <ip-address> vni` | leaf-list | &lt;vni&gt; 1..16777214 |  | VNIs to extend to this VTEP |
 | `switch-options vxlan encryption` | flag |  |  | Encrypt VXLAN underlay traffic with WireGuard |
+| `routing-options` | container |  |  | Routing of the default instance |
+| `routing-options static` | container |  |  | Static routes |
+| `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
+| `routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
+| `routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
 | `forwarding-options` | container |  |  | Forwarding options |
 | `forwarding-options analyzer <name>` | list | &lt;name&gt; |  | Port mirroring session |
 | `forwarding-options analyzer <name> input` | container |  |  | Traffic to mirror |

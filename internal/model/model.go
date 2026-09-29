@@ -25,6 +25,8 @@ type Config struct {
 	Analyzers  map[string]*Analyzer
 	BPDUBlock  BPDUBlock
 	StackBFD   BFD
+	L3         map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
+	Routes     []StaticRoute
 }
 
 type System struct {
@@ -164,6 +166,7 @@ type Interface struct {
 	StormControl StormControl
 	MACLimit     int
 	NoOffload    bool
+	VlanTagging  bool // routed subinterfaces
 	// Switching.
 	Switching  bool
 	Mode       string // access or trunk
@@ -188,6 +191,7 @@ type VLAN struct {
 	Description string
 	MTU         int // 0 = unrestricted by VLAN
 	VNI         int
+	L3          string // l3-interface ("irb.10")
 }
 
 type RSTP struct {
@@ -296,6 +300,7 @@ func (b *builder) build() {
 	r := b.root
 	c := &Config{
 		Members:    map[int]*Member{},
+		L3:         map[string]*L3Unit{},
 		Interfaces: map[string]*Interface{},
 		VLANs:      map[string]*VLAN{},
 		VLANByID:   map[int]*VLAN{},
@@ -363,7 +368,8 @@ func (b *builder) build() {
 
 	// VLANs.
 	for _, e := range r.Entries("vlans") {
-		v := &VLAN{Name: e.Key, ID: atoi(e.Leaf("vlan-id"), 0), Description: e.Leaf("description"), MTU: atoi(e.Leaf("mtu"), 0), VNI: atoi(e.Leaf("vxlan", "vni"), 0)}
+		v := &VLAN{Name: e.Key, ID: atoi(e.Leaf("vlan-id"), 0), Description: e.Leaf("description"), MTU: atoi(e.Leaf("mtu"), 0), VNI: atoi(e.Leaf("vxlan", "vni"), 0),
+			L3: e.Leaf("l3-interface")}
 		c.VLANs[v.Name] = v
 		path := "vlans " + v.Name
 		if v.ID == 0 {
@@ -398,6 +404,10 @@ func (b *builder) build() {
 
 	// Interfaces: explicit entries merged with interface-range templates.
 	for _, e := range b.effectiveInterfaces() {
+		if e.Key == "irb" {
+			b.buildIRB(e)
+			continue
+		}
 		i := &Interface{Name: e.Key, AE: schema.IsAE(e.Key)}
 		if !i.AE {
 			if p, ok := schema.ParsePhysical(e.Key); ok {
@@ -431,7 +441,9 @@ func (b *builder) build() {
 		i.NoOffload = e.Has("offload", "disable")
 		c.Interfaces[i.Name] = i
 		b.buildSwitching(i, e)
+		b.buildUnits(i.Name, e, i)
 	}
+	b.buildRoutes()
 
 	// RSTP.
 	if rs := r.Get("protocols", "rstp"); rs != nil && !rs.Has("disable") {
