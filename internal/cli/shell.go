@@ -45,7 +45,9 @@ type Env struct {
 	Ports func() []string
 	// Ops supplies live data for show/clear commands (nil: unavailable).
 	Ops Operational
-	Log *slog.Logger
+	// Logs supplies "show log" and "show system syslog" (nil: unavailable).
+	Logs Logs
+	Log  *slog.Logger
 }
 
 // Reply is the result of executing one line.

@@ -43,6 +43,9 @@ Last updated: 2026-09-29.
 - Management plane: VRF mgmt (table 100), IRB mgmt0 on a bridge VLAN (bridge self VLAN = only that VLAN
   reaches the CPU) or dedicated port, static addresses + default routes, l3mdev_accept for sshd; torn down
   when unconfigured. 14 lab tests pass.
+- Remote syslog (`internal/syslog`): hub with ring buffer (`show log`), RFC 5424 forwarders over UDP/TCP/TLS
+  from VRF mgmt, 10k queue dropping oldest, facilities change-log/authorization/interactive-commands,
+  `show system syslog`. 15 lab tests pass.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)

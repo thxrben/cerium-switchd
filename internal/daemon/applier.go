@@ -31,6 +31,9 @@ type kernelApplier struct {
 	inv       model.Inventory
 	// last is the configuration applied last; reconciliation restores it.
 	last *config.Tree
+	// onApplied is called with each successfully applied configuration
+	// (services that are not part of the data plane, e.g. syslog).
+	onApplied func(*model.Config)
 }
 
 func memberName(id int) string { return fmt.Sprintf("member%d", id) }
@@ -71,6 +74,11 @@ func (a *kernelApplier) Apply(_ context.Context, _, to *config.Tree) []commit.Me
 	res.Err = a.apply(to, "commit")
 	if res.Err == nil {
 		a.last = to.Clone()
+		if a.onApplied != nil {
+			if cfg, _ := model.Build(to.Active(), a.inv); cfg != nil {
+				a.onApplied(cfg)
+			}
+		}
 	}
 	return []commit.MemberResult{res}
 }

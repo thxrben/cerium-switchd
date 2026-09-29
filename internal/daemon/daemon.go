@@ -15,7 +15,9 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
 	"mclag/internal/inventory"
+	"mclag/internal/model"
 	"mclag/internal/rpc"
+	"mclag/internal/syslog"
 	"mclag/internal/version"
 )
 
@@ -30,7 +32,12 @@ type Options struct {
 
 // Run serves until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
-	log := o.Log
+	// Every record goes to the local buffer, the remote syslog servers and
+	// the journal (stderr).
+	hub := syslog.NewHub(o.Log.Handler(), 5000)
+	hub.VRF = dataplane.MgmtVRF
+	defer hub.Close()
+	log := slog.New(hub.Handler())
 	store, err := commit.OpenFileStore(filepath.Join(o.StateDir, "config"), 50)
 	if err != nil {
 		return fmt.Errorf("state: %w", err)
@@ -40,6 +47,10 @@ func Run(ctx context.Context, o Options) error {
 	inv := &kernelInventory{kernel: kernel, member: 1}
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.inv = inv
+	var hostName func() string
+	applier.onApplied = func(cfg *model.Config) {
+		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
+	}
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
 	})
@@ -53,7 +64,7 @@ func Run(ctx context.Context, o Options) error {
 		go kernel.EnforceMACLimits(ctx, log)
 	}
 
-	hostName := func() string {
+	hostName = func() string {
 		if h := engine.Active().Active().Root.Leaf("system", "host-name"); h != "" {
 			return h
 		}
@@ -72,7 +83,7 @@ func Run(ctx context.Context, o Options) error {
 	liveOps := &ops{kernel: kernel, engine: engine, member: 1}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
-			HostName: hostName, Ports: ports, Ops: liveOps, Log: log}
+			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
 	}
 	srv.Authorize = func(uid int, name string) (commit.Class, error) {
 		if uid == 0 {

@@ -160,11 +160,11 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 	class, err := s.Authorize(uid, name)
 	if err != nil {
-		s.Log.Warn("cli: login rejected", "user", name, "uid", uid, "err", err)
+		s.Log.Warn("cli: login rejected", "facility", "authorization", "user", name, "uid", uid, "err", err)
 		_ = c.send(Msg{T: "done", Text: fmt.Sprintf("error: %v\n", err), Exit: true})
 		return
 	}
-	s.Log.Info("cli: login", "user", name, "class", class)
+	s.Log.Info("cli: login", "facility", "authorization", "user", name, "class", class)
 	sh := cli.New(s.Env(name, class))
 	defer sh.Close()
 
@@ -178,7 +178,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 		s.mu.Lock()
 		delete(s.conns, c)
 		s.mu.Unlock()
-		s.Log.Info("cli: logout", "user", name)
+		s.Log.Info("cli: logout", "facility", "authorization", "user", name)
 	}()
 
 	if err := c.send(Msg{T: "hello", Prompt: sh.Prompt(), Banner: sh.Banner()}); err != nil {
@@ -229,6 +229,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 		var reply Msg
 		switch m.T {
 		case "exec":
+			s.Log.Info("cli command", "facility", "interactive-commands", "user", name, "command", m.Line)
 			ctx, cf := context.WithCancel(context.Background())
 			mu.Lock()
 			cancel = cf

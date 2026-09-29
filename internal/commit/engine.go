@@ -629,7 +629,7 @@ func (s *Session) Commit(ctx context.Context, opts CommitOptions) (*Result, erro
 	e.mu.Unlock()
 
 	res.Seq = seq
-	e.o.Log.Info("commit", "revision", seq, "user", s.User, "comment", opts.Comment,
+	e.o.Log.Info("commit", "facility", "change-log", "revision", seq, "user", s.User, "comment", opts.Comment,
 		"confirm_by", res.Deadline, "diff", config.Diff(old, cand))
 	return res, nil
 }
@@ -674,7 +674,7 @@ func (e *Engine) confirm(user string) error {
 		e.timer.Stop()
 		e.timer = nil
 	}
-	e.o.Log.Info("commit confirmed", "user", user, "revisions", fmt.Sprintf("%d-%d", p.First, e.activeSeq))
+	e.o.Log.Info("commit confirmed", "facility", "change-log", "user", user, "revisions", fmt.Sprintf("%d-%d", p.First, e.activeSeq))
 	return nil
 }
 
@@ -762,7 +762,7 @@ func (e *Engine) rollbackPending(ctx context.Context, from *config.Tree) []Membe
 	e.timer = nil
 	e.mu.Unlock()
 
-	e.o.Log.Warn(comment, "revision", seq, "target", p.Target)
+	e.o.Log.Warn(comment, "facility", "change-log", "revision", seq, "target", p.Target)
 	e.o.Notify(comment)
 	return res
 }

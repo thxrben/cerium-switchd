@@ -428,7 +428,13 @@ Sends log messages to a remote server, from the management VRF. The format is RF
 * `facility <facility>`: send only this facility. Default `any`. The facilities used by switchd are
   `daemon` (switch events), `authorization` (logins), `change-log` (commits including diffs), `interactive-commands`
   (every CLI command with the user), and `kernel` (kernel messages, e.g. link changes and NIC errors).
+  On the wire the facilities are the standard numeric ones: `kernel` = kern (0), `daemon` = daemon (3),
+  `authorization` = auth (4), `change-log` = local6 (22), `interactive-commands` = local7 (23). `local0`–`local5`
+  are not used by switchd (a filter on them sends nothing); `local6`/`local7` select the same messages as
+  `change-log`/`interactive-commands`.
 * `severity <level>`: send messages of this severity **or more severe**. Default `info`. `any` sends everything.
+* A UDP message that cannot be sent is lost (UDP has no delivery guarantee); use `tcp` or `tls` where that matters.
+* The local buffer and `show log` contain every message regardless of these filters.
 * `ca-certificate <path>`: PEM CA certificate used to verify a TLS server. Default: the OS CA store.
   The server certificate must match `<host>`.
 
@@ -1077,6 +1083,7 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
 | `stack member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
+| `system syslog` (UDP/TCP/TLS from VRF mgmt, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |

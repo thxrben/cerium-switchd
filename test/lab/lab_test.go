@@ -497,3 +497,66 @@ func TestManagementPlane(t *testing.T) {
 		t.Errorf("management not torn down:\n%s", out)
 	}
 }
+
+// receiveSyslog listens on srv1's test host (192.168.99.2) and returns what
+// arrived within the timeout.
+func receiveSyslog(t *testing.T, transport string, ready chan<- struct{}) string {
+	py := `import socket, sys
+t = sys.argv[1]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM if t == "udp" else socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("192.168.99.2", 5514))
+s.settimeout(12)
+out = b""
+try:
+    if t == "udp":
+        while len(out) < 8000:
+            out += s.recv(4096) + b"\n"
+    else:
+        s.listen(1)
+        c, _ = s.accept()
+        c.settimeout(3)
+        while True:
+            d = c.recv(4096)
+            if not d:
+                break
+            out += d
+except Exception:
+    pass
+print(out.decode(errors="replace"))
+`
+	mustSSH(t, hSrv1.vm, "cat > /tmp/rx.py <<'EOF'\n"+py+"\nEOF")
+	go func() { time.Sleep(time.Second); close(ready) }()
+	out, _ := ssh(hSrv1.vm, "ip netns exec h python3 /tmp/rx.py "+transport)
+	return out
+}
+
+func TestSyslogOverManagementVRF(t *testing.T) {
+	setupHost(t, hSrv1)
+	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
+	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") +
+		"set stack member 1 management vlan mgmt\nset stack member 1 management address 192.168.99.1/24\n"
+	configure(t, base)
+	for _, transport := range []string{"udp", "tcp"} {
+		ready := make(chan struct{})
+		got := make(chan string, 1)
+		go func() { got <- receiveSyslog(t, transport, ready) }()
+		<-ready
+		configure(t, base+"set system syslog host 192.168.99.2 port 5514\nset system syslog host 192.168.99.2 transport "+transport+"\n")
+		mustSSH(t, sw1, "swcli -c 'show version'") // an interactive-commands message
+		out := <-got
+		if !strings.Contains(out, " sw1 switchd ") || !strings.Contains(out, "commit") {
+			t.Errorf("%s: no commit message received:\n%s", transport, out)
+		}
+		if !strings.Contains(out, "<18") { // local6 (change-log) = 22*8+sev
+			t.Errorf("%s: change-log facility not local6:\n%s", transport, out)
+		}
+		if transport == "tcp" && !strings.Contains(out, "command=\"show version\"") {
+			t.Errorf("tcp: CLI command not logged:\n%s", out)
+		}
+	}
+	configure(t, base)
+	if out := mustSSH(t, sw1, "swcli -c 'show system syslog'"); !strings.Contains(out, "No remote syslog servers") {
+		t.Errorf("forwarder not removed: %s", out)
+	}
+}

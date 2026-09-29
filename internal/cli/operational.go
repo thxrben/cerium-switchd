@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"mclag/internal/commit"
 	"mclag/internal/config"
@@ -53,6 +54,70 @@ type MACEntry struct {
 	Interface string
 	Static    bool
 	Age       int
+}
+
+// Logs supplies the local log buffer and the syslog forwarders.
+type Logs interface {
+	Recent() []LogLine
+	Forwarders() []ForwarderStatus
+}
+
+// LogLine is one buffered log message.
+type LogLine struct {
+	Time     time.Time
+	Facility string
+	Severity string
+	Text     string
+}
+
+// ForwarderStatus describes one remote syslog server.
+type ForwarderStatus struct {
+	Target    string // host:port/transport
+	Filter    string // facility/severity
+	Connected bool
+	Sent      uint64
+	Dropped   uint64
+	Queued    int
+	LastError string
+}
+
+func (sh *Shell) showLog(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Logs == nil {
+		return errors.New("log buffer not available")
+	}
+	host := sh.env.HostName()
+	for _, l := range sh.env.Logs.Recent() {
+		fmt.Fprintf(c.out, "%s %s %s.%s: %s\n", l.Time.Local().Format("2006-01-02 15:04:05"), host, l.Facility, l.Severity, l.Text)
+	}
+	return nil
+}
+
+func (sh *Shell) showSyslog(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Logs == nil {
+		return errors.New("syslog not available")
+	}
+	fs := sh.env.Logs.Forwarders()
+	if len(fs) == 0 {
+		c.out.WriteString("No remote syslog servers configured.\n")
+		return nil
+	}
+	for _, f := range fs {
+		state := "connected"
+		if !f.Connected {
+			state = "not connected"
+		}
+		fmt.Fprintf(c.out, "%s (%s): %s, sent %d, queued %d, dropped %d\n", f.Target, f.Filter, state, f.Sent, f.Queued, f.Dropped)
+		if f.LastError != "" {
+			fmt.Fprintf(c.out, "  last error: %s\n", f.LastError)
+		}
+	}
+	return nil
 }
 
 var errNoOps = errors.New("operational data is not available (switchd data plane not running)")
@@ -300,7 +365,13 @@ func registerOperational() {
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},
 				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
+				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
 			)
+			for _, sc := range cmd.sub {
+				if sc.name == "system" {
+					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog})
+				}
+			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })
 		}
 	}
