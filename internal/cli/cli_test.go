@@ -1,0 +1,458 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"mclag/internal/commit"
+	"mclag/internal/config"
+)
+
+type nopApplier struct{}
+
+func (nopApplier) Apply(context.Context, *config.Tree, *config.Tree) []commit.MemberResult {
+	return []commit.MemberResult{{Member: "member1"}}
+}
+
+// scriptTerm answers prompts from a queue and keeps files in memory.
+type scriptTerm struct {
+	answers []string
+	text    string
+	files   map[string]string
+	asked   []string
+}
+
+func (t *scriptTerm) Ask(prompt string, echo bool) (string, error) {
+	t.asked = append(t.asked, prompt)
+	if len(t.answers) == 0 {
+		return "", io.EOF
+	}
+	a := t.answers[0]
+	t.answers = t.answers[1:]
+	return a, nil
+}
+
+func (t *scriptTerm) ReadText(string) (string, error) { return t.text, nil }
+
+func (t *scriptTerm) ReadFile(name string) ([]byte, error) {
+	s, ok := t.files[name]
+	if !ok {
+		return nil, errors.New(name + ": no such file")
+	}
+	return []byte(s), nil
+}
+
+func (t *scriptTerm) WriteFile(name string, data []byte) error {
+	t.files[name] = string(data)
+	return nil
+}
+
+var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+func newEngine(t testing.TB) *commit.Engine {
+	t.Helper()
+	st, err := commit.OpenFileStore(t.TempDir(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := commit.New(commit.Options{Store: st, Applier: nopApplier{}, Log: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Start(context.Background())
+	t.Cleanup(e.Close)
+	return e
+}
+
+type tester struct {
+	t    *testing.T
+	sh   *Shell
+	term *scriptTerm
+}
+
+func newTester(t *testing.T, e *commit.Engine, user string, class commit.Class) *tester {
+	sh := New(Env{Engine: e, User: user, Class: class, Version: "test", Log: quiet,
+		HostName: func() string { return "sw1" },
+		Ports:    func() []string { return []string{"1/eth0", "1/eth1", "1/eth2"} }})
+	return &tester{t: t, sh: sh, term: &scriptTerm{files: map[string]string{}}}
+}
+
+// run executes a line and returns its output.
+func (ts *tester) run(line string) string {
+	ts.t.Helper()
+	rep := ts.sh.Execute(context.Background(), line, ts.term)
+	if strings.Contains(rep.Output, "internal error") {
+		ts.t.Fatalf("%q: %s", line, rep.Output)
+	}
+	return rep.Output
+}
+
+// ok executes a line that must not print an error.
+func (ts *tester) ok(line string) string {
+	ts.t.Helper()
+	out := ts.run(line)
+	if strings.Contains(out, "error") || strings.Contains(out, "^\n") {
+		ts.t.Fatalf("%q failed:\n%s", line, out)
+	}
+	return out
+}
+
+func contains(t *testing.T, out string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+}
+
+func TestOperationalMode(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	if p := ts.sh.Prompt(); p != "alice@sw1> " {
+		t.Errorf("prompt %q", p)
+	}
+	contains(t, ts.ok("show version"), "mclag switchd test")
+	contains(t, ts.ok("sh ver"), "switchd") // abbreviations
+	out := ts.run("show bogus")
+	contains(t, out, strings.Repeat(" ", len("alice@sw1> show "))+"^\n", "syntax error")
+	contains(t, ts.run("c"), "ambiguous: configure, confirm")
+	contains(t, ts.run("show"), "missing argument")
+	if rep := ts.sh.Execute(context.Background(), "exit", ts.term); !rep.Exit {
+		t.Error("exit did not end the session")
+	}
+	contains(t, ts.run(`show "unterminated`), "unterminated")
+	contains(t, ts.run("show version | frobnicate"), "expecting a pipe command")
+	contains(t, ts.run("show version | display set"), "only valid for show commands")
+}
+
+func TestConfigureSetShowCommit(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	contains(t, ts.ok("configure"), "Entering configuration mode")
+	if ts.sh.Prompt() != "alice@sw1# " || ts.sh.Banner() != "[edit]\n" {
+		t.Errorf("prompt %q banner %q", ts.sh.Prompt(), ts.sh.Banner())
+	}
+	ts.ok("set system host-name core")
+	ts.ok("set vlans users vlan-id 10")
+	ts.ok("set interfaces 1/eth1 unit 0 family ethernet-switching interface-mode access")
+	ts.ok("set interfaces 1/eth1 unit 0 family ethernet-switching vlan members users")
+	contains(t, ts.ok("show system"), "host-name core;")
+	contains(t, ts.ok("show | display set"), "set vlans users vlan-id 10\n", "set system host-name core\n")
+	contains(t, ts.ok("show | compare"), "[edit]\n+   system {\n+       host-name core;")
+	out := ts.ok("commit comment \"first one\"")
+	contains(t, out, "member1: commit complete", "automatically rolled back in 10 minutes")
+	if !strings.Contains(ts.sh.Banner(), "[commit pending confirmation: 10m left]") {
+		t.Errorf("banner %q", ts.sh.Banner())
+	}
+	contains(t, ts.ok("commit"), "commit confirmed")
+	if e.Pending() != nil {
+		t.Error("still pending")
+	}
+	contains(t, ts.ok("run show system commit"), "0   ", "by alice", "first one")
+	contains(t, ts.ok("exit"), "Exiting configuration mode")
+	contains(t, ts.ok("show configuration interfaces 1/eth1 | display set"),
+		"set interfaces 1/eth1 unit 0 family ethernet-switching vlan members users")
+	contains(t, ts.ok("show configuration vlans"), "users {\n    vlan-id 10;\n}")
+	contains(t, ts.ok("show configuration system host-name"), "host-name core;")
+	contains(t, ts.ok("show configuration | display json"), `"host-name": "core"`)
+}
+
+func TestSetErrors(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	out := ts.run("set system hots-name x")
+	contains(t, out, strings.Repeat(" ", len("alice@sw1# set system "))+"^\n", "syntax error")
+	contains(t, ts.run("set system host-name"), "missing argument")
+	contains(t, ts.run("set vlans v vlan-id 5000"), "^")
+	contains(t, ts.run("set"), "missing statement")
+	contains(t, ts.run("set system"), "missing argument")
+	if ts.sh.sess.Changed() {
+		t.Error("failed commands changed the candidate")
+	}
+}
+
+func TestEditLevels(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.ok("edit interfaces 1/eth3")
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3]\n" {
+		t.Errorf("banner %q", b)
+	}
+	ts.ok("set mtu 9014")
+	ts.ok("edit unit 0 family ethernet-switching")
+	ts.ok("set interface-mode trunk")
+	contains(t, ts.ok("show"), "interface-mode trunk;")
+	contains(t, ts.ok("show | display set relative"), "set interface-mode trunk\n")
+	contains(t, ts.ok("show | display set"), "set interfaces 1/eth3 unit 0 family ethernet-switching interface-mode trunk\n")
+	ts.ok("up 2")
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3 unit 0]\n" {
+		t.Errorf("after up 2: %q", b)
+	}
+	ts.ok("exit") // back to the previous level
+	if b := ts.sh.Banner(); b != "[edit interfaces 1/eth3 unit 0 family ethernet-switching]\n" {
+		t.Errorf("after exit: %q", b)
+	}
+	ts.ok("top")
+	contains(t, ts.ok("show interfaces 1/eth3"), "mtu 9014;")
+	contains(t, ts.run("edit system host-name"), "needs a container")
+	contains(t, ts.run("edit system syslog host"), "missing")
+	ts.ok("edit interfaces") // list level, like Junos
+	if b := ts.sh.Banner(); b != "[edit interfaces]\n" {
+		t.Errorf("banner %q", b)
+	}
+	contains(t, ts.ok("show"), "1/eth3 {")
+	ts.ok("set 1/eth4 mtu 1600")
+	ts.ok("top")
+	contains(t, ts.ok("show interfaces 1/eth4"), "mtu 1600;")
+	contains(t, ts.ok("up"), "already at the top")
+	ts.ok("edit vlans v")
+	ts.ok("exit configuration-mode")
+	if ts.sh.InConfig() {
+		t.Error("exit configuration-mode did not leave")
+	}
+}
+
+func TestDeleteActivateCopyRename(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.ok("set vlans a vlan-id 10")
+	ts.ok("set system name-server [ 1.1.1.1 9.9.9.9 ]")
+	ts.ok("delete system name-server 1.1.1.1")
+	contains(t, ts.ok("show system"), "name-server 9.9.9.9;")
+	contains(t, ts.ok("delete system ntp"), "warning: statement not found")
+	ts.ok("deactivate vlans a")
+	contains(t, ts.ok("show vlans"), "inactive: a {")
+	contains(t, ts.ok("show | display set"), "deactivate vlans a")
+	ts.ok("activate vlans a")
+	ts.ok("copy vlans a to b")
+	ts.ok("rename vlans b to c")
+	contains(t, ts.ok("show vlans"), "c {\n    vlan-id 10;")
+	contains(t, ts.run("copy vlans a to c"), "already exists")
+	contains(t, ts.run("copy vlans a"), "expecting '<path> to <name>'")
+	ts.ok("edit vlans")
+	ts.term.answers = []string{"no"}
+	ts.ok("delete")
+	contains(t, ts.ok("show"), "vlan-id")
+	ts.term.answers = []string{"yes"}
+	ts.ok("delete")
+	if out := ts.ok("show"); strings.Contains(out, "vlan-id") {
+		t.Errorf("delete at level kept:\n%s", out)
+	}
+	ts.ok("top")
+	contains(t, ts.ok("show"), "name-server 9.9.9.9;") // outside the level: untouched
+}
+
+func TestLoadSave(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.term.text = "system { host-name loaded; }\n"
+	contains(t, ts.ok("load merge terminal"), "load complete")
+	ts.term.files["cfg.txt"] = "set vlans x vlan-id 7\n"
+	ts.ok("load merge cfg.txt")
+	contains(t, ts.ok("show"), "host-name loaded;", "vlan-id 7;")
+	ts.term.files["bad.txt"] = "set vlans y vlan-id 8\nset nonsense\n"
+	contains(t, ts.run("load merge bad.txt"), "load failed, candidate unchanged", "line 2")
+	contains(t, ts.run("load merge missing.txt"), "no such file")
+	contains(t, ts.ok("save out.conf"), "Wrote")
+	if !strings.Contains(ts.term.files["out.conf"], "host-name loaded;") {
+		t.Errorf("saved: %q", ts.term.files["out.conf"])
+	}
+	ts.ok("edit vlans")
+	ts.term.text = "set z vlan-id 9"
+	ts.ok("load set terminal")
+	contains(t, ts.ok("show"), "z {")
+	contains(t, ts.run("load override terminal"), "top level")
+	ts.ok("top")
+	ts.term.text = "system { host-name only; }"
+	ts.ok("load override terminal")
+	if out := ts.ok("show"); strings.Contains(out, "vlans") {
+		t.Errorf("override kept vlans:\n%s", out)
+	}
+}
+
+func TestCommitVariants(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.ok("set vlans a vlan-id 10")
+	ts.ok("set vlans b vlan-id 10")
+	out := ts.run("commit check")
+	contains(t, out, "error:", "configuration check-out failed")
+	contains(t, ts.run("commit"), "check-out failed")
+	ts.ok("delete vlans b")
+	contains(t, ts.ok("commit check"), "configuration check succeeds")
+	contains(t, ts.ok("commit confirmed 5 comment test"), "rolled back in 5 minutes")
+	contains(t, ts.ok("confirm"), "commit confirmed")
+	contains(t, ts.run("confirm"), "no commit pending")
+	contains(t, ts.ok("commit"), "no changes")
+	ts.ok("set system host-name x")
+	contains(t, ts.ok("commit and-quit"), "Exiting configuration mode")
+	if ts.sh.InConfig() {
+		t.Error("and-quit stayed in configuration mode")
+	}
+	contains(t, ts.ok("confirm"), "commit confirmed")
+	contains(t, ts.run("configure"), "Entering")
+	contains(t, ts.run("commit confirmed 99"), "1..60")
+	contains(t, ts.run("commit check and-quit"), "syntax error")
+	ts.ok("rollback 1")
+	contains(t, ts.ok("show | compare"), "-       host-name x;")
+	contains(t, ts.ok("show | compare rollback 1"), "") // no crash
+	contains(t, ts.run("rollback 99"), "no such revision")
+}
+
+func TestPrivateAndExclusive(t *testing.T) {
+	e := newEngine(t)
+	a := newTester(t, e, "alice", commit.SuperUser)
+	b := newTester(t, e, "bob", commit.SuperUser)
+	contains(t, a.ok("configure private"), "(private)")
+	a.ok("set system host-name mine")
+	contains(t, b.ok("configure exclusive"), "users currently editing the configuration: alice (private)")
+	contains(t, a.run("commit"), "locked by bob")
+	b.ok("exit")
+	a.term.answers = []string{"no"}
+	a.ok("exit")
+	if !a.sh.InConfig() {
+		t.Fatal("left private mode without confirmation")
+	}
+	a.term.answers = []string{"yes"}
+	contains(t, a.ok("exit"), "Exiting")
+	contains(t, a.ok("configure"), "Entering")
+	contains(t, a.ok("status"), "alice (shared)")
+	contains(t, a.run("update"), "only available")
+}
+
+func TestPermissions(t *testing.T) {
+	e := newEngine(t)
+	ro := newTester(t, e, "ro", commit.ReadOnly)
+	contains(t, ro.run("configure"), "permission denied")
+	if strings.Contains(ro.sh.Help(""), "configure") {
+		t.Error("read-only user sees configure")
+	}
+	contains(t, ro.ok("show configuration"), "")
+	op := newTester(t, e, "op", commit.Operator)
+	op.ok("configure")
+	op.ok("set system login user eve class super-user")
+	contains(t, op.run("commit"), "permission denied: class operator")
+}
+
+func TestPipes(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	for _, l := range []string{"set vlans a vlan-id 10", "set vlans b vlan-id 11", "set vlans c vlan-id 12"} {
+		ts.ok(l)
+	}
+	if out := ts.ok("show | display set | match vlan-id | except b"); out != "set vlans a vlan-id 10\nset vlans c vlan-id 12\n" {
+		t.Errorf("match/except: %q", out)
+	}
+	if out := ts.ok("show | display set | count"); out != "Count: 3 lines\n" {
+		t.Errorf("count: %q", out)
+	}
+	if out := ts.ok("show | display set | last 1"); out != "set vlans c vlan-id 12\n" {
+		t.Errorf("last: %q", out)
+	}
+	if out := ts.ok("show | display set | find b"); !strings.HasPrefix(out, "set vlans b") {
+		t.Errorf("find: %q", out)
+	}
+	rep := ts.sh.Execute(context.Background(), "show | no-more", ts.term)
+	if !rep.NoMore {
+		t.Error("no-more not signalled")
+	}
+	contains(t, ts.ok("show vlans a | display json"), `"vlan-id": "10"`)
+	contains(t, ts.run("show | match ("), "invalid pattern")
+	contains(t, ts.run("show | display xml"), "expecting 'set'")
+	contains(t, ts.run("show | compare | display set"), "cannot be combined")
+	contains(t, ts.run("show |"), "missing pipe command")
+}
+
+func completions(cs []Completion) string {
+	var w []string
+	for _, c := range cs {
+		w = append(w, c.Text)
+	}
+	return strings.Join(w, " ")
+}
+
+func TestCompletion(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	check := func(line, want string) {
+		t.Helper()
+		if got := completions(ts.sh.Complete(line)); !strings.Contains(" "+got+" ", " "+want+" ") {
+			t.Errorf("Complete(%q) = %q, want %q", line, got, want)
+		}
+	}
+	check("con", "configure")
+	check("show ", "configuration")
+	check("configure ", "private")
+	ts.ok("configure")
+	check("", "set")
+	check("set sys", "system")
+	check("set system ", "host-name")
+	check("set system syslog host 1.2.3.4 transport ", "tls")
+	check("set interfaces ", "1/eth1")
+	check("set interfaces ", "<interface-name>")
+	ts.ok("set vlans users vlan-id 10")
+	check("set interfaces 1/eth0 unit 0 family ethernet-switching vlan members ", "users")
+	check("set vlans ", "users")
+	check("set protocols rstp ", "<[Enter]>")
+	check("show | ", "display")
+	check("show | display ", "set")
+	check("commit ", "confirmed")
+	check("commit confirmed ", "<minutes>")
+	check("load ", "merge")
+	check("load merge ", "terminal")
+	check("rollback ", "0")
+	check("run show ", "version")
+	check("copy vlans users ", "to")
+	if got := completions(ts.sh.Complete("set system host-name core ")); got != "<[Enter]>" {
+		t.Errorf("completion after a complete leaf: %q", got)
+	}
+	h := ts.sh.Help("set system ")
+	contains(t, h, "Possible completions:", "  host-name ", "> login ", "+ name-server ")
+	contains(t, ts.sh.Help("set bogus "), "No valid completions")
+}
+
+func TestPanicRecovery(t *testing.T) {
+	sh := New(Env{User: "x", Class: commit.SuperUser, Log: quiet}) // no engine: every engine call panics
+	rep := sh.Execute(context.Background(), "show configuration", &scriptTerm{})
+	if !strings.Contains(rep.Output, "internal error") {
+		t.Fatalf("panic not reported: %q", rep.Output)
+	}
+	if cs := sh.Complete("show configuration "); cs != nil {
+		t.Errorf("completion after panic: %v", cs)
+	}
+	// The shell still works afterwards.
+	if rep := sh.Execute(context.Background(), "show version", &scriptTerm{}); !strings.Contains(rep.Output, "switchd") {
+		t.Errorf("shell unusable after panic: %q", rep.Output)
+	}
+}
+
+// FuzzShell feeds arbitrary lines to a configuration-mode shell: nothing
+// may panic (an internal error counts as a failure).
+func FuzzShell(f *testing.F) {
+	for _, s := range []string{
+		"set system host-name x", "show | display set | match a", "edit interfaces 1/eth1",
+		"delete", "commit check", "load merge terminal", "set system name-server [ 1.1.1.1", "up 3",
+		"copy vlans a to b", "rollback 0", "run show system commit", "show | compare rollback 2",
+		"deactivate system", "exit", "configure private", `set system login message "a|b"`,
+	} {
+		f.Add(s)
+	}
+	e := newEngine(f)
+	f.Fuzz(func(t *testing.T, line string) {
+		sh := New(Env{Engine: e, User: "fuzz", Class: commit.SuperUser, Log: quiet})
+		term := &scriptTerm{files: map[string]string{}, text: line, answers: []string{"yes"}}
+		defer sh.Close()
+		for _, l := range []string{"configure", line, line + " ", "show | display set"} {
+			rep := sh.Execute(context.Background(), l, term)
+			if strings.Contains(rep.Output, "internal error") {
+				t.Fatalf("%q: %s", l, rep.Output)
+			}
+			_ = sh.Complete(l)
+			_ = sh.Help(l)
+		}
+	})
+}

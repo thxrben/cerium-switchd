@@ -344,6 +344,58 @@ func Resolve(base *schema.Node, toks []Token, mode ResolveMode) ([]Step, error) 
 	return steps, nil
 }
 
+// ResolveAt resolves toks relative to the edit level base (a path from the
+// root) and returns the full path. base may end at a list without key
+// (e.g. "edit vlans"); the tokens then start with an entry key. Token
+// indices in errors refer to toks.
+func ResolveAt(base []Step, toks []Token, mode ResolveMode) ([]Step, error) {
+	sn := schema.Root()
+	prefix := base
+	if n := len(base); n > 0 {
+		last := base[n-1]
+		if last.Schema.Kind == schema.List && !last.HasKey {
+			// Resolve "<list> <tokens…>" from the list's parent.
+			prefix = base[:n-1]
+			if n > 1 {
+				sn = base[n-2].Schema
+			}
+			steps, err := Resolve(sn, append([]Token{{Text: last.Schema.Name}}, toks...), mode)
+			if err != nil {
+				if pe, ok := err.(*PathError); ok {
+					c := *pe
+					c.Tok--
+					if c.Tok < 0 {
+						c.Tok = 0
+					}
+					return nil, &c
+				}
+				return nil, err
+			}
+			return append(append([]Step(nil), prefix...), steps...), nil
+		}
+		sn = last.Schema
+	}
+	steps, err := Resolve(sn, toks, mode)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]Step(nil), prefix...), steps...), nil
+}
+
+// ClearBelow removes everything below the statement at path: all entries
+// of a list without key, the contents of a container or entry otherwise.
+// Emptied non-presence containers are removed.
+func (t *Tree) ClearBelow(path []Step) {
+	if n := len(path); n > 0 && path[n-1].Schema.Kind == schema.List && !path[n-1].HasKey {
+		_ = t.Delete(path)
+		return
+	}
+	if n := t.Lookup(path); n != nil {
+		n.Kids = nil
+	}
+	t.Normalize()
+}
+
 // ErrNotFound is returned by Delete when the statement does not exist.
 var ErrNotFound = errors.New("statement not found")
 

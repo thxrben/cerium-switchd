@@ -180,10 +180,6 @@ func ApplySetLines(t *Tree, text string) error {
 
 // ApplySetLinesAt is ApplySetLines with paths relative to base.
 func ApplySetLinesAt(t *Tree, text string, base []Step) error {
-	baseSchema := schema.Root()
-	if len(base) > 0 {
-		baseSchema = base[len(base)-1].Schema
-	}
 	for i, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -207,19 +203,16 @@ func ApplySetLinesAt(t *Tree, text string, base []Step) error {
 		default:
 			return &LoadError{Line: i + 1, Msg: fmt.Sprintf("unknown command %q", verb)}
 		}
-		steps, err := Resolve(baseSchema, toks[1:], mode)
+		full, err := ResolveAt(base, toks[1:], mode)
 		if err != nil {
 			return &LoadError{Line: i + 1, Msg: err.Error()}
 		}
-		full := append(append([]Step(nil), base...), steps...)
 		switch verb {
 		case "set":
 			err = t.Set(full)
 		case "delete":
-			if len(steps) == 0 && len(base) > 0 {
-				if n := t.Lookup(base); n != nil {
-					n.Kids = nil
-				}
+			if len(toks) == 1 && len(base) > 0 {
+				t.ClearBelow(base)
 				break
 			}
 			err = t.Delete(full)
@@ -227,7 +220,7 @@ func ApplySetLinesAt(t *Tree, text string, base []Step) error {
 				err = nil
 			}
 		default:
-			if len(steps) == 0 {
+			if len(toks) == 1 {
 				err = fmt.Errorf("%s: missing statement", verb)
 				break
 			}
@@ -273,6 +266,13 @@ func parseCurly(t *Tree, text string, basePath []Step, allowReplace bool) error 
 		baseSchema = basePath[len(basePath)-1].Schema
 	}
 	stack := []frame{{path: basePath, schema: baseSchema}}
+	if n := len(basePath); n > 0 && basePath[n-1].Schema.Kind == schema.List && !basePath[n-1].HasKey {
+		// At a list level (e.g. "edit vlans") statements start with a key.
+		stack[0] = frame{path: basePath[:n-1], schema: schema.Root(), list: basePath[n-1].Schema}
+		if n > 1 {
+			stack[0].schema = basePath[n-2].Schema
+		}
+	}
 	var stmt []Token
 	for _, tk := range toks {
 		top := stack[len(stack)-1]

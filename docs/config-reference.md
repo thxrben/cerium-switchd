@@ -1063,7 +1063,7 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | `interface-range` expansion (member-range, wildcards, precedence) | implemented and tested (hot-plug re-evaluation with the data plane) |
 | `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `copy`, `rename` | implemented and tested (config package); CLI commands next |
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
-| CLI | next |
+| CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`); swcli client and switchd next |
 | Hitless apply (diff-driven, tighten before loosen) | specified, with the data plane (Phase 3) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
