@@ -1,0 +1,33 @@
+# First-time setup of a lab VM: root key login and test tools.
+#   Initial run (only user + password exist, no sudo):
+#     ansible-playbook bootstrap.yml -u user -e ansible_become_method=su -e ansible_become_password=...
+#   Afterwards everything runs as root with the key:  ansible-playbook <play>.yml -u root
+- hosts: lab
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install Python (minimal Debian has none; Ansible modules need it)
+      ansible.builtin.raw: test -e /usr/bin/python3 || (apt-get update -q && apt-get install -y -q --no-install-recommends python3 python3-apt)
+      register: py
+      changed_when: "'Setting up' in py.stdout"
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Authorize the dev machine key for root
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+    - name: Install test tools
+      ansible.builtin.apt:
+        name: [qemu-guest-agent, tcpdump, ethtool, iperf3, nftables, rsync]
+        update_cache: true
+        install_recommends: false
+
+    - name: Enable the guest agent
+      ansible.builtin.service:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+      failed_when: false   # needs the Proxmox agent option; harmless if missing
