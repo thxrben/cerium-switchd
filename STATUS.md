@@ -68,19 +68,33 @@ Last updated: 2026-09-29 (late).
 - Phase 4b step 4 done: hardware capability checks (max speed, pause support, vlan-challenged, bundle speed
   mix) and show system offload.
 
+- Junos restructuring (2026-09-30): stack -> virtual-chassis (mastership-priority), management moved to
+  routing instances (system management-instance + routing-instances mgmt_junos, per-member irb addresses),
+  data routing instances (virtual-router VRFs), protection filter (nftables) for data L3 addresses, show route.
+  Old configs converted on read (internal/daemon/upgrade.go). physw4 is switched off (user), deploy to sw1 only.
+
 ## In progress: Phase 5 stacking
-- Done: link protocol (docs/stack-protocol.md, internal/stack/link): reliable stream per stacking cable as
-  net.Conn, epochs/restart detection, tested with lossy/duplicating/reordering cables and TLS 1.3 mTLS on top,
-  fuzzed; AF_PACKET I/O bound to one port + EtherType 0x88b5; verified sw1 ens20 <-> sw3 ens19 (stk-13).
-- Spec: stacking ports are designated by local <card>/<port> (request virtual-chassis vc-port set pic-slot 0 port 2).
+- Done: link protocol (docs/stack-protocol.md, internal/stack/link) with BFD-style liveness; AF_PACKET I/O
+  (verified sw1 ens20 <-> sw3 ens19, stk-13); stack keys (internal/stack/pki: Ed25519, no expiry, join tokens).
+- Spec: Junos VC syntax (request virtual-chassis vc-port set pic-slot <card> port <port>, show virtual-chassis),
+  mastership switch + member remove (decommissioning).
 
 ## Next (in order)
-1. Phase 5: stack PKI (CA on first member, join tokens, CSR signing), BFD in the link, stack manager in
-   switchd (request virtual-chassis vc-port set/delete, show virtual-chassis [vc-port]; stacking ports: no IP, no bridge),
-   topology + hop-by-hop relay, Raft store, per-member apply, stack-wide show commands.
-   Lab cabling: test host hSw2 currently uses stk-12 (sw1 ens19 / sw2 ens19) and TestHotplug uses stk-13
-   (sw1 ens20); move them to other links before the stacking lab tests.
-2. Open items from Phase 3/4: management DHCP, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover (4.15).
+1. Phase 5: stack manager in switchd (VC ports, show virtual-chassis [vc-port]; stacking ports: up, no IP,
+   no bridge), join (tokens), topology + relay, Raft store (with leadership transfer), per-member apply,
+   stack-wide show commands. Lab cabling: hSw2 uses stk-12 (sw1 ens19 / sw2 ens19) and TestHotplug uses
+   stk-13 (sw1 ens20); move them before the stacking lab tests.
+2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
+   (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
+
+## Questions for the user (collected while they are away)
+1. Should the management network be an opt-in *backup* path for stack sync (TLS-protected) when all stacking
+   cables between two members are cut? Current design: no (stack traffic only on stacking ports, like Junos VC).
+2. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
+   configurable filter (firewall filter on lo0) later, e.g. to allow SSH on a data irb deliberately?
+3. The CLI SSH server (port 2222) still listens on all addresses; with management-instance the filter blocks
+   it on data L3 addresses. Should it additionally listen *only* inside mgmt_junos (then it is unreachable
+   through OS-managed NICs outside the instance, e.g. before the management port is moved)?
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).
