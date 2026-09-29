@@ -17,6 +17,8 @@ import (
 type Netlink struct {
 	// SysRoot is normally "/sys" (used to tell physical ports apart).
 	SysRoot string
+	// StateDir keeps what switchd changed outside its own devices (L3).
+	StateDir string
 
 	mlOnce sync.Once
 	macl   *macLimits

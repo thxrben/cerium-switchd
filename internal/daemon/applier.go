@@ -170,16 +170,36 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if a.dryRun {
 		return nil
 	}
+	level := slog.LevelInfo
+	if reason != "commit" {
+		level = slog.LevelWarn // something else changed the kernel state
+	}
+	// Bridge self VLANs: added before the IP interfaces use them, pruned
+	// after the IP interfaces that used them are gone.
+	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, false); err != nil {
+		return fmt.Errorf("bridge VLANs: %w", err)
+	}
 	changed, err := a.kernel.SyncMgmt(desired.Mgmt)
 	if changed {
-		level := slog.LevelInfo
-		if reason != "commit" {
-			level = slog.LevelWarn
-		}
 		a.log.Log(context.Background(), level, "management interface updated", "reason", reason, "err", err)
 	}
 	if err != nil {
 		return fmt.Errorf("management interface: %w", err)
+	}
+	changed, warnings, err := a.kernel.SyncL3(desired.L3)
+	if changed {
+		a.log.Log(context.Background(), level, "routed interfaces updated", "reason", reason, "err", err)
+	}
+	for _, w := range warnings {
+		if reason == "commit" {
+			a.log.Warn("routing", "note", w)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("routed interfaces: %w", err)
+	}
+	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, true); err != nil {
+		return fmt.Errorf("bridge VLANs: %w", err)
 	}
 	return a.saveOwned(desired)
 }

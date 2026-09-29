@@ -49,7 +49,7 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("state: %w", err)
 	}
 	srv := &rpc.Server{Log: log}
-	kernel := &dataplane.Netlink{}
+	kernel := &dataplane.Netlink{StateDir: o.StateDir}
 	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: 1}
 	if _, err := names.Refresh(); err != nil {
 		log.Warn("port numbering", "err", err)

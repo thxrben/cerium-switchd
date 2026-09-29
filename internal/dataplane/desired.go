@@ -2,6 +2,8 @@ package dataplane
 
 import (
 	"fmt"
+	"maps"
+	"mclag/internal/schema"
 	"slices"
 
 	"mclag/internal/model"
@@ -99,6 +101,17 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 		}
 		s.Links[l.Name] = l
 	}
+	s.L3 = computeL3(cfg, m, names, s)
+	self := map[int]bool{}
+	for _, i := range s.L3.Ifs {
+		if i.Parent == BridgeName {
+			self[i.VID] = true
+		}
+	}
+	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.VLAN != 0 {
+		self[mem.Mgmt.VLAN] = true
+	}
+	s.SelfVLANs = slices.Sorted(maps.Keys(self))
 	if mem := cfg.Members[m]; mem != nil && mem.Mgmt.Configured() {
 		port := ""
 		if mem.Mgmt.Interface != "" {
@@ -160,4 +173,60 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// SubifName is the kernel name of a routed subinterface: Linux names
+// cannot contain "/", so 1/0/6 unit 100 becomes "sw-0-6.100".
+func SubifName(parent string, unit int) string {
+	if p, ok := schema.ParsePhysical(parent); ok {
+		return fmt.Sprintf("sw-%d-%d.%d", p.Card, p.Port, unit)
+	}
+	return fmt.Sprintf("%s.%d", parent, unit)
+}
+
+// computeL3 returns the routed interfaces of member m.
+func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
+	l := &L3{}
+	units := slices.Sorted(maps.Keys(cfg.L3))
+	for _, n := range units {
+		u := cfg.L3[n]
+		i := L3If{Up: !u.Disabled, Addrs: slices.Clone(u.Addrs)}
+		switch {
+		case u.IRB():
+			if u.VLAN == 0 {
+				continue
+			}
+			i.Name, i.Parent, i.VID, i.Own = n, BridgeName, u.VLAN, true
+			i.MTU = 1500
+			if v := cfg.VLANByID[u.VLAN]; v != nil && v.MTU != 0 {
+				i.MTU = model.LinuxMTU(v.MTU)
+			}
+		default:
+			parent := u.Parent
+			if schema.IsAE(parent) {
+				if s.Links[parent] == nil {
+					continue // the bundle has no port on this member
+				}
+			} else {
+				if u.Member != m {
+					continue
+				}
+				linux, ok := names(parent)
+				if !ok {
+					continue
+				}
+				parent = linux
+			}
+			if u.Tag == 0 {
+				i.Name = parent
+			} else {
+				i.Name, i.Parent, i.VID, i.Own = SubifName(u.Parent, u.Unit), parent, u.Tag, true
+			}
+		}
+		l.Ifs = append(l.Ifs, i)
+	}
+	for _, r := range cfg.Routes {
+		l.Routes = append(l.Routes, Route{Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
+	}
+	return l
 }

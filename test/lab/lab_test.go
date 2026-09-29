@@ -796,3 +796,102 @@ func TestCLISSHServer(t *testing.T) {
 		t.Error("CLI SSH server not removed")
 	}
 }
+
+// L3: routing between VLANs through irb interfaces, a routed port and
+// static routes (reference 5.3.2, 5.3.3, 5.8), and clean removal.
+func TestRouting(t *testing.T) {
+	for _, h := range hosts {
+		setupHost(t, h)
+	}
+	// Host addresses and default routes inside the test namespaces.
+	route := func(h host, addr, gw string) {
+		mustSSH(t, h.vm, fmt.Sprintf("ip -n h addr add %s dev %s; ip -n h route replace default via %s", addr, h.nic, gw))
+	}
+	route(hSrv1, "10.10.10.2/24", "10.10.10.1")
+	route(hSw3, "10.10.20.3/24", "10.10.20.1")
+	route(hSw2, "10.10.30.2/24", "10.10.30.1")
+	mustSSH(t, hSw2.vm, "ip -n h addr add 10.99.0.1/32 dev lo")
+	defer func() {
+		for _, h := range hosts {
+			ssh(h.vm, "ip -n h route del default; ip -n h addr del 10.99.0.1/32 dev lo")
+		}
+	}()
+	ping := func(from host, to string) bool {
+		_, err := ssh(from.vm, "ip netns exec h ping -c2 -i0.2 -W1 "+to)
+		return err == nil
+	}
+	cfg := vlans + access(hSrv1.sw1Port, "v10") + access(hSw3.sw1Port, "v20") +
+		"set vlans v10 l3-interface irb.10\nset vlans v20 l3-interface irb.20\n" +
+		"set interfaces irb unit 10 family inet address 10.10.10.1/24\n" +
+		"set interfaces irb unit 20 family inet address 10.10.20.1/24\n" +
+		"set interfaces 1/ens19 unit 0 family inet address 10.10.30.1/24\n" +
+		"set routing-options static route 10.99.0.0/24 next-hop 10.10.30.2\n" +
+		"set routing-options static route 198.51.100.0/24 discard\n"
+	configure(t, cfg)
+	if !ping(hSrv1, "10.10.10.1") {
+		t.Error("irb.10 gateway not reachable from v10")
+	}
+	if !ping(hSrv1, "10.10.20.3") {
+		t.Error("no routing between v10 and v20")
+	}
+	if !ping(hSrv1, "10.10.30.2") {
+		t.Error("no routing from v10 to the routed port")
+	}
+	if !ping(hSrv1, "10.99.0.1") {
+		t.Error("static route not used")
+	}
+	out := mustSSH(t, sw1, "ip route show proto 250; sysctl -n net.ipv4.conf.irb/10.forwarding net.ipv4.ip_forward")
+	for _, want := range []string{"10.99.0.0/24 via 10.10.30.2", "blackhole 198.51.100.0/24", "metric 20"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("routes: missing %q:\n%s", want, out)
+		}
+	}
+	// Forwarding only on switchd's interfaces: the OS management NIC stays a host.
+	if f := strings.Fields(out); len(f) < 2 || f[len(f)-2] != "1" || f[len(f)-1] != "0" {
+		t.Errorf("forwarding sysctls (irb.10, global): %q", f)
+	}
+	// The hosts in one VLAN still switch directly (not via the router).
+	if !reach(t, hSrv1, hSrv1, 1) {
+		t.Error("sanity: srv1 cannot reach itself")
+	}
+
+	// IPv6: forwarding is system-wide there; the OS management NIC keeps
+	// accepting router advertisements (accept_ra 2), and it is undone.
+	// A dummy interface stands in for an OS NIC that uses SLAAC.
+	mustSSH(t, sw1, "ip link add labra0 type dummy 2>/dev/null; sysctl -qw net.ipv6.conf.labra0.accept_ra=1")
+	defer ssh(sw1, "ip link del labra0")
+	raBefore := strings.TrimSpace(mustSSH(t, sw1, "sysctl -n net.ipv6.conf.ens18.accept_ra"))
+	mustSSH(t, hSrv1.vm, "ip -n h addr add fd00:10::2/64 dev "+hSrv1.nic+" nodad; ip -n h -6 route replace default via fd00:10::1")
+	mustSSH(t, hSw3.vm, "ip -n h addr add fd00:20::3/64 dev "+hSw3.nic+" nodad; ip -n h -6 route replace default via fd00:20::1")
+	configure(t, cfg+"set interfaces irb unit 10 family inet6 address fd00:10::1/64\nset interfaces irb unit 20 family inet6 address fd00:20::1/64\n")
+	time.Sleep(2 * time.Second) // DAD on the irb addresses
+	if !ping(hSrv1, "fd00:20::3") {
+		t.Error("no IPv6 routing between v10 and v20")
+	}
+	out = mustSSH(t, sw1, "sysctl -n net.ipv6.conf.all.forwarding net.ipv6.conf.ens18.accept_ra net.ipv6.conf.labra0.accept_ra")
+	if f := strings.Fields(out); len(f) != 3 || f[0] != "1" || (raBefore == "1" && f[1] != "2") || f[2] != "2" {
+		t.Errorf("IPv6 forwarding / accept_ra (all, ens18, labra0): %q (ens18 before: %s)", f, raBefore)
+	}
+	configure(t, cfg)
+	out = mustSSH(t, sw1, "sysctl -n net.ipv6.conf.all.forwarding net.ipv6.conf.ens18.accept_ra net.ipv6.conf.labra0.accept_ra")
+	if f := strings.Fields(out); len(f) != 3 || f[0] != "0" || f[1] != raBefore || f[2] != "1" {
+		t.Errorf("IPv6 forwarding / accept_ra not restored (all, ens18, labra0): %q (ens18 before: %s)", f, raBefore)
+	}
+
+	// Changing an address is hitless for the other interfaces.
+	configure(t, strings.Replace(cfg, "10.10.20.1/24", "10.10.20.254/24", 1))
+	mustSSH(t, hSw3.vm, "ip -n h route replace default via 10.10.20.254")
+	if !ping(hSrv1, "10.10.20.3") {
+		t.Error("routing broken after changing irb.20's address")
+	}
+	if out := mustSSH(t, sw1, "ip -br addr show irb.20"); strings.Contains(out, "10.10.20.1/") {
+		t.Errorf("old address left: %s", out)
+	}
+
+	// Removing L3 removes devices, addresses on the port and routes.
+	configure(t, vlans+access(hSrv1.sw1Port, "v10"))
+	out = mustSSH(t, sw1, "ip -br link show type vlan | grep -c irb || true; ip route show proto 250 | wc -l; ip -br addr show ens19 2>/dev/null | grep -c 10.10.30 || true")
+	if f := strings.Fields(out); len(f) != 3 || f[0] != "0" || f[1] != "0" || f[2] != "0" {
+		t.Errorf("L3 leftovers (irb devices, routes, port addresses): %q", f)
+	}
+}

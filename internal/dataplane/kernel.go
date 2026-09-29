@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 )
 
 // ErrUnsupported marks operations that are not implemented on this kernel
@@ -21,6 +22,13 @@ type Kernel interface {
 	// SyncMgmt converges the management interface to m (nil: remove what
 	// switchd created for it). It reports whether it changed anything.
 	SyncMgmt(m *Mgmt) (bool, error)
+	// SyncSelfVLANs makes the bridge device itself a member of vids; with
+	// prune it also leaves the others (hitless order: add before the IP
+	// interfaces change, prune after).
+	SyncSelfVLANs(vids []int, prune bool) (bool, error)
+	// SyncL3 converges the routed interfaces and static routes; warnings
+	// are routes that cannot be active yet.
+	SyncL3(l *L3) (changed bool, warnings []string, err error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -60,6 +68,21 @@ func (f *Fake) SyncMgmt(m *Mgmt) (bool, error) {
 		f.S.Mgmt = &c
 	}
 	return changed, nil
+}
+
+// SyncSelfVLANs records the bridge self VLANs.
+func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
+	changed := !slices.Equal(f.S.SelfVLANs, vids)
+	f.S.SelfVLANs = slices.Clone(vids)
+	return changed, nil
+}
+
+// SyncL3 records the routed configuration.
+func (f *Fake) SyncL3(l *L3) (bool, []string, error) {
+	changed := !reflect.DeepEqual(f.S.L3, l)
+	c := (&State{L3: l}).Clone()
+	f.S.L3 = c.L3
+	return changed, nil, nil
 }
 
 func (f *Fake) link(n string) (*Link, error) {

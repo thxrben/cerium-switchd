@@ -62,6 +62,7 @@ type IfStatus struct {
 	Description string
 	MAC         string
 	VLANs       []string // "v10 (10, untagged)"
+	Addrs       []string // IP addresses of a routed unit
 	Counters    IfCounters
 	TaggedDrops uint64
 }
@@ -234,6 +235,9 @@ func (sh *Shell) showInterfaces(c *call) error {
 		}
 		fmt.Fprintf(c.out, "  Linux name: %s, MAC: %s, Speed: %s, MTU: %d\n", i.Linux, i.MAC, speed(i.SpeedMbps), i.MTU)
 		fmt.Fprintf(c.out, "  Configured: %s, Role: %s\n", cfg, i.Role)
+		if len(i.Addrs) > 0 {
+			fmt.Fprintf(c.out, "  Addresses: %s\n", strings.Join(i.Addrs, ", "))
+		}
 		if len(i.VLANs) > 0 {
 			fmt.Fprintf(c.out, "  VLANs: %s\n", strings.Join(i.VLANs, ", "))
 		}

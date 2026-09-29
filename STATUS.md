@@ -59,12 +59,15 @@ Last updated: 2026-09-29 (late).
   restarts (offline prompt, reconnect) and its own crashes (supervisor, crash report, shell for super-users),
   local consoles (serial + display) autologin root into the CLI; `system ports login-required`. 17 lab tests pass.
 
+- Phase 4b steps 1–3 done: x/y/z interface names (pinned card numbers, old configs converted hitlessly,
+  verified on physw4), show chassis hardware, L3 (irb, routed ports/subinterfaces, static routes, IPv4+IPv6,
+  forwarding only on switchd's L3 interfaces, accept_ra 2 for OS NICs), show system rollback, show arp /
+  ipv6 neighbors, show system uptime, request system reboot/halt/power-off, host name + resolv.conf in the OS.
+  18 lab tests pass.
+
 ## Next (in order) — see PLAN.md Phase 4b
-1. Junos interface names x/y/z (member/card/port, pinned), `show chassis hardware`; test on physw4 (10.5.20.76).
-2. irb + L3 units, routed ports/subinterfaces, static routes; management onto routing-instances.
-3. show system rollback, show arp, show system uptime, host-name → OS, name servers, request system reboot.
-4. NIC capability checks at commit, show system offload.
-Then Phase 5 stacking.
+1. NIC capability checks at commit (ethtool link modes, pause, offloads; per-port speed class), show system offload.
+2. Then Phase 5 stacking (PKI, stacking transport, topology, Raft, per-member apply).
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

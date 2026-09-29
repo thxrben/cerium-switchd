@@ -13,6 +13,7 @@ package dataplane
 import (
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -104,6 +105,43 @@ type Mgmt struct {
 	DHCP     bool
 }
 
+// L3 is the routed part of the default instance (reference 5.3.2, 5.3.3,
+// 5.8): IP interfaces and static routes.
+type L3 struct {
+	Ifs    []L3If
+	Routes []Route
+}
+
+// L3If is one routed interface in the kernel.
+type L3If struct {
+	Name   string // kernel name: "irb.10", "sw-0-6.100", or the port itself (untagged unit 0)
+	Parent string // kernel parent of a VLAN device ("" for a port itself)
+	VID    int    // VLAN id of a VLAN device
+	Own    bool   // switchd creates the device (irb, subinterface)
+	Up     bool
+	MTU    int // kernel MTU of an own device (0 = default)
+	Addrs  []netip.Prefix
+}
+
+// Route is a static route of the default instance.
+type Route struct {
+	Prefix   netip.Prefix
+	NextHops []netip.Addr
+	Discard  bool
+}
+
+// IPv6 reports whether any interface has an IPv6 address (IPv6 routing).
+func (l *L3) IPv6() bool {
+	for _, i := range l.Ifs {
+		for _, a := range i.Addrs {
+			if a.Addr().Is6() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // State is the managed part of a member's kernel configuration.
 type State struct {
 	Bridge *BridgeOpts // nil: no bridge
@@ -111,6 +149,11 @@ type State struct {
 	// Mgmt is nil when the configuration has no management block: the
 	// host's network configuration is then left alone.
 	Mgmt *Mgmt
+	// L3 holds the routed interfaces (never nil in a desired state).
+	L3 *L3
+	// SelfVLANs are the VLANs the bridge device itself joins (delivered to
+	// the CPU): the management VLAN and the irb VLANs.
+	SelfVLANs []int
 }
 
 // Clone returns a deep copy.
@@ -125,6 +168,18 @@ func (s *State) Clone() *State {
 		b := *s.Bridge
 		c.Bridge = &b
 	}
+	if s.L3 != nil {
+		l := &L3{Routes: slices.Clone(s.L3.Routes)}
+		for _, i := range s.L3.Ifs {
+			i.Addrs = slices.Clone(i.Addrs)
+			l.Ifs = append(l.Ifs, i)
+		}
+		for n := range l.Routes {
+			l.Routes[n].NextHops = slices.Clone(l.Routes[n].NextHops)
+		}
+		c.L3 = l
+	}
+	c.SelfVLANs = slices.Clone(s.SelfVLANs)
 	for n, l := range s.Links {
 		c.Links[n] = l.Clone()
 	}

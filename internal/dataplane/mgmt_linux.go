@@ -44,11 +44,6 @@ func (k *Netlink) SyncMgmt(m *Mgmt) (bool, error) {
 		if err := k.releaseVRFMembers(vrf, ""); err != nil {
 			return true, err
 		}
-		if br, err := netlink.LinkByName(BridgeName); err == nil {
-			if err := syncBridgeSelfVLANs(br, 0); err != nil {
-				return true, err
-			}
-		}
 		return true, netlink.LinkDel(vrf)
 	}
 	if m.VLAN == 0 && m.Port == "" {
@@ -86,9 +81,6 @@ func (k *Netlink) SyncMgmt(m *Mgmt) (bool, error) {
 		if br == nil {
 			return changed, errors.New("management: bridge missing")
 		}
-		if err := syncBridgeSelfVLANs(br, m.VLAN); err != nil {
-			return changed, err
-		}
 		cur, _ := netlink.LinkByName(MgmtIRB)
 		if v, ok := cur.(*netlink.Vlan); cur != nil && (!ok || v.VlanId != m.VLAN || v.ParentIndex != br.Attrs().Index) {
 			if err := note(netlink.LinkDel(cur)); err != nil {
@@ -110,11 +102,6 @@ func (k *Netlink) SyncMgmt(m *Mgmt) (bool, error) {
 		}
 		ipIf = cur
 	} else {
-		if br != nil {
-			if err := syncBridgeSelfVLANs(br, 0); err != nil {
-				return changed, err
-			}
-		}
 		if cur, err := netlink.LinkByName(MgmtIRB); err == nil {
 			if err := note(netlink.LinkDel(cur)); err != nil {
 				return changed, err
@@ -180,29 +167,6 @@ func (k *Netlink) releaseVRFMembers(vrf netlink.Link, keep string) error {
 				_ = netlink.AddrDel(l, &ad)
 			}
 		}
-	}
-	return nil
-}
-
-// syncBridgeSelfVLANs makes vid (0 = none) the only VLAN of the bridge
-// device itself, i.e. the only VLAN delivered to the CPU.
-func syncBridgeSelfVLANs(br netlink.Link, vid int) error {
-	all, err := netlink.BridgeVlanList()
-	if err != nil {
-		return err
-	}
-	have := false
-	for _, v := range all[int32(br.Attrs().Index)] {
-		if int(v.Vid) == vid {
-			have = true
-			continue
-		}
-		if err := netlink.BridgeVlanDel(br, v.Vid, false, false, true, false); err != nil {
-			return err
-		}
-	}
-	if vid != 0 && !have {
-		return netlink.BridgeVlanAdd(br, uint16(vid), false, false, true, false)
 	}
 	return nil
 }

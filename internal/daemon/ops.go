@@ -7,6 +7,7 @@ import (
 	"maps"
 	"mclag/internal/inventory"
 	"mclag/internal/schema"
+	"net"
 	"os"
 	"slices"
 	"strconv"
@@ -102,7 +103,57 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 		}
 		out = append(out, s)
 	}
+	out = append(out, o.l3Units(cfg)...)
 	return out, nil
+}
+
+// l3Units reports the routed units of this member ("irb.10", "1/0/6.100",
+// "1/0/5.0").
+func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
+	var out []cli.IfStatus
+	for _, name := range slices.Sorted(maps.Keys(cfg.L3)) {
+		u := cfg.L3[name]
+		var linux string
+		switch {
+		case u.IRB():
+			linux = name
+		case u.Tag != 0:
+			linux = dataplane.SubifName(u.Parent, u.Unit)
+		case schema.IsAE(u.Parent):
+			linux = u.Parent
+		default:
+			if u.Member != o.member {
+				continue
+			}
+			linux, _ = o.names.Linux(u.Parent)
+		}
+		l, err := netlink.LinkByName(linux)
+		if linux == "" || err != nil {
+			continue
+		}
+		a := l.Attrs()
+		s := cli.IfStatus{Name: name, Linux: linux, Configured: true, AdminUp: a.Flags&net.FlagUp != 0,
+			OperUp: a.OperState == netlink.OperUp || a.OperState == netlink.OperUnknown && a.Flags&net.FlagUp != 0,
+			MTU:    a.MTU + model.EthHeader, Description: u.Description, MAC: a.HardwareAddr.String()}
+		for _, p := range u.Addrs {
+			s.Addrs = append(s.Addrs, p.String())
+		}
+		s.Role = "routed"
+		if u.IRB() {
+			s.Role = "irb vlan " + strconv.Itoa(u.VLAN)
+			if v := cfg.VLANByID[u.VLAN]; v != nil {
+				s.Role = "irb " + v.Name
+			}
+		}
+		if len(s.Addrs) > 0 {
+			s.Role += " " + s.Addrs[0]
+			if len(s.Addrs) > 1 {
+				s.Role += fmt.Sprintf(" (+%d)", len(s.Addrs)-1)
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func (o *ops) Hardware() ([]cli.HardwarePort, error) {
