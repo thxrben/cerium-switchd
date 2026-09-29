@@ -261,9 +261,10 @@ func atoi(s string, def int) int {
 }
 
 // Build converts a tree into the typed model and runs all validation.
-// inv may be nil; it supplies hardware facts (e.g. maximum MTU).
+// Inactive statements are ignored as if deleted. inv may be nil; it
+// supplies hardware facts (e.g. maximum MTU).
 func Build(t *config.Tree, inv Inventory) (*Config, Issues) {
-	b := &builder{root: t.Root, inv: inv, rangeOf: map[string]string{}}
+	b := &builder{root: t.Active().Root, inv: inv, rangeOf: map[string]string{}}
 	b.build()
 	b.validate()
 	sort.SliceStable(b.issues, func(i, j int) bool { return b.issues[i].Severity > b.issues[j].Severity })

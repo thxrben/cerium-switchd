@@ -104,13 +104,8 @@ func (d *differ) node(path []string, a, b *Node) {
 			d.stmt(path, '-', p.a)
 		default:
 			switch p.a.Schema.Kind {
-			case schema.Leaf:
-				if p.a.Value != p.b.Value {
-					d.stmt(path, '-', p.a)
-					d.stmt(path, '+', p.b)
-				}
-			case schema.LeafList:
-				if !slices.Equal(p.a.Values, p.b.Values) {
+			case schema.Leaf, schema.LeafList, schema.Flag:
+				if p.a.Value != p.b.Value || !slices.Equal(p.a.Values, p.b.Values) || p.a.Inactive != p.b.Inactive {
 					d.stmt(path, '-', p.a)
 					d.stmt(path, '+', p.b)
 				}
@@ -120,6 +115,9 @@ func (d *differ) node(path []string, a, b *Node) {
 		}
 	}
 	for _, p := range nested {
+		if p.a.Inactive != p.b.Inactive {
+			d.activation(path, p.b)
+		}
 		sub := append(append([]string(nil), path...), p.a.Schema.Name)
 		if p.a.Schema.Kind == schema.List {
 			sub = append(sub, Quote(p.a.Key))
@@ -149,4 +147,23 @@ func renderStmt(n *Node) string {
 	}
 	writeNode(&b, n, 0)
 	return b.String()
+}
+
+// activation emits a "!" line for a block whose inactive state changed.
+func (d *differ) activation(path []string, n *Node) {
+	word := "active:"
+	if n.Inactive {
+		word = DirInactive
+	}
+	head := n.Schema.Name
+	if n.Schema.Kind == schema.List {
+		if n.Schema.Wrapped {
+			path = append(append([]string(nil), path...), n.Schema.Name)
+			head = Quote(n.Key)
+		} else {
+			head += " " + Quote(n.Key)
+		}
+	}
+	d.header(path)
+	d.b.WriteString("!   " + word + " " + head + "\n")
 }

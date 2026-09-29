@@ -18,6 +18,9 @@ type Node struct {
 	Value  string   // leaves only
 	Values []string // leaf-lists only
 	Kids   []*Node
+	// Inactive marks a statement as deactivated: it is kept and displayed
+	// but ignored by validation and the data plane (see Tree.Active).
+	Inactive bool
 }
 
 // Tree is a complete configuration.
@@ -36,7 +39,7 @@ func (t *Tree) Clone() *Tree {
 }
 
 func (n *Node) clone() *Node {
-	c := &Node{Schema: n.Schema, Key: n.Key, Value: n.Value}
+	c := &Node{Schema: n.Schema, Key: n.Key, Value: n.Value, Inactive: n.Inactive}
 	if n.Values != nil {
 		c.Values = slices.Clone(n.Values)
 	}
@@ -527,7 +530,7 @@ func prune(chain []*Node) {
 func Equal(a, b *Tree) bool { return nodeEqual(a.Root, b.Root) }
 
 func nodeEqual(a, b *Node) bool {
-	if a.Schema != b.Schema || a.Key != b.Key || a.Value != b.Value || !slices.Equal(a.Values, b.Values) || len(a.Kids) != len(b.Kids) {
+	if a.Schema != b.Schema || a.Key != b.Key || a.Value != b.Value || a.Inactive != b.Inactive || !slices.Equal(a.Values, b.Values) || len(a.Kids) != len(b.Kids) {
 		return false
 	}
 	for i := range a.Kids {

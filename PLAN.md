@@ -202,6 +202,36 @@ a way that can drop traffic when the hardware misbehaves:
 * Later phases add post-commit health checks (mgmt still reachable, stack peers up, MC-LAG healthy). If a check fails
   inside the window, the commit is reverted automatically.
 
+### 4.14 Hitless reconfiguration (no link flaps, no leaks)
+A commit (and every rollback, manual or automatic) must never take down links or traffic that the change does not
+concern, and must never leak frames between interfaces or VLANs while it is being applied.
+
+* **Diff-driven apply.** The reconciler compares old and new desired state per object (port, bond, VLAN membership,
+  VXLAN device, tc/nft rule set, mirror session). Unchanged objects get **no netlink/tc/nft write at all**. Nothing is
+  ever rebuilt from scratch: `br0`, bonds and VXLAN devices are modified in place, never deleted and recreated,
+  unless a kernel attribute is immutable (then only that one device is recreated, and `commit check` says so).
+* **No link down for reconfiguration.** VLAN membership, PVID, descriptions, storm control, MAC limits, mirroring and
+  RSTP parameters are all changed on the live link. Attributes that do reset a link on some drivers (e.g. MTU on
+  certain NICs, bond hash policy) are detected per driver and listed by `commit check` as
+  `warning: <if>: this change resets the link (driver <x>)` before you commit. Only the changed interface is affected.
+* **Tighten before loosen (no leaks).** Operations are ordered so that each intermediate state of a port is a subset of
+  either its old or its new permissions, never a union of them:
+  1. restrictions first: install new filters/police/BPDU-block rules, remove VLANs, stop mirror sessions,
+     remove ports from bonds/bridge;
+  2. then permissions: add VLANs, set the PVID (a PVID change is remove-old, then add-new-with-pvid; never both at once),
+     add ports, start mirror sessions (only after their output port has left switching);
+  3. only then remove the old, now unused filters.
+  A port that joins the bridge carries no VLAN at all until its configured VLANs are added
+  (`default_pvid 0` on `br0`), so it never lands in VLAN 1 by accident. A port leaving a bond is removed from
+  forwarding before it becomes a standalone port.
+  The price is a sub-millisecond gap on the **changed** port only, which is preferable to a leak.
+* **Unit-tested planner.** The op planner (old state, new state → ordered op list) is pure code. Property tests check,
+  over random old/new configurations, that (a) no op touches an object whose desired state did not change, and (b)
+  every intermediate state satisfies the subset rule above.
+* **Lab tests** (Phase 3 onward): continuous traffic on unchanged ports during a stream of commits/rollbacks must show
+  zero loss and zero carrier changes; sniffers on every port must never see a frame from a VLAN that the port has in
+  neither its old nor its new configuration.
+
 ## 5. Configuration
 
 The configuration language is specified in **docs/config-reference.md**. That covers syntax, formats, directives,
@@ -269,7 +299,8 @@ Guiding rules:
    * `commit`, `commit and-quit`, `commit comment`, `commit confirmed N` (auto-rollback timer).
    * `rollback N` (50 revisions with user, time and comment), `show | compare [rollback N]`.
 5. **Store interface**: a local file store (bbolt) first. The Raft implementation replaces it in Phase 5.
-6. **Apply pipeline**: committed config → per-member desired state → subsystems with *validate → apply*.
+6. **Apply pipeline**: committed config → per-member desired state → subsystems with *validate → plan → apply*.
+   The plan step produces the ordered, minimal op list of §4.14; `commit check` shows its impact summary.
    If apply fails on a member, it falls back to the previous config and reports the error per member.
 
 ### Phase 2: CLI (local)
@@ -286,6 +317,7 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 1. Netlink interface discovery and live link events. Capability detection (driver, speed, offload flags via ethtool).
    `show interfaces [terse|extensive]` with stats64 counters.
 2. **Reconciler**: desired vs actual, idempotent, and it touches only objects it owns (tagged via ifalias/altname).
+   Diff-driven and hitless as in §4.14: only changed objects are touched, no link down, tighten-before-loosen ordering.
    Kernel state survives a switchd restart, so there is no traffic loss when the daemon restarts.
 3. Bridge `br0` with `vlan_filtering`, access/trunk/native VLAN, admin up/down, descriptions.
 4. **Jumbo frames**: MTU per port (native), per VLAN (nftables bridge rules with counters), and commit-time MTU checks.

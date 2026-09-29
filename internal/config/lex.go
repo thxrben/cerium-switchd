@@ -120,7 +120,7 @@ func Quote(s string) string {
 			needs = true
 		}
 	}
-	if strings.HasPrefix(s, "/*") {
+	if strings.HasPrefix(s, "/*") || IsDirective(s) {
 		needs = true
 	}
 	if !needs {

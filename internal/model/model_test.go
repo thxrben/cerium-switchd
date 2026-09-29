@@ -286,3 +286,26 @@ func TestExpandMemberRange(t *testing.T) {
 		t.Error("oversized range must fail")
 	}
 }
+
+func TestInactiveIgnored(t *testing.T) {
+	tr, err := config.ParseSet(`set vlans v10 vlan-id 10
+set vlans dup vlan-id 10
+deactivate vlans dup
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, issues := Build(tr, nil)
+	if issues.HasErrors() {
+		t.Fatalf("inactive statement validated:\n%s", issues)
+	}
+	if _, ok := cfg.VLANs["dup"]; ok {
+		t.Error("inactive VLAN present in the model")
+	}
+	if err := config.ApplySetLines(tr, "activate vlans dup"); err != nil {
+		t.Fatal(err)
+	}
+	if _, issues := Build(tr, nil); !issues.HasErrors() {
+		t.Error("duplicate vlan-id not reported after activation")
+	}
+}

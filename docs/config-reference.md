@@ -334,6 +334,14 @@ Commit steps:
    as failed, with the member's error message, and no revision is stored.
 4. A new revision is stored and the change is logged (syslog facility `change-log`, including the diff).
 
+**Applying is hitless.** Only statements that changed are applied: interfaces, VLANs and other objects whose
+effective configuration is unchanged are not touched at all, and no link is taken down to reconfigure it. Changes
+are ordered so that a changed port never passes through a state that combines old and new permissions: restrictions
+(removed VLANs, filters, bond/bridge removal) are applied before new permissions (added VLANs, new PVID, mirroring).
+This can cause a sub-millisecond gap on the changed port, but never a leak into another VLAN or port. The same rules
+apply to every rollback, including the automatic one. If a change can only be made by resetting a link on the
+member's hardware (e.g. an MTU change on some NIC drivers), `commit check` warns and names the interface before you commit.
+
 Members that are unreachable during a commit apply the configuration when they reconnect. The commit output lists them as `pending`.
 
 ### 4.2 Commit confirmation and automatic rollback
@@ -1053,8 +1061,9 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | Schema, formats (hierarchical, set, JSON), diff | implemented, tested and fuzzed |
 | Commit check (the validation rules in this document) | implemented and tested, except where noted below |
 | `interface-range` expansion (member-range, wildcards, precedence) | implemented and tested (hot-plug re-evaluation with the data plane) |
-| `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `save`, `copy`, `rename` | specified, next (CLI phase) |
+| `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `copy`, `rename` | implemented and tested (config package); CLI commands next |
 | Commit / confirmation / rollback engine, CLI | next |
+| Hitless apply (diff-driven, tighten before loosen) | specified, with the data plane (Phase 3) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
 | Data plane, services, LACP, MC-LAG (incl. micro-BFD, heartbeat), RSTP, VXLAN | later phases (see PLAN.md §8) |

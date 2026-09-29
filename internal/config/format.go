@@ -53,8 +53,16 @@ func writeKids(b *strings.Builder, n *Node, depth int) {
 	}
 }
 
-func writeEntry(b *strings.Builder, e *Node, depth int, withName bool) {
+// lead writes the indentation and the inactive: directive of a statement.
+func lead(b *strings.Builder, n *Node, depth int) {
 	indent(b, depth)
+	if n.Inactive {
+		b.WriteString(DirInactive + " ")
+	}
+}
+
+func writeEntry(b *strings.Builder, e *Node, depth int, withName bool) {
+	lead(b, e, depth)
 	if withName {
 		b.WriteString(e.Schema.Name + " ")
 	}
@@ -74,7 +82,7 @@ func writeNode(b *strings.Builder, n *Node, depth int) {
 	case schema.List:
 		writeEntry(b, n, depth, !n.Schema.Wrapped)
 	case schema.Container:
-		indent(b, depth)
+		lead(b, n, depth)
 		if len(n.Kids) == 0 {
 			b.WriteString(n.Schema.Name + ";\n")
 			return
@@ -84,10 +92,10 @@ func writeNode(b *strings.Builder, n *Node, depth int) {
 		indent(b, depth)
 		b.WriteString("}\n")
 	case schema.Leaf:
-		indent(b, depth)
+		lead(b, n, depth)
 		fmt.Fprintf(b, "%s %s;\n", n.Schema.Name, Quote(n.Value))
 	case schema.LeafList:
-		indent(b, depth)
+		lead(b, n, depth)
 		if len(n.Values) == 1 {
 			fmt.Fprintf(b, "%s %s;\n", n.Schema.Name, Quote(n.Values[0]))
 			return
@@ -98,19 +106,27 @@ func writeNode(b *strings.Builder, n *Node, depth int) {
 		}
 		fmt.Fprintf(b, "%s [ %s ];\n", n.Schema.Name, strings.Join(q, " "))
 	case schema.Flag:
-		indent(b, depth)
+		lead(b, n, depth)
 		b.WriteString(n.Schema.Name + ";\n")
 	}
 }
 
 // SetLines renders the subtree below n as "set" commands. prefix holds the
-// path words of n itself.
+// path words of n itself. Inactive statements are followed (after all set
+// lines) by "deactivate" lines.
 func SetLines(n *Node, prefix []string) []string {
-	var out []string
+	var out, deact []string
 	var walk func(n *Node, path []string)
 	walk = func(n *Node, path []string) {
 		for _, k := range n.Kids {
 			p := append(append([]string(nil), path...), k.Schema.Name)
+			if k.Inactive {
+				dp := p
+				if k.Schema.Kind == schema.List {
+					dp = append(append([]string(nil), p...), Quote(k.Key))
+				}
+				deact = append(deact, "deactivate "+strings.Join(dp, " "))
+			}
 			switch k.Schema.Kind {
 			case schema.List:
 				p = append(p, Quote(k.Key))
@@ -135,7 +151,7 @@ func SetLines(n *Node, prefix []string) []string {
 		}
 	}
 	walk(n, prefix)
-	return out
+	return append(out, deact...)
 }
 
 // FormatSet renders the whole tree as set commands.
@@ -155,9 +171,19 @@ type LoadError struct {
 
 func (e *LoadError) Error() string { return fmt.Sprintf("line %d: %s", e.Line, e.Msg) }
 
-// ApplySetLines applies "set"/"delete" commands (one per line) to t.
-// Empty lines and lines starting with '#' are ignored.
+// ApplySetLines applies "set"/"delete"/"activate"/"deactivate" commands
+// (one per line) to t. Empty lines and lines starting with '#' are ignored.
+// On error t may be partially modified; see LoadSet for an atomic variant.
 func ApplySetLines(t *Tree, text string) error {
+	return ApplySetLinesAt(t, text, nil)
+}
+
+// ApplySetLinesAt is ApplySetLines with paths relative to base.
+func ApplySetLinesAt(t *Tree, text string, base []Step) error {
+	baseSchema := schema.Root()
+	if len(base) > 0 {
+		baseSchema = base[len(base)-1].Schema
+	}
 	for i, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -176,20 +202,36 @@ func ApplySetLines(t *Tree, text string) error {
 		case "set":
 		case "delete":
 			mode = ModeDelete
+		case "activate", "deactivate":
+			mode = ModeNav
 		default:
 			return &LoadError{Line: i + 1, Msg: fmt.Sprintf("unknown command %q", verb)}
 		}
-		steps, err := Resolve(schema.Root(), toks[1:], mode)
+		steps, err := Resolve(baseSchema, toks[1:], mode)
 		if err != nil {
 			return &LoadError{Line: i + 1, Msg: err.Error()}
 		}
-		if verb == "set" {
-			err = t.Set(steps)
-		} else {
-			err = t.Delete(steps)
+		full := append(append([]Step(nil), base...), steps...)
+		switch verb {
+		case "set":
+			err = t.Set(full)
+		case "delete":
+			if len(steps) == 0 && len(base) > 0 {
+				if n := t.Lookup(base); n != nil {
+					n.Kids = nil
+				}
+				break
+			}
+			err = t.Delete(full)
 			if err == ErrNotFound {
 				err = nil
 			}
+		default:
+			if len(steps) == 0 {
+				err = fmt.Errorf("%s: missing statement", verb)
+				break
+			}
+			err = t.SetActive(full, verb == "activate")
 		}
 		if err != nil {
 			return &LoadError{Line: i + 1, Msg: err.Error()}
@@ -208,17 +250,23 @@ func ParseSet(text string) (*Tree, error) {
 }
 
 // ParseCurly parses curly-brace configuration text relative to the schema
-// node at base (whose resolved path from the root is basePath) and applies
-// it to t.
+// node at base (whose resolved path from the root is basePath) and merges
+// it into t. The inactive: directive is honoured; replace: and delete: are
+// rejected (they are only valid with load replace, see LoadReplace).
 func ParseCurly(t *Tree, text string, basePath []Step) error {
+	return parseCurly(t, text, basePath, false)
+}
+
+func parseCurly(t *Tree, text string, basePath []Step, allowReplace bool) error {
 	toks, err := Lex(text, LexConfig)
 	if err != nil {
 		return &LoadError{Line: lineOf(text, errPos(err)), Msg: err.Error()}
 	}
 	type frame struct {
-		path   []Step
-		schema *schema.Node
-		list   *schema.Node // set when inside a wrapped list block
+		path     []Step
+		schema   *schema.Node
+		list     *schema.Node // set when inside a wrapped list block
+		inactive bool         // the block was tagged inactive:
 	}
 	baseSchema := schema.Root()
 	if len(basePath) > 0 {
@@ -228,59 +276,112 @@ func ParseCurly(t *Tree, text string, basePath []Step) error {
 	var stmt []Token
 	for _, tk := range toks {
 		top := stack[len(stack)-1]
-		if tk.Punct && (tk.Text == ";" || tk.Text == "{" || tk.Text == "}") {
-			if tk.Text == "}" {
-				if len(stmt) > 0 {
-					return &LoadError{Line: lineOf(text, tk.Pos), Msg: "missing ';'"}
-				}
-				if len(stack) == 1 {
-					return &LoadError{Line: lineOf(text, tk.Pos), Msg: "unbalanced '}'"}
-				}
-				stack = stack[:len(stack)-1]
-				continue
-			}
-			if len(stmt) == 0 {
-				return &LoadError{Line: lineOf(text, tk.Pos), Msg: fmt.Sprintf("unexpected %q", tk.Text)}
-			}
-			words := stmt
-			if top.list != nil {
-				words = append([]Token{{Text: top.list.Name}}, stmt...)
-			}
-			mode := ModeSet
-			if tk.Text == "{" {
-				mode = ModeNav
-			}
-			steps, err := Resolve(top.schema, words, mode)
-			line := lineOf(text, stmt[0].Pos)
-			if err != nil {
-				return &LoadError{Line: line, Msg: err.Error()}
-			}
-			full := append(append([]Step(nil), top.path...), steps...)
-			last := steps[len(steps)-1].Schema
-			if tk.Text == "{" {
-				if len(steps) == 0 || !last.HasChildren() {
-					return &LoadError{Line: line, Msg: "statement cannot have a block"}
-				}
-				if last.Kind == schema.List && !steps[len(steps)-1].HasKey {
-					if !last.Wrapped {
-						return &LoadError{Line: line, Msg: "missing " + last.Type.Name}
-					}
-					stack = append(stack, frame{path: full[:len(full)-1], schema: top.schema, list: last})
-					if len(steps) > 1 {
-						stack[len(stack)-1].schema = steps[len(steps)-2].Schema
-					}
-				} else {
-					stack = append(stack, frame{path: full, schema: last})
-				}
-			} else {
-				if err := t.Set(full); err != nil {
-					return &LoadError{Line: line, Msg: err.Error()}
-				}
-			}
-			stmt = stmt[:0]
+		if !tk.Punct || (tk.Text != ";" && tk.Text != "{" && tk.Text != "}") {
+			stmt = append(stmt, tk)
 			continue
 		}
-		stmt = append(stmt, tk)
+		if tk.Text == "}" {
+			if len(stmt) > 0 {
+				return &LoadError{Line: lineOf(text, tk.Pos), Msg: "missing ';'"}
+			}
+			if len(stack) == 1 {
+				return &LoadError{Line: lineOf(text, tk.Pos), Msg: "unbalanced '}'"}
+			}
+			if top.inactive {
+				if top.list != nil {
+					for _, e := range t.Lookup(top.path).Entries(top.list.Name) {
+						e.Inactive = true
+					}
+				} else if n := t.Lookup(top.path); n != nil {
+					n.Inactive = true
+				}
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		if len(stmt) == 0 {
+			return &LoadError{Line: lineOf(text, tk.Pos), Msg: fmt.Sprintf("unexpected %q", tk.Text)}
+		}
+		line := lineOf(text, stmt[0].Pos)
+		var inactive, replace, del bool
+		words := stmt
+		for len(words) > 0 && !words[0].Quoted && IsDirective(words[0].Text) {
+			flag := map[string]*bool{DirInactive: &inactive, DirReplace: &replace, DirDelete: &del}[words[0].Text]
+			if *flag {
+				return &LoadError{Line: line, Msg: "duplicate " + words[0].Text}
+			}
+			*flag = true
+			if (replace || del) && !allowReplace {
+				return &LoadError{Line: line, Msg: words[0].Text + " is only valid with load replace"}
+			}
+			words = words[1:]
+		}
+		if len(words) == 0 {
+			return &LoadError{Line: line, Msg: "missing statement after directive"}
+		}
+		if del && (inactive || replace) {
+			return &LoadError{Line: line, Msg: "delete: cannot be combined with other directives"}
+		}
+		if del && tk.Text == "{" {
+			return &LoadError{Line: line, Msg: "delete: statement cannot have a block"}
+		}
+		if top.list != nil {
+			words = append([]Token{{Text: top.list.Name}}, words...)
+		}
+		mode := ModeSet
+		switch {
+		case tk.Text == "{":
+			mode = ModeNav
+		case del:
+			mode = ModeDelete
+		}
+		steps, err := Resolve(top.schema, words, mode)
+		if err != nil {
+			return &LoadError{Line: line, Msg: err.Error()}
+		}
+		full := append(append([]Step(nil), top.path...), steps...)
+		stmt = stmt[:0]
+		if del {
+			if err := t.Delete(full); err != nil && err != ErrNotFound {
+				return &LoadError{Line: line, Msg: err.Error()}
+			}
+			continue
+		}
+		if replace {
+			t.remove(full)
+		}
+		lastStep := steps[len(steps)-1]
+		last := lastStep.Schema
+		if tk.Text == ";" {
+			if err := t.Set(full); err != nil {
+				return &LoadError{Line: line, Msg: err.Error()}
+			}
+			if inactive {
+				t.Lookup(full).Inactive = true
+			}
+			continue
+		}
+		if !last.HasChildren() {
+			return &LoadError{Line: line, Msg: "statement cannot have a block"}
+		}
+		if last.Kind == schema.List && !lastStep.HasKey {
+			if !last.Wrapped {
+				return &LoadError{Line: line, Msg: "missing " + last.Type.Name}
+			}
+			f := frame{path: full[:len(full)-1], schema: top.schema, list: last, inactive: inactive}
+			if len(steps) > 1 {
+				f.schema = steps[len(steps)-2].Schema
+			}
+			stack = append(stack, f)
+			continue
+		}
+		if last.Kind == schema.List || last.Presence {
+			// An entry or presence container exists even with an empty block.
+			if err := t.Set(full); err != nil {
+				return &LoadError{Line: line, Msg: err.Error()}
+			}
+		}
+		stack = append(stack, frame{path: full, schema: last, inactive: inactive})
 	}
 	if len(stmt) > 0 {
 		return &LoadError{Line: lineOf(text, stmt[0].Pos), Msg: "missing ';'"}
@@ -305,10 +406,18 @@ func lineOf(text string, pos int) int {
 	return strings.Count(text[:pos], "\n") + 1
 }
 
-// ToJSON renders the subtree below n as a JSON-compatible value.
+// ToJSON renders the subtree below n as a JSON-compatible value. Inactive
+// objects carry "@inactive": true, inactive leaves, leaf-lists and flags a
+// sibling key "@inactive:<name>": true.
 func ToJSON(n *Node) map[string]any {
 	out := map[string]any{}
+	if n.Inactive && (n.Schema.Kind == schema.Container || n.Schema.Kind == schema.List) {
+		out["@inactive"] = true
+	}
 	for _, k := range n.Kids {
+		if k.Inactive && k.Schema.Kind != schema.Container && k.Schema.Kind != schema.List {
+			out["@inactive:"+k.Schema.Name] = true
+		}
 		switch k.Schema.Kind {
 		case schema.List:
 			m, _ := out[k.Schema.Name].(map[string]any)
@@ -342,6 +451,9 @@ func FromJSON(data []byte) (*Tree, error) {
 		return nil, err
 	}
 	t := New()
+	if _, ok := m["@inactive"]; ok {
+		return nil, fmt.Errorf("the configuration root cannot be inactive")
+	}
 	if err := fromJSON(t, schema.Root(), nil, m); err != nil {
 		return nil, err
 	}
@@ -354,8 +466,31 @@ func fromJSON(t *Tree, sn *schema.Node, path []Step, m map[string]any) error {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	var marks [][]Step // statements to deactivate after they exist
+	defer func() {
+		for _, p := range marks {
+			if n := t.Lookup(p); n != nil {
+				n.Inactive = true
+			}
+		}
+	}()
 	for _, name := range keys {
 		v := m[name]
+		if strings.HasPrefix(name, "@inactive") {
+			if b, ok := v.(bool); !ok || !b {
+				return fmt.Errorf("%s %s: expecting true", PathString(path), name)
+			}
+			if name == "@inactive" {
+				marks = append(marks, path)
+				continue
+			}
+			c := sn.Child(strings.TrimPrefix(name, "@inactive:"))
+			if !strings.HasPrefix(name, "@inactive:") || c == nil || c.Kind == schema.Container || c.Kind == schema.List {
+				return fmt.Errorf("%s: unknown directive %q", PathString(path), name)
+			}
+			marks = append(marks, append(append([]Step(nil), path...), Step{Schema: c}))
+			continue
+		}
 		c := sn.Child(name)
 		if c == nil {
 			return fmt.Errorf("%s: unknown statement %q", PathString(path), name)
@@ -368,13 +503,10 @@ func fromJSON(t *Tree, sn *schema.Node, path []Step, m map[string]any) error {
 				return fmt.Errorf("%s %s: expecting object", PathString(path), name)
 			}
 			p := append(append([]Step(nil), path...), step)
-			if len(sub) == 0 {
-				if c.Presence {
-					if err := t.Set(p); err != nil {
-						return err
-					}
+			if c.Presence {
+				if err := t.Set(p); err != nil {
+					return err
 				}
-				continue
 			}
 			if err := fromJSON(t, c, p, sub); err != nil {
 				return err

@@ -400,9 +400,11 @@ func FuzzParseCurly(f *testing.F) {
 	f.Add(FormatCurly(tr.Root))
 	f.Add("interfaces { 1/eth0; }")
 	f.Add("a { b { c; } }}")
+	f.Add("vlans { inactive: v { vlan-id 3; } replace: w { inactive: mtu 9000; } delete: x; }")
+	f.Add("inactive: protocols { rstp { inactive: disable; } }")
 	f.Fuzz(func(t *testing.T, text string) {
 		tr := New()
-		if err := ParseCurly(tr, text, nil); err != nil {
+		if err := Load(tr, LoadReplace, text, nil); err != nil {
 			return
 		}
 		again := New()
@@ -412,6 +414,19 @@ func FuzzParseCurly(f *testing.F) {
 		if !Equal(tr, again) {
 			t.Fatalf("curly round trip differs")
 		}
+		fromSet, err := ParseSet(FormatSet(tr))
+		if err != nil || !Equal(tr, fromSet) {
+			t.Fatalf("set round trip failed: %v", err)
+		}
+		js, err := tr.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		fromJSON, err := FromJSON(js)
+		if err != nil || !Equal(tr, fromJSON) {
+			t.Fatalf("json round trip failed: %v", err)
+		}
+		_ = tr.Active()
 	})
 }
 
