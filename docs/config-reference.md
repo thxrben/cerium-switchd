@@ -622,7 +622,9 @@ working path, so a ring survives one broken cable.
   management/underlay interface. Wildcard `interface-range`s skip stacking ports.
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
   reliable stream (sequence numbers, acknowledgements, retransmission, fragmentation to the link MTU). **TLS 1.3 with
-  mutual certificate authentication** runs on top, using the stack's own CA. Frames from unauthenticated devices are ignored.
+  mutual certificate authentication** runs on top, using the stack's own key. Frames from unauthenticated devices are ignored.
+  Member certificates never expire and do not depend on the clock (a member with a wrong clock still joins); a member
+  that is removed from the stack is rejected because its key is no longer listed, not because a certificate ran out.
 * **Joining**: a new switch with designated stacking ports announces itself on them. `request stack join token <t>`
   on the new switch, or `request stack member add <id> token <t>` on the stack, authorises it. It then receives its
   certificate and the configuration.

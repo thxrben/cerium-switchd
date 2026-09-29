@@ -416,7 +416,12 @@ In this order (the user's priorities; each step is spec first, then implementati
    (hardware acceleration per port, §4.11).
 
 ### Phase 5: Stacking (VMs: sw1, sw2, sw3 with stacking NICs in a ring)
-1. **PKI**: stack CA created on the first member, join tokens, CSR signing, automatic cert renewal.
+1. **Stack keys (minimal PKI, no expiry)**: the first member creates the stack key pair (Ed25519). Each member has
+   its own key pair; joining means the stack key signs "member <id> has public key K". Certificates exist only
+   because TLS needs them: validity 2000-01-01 to 9999-12-31 (RFC 5280's "no expiry" value), so nothing ever
+   expires, there is no renewal, and a wrong clock (ARM boards without a battery-backed clock) never breaks the
+   stack. No CRLs: a removed member's key is simply no longer in the replicated member list, which every
+   member checks after the TLS handshake. Join tokens are one-time and expire (they are not certificates).
 2. **Stacking transport**: stacking-port designation (local state), AF_PACKET sockets bound *only* to stacking ports,
    a reliable L2 stream as `net.Conn` (fuzzed and loss-tested in-process with simulated lossy links), TLS 1.3 mTLS on
    top, and IP-less BFD per link.

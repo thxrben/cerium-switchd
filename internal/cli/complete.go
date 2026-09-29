@@ -289,6 +289,16 @@ func (sh *Shell) keyCompletions(sn *schema.Node, parent *config.Node, partial st
 			}
 		}
 	}
+	if sn.Type.Ref == "interface" {
+		if strings.HasPrefix("irb", partial) && !seen["irb"] {
+			out = append(out, Completion{Text: "irb", Help: "VLAN IP interfaces (irb.<n>, attached with 'vlans <v> l3-interface')", Kind: '>'})
+		}
+		if strings.HasPrefix("ae", partial) || partial == "" {
+			out = append(out, Completion{Text: "ae<N>", Help: "Aggregated interface (ae0-ae4095)", Placeholder: true})
+		}
+		// The generic <interface-name> placeholder adds nothing here.
+		return out
+	}
 	return append(out, typeCompletions(sn.Type, partial)...)
 }
 
@@ -311,6 +321,14 @@ func (sh *Shell) valueCompletions(ty *schema.Type, t *config.Tree, partial strin
 		}
 	}
 	switch ty.Ref {
+	case "irb-unit":
+		var names []string
+		if irb := t.Root.Entry("interfaces", "irb"); irb != nil {
+			for _, u := range irb.Entries("unit") {
+				names = append(names, "irb."+u.Key)
+			}
+		}
+		add(names, "VLAN IP interface")
 	case "vlan":
 		var names []string
 		for _, e := range t.Root.Entries("vlans") {
