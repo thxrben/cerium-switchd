@@ -1075,7 +1075,8 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `copy`, `rename` | implemented and tested (config package); CLI commands next |
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
-| Hitless apply (diff-driven, tighten before loosen) | specified, with the data plane (Phase 3) |
+| Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
+| `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
 | Data plane, services, LACP, MC-LAG (incl. micro-BFD, heartbeat), RSTP, VXLAN | later phases (see PLAN.md §8) |

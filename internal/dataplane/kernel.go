@@ -8,7 +8,7 @@ import (
 
 // ErrUnsupported marks operations that are not implemented on this kernel
 // yet. ExecuteLenient logs them instead of failing the commit.
-var ErrUnsupported = errors.New("not supported yet")
+var ErrUnsupported = errors.New("not supported")
 
 // Kernel reads and changes the managed kernel state.
 type Kernel interface {

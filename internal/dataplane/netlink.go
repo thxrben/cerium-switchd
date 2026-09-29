@@ -86,6 +86,9 @@ func (k *Netlink) Read() (*State, error) {
 		}
 		if ln.Kind == Physical || ln.Kind == Bond {
 			ln.MaxLearned = k.maxLearned(a.Name)
+			if ln.Kind == Physical {
+				ln.FlowControl = readFlowControl(a.Name)
+			}
 			tc := readTC(l)
 			ln.DropTagged = tc.dropTagged()
 			ln.StormBroadcast, ln.StormMulticast = tc.stormBroadcast, tc.stormMulticast
@@ -192,7 +195,7 @@ func (k *Netlink) Apply(op Op) error {
 		k.setMaxLearned(op.Link, op.Int)
 		return nil
 	case OpSetFlowControl:
-		return fmt.Errorf("%s: %w", op, ErrUnsupported)
+		return setFlowControl(op.Link, op.Bool)
 	}
 	return fmt.Errorf("unknown op %d", op.Kind)
 }
