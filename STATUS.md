@@ -46,6 +46,10 @@ Last updated: 2026-09-29.
 - Remote syslog (`internal/syslog`): hub with ring buffer (`show log`), RFC 5424 forwarders over UDP/TCP/TLS
   from VRF mgmt, 10k queue dropping oldest, facilities change-log/authorization/interactive-commands,
   `show system syslog`. 15 lab tests pass.
+- Accounts (`internal/access`): configured users become OS accounts with swcli as shell (only accounts
+  switchd created; conflicts are commit errors; root never managed), root-owned authorized_keys, SHA-512 crypt
+  (matches spec vectors and openssl), `plain-text-password`, `start shell` (super-user). Lab: key and password
+  SSH logins, classes enforced, removal ends sessions. 16 lab tests pass.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)

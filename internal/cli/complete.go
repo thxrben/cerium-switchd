@@ -252,6 +252,9 @@ func (sh *Shell) completePath(base *schema.Node, prefix []config.Step, t *config
 	if complete && partial == "" && len(toks) > 0 {
 		out = append(out, enter)
 	}
+	if sn.Name == "authentication" && mode == config.ModeSet && strings.HasPrefix(plainTextPassword, partial) {
+		out = append(out, Completion{Text: plainTextPassword, Help: "Prompt for a password (only its hash is stored)"})
+	}
 	for _, c := range sn.Children {
 		if !strings.HasPrefix(c.Name, partial) {
 			continue

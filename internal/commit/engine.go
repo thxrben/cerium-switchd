@@ -87,7 +87,10 @@ type Options struct {
 	Store     Store
 	Applier   Applier
 	Inventory model.Inventory // may be nil
-	Clock     Clock           // nil: real time
+	// Checks are additional commit checks that depend on the host (e.g.
+	// OS accounts with the same name as a configured user).
+	Checks []func(*model.Config) model.Issues
+	Clock  Clock // nil: real time
 	// Notify broadcasts a message to every logged-in CLI session.
 	Notify func(msg string)
 	Log    *slog.Logger
@@ -483,6 +486,9 @@ var forbidden = [][]string{{"system", "login"}, {"system", "services"}, {"stack"
 // Caller must not hold e.mu.
 func (s *Session) check(cand, active *config.Tree) (*model.Config, model.Issues) {
 	cfg, issues := model.Build(cand, s.e.o.Inventory)
+	for _, chk := range s.e.o.Checks {
+		issues = append(issues, chk(cfg)...)
+	}
 	if s.Class == Operator {
 		for _, p := range forbidden {
 			if !config.NodeEqual(active.Root.Get(p...), cand.Root.Get(p...)) {

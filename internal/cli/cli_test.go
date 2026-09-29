@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"mclag/internal/access"
 	"mclag/internal/commit"
 	"mclag/internal/config"
 )
@@ -544,4 +545,44 @@ func TestShowLog(t *testing.T) {
 	out := ts.run("show system syslog")
 	contains(t, out, "10.0.0.5:6514/tls (any/info): not connected, sent 3, queued 2, dropped 1", "last error: connection refused")
 	contains(t, ts.ok("show log | match revision | count"), "Count: 1 lines")
+}
+
+func TestPlainTextPassword(t *testing.T) {
+	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
+	ts.ok("configure")
+	ts.term.answers = []string{"correct horse", "correct horse"}
+	ts.ok("set system login user bob authentication plain-text-password")
+	hash := ts.sh.sess.Candidate().Root.Leaf("system", "login", "user", "bob", "authentication", "encrypted-password")
+	if !access.CheckPassword("correct horse", hash) {
+		t.Fatalf("stored hash %q does not match", hash)
+	}
+	if out := ts.ok("show | display set"); strings.Contains(out, "correct horse") || strings.Contains(out, "plain-text") {
+		t.Errorf("plain text leaked into the configuration:\n%s", out)
+	}
+	ts.term.answers = []string{"aaaaaaaa", "bbbbbbbb"}
+	contains(t, ts.run("set system login user bob authentication plain-text-password"), "do not match")
+	ts.term.answers = []string{"short", "short"}
+	contains(t, ts.run("set system login user bob authentication plain-text-password"), "at least 8")
+	if ts.sh.sess.Candidate().Root.Leaf("system", "login", "user", "bob", "authentication", "encrypted-password") != hash {
+		t.Error("failed attempts changed the password")
+	}
+	contains(t, ts.run("set system host-name plain-text-password"), "only valid below")
+	ts.ok("edit system login user carol authentication")
+	ts.term.answers = []string{"12345678", "12345678"}
+	ts.ok("set plain-text-password")
+	if got := completions(ts.sh.Complete("set ")); !strings.Contains(got, "plain-text-password") {
+		t.Errorf("completion at the authentication level: %s", got)
+	}
+}
+
+func TestStartShell(t *testing.T) {
+	e := newEngine(t)
+	su := newTester(t, e, "alice", commit.SuperUser)
+	if rep := su.sh.Execute(context.Background(), "start shell", su.term); !rep.Shell || rep.Output != "" {
+		t.Errorf("start shell: %+v", rep)
+	}
+	op := newTester(t, e, "op", commit.Operator)
+	if rep := op.sh.Execute(context.Background(), "start shell", op.term); rep.Shell || !strings.Contains(rep.Output, "permission denied") {
+		t.Errorf("operator start shell: %+v", rep)
+	}
 }

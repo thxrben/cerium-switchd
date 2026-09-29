@@ -35,6 +35,7 @@ type Msg struct {
 	Err    string `json:"err,omitempty"`
 	NoMore bool   `json:"nomore,omitempty"`
 	Exit   bool   `json:"exit,omitempty"`
+	Shell  bool   `json:"shell,omitempty"`
 	Items  []Item `json:"items,omitempty"`
 }
 

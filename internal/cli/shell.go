@@ -57,6 +57,9 @@ type Reply struct {
 	NoMore bool
 	// Exit ends the CLI session.
 	Exit bool
+	// Shell asks the client to run a Linux shell as the logged-in user
+	// ("start shell") and to return to the CLI when it exits.
+	Shell bool
 }
 
 // Shell is one user's CLI session.

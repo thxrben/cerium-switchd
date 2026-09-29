@@ -93,6 +93,14 @@ func (a *kernelApplier) reconcile(reason string) {
 	}
 	if err := a.apply(a.last, reason); err != nil {
 		a.log.Error("data plane: reconcile failed", "reason", reason, "err", err)
+		return
+	}
+	// Services outside the data plane converge as well (idempotent; e.g.
+	// an account removal that had to wait for the user's processes).
+	if a.onApplied != nil && reason == "periodic" {
+		if cfg, _ := model.Build(a.last.Active(), a.inv); cfg != nil {
+			a.onApplied(cfg)
+		}
 	}
 }
 

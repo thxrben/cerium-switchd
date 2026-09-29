@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"mclag/internal/access"
 	"mclag/internal/commit"
 	"mclag/internal/config"
 	"mclag/internal/schema"
@@ -42,6 +43,9 @@ func init() {
 		{name: "confirm", help: "Confirm a commit that is pending confirmation", class: commit.Operator, run: (*Shell).confirm},
 		{name: "exit", help: "Leave the CLI", class: commit.ReadOnly, run: (*Shell).leaveCLI},
 		{name: "quit", help: "Leave the CLI", class: commit.ReadOnly, run: (*Shell).leaveCLI, hidden: true},
+		{name: "start", help: "Start a program", class: commit.SuperUser, sub: []*command{
+			{name: "shell", help: "Start a Linux shell as your user (exit returns to the CLI)", class: commit.SuperUser, run: (*Shell).startShell},
+		}},
 		{name: "show", help: "Show information about the switch", class: commit.ReadOnly, sub: []*command{
 			showConfig,
 			{name: "system", help: "Show system information", class: commit.ReadOnly, sub: []*command{showCommit}},
@@ -101,6 +105,14 @@ func (sh *Shell) leaveCLI(c *call) error {
 		return err
 	}
 	c.reply.Exit = true
+	return nil
+}
+
+func (sh *Shell) startShell(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	c.reply.Shell = true
 	return nil
 }
 
@@ -268,10 +280,49 @@ func (sh *Shell) cfgSet(c *call) error {
 	if len(c.args) == 0 {
 		return &posError{pos: len(c.line), msg: "missing statement"}
 	}
+	if last := c.args[len(c.args)-1]; !last.Quoted && last.Text == plainTextPassword {
+		return sh.setPlainTextPassword(c)
+	}
 	steps, err := sh.resolve(c, c.args, config.ModeSet)
 	if err != nil {
 		return err
 	}
+	return sh.sess.Modify(func(t *config.Tree) error { return t.Set(steps) })
+}
+
+// plainTextPassword is a CLI-only statement below "authentication": it
+// prompts for a password and stores only its hash in encrypted-password.
+const plainTextPassword = "plain-text-password"
+
+func (sh *Shell) setPlainTextPassword(c *call) error {
+	toks := append(append([]config.Token(nil), c.args[:len(c.args)-1]...), config.Token{Text: "encrypted-password", Pos: c.args[len(c.args)-1].Pos})
+	steps, err := sh.resolve(c, toks, config.ModeDelete)
+	if err != nil {
+		return err
+	}
+	last := steps[len(steps)-1]
+	if last.Schema.Name != "encrypted-password" || len(steps) < 2 || steps[len(steps)-2].Schema.Name != "authentication" {
+		return &posError{pos: c.args[len(c.args)-1].Pos, msg: "plain-text-password is only valid below 'system login user <name> authentication'"}
+	}
+	pw, err := c.term.Ask("New password: ", false)
+	if err != nil {
+		return err
+	}
+	again, err := c.term.Ask("Retype new password: ", false)
+	if err != nil {
+		return err
+	}
+	switch {
+	case pw != again:
+		return errors.New("passwords do not match; nothing changed")
+	case len(pw) < 8:
+		return errors.New("the password must have at least 8 characters; nothing changed")
+	}
+	hash, err := access.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	steps[len(steps)-1].Values = []string{hash}
 	return sh.sess.Modify(func(t *config.Tree) error { return t.Set(steps) })
 }
 

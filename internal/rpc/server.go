@@ -236,7 +236,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 			mu.Unlock()
 			rep := sh.Execute(ctx, m.Line, &term{c: c, ctx: ctx})
 			cf()
-			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Prompt: sh.Prompt(), Banner: sh.Banner()}
+			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Prompt: sh.Prompt(), Banner: sh.Banner()}
 		case "complete":
 			reply = Msg{T: "completions", Items: items(sh.Complete(m.Line))}
 		case "help":

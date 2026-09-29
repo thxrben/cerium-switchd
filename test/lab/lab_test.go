@@ -560,3 +560,68 @@ func TestSyslogOverManagementVRF(t *testing.T) {
 		t.Errorf("forwarder not removed: %s", out)
 	}
 }
+
+// sshAs runs a command as a configured user with the dev machine's key.
+func sshAs(user, cmd string) (string, error) {
+	out, err := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new",
+		user+"@"+sw1, cmd).CombinedOutput()
+	return string(out), err
+}
+
+func TestUserAccounts(t *testing.T) {
+	key, err := os.ReadFile(os.Getenv("HOME") + "/.ssh/id_ed25519.pub")
+	if err != nil {
+		t.Skip("no ed25519 key")
+	}
+	k := strings.TrimSpace(string(key))
+	users := fmt.Sprintf(`set system login user alice class super-user
+set system login user alice full-name "Alice Admin"
+set system login user alice authentication ssh-key "%s"
+set system login user alice authentication encrypted-password "$6$labsaltlabsalt12$cJd.1Qyjf8fd1M.E0tTVRIZLML0MX2329RNEgjFj1byV0DKEh6n6H2vdyCDCE1CPvLLeSBk4wh.VSbu8glnNz/"
+set system login user bob class read-only
+set system login user bob authentication ssh-key "%s"
+`, k, k)
+	configure(t, users)
+	out := mustSSH(t, sw1, "getent passwd alice bob; stat -c '%U %a %n' /home/alice/.ssh /home/alice/.ssh/authorized_keys")
+	for _, want := range []string{"alice:x:2000:", "Alice Admin", ":/usr/local/bin/swcli", "bob:x:2001:", "root 755 /home/alice/.ssh", "root 644 /home/alice/.ssh/authorized_keys"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	// Key login lands in the CLI with the configured class.
+	if out, err := sshAs("alice", "show version"); err != nil || !strings.Contains(out, "mclag switchd") {
+		t.Errorf("alice: %v\n%s", err, out)
+	}
+	if out, _ := sshAs("bob", "configure"); !strings.Contains(out, "permission denied") {
+		t.Errorf("read-only bob could configure:\n%s", out)
+	}
+	if out, _ := sshAs("alice", "bash -c id"); !strings.Contains(out, "syntax error") {
+		t.Errorf("a remote command ran outside the CLI:\n%s", out)
+	}
+	// Password login with switchd's SHA-512 crypt hash (password "labpassword").
+	dir := t.TempDir()
+	os.WriteFile(dir+"/askpass", []byte("#!/bin/sh\necho labpassword\n"), 0o700)
+	cmd := exec.Command("ssh", "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
+		"-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=5", "alice@"+sw1, "show version")
+	cmd.Env = append(os.Environ(), "SSH_ASKPASS="+dir+"/askpass", "SSH_ASKPASS_REQUIRE=force", "DISPLAY=x")
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "mclag switchd") {
+		t.Errorf("password login: %v\n%s", err, out)
+	}
+	// An existing OS account is not taken over.
+	out = mustSSH(t, sw1, `swcli -c "configure
+set system login user user class super-user
+commit check
+exit configuration-mode"; true`)
+	if !strings.Contains(out, "OS account named user exists") {
+		t.Errorf("no conflict for the existing account:\n%s", out)
+	}
+	// Removing the users deletes the accounts and keeps the homes.
+	configure(t, "")
+	out = mustSSH(t, sw1, "getent passwd alice bob; ls -d /home/alice; true")
+	if strings.Contains(out, "alice:x") || strings.Contains(out, "bob:x") || !strings.Contains(out, "/home/alice") {
+		t.Errorf("accounts not removed or home deleted:\n%s", out)
+	}
+	if out := mustSSH(t, sw1, "getent passwd user"); !strings.Contains(out, "user:x:1000") {
+		t.Error("unmanaged account touched")
+	}
+}

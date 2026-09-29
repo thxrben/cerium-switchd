@@ -452,7 +452,8 @@ console lands directly in the CLI.
 * `full-name <text>`: stored as the account's GECOS field.
 * `authentication encrypted-password <hash>`: a crypt(3) hash (`$6$…` SHA-512 or `$y$…` yescrypt). Use `plain-text-password` in the CLI to create one.
 * `authentication ssh-key <key>`: an OpenSSH public key line. Several keys are allowed.
-* Removing a user deletes the account, but its home directory is kept. switchd only ever modifies accounts that it created itself.
+* Removing a user ends their sessions and deletes the account, but its home directory is kept. If the account
+  cannot be deleted yet (e.g. a process of the user is still running), switchd retries every 30 seconds. switchd only ever modifies accounts that it created itself.
   Existing OS accounts with the same name are **not** taken over, and that conflict is reported as an E at commit.
 * `root` is not managed. Its password is maintained by the OS, as a break-glass login on the serial console.
 * W: a user with neither password nor key (they cannot log in).
@@ -461,6 +462,9 @@ console lands directly in the CLI.
 switchd manages a drop-in configuration for the system's OpenSSH server. It listens in the management VRF
 (including an in-band management VLAN). Password authentication is offered only to users with an `encrypted-password`.
 Default: port 22, `root-login deny`.
+* **Without `system services ssh`, switchd does not change the SSH server configuration** (like `management`: the
+  safe default for the first installation, so the installer's root access keeps working). Managed users can still
+  log in: their keys are installed in `~/.ssh/authorized_keys` (owned by root, so users cannot change them).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
 HTTPS web interface and REST API in the management VRF. Default: port 443 with a self-signed certificate generated
@@ -1083,6 +1087,8 @@ set forwarding-options analyzer debug output interface 1/enp3s0
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
 | `stack member <id> management` (VRF mgmt, IRB or dedicated port, static addresses, gateways) | implemented and lab tested; `dhcp` not yet |
+| `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
+| `system services ssh` drop-in, serial console management, web interface | not implemented yet |
 | `system syslog` (UDP/TCP/TLS from VRF mgmt, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |

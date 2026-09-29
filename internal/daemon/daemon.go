@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"mclag/internal/access"
 	"mclag/internal/cli"
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
@@ -48,11 +49,18 @@ func Run(ctx context.Context, o Options) error {
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.inv = inv
 	var hostName func() string
+	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	applier.onApplied = func(cfg *model.Config) {
 		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
+		if !o.DryRun {
+			if err := accounts.Sync(cfg); err != nil {
+				log.Error("accounts", "facility", "authorization", "err", err)
+			}
+		}
 	}
 	engine, err := commit.New(commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
+		Checks: []func(*model.Config) model.Issues{accounts.Check},
 	})
 	if err != nil {
 		return err

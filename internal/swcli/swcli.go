@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,10 @@ func (u *ui) batch(r io.Reader) int {
 			fmt.Fprintln(u.out, prompt+line)
 		}
 		fmt.Fprint(u.out, m.Text)
+		if m.Shell {
+			fmt.Fprintln(os.Stderr, "error: start shell needs an interactive terminal")
+			code = 1
+		}
 		if strings.HasPrefix(m.Text, "error") || strings.Contains(m.Text, "\nerror") || strings.Contains(m.Text, "^\n") {
 			code = 1
 		}
@@ -279,6 +284,9 @@ func (u *ui) interactive() int {
 			return 1
 		}
 		u.page(m.Text, m.NoMore, keys)
+		if m.Shell {
+			u.runShell()
+		}
 		if m.Exit {
 			return 0
 		}
@@ -499,4 +507,22 @@ func (h *history) add(l string) {
 	if len(h.lines) > 1000 {
 		h.lines = h.lines[len(h.lines)-1000:]
 	}
+}
+
+// runShell runs the user's Linux shell with a normal terminal and returns
+// to the CLI when it exits.
+func (u *ui) runShell() {
+	u.cooked(func() {
+		u.write("\x1b[?2004l")
+		cmd := exec.Command("/bin/bash", "-l")
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cmd.Env = append(os.Environ(), "SHELL=/bin/bash")
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) {
+				fmt.Fprintf(u.out, "error: %v\n", err)
+			}
+		}
+		u.write("\x1b[?2004h")
+	})
 }
