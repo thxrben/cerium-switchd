@@ -195,7 +195,7 @@ func build() *Node {
 		L("unit", "Logical unit", Uint("<unit>", 0, 0),
 			V("description", "Unit description", Text),
 			C("family", "Protocol family",
-				C("ethernet-switching", "Layer 2 switching",
+				P("ethernet-switching", "Layer 2 switching",
 					V("interface-mode", "Port mode", Enum(
 						E("access", "Untagged member of one VLAN"),
 						E("trunk", "Tagged member of several VLANs"),
