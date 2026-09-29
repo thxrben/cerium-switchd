@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"log/slog"
 	"mclag/internal/osconf"
+	"mclag/internal/stack"
 	"net"
 	"os"
 	"os/exec"
@@ -53,10 +54,13 @@ func Run(ctx context.Context, o Options) error {
 	if _, err := names.Refresh(); err != nil {
 		log.Warn("port numbering", "err", err)
 	}
-	inv := &kernelInventory{kernel: kernel, names: names, member: 1}
+	var hostName func() string
+	vc := &stack.Manager{Dir: filepath.Join(o.StateDir, "stack"), Log: log,
+		Linux:    func(local string) (string, bool) { return names.Linux("1/" + local) },
+		HostName: func() string { return hostName() }}
+	inv := &kernelInventory{kernel: kernel, names: names, member: 1, vc: vc}
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.inv, applier.names = inv, names
-	var hostName func() string
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	systemctl := func(args ...string) error { return command("systemctl", args...) }
 	consoles := &access.Consoles{SysRoot: "/sys", UnitDir: "/etc/systemd/system", ProfileDir: "/etc/profile.d",
@@ -97,6 +101,11 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	defer engine.Close()
+	if !o.DryRun {
+		if err := vc.Start(ctx); err != nil {
+			log.Error("stack", "err", err)
+		}
+	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
@@ -123,7 +132,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return out
 	}
-	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: 1, started: time.Now(), log: log, dryRun: o.DryRun,
+	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: 1, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,

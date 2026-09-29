@@ -640,7 +640,15 @@ working path, so a ring survives one broken cable.
   its stacking ports *before* it can receive the stack configuration. `show virtual-chassis vc-port` lists them, and
   `show virtual-chassis` shows the members, their roles and the topology.
 * A stacking port is never a data or management port. E: the port is configured under `interfaces`, or as a
-  management/underlay interface. Wildcard `interface-range`s skip stacking ports.
+  management/underlay interface. Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
+  administratively up, outside the bridge, without IP addresses and with IPv6 disabled, whatever the configuration says.
+* **Every switch is a stack.** A switch that has never joined another stack is member 1 of its own stack (it creates
+  its stack key at first start). Two switches of different stacks connected by a stacking cable see each other as
+  "other stack" and exchange nothing else until one of them joins the other's stack.
+* `show virtual-chassis vc-port`: per stacking port its state (`up`, `down`, `absent` when the port does not exist),
+  the neighbour (member id and host name, `other stack`, or `-`), the neighbour's port and how long the link is up.
+* `show virtual-chassis`: the stack id, this member, and per member its id, host name, role (`master`, `backup`,
+  `linecard`), `mastership-priority` and status (`present`, `not present`).
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
   reliable stream (sequence numbers, acknowledgements, retransmission, fragmentation to the link MTU). **TLS 1.3 with
   mutual certificate authentication** runs on top, using the stack's own key. Frames from unauthenticated devices are ignored.

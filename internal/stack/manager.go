@@ -1,0 +1,440 @@
+// Package stack runs this switch's part of the virtual chassis (reference
+// 5.2): its keys, its stacking ports (VC ports) and the authenticated
+// sessions to the neighbours on them.
+package stack
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/vishvananda/netlink"
+
+	"mclag/internal/config"
+	"mclag/internal/stack/link"
+	"mclag/internal/stack/pki"
+)
+
+// Manager owns the stack identity and the VC ports of this switch.
+type Manager struct {
+	Dir string // state directory for keys and VC ports
+	Log *slog.Logger
+	// Linux maps a local port "<card>/<port>" to its kernel name.
+	Linux func(local string) (string, bool)
+	// HostName is this member's host name (shown to neighbours).
+	HostName func() string
+
+	mu         sync.Mutex
+	stack      *pki.Stack
+	member     int
+	memberKey  ed25519.PrivateKey
+	memberCert *x509.Certificate
+	ports      map[string]*vcPort
+	ctx        context.Context
+}
+
+// PortStatus is one line of "show virtual-chassis vc-port".
+type PortStatus struct {
+	Port      string // "<card>/<port>"
+	Linux     string
+	State     string // up, down, absent
+	Neighbor  string // "member 2 (sw2)", "other stack", "-"
+	PeerPort  string
+	UpSince   time.Time
+	LastError string
+}
+
+type vcPort struct {
+	local  string
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	st     PortStatus
+}
+
+type vcState struct {
+	Ports []string `json:"ports"`
+}
+
+// hello is exchanged once a stacking session is authenticated.
+type hello struct {
+	Member int    `json:"member"`
+	Host   string `json:"host"`
+	Port   string `json:"port"`
+}
+
+func (m *Manager) path(n string) string { return filepath.Join(m.Dir, n) }
+
+// Start loads (or, on first start, creates) the keys and starts the VC
+// ports.
+func (m *Manager) Start(ctx context.Context) error {
+	if m.Log == nil {
+		m.Log = slog.Default()
+	}
+	if err := os.MkdirAll(m.Dir, 0o700); err != nil {
+		return err
+	}
+	if err := m.loadKeys(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.ctx = ctx
+	m.ports = map[string]*vcPort{}
+	m.mu.Unlock()
+	var st vcState
+	if raw, err := os.ReadFile(m.path("vc-ports.json")); err == nil {
+		_ = json.Unmarshal(raw, &st)
+	}
+	for _, p := range st.Ports {
+		m.startPort(p)
+	}
+	return nil
+}
+
+// loadKeys reads the stack and member keys, creating a new one-member stack
+// on first start.
+func (m *Manager) loadKeys() error {
+	read := func(n string) []byte {
+		b, _ := os.ReadFile(m.path(n))
+		return b
+	}
+	sk, sc, mk, mc := read("stack.key"), read("stack.crt"), read("member.key"), read("member.crt")
+	if sk == nil || sc == nil || mk == nil || mc == nil {
+		s, err := pki.NewStack()
+		if err != nil {
+			return err
+		}
+		_, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return err
+		}
+		cert, err := s.SignMember(1, key.Public().(ed25519.PublicKey))
+		if err != nil {
+			return err
+		}
+		skb, _ := pki.EncodeKey(s.Key)
+		mkb, _ := pki.EncodeKey(key)
+		for n, b := range map[string][]byte{"stack.key": skb, "stack.crt": pki.EncodeCert(s.Cert),
+			"member.key": mkb, "member.crt": pki.EncodeCert(cert)} {
+			if err := os.WriteFile(m.path(n), b, 0o600); err != nil {
+				return err
+			}
+		}
+		m.Log.Info("stack: new one-member stack created", "stack", s.Cert.Subject.CommonName)
+		sk, sc, mk, mc = skb, pki.EncodeCert(s.Cert), mkb, pki.EncodeCert(cert)
+	}
+	skey, err := pki.DecodeKey(sk)
+	if err != nil {
+		return fmt.Errorf("stack key: %w", err)
+	}
+	scert, err := pki.DecodeCert(sc)
+	if err != nil {
+		return fmt.Errorf("stack certificate: %w", err)
+	}
+	mkey, err := pki.DecodeKey(mk)
+	if err != nil {
+		return fmt.Errorf("member key: %w", err)
+	}
+	mcert, err := pki.DecodeCert(mc)
+	if err != nil {
+		return fmt.Errorf("member certificate: %w", err)
+	}
+	id, ok := pki.ParseMemberName(mcert.Subject.CommonName)
+	if !ok {
+		return fmt.Errorf("member certificate subject %q", mcert.Subject.CommonName)
+	}
+	m.mu.Lock()
+	m.stack = &pki.Stack{Key: skey, Cert: scert}
+	m.member, m.memberKey, m.memberCert = id, mkey, mcert
+	m.mu.Unlock()
+	return nil
+}
+
+// Member returns this switch's member id.
+func (m *Manager) Member() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.member
+}
+
+// StackID names the stack (the stack certificate's subject).
+func (m *Manager) StackID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stack == nil {
+		return ""
+	}
+	return strings.TrimPrefix(m.stack.Cert.Subject.CommonName, "mclag stack ")
+}
+
+func (m *Manager) save() error {
+	var st vcState
+	for p := range m.ports {
+		st.Ports = append(st.Ports, p)
+	}
+	sort.Slice(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i], st.Ports[j]) })
+	raw, _ := json.Marshal(st)
+	tmp := m.path("vc-ports.json.tmp")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.path("vc-ports.json"))
+}
+
+// SetPort designates (add) or releases a VC port "<card>/<port>".
+func (m *Manager) SetPort(local string, add bool) error {
+	m.mu.Lock()
+	_, exists := m.ports[local]
+	m.mu.Unlock()
+	switch {
+	case add && exists:
+		return fmt.Errorf("%s is already a VC port", local)
+	case !add && !exists:
+		return fmt.Errorf("%s is not a VC port", local)
+	case add:
+		m.startPort(local)
+	default:
+		m.mu.Lock()
+		p := m.ports[local]
+		delete(m.ports, local)
+		m.mu.Unlock()
+		p.cancel()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.save()
+}
+
+// IsPort reports whether a kernel interface is a VC port.
+func (m *Manager) IsPort(linux string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.ports {
+		if l, ok := m.Linux(p.local); ok && l == linux {
+			return true
+		}
+	}
+	return false
+}
+
+// Ports returns the VC ports and their neighbours.
+func (m *Manager) Ports() []PortStatus {
+	m.mu.Lock()
+	ps := make([]*vcPort, 0, len(m.ports))
+	for _, p := range m.ports {
+		ps = append(ps, p)
+	}
+	m.mu.Unlock()
+	out := make([]PortStatus, 0, len(ps))
+	for _, p := range ps {
+		p.mu.Lock()
+		out = append(out, p.st)
+		p.mu.Unlock()
+	}
+	sort.Slice(out, func(i, j int) bool { return config.NaturalLess(out[i].Port, out[j].Port) })
+	return out
+}
+
+func (m *Manager) startPort(local string) {
+	m.mu.Lock()
+	ctx, cancel := context.WithCancel(m.ctx)
+	p := &vcPort{local: local, cancel: cancel, st: PortStatus{Port: local, State: "down", Neighbor: "-"}}
+	m.ports[local] = p
+	m.mu.Unlock()
+	go m.runPort(ctx, p)
+}
+
+func (p *vcPort) set(f func(s *PortStatus)) {
+	p.mu.Lock()
+	f(&p.st)
+	p.mu.Unlock()
+}
+
+// runPort keeps a stacking session on one port for as long as the port is
+// a VC port.
+func (m *Manager) runPort(ctx context.Context, p *vcPort) {
+	for ctx.Err() == nil {
+		linux, ok := m.Linux(p.local)
+		if !ok {
+			p.set(func(s *PortStatus) { s.State, s.Linux, s.Neighbor = "absent", "", "-" })
+			sleep(ctx, time.Second)
+			continue
+		}
+		p.set(func(s *PortStatus) { s.Linux = linux })
+		if err := preparePort(linux); err != nil {
+			p.set(func(s *PortStatus) { s.State, s.LastError = "down", err.Error() })
+			sleep(ctx, time.Second)
+			continue
+		}
+		pio, err := link.OpenPacket(linux)
+		if err != nil {
+			p.set(func(s *PortStatus) { s.State, s.LastError = "down", err.Error() })
+			sleep(ctx, time.Second)
+			continue
+		}
+		m.sessions(ctx, p, pio, linux)
+		pio.Close()
+	}
+	p.set(func(s *PortStatus) { s.State, s.Neighbor = "down", "-" })
+}
+
+// sessions runs link + TLS sessions on an open port until ctx ends or the
+// port disappears.
+func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, linux string) {
+	for ctx.Err() == nil {
+		if _, err := net.InterfaceByName(linux); err != nil {
+			return // the port went away (unplugged NIC)
+		}
+		l := link.New(pio, link.Options{Name: p.local})
+		select {
+		case <-ctx.Done():
+			l.Close()
+			return
+		case <-l.Done():
+			continue
+		case <-l.Up():
+		}
+		err := m.session(ctx, p, l, pio, linux)
+		l.Close()
+		p.set(func(s *PortStatus) {
+			s.State, s.PeerPort, s.UpSince = "down", "", time.Time{}
+			if err != nil {
+				s.LastError = err.Error()
+			}
+		})
+		if err != nil && ctx.Err() == nil {
+			m.Log.Info("stack: session on VC port ended", "port", p.local, "err", err)
+			sleep(ctx, 2*time.Second)
+		}
+	}
+}
+
+// session authenticates the neighbour on an established link and keeps
+// the session until it ends.
+func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *link.PacketIO, linux string) error {
+	m.mu.Lock()
+	cfg := pki.TLSConfig(m.stack.Cert, pki.TLSCert(m.memberCert, m.memberKey), func(int, ed25519.PublicKey) bool {
+		// Until the replicated member list exists, every member certificate
+		// signed by this stack is accepted.
+		return true
+	})
+	me := m.member
+	m.mu.Unlock()
+	// Roles by MAC address: the lower one is the TLS client.
+	own, err := net.InterfaceByName(linux)
+	if err != nil {
+		return err
+	}
+	var conn *tls.Conn
+	if bytes.Compare(own.HardwareAddr, pio.Peer()) < 0 {
+		conn = tls.Client(l, cfg)
+	} else {
+		conn = tls.Server(l, cfg)
+	}
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := conn.Handshake(); err != nil {
+		p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
+		return fmt.Errorf("neighbour not authenticated (another stack?): %w", err)
+	}
+	host := ""
+	if m.HostName != nil {
+		host = m.HostName()
+	}
+	out, _ := json.Marshal(hello{Member: me, Host: host, Port: p.local})
+	if _, err := conn.Write(append(out, '\n')); err != nil {
+		return err
+	}
+	r := bufio.NewReader(conn)
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return err
+	}
+	var h hello
+	if err := json.Unmarshal(line, &h); err != nil {
+		return fmt.Errorf("neighbour hello: %w", err)
+	}
+	conn.SetDeadline(time.Time{})
+	p.set(func(s *PortStatus) {
+		s.State, s.PeerPort, s.UpSince, s.LastError = "up", h.Port, time.Now(), ""
+		s.Neighbor = fmt.Sprintf("member %d", h.Member)
+		if h.Host != "" {
+			s.Neighbor += " (" + h.Host + ")"
+		}
+	})
+	m.Log.Info("stack: neighbour on VC port", "port", p.local, "member", h.Member, "host", h.Host, "peer_port", h.Port)
+	// Keep the session; later phases carry stack messages here.
+	errc := make(chan error, 1)
+	go func() {
+		for {
+			if _, err := r.ReadBytes('\n'); err != nil {
+				errc <- err
+				return
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-l.Done():
+		return l.Err()
+	case err := <-errc:
+		return err
+	}
+}
+
+// preparePort makes a port usable for stacking and nothing else: up, out
+// of any bridge or bond, no addresses, IPv6 off.
+func preparePort(linux string) error {
+	ln, err := netlink.LinkByName(linux)
+	if err != nil {
+		return err
+	}
+	if ln.Attrs().MasterIndex != 0 {
+		if err := netlink.LinkSetNoMaster(ln); err != nil {
+			return err
+		}
+	}
+	p := "/proc/sys/net/ipv6/conf/" + linux + "/disable_ipv6"
+	if raw, err := os.ReadFile(p); err == nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("1")) {
+		if err := os.WriteFile(p, []byte("1"), 0o644); err != nil {
+			return err
+		}
+	}
+	addrs, _ := netlink.AddrList(ln, netlink.FAMILY_ALL)
+	for _, a := range addrs {
+		_ = netlink.AddrDel(ln, &a)
+	}
+	if ln.Attrs().Flags&net.FlagUp == 0 {
+		return netlink.LinkSetUp(ln)
+	}
+	return nil
+}
+
+func sleep(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
+
+// ParseLocalPort validates "<card>/<port>" (as given by pic-slot and port).
+func ParseLocalPort(card, port int) (string, error) {
+	if card < 0 || card > 99 || port < 0 || port > 999 {
+		return "", errors.New("pic-slot 0-99, port 0-999")
+	}
+	return fmt.Sprintf("%d/%d", card, port), nil
+}

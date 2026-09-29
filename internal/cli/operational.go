@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +37,24 @@ type Operational interface {
 	Offload() ([]OffloadPort, error)
 	// Routes lists a routing table ("" = the default instance).
 	Routes(instance string) ([]Route, error)
+	// VirtualChassis reports the stack and the VC ports of this member.
+	VirtualChassis() (VCStatus, error)
+	// SetVCPort designates (add) or releases a VC port "<card>/<port>".
+	SetVCPort(local string, add bool, user string) error
+}
+
+// VCStatus is what "show virtual-chassis" shows.
+type VCStatus struct {
+	StackID  string
+	Member   int
+	HostName string
+	Ports    []VCPort
+}
+
+// VCPort is one VC port.
+type VCPort struct {
+	Port, Linux, State, Neighbor, PeerPort, LastError string
+	UpSince                                           time.Time
 }
 
 // Route is one line of "show route".
@@ -379,6 +399,138 @@ func (sh *Shell) showHardware(c *call) error {
 	return nil
 }
 
+// setVCPort implements "request virtual-chassis vc-port set|delete
+// pic-slot <card> port <port>".
+func (sh *Shell) setVCPort(c *call, add bool) error {
+	if len(c.args) != 4 || !prefixOf(c.args[0].Text, "pic-slot") || !prefixOf(c.args[2].Text, "port") {
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'pic-slot <card> port <port>'"}
+	}
+	card, err1 := strconv.Atoi(c.args[1].Text)
+	port, err2 := strconv.Atoi(c.args[3].Text)
+	if err1 != nil || card < 0 || card > schema.MaxCard {
+		return &posError{pos: c.argPos(1), msg: fmt.Sprintf("expecting a card number (0-%d)", schema.MaxCard)}
+	}
+	if err2 != nil || port < 0 || port > schema.MaxPort {
+		return &posError{pos: c.argPos(3), msg: fmt.Sprintf("expecting a port number (0-%d)", schema.MaxPort)}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	local := fmt.Sprintf("%d/%d", card, port)
+	if add {
+		// A configured data port would be taken away from the data plane.
+		st, err := sh.vcStatus()
+		if err != nil {
+			return err
+		}
+		name := fmt.Sprintf("%d/%s", st.Member, local)
+		if cfg := sh.activeModel(); cfg != nil && cfg.Interfaces[name] != nil {
+			return fmt.Errorf("%s is configured under 'interfaces'; delete that configuration first", name)
+		}
+	}
+	return sh.env.Ops.SetVCPort(local, add, sh.env.User)
+}
+
+func completeVCPort(_ *Shell, args []config.Token, partial string) []Completion {
+	switch len(args) {
+	case 0:
+		return filter([]Completion{{Text: "pic-slot", Help: "Card number of the port"}}, partial)
+	case 1:
+		return []Completion{{Text: "<card>", Help: "Card number (see show chassis hardware)", Placeholder: true}}
+	case 2:
+		return filter([]Completion{{Text: "port", Help: "Port number on the card"}}, partial)
+	case 3:
+		return []Completion{{Text: "<port>", Help: "Port number", Placeholder: true}}
+	}
+	return []Completion{enter}
+}
+
+func (sh *Shell) vcStatus() (VCStatus, error) {
+	if sh.env.Ops == nil {
+		return VCStatus{}, errors.New("virtual chassis information is not available")
+	}
+	return sh.env.Ops.VirtualChassis()
+}
+
+func (sh *Shell) showVC(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	st, err := sh.vcStatus()
+	if err != nil {
+		return err
+	}
+	cfg := sh.activeModel()
+	fmt.Fprintf(c.out, "Virtual chassis %s, this switch is member %d\n\n", st.StackID, st.Member)
+	fmt.Fprintf(c.out, "%-7s %-20s %-9s %-9s %s\n", "Member", "Host name", "Role", "Priority", "Status")
+	present := map[int]bool{st.Member: true}
+	host := map[int]string{st.Member: st.HostName}
+	for _, p := range st.Ports {
+		var id int
+		if n, _ := fmt.Sscanf(p.Neighbor, "member %d", &id); n == 1 && p.State == "up" {
+			present[id] = true
+		}
+	}
+	ids := map[int]bool{st.Member: true}
+	if cfg != nil {
+		for id := range cfg.Members {
+			ids[id] = true
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		prio, name := 128, host[id]
+		if cfg != nil && cfg.Members[id] != nil {
+			prio = cfg.Members[id].Priority
+			if cfg.Members[id].HostName != "" {
+				name = cfg.Members[id].HostName
+			}
+		}
+		role, status := "linecard", "not present"
+		if present[id] {
+			status = "present"
+		}
+		if id == st.Member {
+			role = "master" // until Raft elects one (Phase 5), every switch leads its own stack
+		}
+		fmt.Fprintf(c.out, "%-7d %-20s %-9s %-9d %s\n", id, name, role, prio, status)
+	}
+	return nil
+}
+
+func (sh *Shell) showVCPorts(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	st, err := sh.vcStatus()
+	if err != nil {
+		return err
+	}
+	if len(st.Ports) == 0 {
+		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set pic-slot <card> port <port>').\n")
+		return nil
+	}
+	fmt.Fprintf(c.out, "%-8s %-12s %-7s %-24s %-10s %s\n", "Port", "Linux name", "State", "Neighbor", "Peer port", "Up")
+	now := time.Now()
+	for _, p := range st.Ports {
+		up := "-"
+		if !p.UpSince.IsZero() {
+			up = fmtDuration(now.Sub(p.UpSince))
+		}
+		fmt.Fprintf(c.out, "%-8s %-12s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, p.Neighbor, dash(p.PeerPort), up)
+		if p.LastError != "" && p.State != "up" {
+			fmt.Fprintf(c.out, "         last error: %s\n", p.LastError)
+		}
+	}
+	return nil
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // showRoute implements "show route [instance <name>]".
 func (sh *Shell) showRoute(c *call) error {
 	instance := ""
@@ -642,6 +794,9 @@ func registerOperational() {
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},
 				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
+				&command{name: "virtual-chassis", help: "Show the virtual chassis (stack)", class: commit.ReadOnly, run: (*Shell).showVC, sub: []*command{
+					{name: "vc-port", help: "Show the stacking ports and their neighbours", class: commit.ReadOnly, run: (*Shell).showVCPorts},
+				}},
 				&command{name: "route", help: "Show a routing table", class: commit.ReadOnly, run: (*Shell).showRoute, complete: completeRoute},
 				&command{name: "arp", help: "Show the IPv4 neighbour (ARP) table", class: commit.ReadOnly, run: (*Shell).showARP,
 					complete: words(Completion{Text: "no-resolve", Help: "Do not resolve host names"})},
@@ -675,11 +830,23 @@ func registerOperational() {
 		return &command{name: action, help: help, class: commit.SuperUser, run: func(sh *Shell, c *call) error { return sh.power(c, action) },
 			complete: words(Completion{Text: "in", Help: "Delay in minutes"})}
 	}
+	vcPort := func(add bool) *command {
+		name, help := "set", "Make a port a stacking (VC) port"
+		if !add {
+			name, help = "delete", "Release a stacking (VC) port"
+		}
+		return &command{name: name, help: help, class: commit.SuperUser,
+			run:      func(sh *Shell, c *call) error { return sh.setVCPort(c, add) },
+			complete: completeVCPort}
+	}
 	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.SuperUser, sub: []*command{
 		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
 			power("reboot", "Reboot this member"),
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
+		}},
+		{name: "virtual-chassis", help: "Virtual chassis (stack) requests", class: commit.SuperUser, sub: []*command{
+			{name: "vc-port", help: "Stacking ports of this switch", class: commit.SuperUser, sub: []*command{vcPort(true), vcPort(false)}},
 		}},
 	}})
 	sort.Slice(operational, func(i, j int) bool { return operational[i].name < operational[j].name })

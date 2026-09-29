@@ -502,6 +502,18 @@ func (f *fakeOps) Routes(instance string) ([]Route, error) {
 		{Dest: "10.5.0.0/16", Proto: "direct", Via: "1/2/0"}}, nil
 }
 
+func (f *fakeOps) VirtualChassis() (VCStatus, error) {
+	return VCStatus{StackID: "abc", Member: 1, HostName: "sw1", Ports: []VCPort{
+		{Port: "0/1", Linux: "ens19", State: "up", Neighbor: "member 2 (sw2)", PeerPort: "0/1", UpSince: time.Now().Add(-time.Minute)},
+		{Port: "0/2", Linux: "ens20", State: "up", Neighbor: "other stack", LastError: "x"},
+	}}, nil
+}
+
+func (f *fakeOps) SetVCPort(local string, add bool, user string) error {
+	f.power = append(f.power, fmt.Sprintf("vc %s %v", local, add))
+	return nil
+}
+
 func (f *fakeOps) CancelPower(user string) error {
 	f.power = append(f.power, "cancel "+user)
 	return nil
@@ -684,6 +696,15 @@ func TestSystemOperationalCommands(t *testing.T) {
 		t.Errorf("IPv4 first:\n%s", out)
 	}
 	contains(t, ts.ok("show route instance mgmt_junos"), "Routing instance mgmt_junos")
+	contains(t, ts.ok("show virtual-chassis"), "Virtual chassis abc, this switch is member 1", "1       sw1                  master    128       present")
+	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1      ens19        up      member 2 (sw2)           0/1        00:01:00", "other stack")
+	ts.ok("request virtual-chassis vc-port set pic-slot 0 port 3")
+	if len(ops.power) != 1 || ops.power[0] != "vc 0/3 true" {
+		t.Errorf("vc-port set: %v", ops.power)
+	}
+	ops.power = nil
+	contains(t, ts.run("request virtual-chassis vc-port set pic-slot 0"), "syntax error")
+	contains(t, ts.run("request virtual-chassis vc-port set pic-slot x port 1"), "expecting a card number")
 	contains(t, ts.run("show route instance nope"), "does not exist")
 	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")

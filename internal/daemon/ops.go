@@ -8,6 +8,7 @@ import (
 	"maps"
 	"mclag/internal/inventory"
 	"mclag/internal/schema"
+	"mclag/internal/stack"
 	"net"
 	"os"
 	"slices"
@@ -24,10 +25,12 @@ import (
 // ops implements cli.Operational from the kernel and the active
 // configuration of this member.
 type ops struct {
-	kernel *dataplane.Netlink
-	engine *commit.Engine
-	names  *inventory.Naming
-	member int
+	kernel   *dataplane.Netlink
+	engine   *commit.Engine
+	names    *inventory.Naming
+	member   int
+	vc       *stack.Manager
+	hostName func() string
 	// started is when switchd started; notify reaches every CLI session.
 	started time.Time
 	notify  func(string)
@@ -437,4 +440,28 @@ func routeProto(p netlink.RouteProtocol) string {
 		return "ra"
 	}
 	return strconv.Itoa(int(p))
+}
+
+func (o *ops) VirtualChassis() (cli.VCStatus, error) {
+	st := cli.VCStatus{StackID: o.vc.StackID(), Member: o.vc.Member(), HostName: o.hostName()}
+	if st.StackID == "" {
+		return st, fmt.Errorf("the stack is not running (dry-run mode?)")
+	}
+	for _, p := range o.vc.Ports() {
+		st.Ports = append(st.Ports, cli.VCPort{Port: p.Port, Linux: p.Linux, State: p.State, Neighbor: p.Neighbor,
+			PeerPort: p.PeerPort, UpSince: p.UpSince, LastError: p.LastError})
+	}
+	return st, nil
+}
+
+func (o *ops) SetVCPort(local string, add bool, user string) error {
+	if err := o.vc.SetPort(local, add); err != nil {
+		return err
+	}
+	what := "set"
+	if !add {
+		what = "deleted"
+	}
+	o.log.Info("VC port "+what, "facility", "change-log", "port", local, "user", user)
+	return nil
 }

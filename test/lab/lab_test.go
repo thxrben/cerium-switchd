@@ -65,7 +65,9 @@ type host struct {
 
 var (
 	hSrv1 = host{"srv1", "10.5.176.101", "ens19", "1/ens23", 1}
-	hSw2  = host{"sw2", "10.5.176.96", "ens19", "1/ens19", 2}
+	// sw2's host uses the underlay link (sw2 ens1 <-> sw1 ens1): the
+	// stacking links (stk-*) stay free for the stacking tests.
+	hSw2 = host{"sw2", "10.5.176.96", "ens1", "1/ens1", 2}
 	hSw3  = host{"sw3", "10.5.176.97", "ens23", "1/ens2", 3}
 	hosts = []host{hSrv1, hSw2, hSw3}
 )
@@ -246,16 +248,16 @@ func TestTrunkWithNative(t *testing.T) {
 	setupHost(t, hSw3)
 	setupHost(t, hSw2, 20, 30)
 	cfg := vlans + access(hSrv1.sw1Port, "v10") + access(hSw3.sw1Port, "v20") +
-		"set interfaces 1/ens19 unit 0 family ethernet-switching interface-mode trunk\n" +
-		"set interfaces 1/ens19 unit 0 family ethernet-switching vlan members [ v20 v30 ]\n" +
-		"set interfaces 1/ens19 native-vlan-id v10\n"
+		"set interfaces 1/ens1 unit 0 family ethernet-switching interface-mode trunk\n" +
+		"set interfaces 1/ens1 unit 0 family ethernet-switching vlan members [ v20 v30 ]\n" +
+		"set interfaces 1/ens1 native-vlan-id v10\n"
 	configure(t, cfg)
 	// Native VLAN 10: untagged between sw2 and srv1.
 	if !reach(t, hSw2, hSrv1, 1) {
 		t.Error("native VLAN not untagged on the trunk")
 	}
 	// VLAN 20 tagged on the trunk, untagged on sw3's access port: sw2's
-	// ens19.20 (192.168.20.2) reaches sw3 once sw3 has 192.168.20.3 untagged.
+	// ens1.20 (192.168.20.2) reaches sw3 once sw3 has 192.168.20.3 untagged.
 	mustSSH(t, hSw3.vm, "ip -n h addr add 192.168.20.3/24 dev "+hSw3.nic)
 	if !reach(t, hSw2, hSw3, 20) {
 		t.Error("tagged VLAN 20 not carried between trunk and access port")
@@ -286,9 +288,9 @@ func TestHitlessCommits(t *testing.T) {
 	time.Sleep(time.Second)
 	variants := []string{
 		access(hSw2.sw1Port, "v10"),
-		access(hSw2.sw1Port, "v30") + "set interfaces 1/ens19 description x\n",
-		"set interfaces 1/ens19 unit 0 family ethernet-switching interface-mode trunk\nset interfaces 1/ens19 unit 0 family ethernet-switching vlan members [ v10 v20 ]\n",
-		access(hSw2.sw1Port, "v20") + "set interfaces 1/ens19 mtu 9014\n",
+		access(hSw2.sw1Port, "v30") + "set interfaces 1/ens1 description x\n",
+		"set interfaces 1/ens1 unit 0 family ethernet-switching interface-mode trunk\nset interfaces 1/ens1 unit 0 family ethernet-switching vlan members [ v10 v20 ]\n",
+		access(hSw2.sw1Port, "v20") + "set interfaces 1/ens1 mtu 9014\n",
 		"set vlans v40 vlan-id 40\n" + access(hSw2.sw1Port, "v40"),
 	}
 	for _, v := range variants {
@@ -306,7 +308,7 @@ func TestReleasedPortGoesDown(t *testing.T) {
 	}
 	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10")+access(hSw2.sw1Port, "v10"))
 	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10"))
-	out := mustSSH(t, sw1, "ip -o link show ens19")
+	out := mustSSH(t, sw1, "ip -o link show ens1")
 	if strings.Contains(out, ",UP") || strings.Contains(out, "master") {
 		t.Errorf("released port still up or enslaved: %s", out)
 	}
@@ -424,20 +426,20 @@ func TestForeignChangesReverted(t *testing.T) {
 }
 
 func TestHotplug(t *testing.T) {
-	// Park ens20 in another namespace: switchd sees it as absent.
-	mustSSH(t, sw1, "ip netns add parked 2>/dev/null; ip link set ens20 netns parked 2>/dev/null; true")
-	defer ssh(sw1, "ip -n parked link set ens20 netns 1 2>/dev/null; true")
-	configure(t, vlans+"set interfaces 1/ens20 unit 0 family ethernet-switching vlan members v30\n")
-	if out, _ := ssh(sw1, "ip link show ens20"); !strings.Contains(out, "does not exist") {
-		t.Fatalf("ens20 should be absent: %s", out)
+	// Park ens21 in another namespace: switchd sees it as absent.
+	mustSSH(t, sw1, "ip netns add parked 2>/dev/null; ip link set ens21 netns parked 2>/dev/null; true")
+	defer ssh(sw1, "ip -n parked link set ens21 netns 1 2>/dev/null; true")
+	configure(t, vlans+"set interfaces 1/ens21 unit 0 family ethernet-switching vlan members v30\n")
+	if out, _ := ssh(sw1, "ip link show ens21"); !strings.Contains(out, "does not exist") {
+		t.Fatalf("ens21 should be absent: %s", out)
 	}
 	start := time.Now()
-	mustSSH(t, sw1, "ip -n parked link set ens20 netns 1")
-	if !waitFor(t, "bridge vlan show dev ens20", "30 PVID", 10*time.Second) {
+	mustSSH(t, sw1, "ip -n parked link set ens21 netns 1")
+	if !waitFor(t, "bridge vlan show dev ens21", "30 PVID", 10*time.Second) {
 		t.Fatal("appearing port was not configured")
 	}
 	t.Logf("port configured %v after it appeared", time.Since(start).Round(time.Millisecond))
-	if !waitFor(t, "ip -o link show ens20", ",UP", 5*time.Second) {
+	if !waitFor(t, "ip -o link show ens21", ",UP", 5*time.Second) {
 		t.Error("appearing port not brought up")
 	}
 }
@@ -542,7 +544,7 @@ func TestManagementPlane(t *testing.T) {
 	}
 	mustSSH(t, hSrv1.vm, "ip -n h addr add 192.168.99.2/24 dev ens19")
 	mustSSH(t, hSw3.vm, "ip -n h addr add 192.168.99.3/24 dev ens23; ip -n h addr add 192.168.10.3/24 dev ens23")
-	mustSSH(t, hSw2.vm, "ip -n h addr add 192.168.98.2/24 dev ens19")
+	mustSSH(t, hSw2.vm, "ip -n h addr add 192.168.98.2/24 dev "+hSw2.nic)
 	base := vlans + "set vlans mgmt vlan-id 99\n" + access(hSrv1.sw1Port, "mgmt") + access(hSw3.sw1Port, "v10")
 	mgmtVLAN := "set system management-instance\nset vlans mgmt l3-interface irb.99\n" +
 		"set interfaces irb unit 99 family inet address 192.168.99.1/24 member 1\n" +
@@ -583,19 +585,19 @@ func TestManagementPlane(t *testing.T) {
 	}
 
 	// Dedicated port instead.
-	configure(t, base+"set system management-instance\nset interfaces 1/ens19 unit 0 family inet address 192.168.98.1/24\n"+
-		"set routing-instances mgmt_junos interface 1/ens19.0\n")
+	configure(t, base+"set system management-instance\nset interfaces 1/ens1 unit 0 family inet address 192.168.98.1/24\n"+
+		"set routing-instances mgmt_junos interface 1/ens1.0\n")
 	if _, err := ssh(hSw2.vm, "ip netns exec h ping -c2 -W1 192.168.98.1"); err != nil {
 		t.Error("management address on the dedicated port not reachable")
 	}
-	out = mustSSH(t, sw1, "ip link show irb.99 2>&1; ip -o link show ens19; bridge vlan show dev swbr0 | grep -c 99; nft list table inet switchd_protect 2>&1; true")
+	out = mustSSH(t, sw1, "ip link show irb.99 2>&1; ip -o link show ens1; bridge vlan show dev swbr0 | grep -c 99; nft list table inet switchd_protect 2>&1; true")
 	if !strings.Contains(out, "does not exist") || !strings.Contains(out, "master mgmt_junos") || !strings.Contains(out, "No such file") {
-		t.Errorf("after switching to a dedicated port (irb.99 gone, ens19 in mgmt_junos, no protection table):\n%s", out)
+		t.Errorf("after switching to a dedicated port (irb.99 gone, ens1 in mgmt_junos, no protection table):\n%s", out)
 	}
 
 	// No management instance: switchd removes what it created.
 	configure(t, base)
-	out = mustSSH(t, sw1, "ip vrf show; ip -o link show ens19")
+	out = mustSSH(t, sw1, "ip vrf show; ip -o link show ens1")
 	if strings.Contains(out, "mgmt") || strings.Contains(out, ",UP") {
 		t.Errorf("management not torn down:\n%s", out)
 	}
@@ -845,7 +847,7 @@ func TestRouting(t *testing.T) {
 		"set vlans v10 l3-interface irb.10\nset vlans v20 l3-interface irb.20\n" +
 		"set interfaces irb unit 10 family inet address 10.10.10.1/24\n" +
 		"set interfaces irb unit 20 family inet address 10.10.20.1/24\n" +
-		"set interfaces 1/ens19 unit 0 family inet address 10.10.30.1/24\n" +
+		"set interfaces 1/ens1 unit 0 family inet address 10.10.30.1/24\n" +
 		"set routing-options static route 10.99.0.0/24 next-hop 10.10.30.2\n" +
 		"set routing-options static route 198.51.100.0/24 discard\n"
 	configure(t, cfg)
@@ -901,7 +903,7 @@ func TestRouting(t *testing.T) {
 
 	// A data routing instance: irb.20 and the routed port route among
 	// themselves, but not to the default instance (irb.10).
-	configure(t, cfg+"set routing-instances blue interface irb.20\nset routing-instances blue interface 1/ens19.0\n"+
+	configure(t, cfg+"set routing-instances blue interface irb.20\nset routing-instances blue interface 1/ens1.0\n"+
 		"set routing-instances blue routing-options static route 10.99.0.0/24 next-hop 10.10.30.2\n")
 	if !ping(hSw3, "10.10.30.2") || !ping(hSw3, "10.99.0.1") {
 		t.Error("no routing inside instance blue")
@@ -929,7 +931,7 @@ func TestRouting(t *testing.T) {
 
 	// Removing L3 removes devices, addresses on the port and routes.
 	configure(t, vlans+access(hSrv1.sw1Port, "v10"))
-	out = mustSSH(t, sw1, "ip -br link show type vlan | grep -c irb || true; ip route show proto 250 | wc -l; ip -br addr show ens19 2>/dev/null | grep -c 10.10.30 || true")
+	out = mustSSH(t, sw1, "ip -br link show type vlan | grep -c irb || true; ip route show proto 250 | wc -l; ip -br addr show ens1 2>/dev/null | grep -c 10.10.30 || true")
 	if f := strings.Fields(out); len(f) != 3 || f[0] != "0" || f[1] != "0" || f[2] != "0" {
 		t.Errorf("L3 leftovers (irb devices, routes, port addresses): %q", f)
 	}
