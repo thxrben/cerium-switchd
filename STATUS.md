@@ -15,15 +15,19 @@ Last updated: 2026-09-29.
 - CLI engine (`internal/cli`): operational + configuration mode, all §3.2 commands, commit variants, pipes,
   schema/config-aware completion and `?` help, Junos-style caret errors, permissions, panic recovery;
   file I/O and prompts go through the client (Terminal). Fuzzed (FuzzShell).
+- RPC (`internal/rpc`, JSON lines, SO_PEERCRED auth), swcli client (`internal/swcli`: line editor, Tab/?,
+  history, bracketed paste, pager, Ctrl-C interrupt, degraded mode), switchd daemon (`internal/daemon`, dry-run
+  applier only). One binary: `swcli` is a symlink to `switchd`. `packaging/switchd.service`, `lab/deploy.yml`.
+  Checkpoint A reached: running on sw1 in dry-run; commit/confirm/automatic rollback verified across a restart.
 - Lab: all five VMs bootstrapped via Ansible (lab/), root key login works.
 - Plan §4.15: OS ownership (takeover/release, masking conflicts, sysctls, foreign-change revert); lab install steps in §11.
 - Plan §4.14: hitless reconfiguration (diff-driven, no link down, tighten-before-loosen, planner property tests).
 
 ## Next (in order)
-1. JSON-lines RPC over a unix socket (SO_PEERCRED), `swcli` client (x/term, pager), `switchd --dry-run`
-   with a dry-run Applier → Checkpoint A (try it on sw1).
-2. `set … authentication plain-text-password` (prompt twice, store a $6$ hash).
-3. Phase 3 data plane on the lab VMs.
+1. `set … authentication plain-text-password` (prompt twice, store a $6$ hash); `start shell`;
+   swcli as login shell for configured users (with OS account sync in Phase 4).
+2. Phase 3 data plane on the lab VMs: netlink discovery/inventory, reconciler (hitless, §4.14),
+   bridge/VLANs/access/trunk, MTU, LAGs, mgmt VRF, syslog. Replace the dry-run applier.
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

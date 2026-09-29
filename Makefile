@@ -1,7 +1,6 @@
 GO      ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X mclag/internal/version.Version=$(VERSION)
-CMDS    := switchd swcli
 ARCHES  := amd64 arm64 arm
 
 .PHONY: all build test fuzz vet cross clean
@@ -10,7 +9,8 @@ all: vet test build
 
 build:
 	@mkdir -p bin
-	for c in $(CMDS); do CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/$$c ./cmd/$$c || exit 1; done
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/switchd ./cmd/switchd
+	ln -sf switchd bin/swcli
 
 test:
 	$(GO) test ./...
@@ -28,12 +28,12 @@ fuzz:
 	  done; \
 	done
 
-# Static binaries for all supported architectures.
+# Static binaries for all supported architectures (swcli is a symlink to switchd).
 cross:
 	@mkdir -p dist
-	for a in $(ARCHES); do for c in $(CMDS); do \
-	  CGO_ENABLED=0 GOOS=linux GOARCH=$$a GOARM=7 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/$$c-linux-$$a ./cmd/$$c || exit 1; \
-	done; done
+	for a in $(ARCHES); do \
+	  CGO_ENABLED=0 GOOS=linux GOARCH=$$a GOARM=7 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/switchd-linux-$$a ./cmd/switchd || exit 1; \
+	done
 
 clean:
 	rm -rf bin dist

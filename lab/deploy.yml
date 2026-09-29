@@ -1,0 +1,53 @@
+# Deploy the locally built switchd (make cross) to the switch VMs.
+#   ansible-playbook deploy.yml -u root [-e switchd_args=--dry-run]
+- hosts: switches
+  become: false
+  vars:
+    switchd_args: --dry-run
+    arch_map: {x86_64: amd64, aarch64: arm64, armv7l: arm}
+  tasks:
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: "../dist/switchd-linux-{{ arch_map[ansible_architecture] }}"
+        dest: /usr/local/sbin/switchd
+        mode: "0755"
+      notify: restart switchd
+
+    - name: swcli is the same binary
+      ansible.builtin.file:
+        src: /usr/local/sbin/switchd
+        dest: /usr/local/bin/swcli
+        state: link
+
+    - name: Allow swcli as a login shell
+      ansible.builtin.lineinfile:
+        path: /etc/shells
+        line: /usr/local/bin/swcli
+
+    - name: Daemon arguments
+      ansible.builtin.copy:
+        dest: /etc/default/switchd
+        content: "SWITCHD_ARGS={{ switchd_args }}\n"
+        mode: "0644"
+      notify: restart switchd
+
+    - name: systemd unit
+      ansible.builtin.copy:
+        src: ../packaging/switchd.service
+        dest: /etc/systemd/system/switchd.service
+        mode: "0644"
+      notify: restart switchd
+
+    - name: Enable and start
+      ansible.builtin.systemd:
+        name: switchd
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: restart switchd
+      ansible.builtin.systemd:
+        name: switchd
+        state: restarted
+        daemon_reload: true

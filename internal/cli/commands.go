@@ -623,7 +623,11 @@ func (sh *Shell) cfgCommit(c *call) error {
 	}
 	if !res.Deadline.IsZero() {
 		mins := int((res.Deadline.Sub(time.Now()) + 30*time.Second) / time.Minute)
-		fmt.Fprintf(c.out, "commit confirmed will be automatically rolled back in %d minutes unless confirmed\n", mins)
+		unit := "minutes"
+		if mins == 1 {
+			unit = "minute"
+		}
+		fmt.Fprintf(c.out, "commit confirmed will be automatically rolled back in %d %s unless confirmed\n", mins, unit)
 	}
 	if andQuit {
 		return sh.leaveConfig(c, false)

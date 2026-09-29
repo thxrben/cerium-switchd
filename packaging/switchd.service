@@ -1,0 +1,19 @@
+[Unit]
+Description=mclag switch daemon
+Documentation=file:///usr/share/doc/switchd/config-reference.md
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/switchd $SWITCHD_ARGS
+EnvironmentFile=-/etc/default/switchd
+Restart=always
+RestartSec=1
+RuntimeDirectory=switchd
+RuntimeDirectoryPreserve=yes
+StateDirectory=switchd
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
