@@ -1,5 +1,5 @@
 // Command switchd is the switch daemon. The same binary is the CLI client:
-// started as "swcli" (e.g. through a symlink, or as login shell "-swcli")
+// started as "swcli" or "cli" (e.g. through a symlink, or as login shell "-swcli")
 // or as "switchd cli", it runs the client instead.
 package main
 
@@ -21,7 +21,7 @@ import (
 
 func main() {
 	name := strings.TrimPrefix(filepath.Base(os.Args[0]), "-")
-	if name == "swcli" {
+	if name == "swcli" || name == "cli" || name == "swcli-session" {
 		os.Exit(swcli.Main(os.Args[1:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "cli" {

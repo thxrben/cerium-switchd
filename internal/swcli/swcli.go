@@ -12,10 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	osuser "os/user"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
-	"syscall"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/term"
 
@@ -32,78 +36,207 @@ func Main(args []string) int {
 	cmd := fs.String("c", "", "run one command (or several, separated by newlines) and exit")
 	sock := fs.String("s", DefaultSocket, "switchd socket")
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return exitUsage
 	}
 	// With sshd's ForceCommand (root on the CLI SSH server) the requested
 	// command arrives in SSH_ORIGINAL_COMMAND.
 	if *cmd == "" {
 		*cmd = os.Getenv("SSH_ORIGINAL_COMMAND")
 	}
-	ui := &ui{in: os.Stdin, out: os.Stdout}
-	ui.tty = term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
-
-	var c *rpc.Client
-	for {
-		var err error
-		c, err = rpc.Dial(*sock, ui)
-		if err == nil {
-			break
-		}
-		if errors.Is(err, rpc.ErrRejected) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
-		}
-		if !ui.degraded(err) {
-			return 1
-		}
+	u := &ui{sock: *sock, in: os.Stdin, out: os.Stdout}
+	u.tty = term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	interactive := *cmd == "" && u.tty
+	if interactive && os.Getenv(childEnv) == "" {
+		return supervise(args)
 	}
-	defer c.Close()
-	ui.c = c
+	if os.Getenv(childEnv) != "" {
+		u.report = os.NewFile(3, "supervisor")
+	}
+
+	c, err := rpc.Dial(*sock, u)
+	switch {
+	case err == nil:
+		u.connected(c)
+	case errors.Is(err, rpc.ErrRejected):
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	case !interactive:
+		fmt.Fprintf(os.Stderr, "switchd is not available: %v\n", err)
+		return 1
+	default:
+		u.cur.Store(rpc.Offline(offlinePrompt("")))
+	}
+	defer func() { u.cl().Close() }()
 
 	switch {
 	case *cmd != "":
-		return ui.batch(strings.NewReader(*cmd))
-	case !ui.tty:
-		return ui.batch(os.Stdin)
+		return u.batch(strings.NewReader(*cmd))
+	case !u.tty:
+		return u.batch(os.Stdin)
 	}
-	return ui.interactive()
+	return u.interactive()
 }
 
+// exitUsage is returned for bad arguments; exit status 2 means a crash
+// (Go runtime) to the supervisor.
+const exitUsage = 64
+
 type ui struct {
-	c        *rpc.Client
+	sock     string
+	cur      atomic.Pointer[rpc.Client] // replaced on reconnect
 	in       *os.File
 	out      *os.File
 	tty      bool
-	mu       sync.Mutex // guards terminal output and the editor
+	mu       sync.Mutex // guards terminal output, the editor and the fields below
 	ed       *editor    // non-nil while a line is being edited
 	rawState *term.State
+	// running is set while a command executes; interrupts counts Ctrl-C
+	// during it.
+	running    atomic.Bool
+	interrupts atomic.Int32
+	inShell    bool // a Linux shell owns the terminal: print nothing
+	retrying   bool // a reconnect loop is running
+	wasConfig  bool // the lost session was in configuration mode
+	class      string
+	report     *os.File // tells the supervisor the session's class
 }
 
-// degraded handles an unreachable switchd. It returns true to retry.
-func (u *ui) degraded(err error) bool {
-	fmt.Fprintf(os.Stderr, "switchd is not reachable: %v\n", err)
-	if os.Getuid() == 0 {
-		fmt.Fprintln(os.Stderr, "degraded mode: starting a root shell (/bin/bash); run 'systemctl status switchd'")
-		if e := syscall.Exec("/bin/bash", []string{"-bash"}, os.Environ()); e != nil {
-			fmt.Fprintf(os.Stderr, "cannot start /bin/bash: %v\n", e)
+// cl returns the current connection (possibly offline).
+func (u *ui) cl() *rpc.Client { return u.cur.Load() }
+
+// connected installs a new connection.
+func (u *ui) connected(c *rpc.Client) {
+	u.cur.Store(c)
+	u.class = c.Class
+	if u.report != nil {
+		fmt.Fprintln(u.report, c.Class)
+	}
+}
+
+// shellAllowed reports whether the user may get a Linux shell without
+// asking switchd: root, or a user switchd reported as super-user.
+func (u *ui) shellAllowed() bool {
+	return os.Getuid() == 0 || u.class == "super-user"
+}
+
+// offlinePrompt derives the prompt shown while switchd is away.
+func offlinePrompt(prev string) string {
+	name := strings.TrimSpace(prev)
+	if name != "" {
+		name = name[:len(name)-1] // > or #
+	} else {
+		user := strconv.Itoa(os.Getuid())
+		if cu, err := osuser.Current(); err == nil {
+			user = cu.Username
 		}
-		return false
+		host, _ := os.Hostname()
+		host, _, _ = strings.Cut(host, ".")
+		name = user + "@" + host
 	}
-	if !u.tty {
-		return false
+	return name + " (switchd not available)> "
+}
+
+func (u *ui) offlineHelp() string {
+	if u.shellAllowed() {
+		return "Enter 'start shell' for a Linux shell or 'exit' to log out, or wait."
 	}
-	fmt.Fprint(os.Stderr, "Press Enter to retry, Ctrl-D to log out: ")
-	var b [1]byte
+	return "Enter 'exit' to log out, or wait."
+}
+
+// Disconnected switches to offline mode and reconnects in the background.
+func (u *ui) Disconnected(c *rpc.Client) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.cl() != c {
+		return
+	}
+	p, _ := c.State()
+	u.wasConfig = strings.HasSuffix(p, "# ")
+	off := rpc.Offline(offlinePrompt(p))
+	u.cur.Store(off)
+	u.announce("switchd is not available (connection lost); reconnecting in the background ***\r\n*** "+u.offlineHelp(), off)
+	if !u.retrying {
+		u.retrying = true
+		go u.reconnect()
+	}
+}
+
+// announce shows a notice and redraws the line being edited with c's
+// prompt and banner. Caller holds u.mu.
+func (u *ui) announce(text string, c *rpc.Client) {
+	if u.inShell {
+		return
+	}
+	msg := "\r\n*** " + strings.TrimSpace(text) + " ***\r\n"
+	if u.ed == nil {
+		u.write(msg)
+		return
+	}
+	prompt, banner := c.State()
+	u.ed.clear()
+	u.write(msg + banner)
+	u.ed.prompt = prompt
+	u.ed.redraw()
+}
+
+// reconnect retries until switchd accepts the session again.
+func (u *ui) reconnect() {
+	delay := time.Second
 	for {
-		n, err := u.in.Read(b[:])
-		if err != nil || n == 0 {
-			fmt.Fprintln(os.Stderr)
+		time.Sleep(delay)
+		c, err := rpc.Dial(u.sock, u)
+		if err != nil {
+			if errors.Is(err, rpc.ErrRejected) {
+				delay = 10 * time.Second
+			}
+			continue
+		}
+		u.mu.Lock()
+		if c.Closed() { // lost again before it was installed
+			u.mu.Unlock()
+			continue
+		}
+		u.connected(c)
+		u.retrying = false
+		msg := "switchd is available again"
+		if u.wasConfig {
+			msg += " ***\r\n*** You are in operational mode; uncommitted changes to the shared configuration were kept (private/exclusive ones are lost)"
+			u.wasConfig = false
+		}
+		u.announce(msg, c)
+		u.mu.Unlock()
+		return
+	}
+}
+
+// start begins offline mode when switchd was not reachable at login.
+func (u *ui) startOffline() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.cl().Closed() || u.retrying {
+		return
+	}
+	u.announce("switchd is not available; reconnecting in the background ***\r\n*** "+u.offlineHelp(), u.cl())
+	u.retrying = true
+	go u.reconnect()
+}
+
+// offline handles a command line while switchd is away. It returns true
+// to log out.
+func (u *ui) offline(line string) bool {
+	switch strings.Join(strings.Fields(line), " ") {
+	case "exit", "quit", "logout":
+		return true
+	case "start shell":
+		if !u.shellAllowed() {
+			u.write("error: permission denied\n")
 			return false
 		}
-		if b[0] == '\n' || b[0] == '\r' {
-			return true
-		}
+		u.runShell()
+	default:
+		u.write("error: switchd is not available; the command was not run. " + u.offlineHelp() + "\n")
 	}
+	return false
 }
 
 // batch runs commands from r without line editing.
@@ -116,8 +249,8 @@ func (u *ui) batch(r io.Reader) int {
 		if line == "" {
 			continue
 		}
-		prompt := u.c.Prompt
-		m, err := u.c.Exec(line)
+		prompt, _ := u.cl().State()
+		m, err := u.cl().Exec(line)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "connection to switchd lost: %v\n", err)
 			return 1
@@ -219,14 +352,7 @@ func readLine(f *os.File) (string, error) {
 func (u *ui) Notify(text string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	msg := "\r\n*** " + strings.TrimSpace(text) + " ***\r\n"
-	if u.ed != nil {
-		u.ed.clear()
-		u.write(msg)
-		u.ed.redraw()
-		return
-	}
-	u.write(msg)
+	u.announce(text, u.cl())
 }
 
 // write prints text, translating newlines while the terminal is raw.
@@ -255,18 +381,35 @@ func (u *ui) interactive() int {
 		}
 	}()
 	u.write("\x1b[?2004h") // bracketed paste
+	// Ctrl-C in cooked mode (while a command runs, or at a question)
+	// interrupts the command; a second one while the same command still
+	// runs drops a switchd that does not react.
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, os.Interrupt)
+	defer signal.Stop(sig)
+	go func() {
+		for range sig {
+			c := u.cl()
+			if n := u.interrupts.Add(1); n >= 2 && u.running.Load() {
+				c.Abort()
+			}
+			c.Interrupt()
+		}
+	}()
+	u.startOffline()
 	hist := &history{}
 	keys := newKeyReader(u.in)
 	var queued []string // further lines of a multi-line paste
 	for {
 		var line string
+		prompt, banner := u.cl().State()
 		if len(queued) > 0 {
 			line, queued = queued[0], queued[1:]
-			u.write(u.c.Banner + u.c.Prompt + line + "\n")
+			u.write(banner + prompt + line + "\n")
 		} else {
 			u.mu.Lock()
-			u.write(u.c.Banner)
-			u.ed = newEditor(u, u.c.Prompt, hist)
+			u.write(banner)
+			u.ed = newEditor(u, prompt, hist)
 			u.ed.redraw()
 			u.mu.Unlock()
 			var ok bool
@@ -279,14 +422,24 @@ func (u *ui) interactive() int {
 				u.write("exit\n")
 			}
 		}
+		c := u.cl()
 		if strings.TrimSpace(line) == "" {
+			if !c.Closed() {
+				_, _ = c.Exec("") // refreshes prompt and banner
+			}
 			continue
 		}
 		hist.add(line)
-		m, err := u.execInterruptible(line)
+		if c.Closed() {
+			if u.offline(line) {
+				return 0
+			}
+			continue
+		}
+		m, err := u.execInterruptible(c, line)
 		if err != nil {
-			u.write(fmt.Sprintf("connection to switchd lost: %v\n", err))
-			return 1
+			u.write("error: the connection to switchd broke while the command was running; it may or may not have completed\n")
+			continue
 		}
 		u.page(m.Text, m.NoMore, keys)
 		if m.Shell {
@@ -298,28 +451,16 @@ func (u *ui) interactive() int {
 	}
 }
 
-// execInterruptible runs a command; Ctrl-C (SIGINT in cooked mode) cancels
-// it on the server.
-func (u *ui) execInterruptible(line string) (rpc.Msg, error) {
+// execInterruptible runs a command in cooked mode, so that Ctrl-C (SIGINT)
+// cancels it on the server.
+func (u *ui) execInterruptible(c *rpc.Client, line string) (rpc.Msg, error) {
 	var m rpc.Msg
 	var err error
 	u.cooked(func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt)
-		done := make(chan struct{})
-		go func() {
-			for {
-				select {
-				case <-sig:
-					u.c.Interrupt()
-				case <-done:
-					return
-				}
-			}
-		}()
-		m, err = u.c.Exec(line)
-		signal.Stop(sig)
-		close(done)
+		u.interrupts.Store(0)
+		u.running.Store(true)
+		m, err = c.Exec(line)
+		u.running.Store(false)
 	})
 	return m, err
 }
@@ -418,12 +559,14 @@ func (u *ui) edit(keys *keyReader) (string, []string, bool) {
 		case k.r == '?' && !inQuote(string(ed.buf[:ed.pos])):
 			line := string(ed.buf[:ed.pos])
 			u.mu.Unlock()
-			help, err := u.c.Help(line)
+			help, err := u.cl().Help(line)
 			u.mu.Lock()
 			ed.end()
 			u.write("?\n")
 			if err == nil {
 				u.write(help)
+			} else {
+				u.write(u.offlineHelp() + "\n")
 			}
 			ed.redraw()
 		default:
@@ -450,7 +593,7 @@ func inQuote(s string) bool {
 func (u *ui) complete(ed *editor) {
 	before := string(ed.buf[:ed.pos])
 	u.mu.Unlock()
-	items, err := u.c.Complete(before)
+	items, err := u.cl().Complete(before)
 	u.mu.Lock()
 	if err != nil || inQuote(before) {
 		return
@@ -479,7 +622,7 @@ func (u *ui) complete(ed *editor) {
 			return
 		}
 	}
-	help, err := u.c.Help(before)
+	help, err := u.cl().Help(before)
 	if err != nil {
 		return
 	}
@@ -517,17 +660,40 @@ func (h *history) add(l string) {
 // runShell runs the user's Linux shell with a normal terminal and returns
 // to the CLI when it exits.
 func (u *ui) runShell() {
+	u.mu.Lock()
+	u.inShell = true
+	u.mu.Unlock()
 	u.cooked(func() {
 		u.write("\x1b[?2004l")
-		cmd := exec.Command("/bin/bash", "-l")
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-		cmd.Env = append(os.Environ(), "SHELL=/bin/bash")
-		if err := cmd.Run(); err != nil {
-			var ee *exec.ExitError
-			if !errors.As(err, &ee) {
-				fmt.Fprintf(u.out, "error: %v\n", err)
-			}
-		}
+		runBash()
 		u.write("\x1b[?2004h")
 	})
+	u.mu.Lock()
+	u.inShell = false
+	if u.cl().Closed() {
+		u.write("*** switchd is still not available. " + u.offlineHelp() + " ***\n")
+	}
+	u.mu.Unlock()
+	if c := u.cl(); !c.Closed() {
+		_, _ = c.Exec("") // notices were not shown during the shell: refresh
+	}
+}
+
+// runBash runs a login bash on the terminal. SWITCHD_SHELL tells the
+// console profile hook not to start the CLI again.
+func runBash() {
+	cmd := exec.Command("/bin/bash", "-l")
+	// Under the supervisor, stderr is a pipe (for crash reports); the
+	// shell gets the terminal.
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stdout
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(e string) bool {
+		return strings.HasPrefix(e, childEnv+"=") || strings.HasPrefix(e, "SWITCHD_SHELL=") || strings.HasPrefix(e, "SHELL=")
+	})
+	cmd.Env = append(cmd.Env, "SHELL=/bin/bash", "SWITCHD_SHELL=cli")
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+	}
 }

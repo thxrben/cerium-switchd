@@ -125,6 +125,7 @@ func build() *Node {
 		),
 		C("ports", "Console ports",
 			F("no-auto-detect", "Do not start a CLI login on detected serial ports"),
+			F("login-required", "Ask for user name and password on the local consoles (default: root without password)"),
 			L("console", "Serial console port", TTY,
 				VD("speed", "Baud rate", Enum(
 					E("9600", ""), E("19200", ""), E("38400", ""), E("57600", ""), E("115200", ""),

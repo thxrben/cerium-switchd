@@ -155,7 +155,7 @@ func (sh *Shell) confirm(c *call) error {
 	if err := noArgs(c); err != nil {
 		return err
 	}
-	if err := sh.env.Engine.Confirm(sh.env.User); err != nil {
+	if err := sh.env.Engine.Confirm(c.ctx, sh.env.User); err != nil {
 		return err
 	}
 	c.out.WriteString("commit confirmed\n")

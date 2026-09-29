@@ -13,11 +13,12 @@
         mode: "0755"
       notify: restart switchd
 
-    - name: swcli is the same binary
+    - name: swcli and cli are the same binary
       ansible.builtin.file:
         src: /usr/local/sbin/switchd
-        dest: /usr/local/bin/swcli
+        dest: "/usr/local/bin/{{ item }}"
         state: link
+      loop: [swcli, cli]
 
     - name: Allow swcli as a login shell
       ansible.builtin.lineinfile:

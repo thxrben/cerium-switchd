@@ -53,8 +53,8 @@ func Run(ctx context.Context, o Options) error {
 	var hostName func() string
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	systemctl := func(args ...string) error { return command("systemctl", args...) }
-	consoles := &access.Consoles{SysRoot: "/sys", UnitDir: "/etc/systemd/system",
-		StateFile: filepath.Join(o.StateDir, "consoles.json"), Log: log, Systemctl: systemctl}
+	consoles := &access.Consoles{SysRoot: "/sys", UnitDir: "/etc/systemd/system", ProfileDir: "/etc/profile.d",
+		StateFile: filepath.Join(o.StateDir, "consoles.json"), Log: log, Systemctl: systemctl, MainComm: access.SystemdMainComm}
 	sshd := &access.SSH{Dir: "/etc/switchd", UnitPath: "/etc/systemd/system/switchd-sshd.service",
 		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
 	applier.onApplied = func(cfg *model.Config) {

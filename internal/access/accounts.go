@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"mclag/internal/model"
@@ -266,8 +267,19 @@ func (o *OS) Add(e Entry) error {
 	if err := run("groupadd", "--force", "--system", CLIGroup); err != nil {
 		return err
 	}
-	return run("useradd", "--create-home", "--user-group", "--groups", CLIGroup, "--uid", strconv.Itoa(e.UID),
-		"--shell", e.Shell, "--comment", e.FullName, "--password", e.Hash, e.Name)
+	if err := run("useradd", "--create-home", "--user-group", "--groups", CLIGroup, "--uid", strconv.Itoa(e.UID),
+		"--shell", e.Shell, "--comment", e.FullName, "--password", e.Hash, e.Name); err != nil {
+		return err
+	}
+	// A home directory kept from an earlier account of this name belongs
+	// to root (see Delete); it becomes the new account's.
+	home := o.path(e.Home)
+	if st, err := os.Stat(home); err == nil {
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) != e.UID {
+			return run("chown", "-R", "--no-dereference", e.Name+":", home)
+		}
+	}
+	return nil
 }
 
 func (o *OS) Modify(e Entry) error {
@@ -279,17 +291,29 @@ func (o *OS) Modify(e Entry) error {
 }
 
 // Delete ends the user's sessions (a removed user must not stay logged in)
-// and deletes the account; the home directory is kept.
+// and deletes the account. The home directory is kept, owned by root and
+// closed, so that a later account that gets the same uid cannot read it.
 func (o *OS) Delete(name string) error {
+	e, _ := o.Lookup(name)
 	_ = run("loginctl", "terminate-user", name)
 	var err error
 	for i := 0; i < 10; i++ {
 		if err = run("userdel", name); err == nil || !strings.Contains(err.Error(), "currently used") {
-			return err
+			break
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	return err
+	if err != nil || e.Home == "" || e.Home == "/" {
+		return err
+	}
+	home := o.path(e.Home)
+	if _, serr := os.Stat(home); serr != nil {
+		return nil
+	}
+	if err := run("chown", "-R", "--no-dereference", "root:root", home); err != nil {
+		return err
+	}
+	return os.Chmod(home, 0o700)
 }
 
 // WriteKeys writes ~/.ssh/authorized_keys owned by root (0644 in a root

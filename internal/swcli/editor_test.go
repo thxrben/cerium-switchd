@@ -2,6 +2,7 @@ package swcli
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,20 @@ func TestHelpers(t *testing.T) {
 	h.add("a")
 	if len(h.lines) != 1 {
 		t.Error("duplicate history entry")
+	}
+}
+
+func TestFilterCrash(t *testing.T) {
+	var shown strings.Builder
+	in := "error: something\nSIGSEGV: segmentation violation\nPC=0x1\ngoroutine 1 [running]:\n"
+	rep := filterCrash(strings.NewReader(in), &shown)
+	if shown.String() != "error: something\n" || !strings.HasPrefix(string(rep), "SIGSEGV") || !strings.Contains(string(rep), "goroutine 1") {
+		t.Errorf("shown %q report %q", shown.String(), rep)
+	}
+	for script, want := range map[string]bool{"exit 0": false, "exit 1": false, "exit 2": true,
+		"kill -HUP $$": false, "kill -SEGV $$": true, "kill -KILL $$": true} {
+		if _, crashed := exitStatus(exec.Command("sh", "-c", script).Run()); crashed != want {
+			t.Errorf("%s: crashed = %v", script, crashed)
+		}
 	}
 }

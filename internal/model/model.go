@@ -42,7 +42,10 @@ type System struct {
 	Commit      CommitPolicy
 	Consoles    map[string]*Console
 	AutoConsole bool
-	Offload     OffloadPolicy
+	// ConsoleLogin: local consoles ask for credentials (default: autologin
+	// as root into the CLI).
+	ConsoleLogin bool
+	Offload      OffloadPolicy
 }
 
 type NTPServer struct {
@@ -346,6 +349,7 @@ func (b *builder) build() {
 	conf := sys.Get("commit", "confirmation")
 	s.Commit = CommitPolicy{ConfirmRequired: conf.Leaf("mode") != "optional", TimeoutMinutes: atoi(conf.Leaf("timeout"), 10)}
 	s.AutoConsole = !sys.Has("ports", "no-auto-detect")
+	s.ConsoleLogin = sys.Has("ports", "login-required")
 	s.Consoles = map[string]*Console{}
 	for _, e := range sys.Get("ports").Entries("console") {
 		s.Consoles[e.Key] = &Console{Device: e.Key, Speed: atoi(e.Leaf("speed"), 115200), Disabled: e.Has("disable")}

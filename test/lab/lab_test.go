@@ -109,12 +109,36 @@ func keptUsers(t *testing.T) string {
 	return strings.Join(keep, "\n") + "\n"
 }
 
+// keptSSH holds the CLI SSH server configuration found before the first
+// test ran (e.g. the port people use to reach the lab switch); it is kept
+// unless a test configures the SSH server itself.
+var (
+	keptSSHOnce sync.Once
+	keptSSH     string
+)
+
+func keptServices(t *testing.T) string {
+	t.Helper()
+	keptSSHOnce.Do(func() {
+		out := mustSSH(t, sw1, "swcli -c 'show configuration system services ssh | display set'")
+		for _, l := range strings.Split(out, "\n") {
+			if strings.HasPrefix(l, "set system services ssh") {
+				keptSSH += l + "\n"
+			}
+		}
+	})
+	return keptSSH
+}
+
 // configure replaces sw1's configuration with setLines and commits it
-// (commit + confirm). Configured login users other than the test users are
-// kept.
+// (commit + confirm). Configured login users other than the test users,
+// and the CLI SSH server, are kept.
 func configure(t *testing.T, setLines string) {
 	t.Helper()
 	base := "set system host-name sw1\n" + keptUsers(t)
+	if !strings.Contains(setLines, "system services ssh") {
+		base += keptServices(t)
+	}
 	mustSSH(t, sw1, "cat > /root/lab.set <<'EOF'\n"+base+setLines+"\nEOF")
 	out := mustSSH(t, sw1, `swcli -c "configure
 load override lab.set
@@ -655,9 +679,22 @@ exit configuration-mode"; true`)
 func TestSerialConsoles(t *testing.T) {
 	configure(t, "")
 	unit := "systemctl is-active serial-getty@ttyS0; systemctl show -p ExecStart serial-getty@ttyS0"
-	if !waitFor(t, unit, "--noclear 115200 ttyS0", 10*time.Second) {
-		t.Fatalf("no auto-detected login on ttyS0:\n%s", mustSSH(t, sw1, unit+"; true"))
+	if !waitFor(t, unit, "--autologin root --noreset --noclear 115200 ttyS0", 10*time.Second) {
+		t.Fatalf("no auto-detected console on ttyS0:\n%s", mustSSH(t, sw1, unit+"; true"))
 	}
+	// Both the serial console and the display run the CLI as root, via the
+	// profile hook, under the supervisor.
+	mustSSH(t, sw1, "systemctl restart serial-getty@ttyS0 getty@tty1")
+	cli := "for t in ttyS0 tty1; do ps -o user=,args= -t $t | grep -c 'root *swcli-session'; done | tr '\\n' ' '"
+	if !waitFor(t, cli, "1 1 ", 10*time.Second) {
+		t.Errorf("consoles do not run the CLI:\n%s", mustSSH(t, sw1, "ps -o tty=,user=,args= -t ttyS0,tty1; true"))
+	}
+	configure(t, "set system ports login-required\n")
+	if !waitFor(t, unit+"; test -e /etc/systemd/system/getty@.service.d/switchd.conf || echo vt-default", "vt-default", 10*time.Second) ||
+		strings.Contains(mustSSH(t, sw1, unit), "autologin") {
+		t.Errorf("login-required not applied:\n%s", mustSSH(t, sw1, unit+"; true"))
+	}
+	configure(t, "")
 	configure(t, "set system ports console ttyS0 speed 9600\n")
 	if !waitFor(t, unit, "--noclear 9600 ttyS0", 10*time.Second) {
 		t.Errorf("speed not applied:\n%s", mustSSH(t, sw1, unit+"; true"))
@@ -667,9 +704,10 @@ func TestSerialConsoles(t *testing.T) {
 		t.Errorf("console not disabled: %s", out)
 	}
 	configure(t, "")
-	if !waitFor(t, unit, "--noclear 115200 ttyS0", 10*time.Second) {
+	if !waitFor(t, unit, "--autologin root --noreset --noclear 115200 ttyS0", 10*time.Second) {
 		t.Error("console not restored after removing the configuration")
 	}
+	mustSSH(t, sw1, "systemctl restart getty@tty1")
 }
 
 func TestCLISSHServer(t *testing.T) {
@@ -689,7 +727,8 @@ func TestCLISSHServer(t *testing.T) {
 
 	configure(t, alice+"set system services ssh port 2222\nset system login message \"lab switch\"\n")
 	on2222 := func(user, cmd string) (string, error) {
-		out, err := exec.Command("ssh", "-p", "2222", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+		// The lab firewall only admits the CLI port from inside the lab.
+		out, err := exec.Command("ssh", "-J", "root@"+hSw2.vm, "-p", "2222", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
 			"-o", "StrictHostKeyChecking=accept-new", user+"@"+sw1, cmd).CombinedOutput()
 		return string(out), err
 	}
@@ -709,6 +748,15 @@ func TestCLISSHServer(t *testing.T) {
 	// The OS SSH server was never modified.
 	if now := mustSSH(t, sw1, "md5sum /etc/ssh/sshd_config; ls /etc/ssh/sshd_config.d/"); now != osSSHD {
 		t.Errorf("OS SSH configuration changed:\n%s\n%s", osSSHD, now)
+	}
+	if keptServices(t) != "" {
+		// Removal cannot be tested without cutting off the kept access;
+		// the kept configuration comes back instead.
+		configure(t, "")
+		if !waitFor(t, "systemctl is-active switchd-sshd", "active", 10*time.Second) {
+			t.Error("kept CLI SSH server not restored")
+		}
+		return
 	}
 	configure(t, "")
 	if !waitFor(t, "systemctl is-active switchd-sshd; test -e /etc/switchd/sshd_config || echo gone", "gone", 10*time.Second) {

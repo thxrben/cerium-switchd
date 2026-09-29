@@ -245,3 +245,44 @@ func syncDir(dir string) error {
 	defer d.Close()
 	return d.Sync()
 }
+
+// CandidateStore is implemented by stores that keep the shared candidate
+// across restarts of switchd (reference 3.1).
+type CandidateStore interface {
+	// Candidate returns the stored shared candidate (nil: none).
+	Candidate() (*config.Tree, error)
+	// SetCandidate stores t, or removes the stored candidate if t is nil.
+	SetCandidate(t *config.Tree) error
+}
+
+const candidateFile = "candidate.json"
+
+func (s *FileStore) Candidate() (*config.Tree, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.dir, candidateFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return config.FromJSON(raw)
+}
+
+func (s *FileStore) SetCandidate(t *config.Tree) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.dir, candidateFile)
+	if t == nil {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	raw, err := json.Marshal(config.ToJSON(t.Root))
+	if err != nil {
+		return err
+	}
+	return writeAtomic(path, raw, s.fileMode)
+}

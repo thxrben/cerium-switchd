@@ -130,7 +130,7 @@ func (r *rig) open() {
 	}
 	e, err := New(Options{
 		Store: st, Applier: r.applier, Clock: r.clock,
-		Notify: func(m string) { r.notes = append(r.notes, m) },
+		Notify: func(_ context.Context, m string) { r.notes = append(r.notes, m) },
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -193,7 +193,8 @@ func TestCommitRequiresConfirmationAndRollsBack(t *testing.T) {
 	if h[0].Comment != "automatic rollback: revisions 2–2 not confirmed" || h[0].User != "system" || !h[0].Confirmed {
 		t.Fatalf("rollback revision: %+v", h[0])
 	}
-	if len(r.notes) != 1 || !strings.Contains(r.notes[0], "automatic rollback") {
+	if len(r.notes) != 2 || !strings.Contains(r.notes[0], "alice: commit complete (revision 2), must be confirmed within 10 minutes") ||
+		!strings.Contains(r.notes[1], "automatic rollback") {
 		t.Errorf("notifications: %v", r.notes)
 	}
 	if r.applier.last().Root.Has("system") || r.e.Pending() != nil {
@@ -210,14 +211,14 @@ func TestConfirm(t *testing.T) {
 	s := r.session("alice", SuperUser, Shared)
 	setLines(t, s, "set system host-name a")
 	commit(t, s, CommitOptions{})
-	if err := r.e.Confirm("alice"); err != nil {
+	if err := r.e.Confirm(context.Background(), "alice"); err != nil {
 		t.Fatal(err)
 	}
 	r.clock.Advance(time.Hour)
 	if hostName(r.e) != "a" || !r.e.History()[0].Confirmed {
 		t.Fatal("confirmed commit rolled back")
 	}
-	if err := r.e.Confirm("alice"); !errors.Is(err, ErrNothingToConf) {
+	if err := r.e.Confirm(context.Background(), "alice"); !errors.Is(err, ErrNothingToConf) {
 		t.Errorf("second confirm: %v", err)
 	}
 
@@ -261,7 +262,7 @@ func TestOptionalModeAndStricterPolicy(t *testing.T) {
 	if res := commit(t, s, CommitOptions{}); res.Deadline.IsZero() {
 		t.Fatal("switching to optional must itself be confirmed (stricter policy)")
 	}
-	if err := r.e.Confirm("alice"); err != nil {
+	if err := r.e.Confirm(context.Background(), "alice"); err != nil {
 		t.Fatal(err)
 	}
 	setLines(t, s, "set system host-name a")
@@ -299,7 +300,7 @@ func TestApplyFailureReverts(t *testing.T) {
 	s := r.session("alice", SuperUser, Shared)
 	setLines(t, s, "set system host-name a")
 	commit(t, s, CommitOptions{})
-	r.e.Confirm("alice")
+	r.e.Confirm(context.Background(), "alice")
 	r.applier.fail = func(m string, to *config.Tree) error {
 		if m == "member2" && to.Root.Leaf("system", "host-name") == "bad" {
 			return errors.New("netlink: operation not supported")
@@ -523,7 +524,7 @@ func TestRollbackCommand(t *testing.T) {
 	for _, h := range []string{"a", "b"} {
 		setLines(t, s, "set system host-name "+h)
 		commit(t, s, CommitOptions{})
-		r.e.Confirm("alice")
+		r.e.Confirm(context.Background(), "alice")
 	}
 	if err := s.Rollback(1); err != nil {
 		t.Fatal(err)
@@ -594,7 +595,7 @@ func TestConcurrentUse(t *testing.T) {
 				}
 				_, _ = s.Commit(ctx, CommitOptions{})
 				if i%3 == 0 {
-					_ = r.e.Confirm("u")
+					_ = r.e.Confirm(context.Background(), "u")
 				}
 				_ = r.e.History()
 				_ = r.e.Status()
@@ -615,5 +616,30 @@ func TestConcurrentUse(t *testing.T) {
 	newest, err := r.e.Revision(0)
 	if err != nil || !config.Equal(newest, r.e.Active()) {
 		t.Fatalf("active configuration differs from the newest revision: %v", err)
+	}
+}
+
+// The shared candidate survives a restart; once committed it is no longer
+// stored.
+func TestSharedCandidatePersists(t *testing.T) {
+	r := newRig(t)
+	s := r.session("alice", SuperUser, Shared)
+	setLines(t, s, "set system host-name kept")
+	r.e.Close()
+	r.open()
+	s = r.session("bob", SuperUser, Shared)
+	if s.Candidate().Root.Leaf("system", "host-name") != "kept" {
+		t.Fatal("shared candidate lost across restart")
+	}
+	commit(t, s, CommitOptions{})
+	r.e.Confirm(context.Background(), "bob")
+	if _, err := os.Stat(filepath.Join(r.dir, candidateFile)); !os.IsNotExist(err) {
+		t.Errorf("candidate file left after commit: %v", err)
+	}
+	// Private candidates are not stored.
+	p := r.session("carol", SuperUser, Private)
+	setLines(t, p, "set system host-name private")
+	if _, err := os.Stat(filepath.Join(r.dir, candidateFile)); !os.IsNotExist(err) {
+		t.Errorf("private candidate stored: %v", err)
 	}
 }

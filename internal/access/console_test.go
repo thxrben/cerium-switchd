@@ -28,11 +28,14 @@ func fakeTTYs(t *testing.T, root string, ttys map[string]string, console string)
 func TestConsoles(t *testing.T) {
 	dir := t.TempDir()
 	sys := filepath.Join(dir, "sys")
-	fakeTTYs(t, sys, map[string]string{"ttyS0": "4", "ttyS1": "0", "ttyUSB0": "", "tty1": ""}, "tty0 ttyAMA0")
+	fakeTTYs(t, sys, map[string]string{"ttyS0": "4", "ttyS1": "0", "ttyUSB0": "", "tty0": "", "tty1": ""}, "tty0 ttyAMA0")
 	var calls []string
+	comm := map[string]string{"getty@tty1.service": "agetty", "serial-getty@ttyUSB0.service": "agetty"}
 	c := &Consoles{SysRoot: sys, UnitDir: filepath.Join(dir, "units"), StateFile: filepath.Join(dir, "c.json"),
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Systemctl: func(a ...string) error { calls = append(calls, strings.Join(a, " ")); return nil }}
+		ProfileDir: dir,
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Systemctl:  func(a ...string) error { calls = append(calls, strings.Join(a, " ")); return nil },
+		MainComm:   func(u string) string { return comm[u] }}
 	if got := c.Detect(); !slices.Equal(got, []string{"ttyAMA0", "ttyS0", "ttyUSB0"}) {
 		t.Fatalf("Detect = %v", got)
 	}
@@ -43,11 +46,19 @@ func TestConsoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	drop, _ := os.ReadFile(c.dropIn("ttyS0"))
-	if !strings.Contains(string(drop), "agetty --noreset --noclear 9600 %I $TERM") {
+	if !strings.Contains(string(drop), "agetty --autologin root --noreset --noclear 9600 %I $TERM") {
 		t.Errorf("drop-in: %s", drop)
 	}
-	if !slices.Contains(calls, "restart serial-getty@ttyUSB0.service") || !slices.Contains(calls, "daemon-reload") {
-		t.Errorf("calls: %v", calls)
+	for _, want := range []string{"restart serial-getty@ttyUSB0.service", "daemon-reload", "restart getty@tty1.service"} {
+		if !slices.Contains(calls, want) {
+			t.Errorf("missing %q in %v", want, calls)
+		}
+	}
+	if vt, _ := os.ReadFile(filepath.Join(c.UnitDir, "getty@.service.d", "switchd.conf")); !strings.Contains(string(vt), "--autologin root") {
+		t.Errorf("vt drop-in: %s", vt)
+	}
+	if hook, _ := os.ReadFile(filepath.Join(dir, "switchd-cli.sh")); string(hook) != ProfileHook {
+		t.Errorf("profile hook: %q", hook)
 	}
 	// Idempotent.
 	calls = nil
@@ -65,7 +76,28 @@ func TestConsoles(t *testing.T) {
 			t.Errorf("missing %q in %v", want, calls)
 		}
 	}
+	// login-required: a console with a logged-in user is not restarted; the
+	// VT drop-in is removed.
+	cfg.System.AutoConsole = true
+	cfg.System.ConsoleLogin = true
+	cfg.System.Consoles = nil
+	comm["serial-getty@ttyUSB0.service"] = "login"
+	calls = nil
+	c.Sync(cfg)
+	if slices.Contains(calls, "restart serial-getty@ttyUSB0.service") || !slices.Contains(calls, "restart serial-getty@ttyAMA0.service") {
+		t.Errorf("login-required: %v", calls)
+	}
+	if drop, _ := os.ReadFile(c.dropIn("ttyUSB0")); strings.Contains(string(drop), "autologin") {
+		t.Errorf("drop-in still autologin: %s", drop)
+	}
+	if _, err := os.Stat(filepath.Join(c.UnitDir, "getty@.service.d", "switchd.conf")); err == nil {
+		t.Error("vt drop-in not removed")
+	}
 	// Re-enable: unmask and start.
+	cfg.System.AutoConsole = false
+	cfg.System.ConsoleLogin = false
+	cfg.System.Consoles = map[string]*model.Console{"ttyS0": {Device: "ttyS0", Disabled: true}}
+	c.Sync(cfg)
 	cfg.System.Consoles = map[string]*model.Console{"ttyS0": {Device: "ttyS0", Speed: 115200}}
 	calls = nil
 	c.Sync(cfg)

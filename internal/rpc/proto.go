@@ -4,7 +4,7 @@
 //
 // Client to server:
 //
-//	{"t":"exec","line":…}      run a command line
+//	{"t":"exec","line":…}      run a command line (empty: refresh prompt/banner)
 //	{"t":"complete","line":…}  completions for the text before the cursor
 //	{"t":"help","line":…}      "?" output
 //	{"t":"answer","text":…}    reply to "ask" / "readtext" (err set on EOF)
@@ -13,13 +13,15 @@
 //
 // Server to client:
 //
-//	{"t":"hello",…}            after connecting: prompt, banner
+//	{"t":"hello",…}            after connecting: prompt, banner, class (name)
 //	{"t":"ask","prompt":…,"echo":…}
 //	{"t":"readtext","prompt":…}
 //	{"t":"readfile","name":…} / {"t":"writefile","name":…,"data":…}
 //	{"t":"done","text":…,…}   result of exec, with the next prompt
 //	{"t":"completions",…}     result of complete / help
-//	{"t":"notify","text":…}   asynchronous message (e.g. automatic rollback)
+//	{"t":"notify","text":…}   asynchronous message (e.g. another user's
+//	                          commit), with the session's current prompt
+//	                          and banner
 package rpc
 
 // Msg is one protocol message; unused fields are omitted.

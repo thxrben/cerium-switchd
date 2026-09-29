@@ -11,6 +11,7 @@ import (
 	"net"
 	"os/user"
 	"strconv"
+	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -51,12 +52,33 @@ func (s *Server) Serve(l *net.UnixListener) error {
 	}
 }
 
-// Notify sends a message to every connected session.
-func (s *Server) Notify(text string) {
+type originKey struct{}
+
+// Notify sends a message to every connected session except the one whose
+// command caused it (identified through ctx). It does not block: each
+// session delivers its notices in order, together with its current prompt
+// and banner, as soon as it is not executing a command.
+func (s *Server) Notify(ctx context.Context, text string) {
+	origin, _ := ctx.Value(originKey{}).(*conn)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for c := range s.conns {
-		_ = c.send(Msg{T: "notify", Text: text})
+		if c == origin {
+			continue
+		}
+		select {
+		case c.notes <- text:
+		default: // a session that does not read: drop
+		}
+	}
+}
+
+// CloseSessions disconnects every session (at shutdown).
+func (s *Server) CloseSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for c := range s.conns {
+		c.c.Close()
 	}
 }
 
@@ -85,6 +107,10 @@ type conn struct {
 	enc     *json.Encoder
 	replies chan Msg
 	done    chan struct{}
+	notes   chan string
+	// shMu is held while the shell executes a command and while its state
+	// (prompt, banner) is sent, so replies and notices are consistent.
+	shMu sync.Mutex
 }
 
 func (c *conn) send(m Msg) error {
@@ -148,7 +174,7 @@ func (t *term) WriteFile(name string, data []byte) error {
 
 func (s *Server) handle(uc *net.UnixConn) {
 	defer uc.Close()
-	c := &conn{c: uc, enc: json.NewEncoder(uc), replies: make(chan Msg, 1), done: make(chan struct{})}
+	c := &conn{c: uc, enc: json.NewEncoder(uc), replies: make(chan Msg, 1), done: make(chan struct{}), notes: make(chan string, 32)}
 	uid, err := peer(uc)
 	if err != nil {
 		s.Log.Error("cli: peer credentials", "err", err)
@@ -181,9 +207,21 @@ func (s *Server) handle(uc *net.UnixConn) {
 		s.Log.Info("cli: logout", "facility", "authorization", "user", name)
 	}()
 
-	if err := c.send(Msg{T: "hello", Prompt: sh.Prompt(), Banner: sh.Banner()}); err != nil {
+	if err := c.send(Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}); err != nil {
 		return
 	}
+	go func() {
+		for {
+			select {
+			case text := <-c.notes:
+				c.shMu.Lock()
+				_ = c.send(Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner()})
+				c.shMu.Unlock()
+			case <-c.done:
+				return
+			}
+		}
+	}()
 
 	// The reader routes replies to the running command and queues requests.
 	reqs := make(chan Msg)
@@ -227,10 +265,13 @@ func (s *Server) handle(uc *net.UnixConn) {
 			return
 		}
 		var reply Msg
+		c.shMu.Lock()
 		switch m.T {
 		case "exec":
-			s.Log.Info("cli command", "facility", "interactive-commands", "user", name, "command", m.Line)
-			ctx, cf := context.WithCancel(context.Background())
+			if strings.TrimSpace(m.Line) != "" { // an empty line only refreshes prompt and banner
+				s.Log.Info("cli command", "facility", "interactive-commands", "user", name, "command", m.Line)
+			}
+			ctx, cf := context.WithCancel(context.WithValue(context.Background(), originKey{}, c))
 			mu.Lock()
 			cancel = cf
 			mu.Unlock()
@@ -244,7 +285,9 @@ func (s *Server) handle(uc *net.UnixConn) {
 		default:
 			reply = Msg{T: "done", Text: fmt.Sprintf("error: unknown request %q\n", m.T), Prompt: sh.Prompt(), Banner: sh.Banner()}
 		}
-		if err := c.send(reply); err != nil || reply.Exit {
+		err := c.send(reply)
+		c.shMu.Unlock()
+		if err != nil || reply.Exit {
 			return
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,20 +21,67 @@ type Handler interface {
 	ReadFile(name string) ([]byte, error)
 	WriteFile(name string, data []byte) error
 	// Notify shows an asynchronous message; it may be called at any time
-	// from another goroutine.
+	// from another goroutine. The client's prompt and banner are already
+	// updated when it is called.
 	Notify(text string)
+	// Disconnected is called (from another goroutine) when the connection
+	// to switchd breaks, but not after Close.
+	Disconnected(c *Client)
 }
 
 // Client is a connection to switchd.
 type Client struct {
-	conn net.Conn
-	wmu  sync.Mutex
-	enc  *json.Encoder
-	msgs chan Msg
-	h    Handler
-	// Prompt and Banner for the next line, updated after each command.
-	Prompt, Banner string
+	conn    net.Conn
+	wmu     sync.Mutex
+	enc     *json.Encoder
+	msgs    chan Msg
+	h       Handler
+	done    chan struct{}
+	closing atomic.Bool
+
+	smu            sync.Mutex
+	prompt, banner string
+	// Class is the permission class of the session (from the hello).
+	Class string
 }
+
+// ErrOffline is returned by an offline client.
+var ErrOffline = errors.New("switchd is not available")
+
+// Offline returns a client without a connection, showing prompt. Every
+// request fails with ErrOffline.
+func Offline(prompt string) *Client {
+	c := &Client{done: make(chan struct{}), prompt: prompt}
+	c.closing.Store(true)
+	close(c.done)
+	return c
+}
+
+// State returns the prompt and the banner for the next line.
+func (c *Client) State() (prompt, banner string) {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	return c.prompt, c.banner
+}
+
+func (c *Client) setState(m Msg) {
+	c.smu.Lock()
+	c.prompt, c.banner = m.Prompt, m.Banner
+	c.smu.Unlock()
+}
+
+// Closed reports whether the connection is gone.
+func (c *Client) Closed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// helloTimeout bounds the wait for switchd's greeting (a hung switchd).
+var helloTimeout = 10 * time.Second
 
 // ErrRejected is wrapped by Dial when switchd refuses the login.
 var ErrRejected = errors.New("login rejected")
@@ -44,24 +92,43 @@ func Dial(path string, h Handler) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{conn: conn, enc: json.NewEncoder(conn), msgs: make(chan Msg, 16), h: h}
+	c := &Client{conn: conn, enc: json.NewEncoder(conn), msgs: make(chan Msg, 16), h: h, done: make(chan struct{})}
+	c.closing.Store(true) // no Disconnected before the hello
 	go c.read()
-	m, ok := <-c.msgs
+	var m Msg
+	var ok bool
+	select {
+	case m, ok = <-c.msgs:
+	case <-time.After(helloTimeout):
+		c.Close()
+		return nil, errors.New("switchd does not respond")
+	}
 	switch {
 	case !ok:
 		conn.Close()
 		return nil, errors.New("connection closed by switchd")
 	case m.T == "hello":
-		c.Prompt, c.Banner = m.Prompt, m.Banner
+		c.setState(m)
+		c.Class = m.Name
+		c.closing.Store(false)
+		if c.Closed() { // lost right after the hello
+			return nil, errors.New("connection closed by switchd")
+		}
 		return c, nil
 	default:
-		conn.Close()
+		c.Close()
 		return nil, fmt.Errorf("%w: %s", ErrRejected, strings.TrimSpace(strings.TrimPrefix(m.Text, "error: ")))
 	}
 }
 
 func (c *Client) read() {
-	defer close(c.msgs)
+	defer func() {
+		close(c.done)
+		close(c.msgs)
+		if !c.closing.Load() {
+			c.h.Disconnected(c)
+		}
+	}()
 	sc := bufio.NewScanner(c.conn)
 	sc.Buffer(make([]byte, 64<<10), MaxMsg)
 	for sc.Scan() {
@@ -70,17 +137,40 @@ func (c *Client) read() {
 			return
 		}
 		if m.T == "notify" {
+			if m.Prompt != "" {
+				c.setState(m)
+			}
 			c.h.Notify(m.Text)
 			continue
+		}
+		if m.Exit {
+			c.closing.Store(true) // switchd ends the session: not a lost connection
 		}
 		c.msgs <- m
 	}
 }
 
 // Close ends the session.
-func (c *Client) Close() error { return c.conn.Close() }
+func (c *Client) Close() error {
+	c.closing.Store(true)
+	if c.conn == nil {
+		return nil
+	}
+	return c.conn.Close()
+}
+
+// Abort drops the connection as if switchd had gone away (Disconnected is
+// called), e.g. when switchd does not react to an interrupt.
+func (c *Client) Abort() {
+	if c.conn != nil {
+		c.conn.Close()
+	}
+}
 
 func (c *Client) send(m Msg) error {
+	if c.conn == nil {
+		return ErrOffline
+	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	return c.enc.Encode(m)
@@ -110,7 +200,7 @@ func (c *Client) Exec(line string) (Msg, error) {
 		}
 		switch m.T {
 		case "done":
-			c.Prompt, c.Banner = m.Prompt, m.Banner
+			c.setState(m)
 			return m, nil
 		case "ask":
 			a, err := c.h.Ask(m.Prompt, m.Echo)

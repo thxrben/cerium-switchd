@@ -91,8 +91,11 @@ type Options struct {
 	// OS accounts with the same name as a configured user).
 	Checks []func(*model.Config) model.Issues
 	Clock  Clock // nil: real time
-	// Notify broadcasts a message to every logged-in CLI session.
-	Notify func(msg string)
+	// Notify broadcasts a message to the logged-in CLI sessions. ctx is the
+	// context of the operation that caused it (the originating session is
+	// identified through it and not notified); automatic events use
+	// context.Background().
+	Notify func(ctx context.Context, msg string)
 	Log    *slog.Logger
 }
 
@@ -150,7 +153,7 @@ func New(o Options) (*Engine, error) {
 		o.Log = slog.Default()
 	}
 	if o.Notify == nil {
-		o.Notify = func(string) {}
+		o.Notify = func(context.Context, string) {}
 	}
 	e := &Engine{o: o, sessions: map[*Session]struct{}{}}
 	revs := o.Store.Revisions()
@@ -171,6 +174,15 @@ func New(o Options) (*Engine, error) {
 	}
 	e.active, e.activeSeq = t, last.Seq
 	e.shared = t.Clone()
+	if cs, ok := o.Store.(CandidateStore); ok {
+		c, err := cs.Candidate()
+		switch {
+		case err != nil:
+			o.Log.Warn("stored shared candidate is unreadable; starting from the active configuration", "err", err)
+		case c != nil:
+			e.shared = c
+		}
+	}
 	return e, nil
 }
 
@@ -401,6 +413,7 @@ func (s *Session) Modify(fn func(t *config.Tree) error) error {
 		s.private = work
 	} else {
 		e.shared = work
+		e.persistShared()
 	}
 	return nil
 }
@@ -473,6 +486,7 @@ func (s *Session) Close() (uncommitted bool) {
 	case Exclusive:
 		e.lock = nil
 		e.shared = e.active.Clone()
+		e.persistShared()
 	case Private:
 		s.private = nil
 	}
@@ -556,7 +570,7 @@ func (s *Session) Commit(ctx context.Context, opts CommitOptions) (*Result, erro
 	if config.Equal(cand, old) {
 		res := &Result{Seq: oldSeq, NoChanges: true}
 		if pending != nil {
-			if err := e.confirm(s.User); err != nil {
+			if err := e.confirm(ctx, s.User); err != nil {
 				return nil, err
 			}
 			res.Confirmed = true
@@ -632,9 +646,18 @@ func (s *Session) Commit(ctx context.Context, opts CommitOptions) (*Result, erro
 	if needConfirm {
 		e.armTimer(res.Deadline)
 	}
+	e.persistShared()
 	e.mu.Unlock()
 
 	res.Seq = seq
+	note := fmt.Sprintf("%s: commit complete (revision %d)", s.User, seq)
+	if !res.Deadline.IsZero() {
+		note += fmt.Sprintf(", must be confirmed within %d minutes", minutes)
+	}
+	if opts.Comment != "" {
+		note += fmt.Sprintf(": %q", opts.Comment)
+	}
+	e.o.Notify(ctx, note)
 	e.o.Log.Info("commit", "facility", "change-log", "revision", seq, "user", s.User, "comment", opts.Comment,
 		"confirm_by", res.Deadline, "diff", config.Diff(old, cand))
 	return res, nil
@@ -658,14 +681,14 @@ func (e *Engine) logResults(what string, rs []MemberResult) {
 }
 
 // Confirm makes all pending commits permanent.
-func (e *Engine) Confirm(user string) error {
+func (e *Engine) Confirm(ctx context.Context, user string) error {
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
-	return e.confirm(user)
+	return e.confirm(ctx, user)
 }
 
 // confirm requires opMu.
-func (e *Engine) confirm(user string) error {
+func (e *Engine) confirm(ctx context.Context, user string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p := e.o.Store.Pending()
@@ -680,7 +703,14 @@ func (e *Engine) confirm(user string) error {
 		e.timer.Stop()
 		e.timer = nil
 	}
-	e.o.Log.Info("commit confirmed", "facility", "change-log", "user", user, "revisions", fmt.Sprintf("%d-%d", p.First, e.activeSeq))
+	revs := fmt.Sprintf("%d–%d", p.First, e.activeSeq)
+	if p.First == e.activeSeq {
+		revs = fmt.Sprintf("revision %d", p.First)
+	} else {
+		revs = "revisions " + revs
+	}
+	e.o.Log.Info("commit confirmed", "facility", "change-log", "user", user, "revisions", revs)
+	e.o.Notify(ctx, fmt.Sprintf("%s: commit confirmed (%s)", user, revs))
 	return nil
 }
 
@@ -766,9 +796,26 @@ func (e *Engine) rollbackPending(ctx context.Context, from *config.Tree) []Membe
 	}
 	e.gen++
 	e.timer = nil
+	e.persistShared()
 	e.mu.Unlock()
 
 	e.o.Log.Warn(comment, "facility", "change-log", "revision", seq, "target", p.Target)
-	e.o.Notify(comment)
+	e.o.Notify(context.Background(), comment)
 	return res
+}
+
+// persistShared stores the shared candidate if it has uncommitted changes
+// (else removes the stored one). Caller holds e.mu.
+func (e *Engine) persistShared() {
+	cs, ok := e.o.Store.(CandidateStore)
+	if !ok {
+		return
+	}
+	var t *config.Tree
+	if !config.Equal(e.shared, e.active) {
+		t = e.shared
+	}
+	if err := cs.SetCandidate(t); err != nil {
+		e.o.Log.Warn("cannot store the shared candidate", "err", err)
+	}
 }

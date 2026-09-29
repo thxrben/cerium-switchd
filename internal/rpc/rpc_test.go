@@ -30,6 +30,13 @@ type handler struct {
 	text    string
 	files   map[string][]byte
 	notes   []string
+	lost    chan struct{}
+}
+
+func (h *handler) Disconnected(*Client) {
+	if h.lost != nil {
+		close(h.lost)
+	}
 }
 
 func (h *handler) Ask(string, bool) (string, error) {
@@ -60,12 +67,14 @@ func startServer(t *testing.T, auth Authorizer) (string, *Server) {
 	t.Helper()
 	dir := t.TempDir()
 	st, _ := commit.OpenFileStore(filepath.Join(dir, "state"), 50)
-	e, err := commit.New(commit.Options{Store: st, Applier: nopApplier{}, Log: quiet})
+	var srv *Server
+	e, err := commit.New(commit.Options{Store: st, Applier: nopApplier{}, Log: quiet,
+		Notify: func(ctx context.Context, m string) { srv.Notify(ctx, m) }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.Start(context.Background())
-	srv := &Server{
+	srv = &Server{
 		Env: func(name string, class commit.Class) cli.Env {
 			return cli.Env{Engine: e, User: name, Class: class, Version: "t", Log: quiet, HostName: func() string { return "sw1" }}
 		},
@@ -96,8 +105,8 @@ func TestSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if !strings.HasSuffix(c.Prompt, "@sw1> ") {
-		t.Errorf("prompt %q", c.Prompt)
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1> ") || c.Class != "super-user" {
+		t.Errorf("prompt %q class %q", p, c.Class)
 	}
 	exec := func(line string) Msg {
 		t.Helper()
@@ -108,8 +117,8 @@ func TestSession(t *testing.T) {
 		return m
 	}
 	exec("configure")
-	if !strings.HasSuffix(c.Prompt, "@sw1# ") || c.Banner != "[edit]\n" {
-		t.Errorf("config prompt %q banner %q", c.Prompt, c.Banner)
+	if p, b := c.State(); !strings.HasSuffix(p, "@sw1# ") || b != "[edit]\n" {
+		t.Errorf("config prompt %q banner %q", p, b)
 	}
 	exec("load merge in.conf")
 	h.text = "system { host-name viaterm; }"
@@ -139,7 +148,7 @@ func TestSession(t *testing.T) {
 	if err != nil || !strings.Contains(help, "host-name") {
 		t.Errorf("help: %q %v", help, err)
 	}
-	srv.Notify("automatic rollback: test")
+	srv.Notify(context.Background(), "automatic rollback: test")
 	exec("show") // round trip so the notification has arrived
 	h.mu.Lock()
 	if len(h.notes) != 1 {
@@ -199,4 +208,96 @@ type blockingHandler struct {
 func (h *blockingHandler) Ask(string, bool) (string, error) {
 	close(h.blocked)
 	select {}
+}
+
+// Another user's commit and confirmation reach the other sessions at once,
+// with their refreshed banner; the user who acted gets no notice.
+func TestMultiUserNotices(t *testing.T) {
+	path, _ := startServer(t, allow)
+	ha, hb := &handler{}, &handler{}
+	a, err := Dial(path, ha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Dial(path, hb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	wait := func(h *handler, n int) []string {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			h.mu.Lock()
+			notes := append([]string(nil), h.notes...)
+			h.mu.Unlock()
+			if len(notes) >= n {
+				return notes
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("expected %d notices", n)
+		return nil
+	}
+	a.Exec("configure")
+	a.Exec("set system host-name x")
+	if m, _ := a.Exec("commit confirmed 5"); !strings.Contains(m.Text, "commit complete") {
+		t.Fatalf("commit: %q", m.Text)
+	}
+	notes := wait(hb, 1)
+	if !strings.Contains(notes[0], "commit complete (revision 2), must be confirmed within 5 minutes") {
+		t.Errorf("notice: %q", notes[0])
+	}
+	if _, banner := b.State(); !strings.Contains(banner, "commit pending confirmation") {
+		t.Errorf("banner not refreshed: %q", banner)
+	}
+	b.Exec("confirm")
+	wait(ha, 1)
+	if _, banner := a.State(); strings.Contains(banner, "pending") || banner != "[edit]\n" {
+		t.Errorf("a's banner after b confirmed: %q", banner)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(wait(hb, 1)); n != 1 {
+		t.Errorf("b was notified of its own confirm")
+	}
+	if n := len(wait(ha, 1)); n != 1 {
+		t.Errorf("a: %v", ha.notes)
+	}
+	// An empty line refreshes without being a command.
+	if m, err := a.Exec(""); err != nil || m.Text != "" || m.Prompt == "" {
+		t.Errorf("empty exec: %+v %v", m, err)
+	}
+}
+
+func TestDisconnected(t *testing.T) {
+	path, srv := startServer(t, allow)
+	h := &handler{lost: make(chan struct{})}
+	c, err := Dial(path, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.CloseSessions()
+	select {
+	case <-h.lost:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Disconnected not called")
+	}
+	if !c.Closed() {
+		t.Error("not closed")
+	}
+	if _, err := c.Exec("show version"); err == nil {
+		t.Error("exec on a lost connection succeeded")
+	}
+	// Close does not report a disconnect.
+	h2 := &handler{lost: make(chan struct{})}
+	c2, _ := Dial(path, h2)
+	c2.Close()
+	select {
+	case <-h2.lost:
+		t.Error("Disconnected after Close")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := Offline("x> ").Exec("show"); !errors.Is(err, ErrOffline) {
+		t.Errorf("offline: %v", err)
+	}
 }

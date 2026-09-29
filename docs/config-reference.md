@@ -239,6 +239,24 @@ set protocols rstp
 
   Leaving plain `configure` keeps uncommitted changes in the shared candidate, and you are warned about them.
   Leaving `private` or `exclusive` discards uncommitted changes after a confirmation prompt.
+  The shared candidate is stored on disk and survives a restart of switchd.
+
+* **Multi-user notices.** When someone commits, confirms or rolls back (including the automatic rollback), every
+  other CLI session immediately shows a notice such as `*** thorben: commit confirmed (revisions 13–14) ***`. The
+  notice redraws the prompt, the edit level and the `[commit pending confirmation …]` line, and keeps the text
+  typed so far. Pressing Enter on an empty line also refreshes them (e.g. the minutes left).
+
+* **switchd restarts.** A CLI session survives a restart or crash of switchd:
+  * The CLI shows `*** switchd is not available … ***` and keeps trying to reconnect in the background. It does
+    not log you out.
+  * Users allowed to `start shell` (4.3) are offered a Linux shell meanwhile. Leaving the shell returns to the
+    waiting CLI. Other users can wait or log out with Ctrl-D.
+  * When switchd is back, the CLI shows `*** switchd is available again ***` and continues in operational mode.
+    The shared candidate is kept (see above). Private and exclusive candidates, and the edit level, are lost.
+  * A command that was running when the connection broke is reported as interrupted. It is **not** repeated
+    automatically, since it may or may not have completed; check with `show system commit`.
+  * If the CLI program itself fails, super-users (and root) get a Linux shell instead. When they leave it, the
+    CLI starts again.
 
 ### 3.2 Configuration-mode commands
 
@@ -388,7 +406,7 @@ When confirmation is needed:
 | `configure`, `commit`, `confirm`, `rollback` | ✔ | ✔ | – |
 | change `system login`, `system services`, `stack` | ✔ | – | – |
 | `request system reboot/halt`, `request stack …` | ✔ | – | – |
-| `start shell` (Linux root shell) | ✔ | – | – |
+| `start shell` (Linux shell as the logged-in user; `exit` returns to the CLI) | ✔ | – | – |
 
 An operator whose candidate touches a forbidden hierarchy gets an error at commit time naming the forbidden paths.
 
@@ -445,17 +463,18 @@ Number of recent messages kept in memory per member for `show log`. Default 5000
 Banner shown before authentication on SSH and serial logins.
 
 #### `system login user <username> { … }`
-Creates a local Linux account on **every** member. Its login shell is the CLI, so logging in via SSH or a serial
-console lands directly in the CLI.
+Creates a local Linux account on **every** member. Its login shell is the CLI, so logging in via SSH (or on a console with
+`system ports login-required`) lands directly in the CLI.
 * `class super-user|operator|read-only`: permissions (4.3). Default `read-only`.
 * `uid <1000-64000>`: numeric user id. Default: assigned automatically from 2000 upwards and kept stable afterwards.
 * `full-name <text>`: stored as the account's GECOS field.
 * `authentication encrypted-password <hash>`: a crypt(3) hash (`$6$…` SHA-512 or `$y$…` yescrypt). Use `plain-text-password` in the CLI to create one.
 * `authentication ssh-key <key>`: an OpenSSH public key line. Several keys are allowed.
-* Removing a user ends their sessions and deletes the account, but its home directory is kept. If the account
+* Removing a user ends their sessions and deletes the account. Its home directory is kept but handed to root
+  (mode 0700), so a later account that gets the same uid cannot read it. A new user with the same name gets it back. If the account
   cannot be deleted yet (e.g. a process of the user is still running), switchd retries every 30 seconds. switchd only ever modifies accounts that it created itself.
   Existing OS accounts with the same name are **not** taken over, and that conflict is reported as an E at commit.
-* `root` is not managed. Its password is maintained by the OS, as a break-glass login on the serial console.
+* `root` is not managed. Its password is maintained by the OS (used with `login-required` consoles and SSH).
 * W: a user with neither password nor key (they cannot log in).
 
 #### `system services ssh { port <n>; root-login deny|allow|key-only; }`
@@ -481,9 +500,20 @@ at first start. `certificate` and `key` must be given together (E otherwise). `d
 #### `system commit confirmation { mode required|optional; timeout <minutes>; }`
 See 4.2. Defaults: `required`, 10 minutes.
 
-#### `system ports { no-auto-detect; console <tty> { speed <baud>; disable; } }`
-Login on serial consoles (the login shell is the CLI).
-* **Auto-detection** (the default) starts a login on each of the following:
+#### `system ports { no-auto-detect; login-required; console <tty> { speed <baud>; disable; } }`
+The local consoles, meaning the serial consoles and a connected display with keyboard (the virtual terminals), always run
+the CLI. On these consoles you are **root without a password** by default, because physical access is equivalent
+to root anyway (the boot loader, single-user mode, or removing the disk). Only remote SSH sessions authenticate.
+* `start shell` gives a root bash. `exit` in that bash returns to the CLI, and `cli` in any shell starts the CLI.
+* `exit` in the CLI ends the console session, and the console restarts in the CLI.
+* If switchd is not running, the CLI offers a root shell (see 3.1, switchd restarts). A crash of the CLI program
+  itself also ends up in a root shell. The console never leaves you without access.
+* `login-required`: the consoles ask for user name and password (managed users and root). Whoever logs in lands in the CLI.
+* Root on the OS SSH server (port 22) keeps a plain bash, for automation.
+* A change to these settings applies to a console at once when nobody is using it. On a console with an open
+  session it applies when that session ends, so a commit never cuts off the console you are working on.
+
+**Serial console auto-detection** (the default) starts a login on each of the following:
   * `ttyS*` ports with a real UART behind them,
   * `ttyUSB*` / `ttyACM*` adapters (including hot-plugged ones),
   * the kernel console (`console=` boot parameter).
@@ -1154,6 +1184,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system commit confirmation timeout` | leaf | &lt;minutes&gt; 1..60 | 10 | Minutes until an unconfirmed commit is rolled back |
 | `system ports` | container |  |  | Console ports |
 | `system ports no-auto-detect` | flag |  |  | Do not start a CLI login on detected serial ports |
+| `system ports login-required` | flag |  |  | Ask for user name and password on the local consoles (default: root without password) |
 | `system ports console <tty>` | list | &lt;tty&gt; |  | Serial console port |
 | `system ports console <tty> speed` | leaf | 9600 \\| 19200 \\| 38400 \\| 57600 \\| 115200 | 115200 | Baud rate |
 | `system ports console <tty> disable` | flag |  |  | Do not start a login on this port |
