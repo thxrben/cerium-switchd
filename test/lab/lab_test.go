@@ -49,6 +49,19 @@ func mustSSH(t *testing.T, addr, cmd string) string {
 	return out
 }
 
+// bondHost is a namespace "b" on sw2 bonding its peer1/peer2 NICs, which
+// are cabled to sw1's ens21/ens22.
+var bondHost = host{"sw2-bond", "10.5.176.96", "bond0", "ae1", 22}
+
+func setupBondHost(t *testing.T, mtu int) {
+	t.Helper()
+	mustSSH(t, bondHost.vm, fmt.Sprintf(`ip netns add b 2>/dev/null; for i in ens21 ens22; do ip link set $i netns b 2>/dev/null; done
+ip -n b link del bond0 2>/dev/null; ip -n b link set lo up
+ip -n b link add bond0 type bond mode balance-xor xmit_hash_policy layer3+4 miimon 100
+for i in ens21 ens22; do ip -n b link set $i down; ip -n b link set $i master bond0; done
+ip -n b link set bond0 mtu %d up; ip -n b addr add 192.168.1.22/24 dev bond0`, mtu))
+}
+
 // hostCmd runs cmd inside the test namespace of h.
 func hostCmd(t *testing.T, h host, cmd string) string {
 	return mustSSH(t, h.vm, "ip netns exec h sh -c '"+cmd+"'")
@@ -96,7 +109,17 @@ const vlans = "set vlans v10 vlan-id 10\nset vlans v20 vlan-id 20\nset vlans v30
 // reach reports whether from can ping to (addresses 192.168.<net>.x).
 func reach(t *testing.T, from, to host, net int) bool {
 	t.Helper()
-	_, err := ssh(from.vm, fmt.Sprintf("ip netns exec h ping -c2 -i0.2 -W1 192.168.%d.%d", net, to.n))
+	return reachSize(t, from, to, net, 56)
+}
+
+// reachSize pings with a payload of size bytes and the don't-fragment bit.
+func reachSize(t *testing.T, from, to host, net, size int) bool {
+	t.Helper()
+	ns := "h"
+	if from == bondHost {
+		ns = "b"
+	}
+	_, err := ssh(from.vm, fmt.Sprintf("ip netns exec %s ping -M do -s %d -c2 -i0.2 -W1 192.168.%d.%d", ns, size, net, to.n))
 	return err == nil
 }
 
@@ -219,5 +242,61 @@ func TestRestartIsIdempotent(t *testing.T) {
 	}
 	if !reach(t, hSrv1, hSw3, 1) {
 		t.Error("traffic broken after restart")
+	}
+}
+
+func TestStaticLAG(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupBondHost(t, 1500)
+	lag := "set interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
+		"set interfaces 1/ens21 ether-options 802.3ad ae1\nset interfaces 1/ens22 ether-options 802.3ad ae1\n"
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+lag)
+	out := mustSSH(t, sw1, "cat /proc/net/bonding/ae1; ip -o link show ens21; ip -o link show ens22")
+	for _, want := range []string{"load balancing (xor)", "Slave Interface: ens21", "Slave Interface: ens22", "layer3+4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bond lacks %q:\n%s", want, out)
+		}
+	}
+	if !reach(t, hSrv1, bondHost, 1) || !reach(t, bondHost, hSrv1, 1) {
+		t.Fatal("no traffic over the static bundle")
+	}
+	// Many flows (different source ports) must all work, whichever member
+	// they hash to in each direction.
+	res := mustSSH(t, hSrv1.vm, "for p in $(seq 1 20); do ip netns exec h ping -c1 -W1 192.168.1.22 >/dev/null && echo ok; done | wc -l")
+	if strings.TrimSpace(res) != "20" {
+		t.Errorf("only %s of 20 pings over the bundle", strings.TrimSpace(res))
+	}
+	// Removing the bundle releases both ports (down, no master) and deletes it.
+	configure(t, vlans+access(hSrv1.sw1Port, "v10"))
+	out = mustSSH(t, sw1, "ip -o link show ens21; ip -o link show ens22; ip link show ae1 2>&1 || true")
+	if strings.Contains(out, "master") || strings.Contains(out, ",UP") || !strings.Contains(out, "does not exist") {
+		t.Errorf("bundle not released:\n%s", out)
+	}
+}
+
+func TestJumboMTU(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupBondHost(t, 9000)
+	mustSSH(t, hSrv1.vm, "ip -n h link set ens19 mtu 9000")
+	defer mustSSH(t, hSrv1.vm, "ip -n h link set ens19 mtu 1500")
+	lag := "set interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
+		"set interfaces 1/ens21 ether-options 802.3ad ae1\nset interfaces 1/ens22 ether-options 802.3ad ae1\n"
+	// Default MTU 1514: jumbo frames are dropped, standard frames pass.
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+lag)
+	if !reachSize(t, hSrv1, bondHost, 1, 1472) {
+		t.Fatal("1500-byte packets do not pass")
+	}
+	if reachSize(t, hSrv1, bondHost, 1, 8972) {
+		t.Error("9000-byte packets pass with mtu 1514")
+	}
+	// mtu 9014 on the ports and the bundle (members inherit it).
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+lag+
+		"set interfaces 1/ens23 mtu 9014\nset interfaces ae1 mtu 9014\n")
+	out := mustSSH(t, sw1, "ip -o link show ens21 | grep -o 'mtu [0-9]*'; ip -o link show ae1 | grep -o 'mtu [0-9]*'")
+	if strings.Count(out, "mtu 9000") != 2 {
+		t.Errorf("MTU not applied to bundle and member: %s", out)
+	}
+	if !reachSize(t, hSrv1, bondHost, 1, 8972) {
+		t.Error("9000-byte packets do not pass with mtu 9014")
 	}
 }
