@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -119,7 +120,7 @@ func TestOperationalMode(t *testing.T) {
 	contains(t, ts.ok("sh ver"), "switchd") // abbreviations
 	out := ts.run("show bogus")
 	contains(t, out, strings.Repeat(" ", len("alice@sw1> show "))+"^\n", "syntax error")
-	contains(t, ts.run("c"), "ambiguous: configure, confirm")
+	contains(t, ts.run("co"), "ambiguous: configure, confirm")
 	contains(t, ts.run("show"), "missing argument")
 	if rep := ts.sh.Execute(context.Background(), "exit", ts.term); !rep.Exit {
 		t.Error("exit did not end the session")
@@ -455,4 +456,71 @@ func FuzzShell(f *testing.F) {
 			_ = sh.Help(l)
 		}
 	})
+}
+
+type fakeOps struct{ cleared []string }
+
+func (f *fakeOps) Interfaces() ([]IfStatus, error) {
+	return []IfStatus{
+		{Name: "1/ens19", Linux: "ens19", Configured: true, Role: "access v10", AdminUp: true, OperUp: true, MTU: 1514,
+			SpeedMbps: 10000, Description: "server", VLANs: []string{"v10 (10, untagged)"}, TaggedDrops: 7,
+			Counters: IfCounters{RxPackets: 5, RxErrors: 1}},
+		{Name: "1/ens2", Linux: "ens2", MTU: 1514},
+	}, nil
+}
+
+func (f *fakeOps) MACTable() ([]MACEntry, error) {
+	return []MACEntry{
+		{VLAN: 20, VLANName: "v20", MAC: "02:00:00:00:00:02", Interface: "1/ens2", Age: 3},
+		{VLAN: 10, VLANName: "v10", MAC: "02:00:00:00:00:01", Interface: "1/ens19", Age: 1},
+	}, nil
+}
+
+func (f *fakeOps) ClearMACTable(vlan int, iface string) (int, error) {
+	f.cleared = append(f.cleared, fmt.Sprintf("%d/%s", vlan, iface))
+	return 1, nil
+}
+
+func TestOperationalCommands(t *testing.T) {
+	e := newEngine(t)
+	ops := &fakeOps{}
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.sh.env.Ops = ops
+	ts.ok("configure")
+	ts.ok("set vlans v10 vlan-id 10")
+	ts.ok("set vlans v20 vlan-id 20")
+	ts.ok("set interfaces 1/ens19 unit 0 family ethernet-switching vlan members v10")
+	ts.ok("set interfaces 1/ens2 unit 0 family ethernet-switching interface-mode trunk")
+	ts.ok("set interfaces 1/ens2 unit 0 family ethernet-switching vlan members [ v10 v20 ]")
+	ts.ok("commit")
+	ts.ok("exit")
+
+	out := ts.ok("show interfaces terse")
+	contains(t, out, "1/ens19        up    up    1514   10G    access v10", "1/ens2         down  down", "(not configured)")
+	contains(t, ts.run("show interfaces 1/ens19 extensive"), "Description: server", "VLANs: v10 (10, untagged)",
+		"Input errors: 1", "Tagged frames dropped (access port): 7")
+	contains(t, ts.run("show interfaces nope"), "not found")
+	out = ts.ok("show ethernet-switching table")
+	if i, j := strings.Index(out, "02:00:00:00:00:01"), strings.Index(out, "02:00:00:00:00:02"); i < 0 || j < i {
+		t.Errorf("mac table not sorted by VLAN:\n%s", out)
+	}
+	contains(t, out, "2 entries")
+	contains(t, ts.ok("show ethernet-switching table vlan v20"), "1 entries", "1/ens2")
+	contains(t, ts.ok("show ethernet-switching table interface 1/ens19"), "1 entries")
+	contains(t, ts.run("show ethernet-switching table vlan nope"), "unknown VLAN")
+	contains(t, ts.ok("show vlans"), "v10            10", "1/ens2*, 1/ens19", "v20            20", "* = tagged")
+	contains(t, ts.ok("clear ethernet-switching table vlan 10 interface 1/ens19"), "1 entries cleared")
+	if len(ops.cleared) != 1 || ops.cleared[0] != "10/1/ens19" {
+		t.Errorf("clear: %v", ops.cleared)
+	}
+	ro := newTester(t, e, "ro", commit.ReadOnly)
+	ro.sh.env.Ops = ops
+	contains(t, ro.run("clear ethernet-switching table"), "permission denied")
+	contains(t, ro.ok("show vlans"), "v10")
+	noOps := newTester(t, e, "x", commit.SuperUser)
+	contains(t, noOps.run("show interfaces"), "not available")
+	check := completions(ts.sh.Complete("show ethernet-switching table vlan "))
+	if !strings.Contains(check, "v10") {
+		t.Errorf("vlan completion: %s", check)
+	}
 }

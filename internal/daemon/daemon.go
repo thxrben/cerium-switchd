@@ -13,6 +13,7 @@ import (
 
 	"mclag/internal/cli"
 	"mclag/internal/commit"
+	"mclag/internal/dataplane"
 	"mclag/internal/inventory"
 	"mclag/internal/rpc"
 	"mclag/internal/version"
@@ -60,9 +61,10 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return out
 	}
+	liveOps := &ops{kernel: &dataplane.Netlink{}, engine: engine, member: 1}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
-			HostName: hostName, Ports: ports, Log: log}
+			HostName: hostName, Ports: ports, Ops: liveOps, Log: log}
 	}
 	srv.Authorize = func(uid int, name string) (commit.Class, error) {
 		if uid == 0 {

@@ -84,6 +84,7 @@ func init() {
 			complete: words(Completion{Text: "<number>", Help: "Number of levels", Placeholder: true})},
 		{name: "update", help: "Rebase a private candidate onto the latest commit", class: commit.Operator, run: (*Shell).cfgUpdate},
 	}
+	registerOperational()
 }
 
 func noArgs(c *call) error {

@@ -43,7 +43,9 @@ type Env struct {
 	// Ports lists interface names known from the hardware inventory, for
 	// completion (may be nil).
 	Ports func() []string
-	Log   *slog.Logger
+	// Ops supplies live data for show/clear commands (nil: unavailable).
+	Ops Operational
+	Log *slog.Logger
 }
 
 // Reply is the result of executing one line.
