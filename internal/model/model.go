@@ -23,6 +23,7 @@ type Config struct {
 	Domains    map[int]*Domain
 	Switch     SwitchOptions
 	Analyzers  map[string]*Analyzer
+	BPDUBlock  BPDUBlock
 }
 
 type System struct {
@@ -134,9 +135,10 @@ type Interface struct {
 	FlowControl *bool
 	// Aggregated interface options.
 	LACP         *LACP
+	LACPPriSet   bool // system-priority explicitly configured
 	MinLinks     int
 	HashPolicy   string
-	MCLAGID      int
+	MCLAG        bool     // bundle is an MC-LAG (spans or may span both domain members)
 	MemberPorts  []string // physical ports with 802.3ad pointing here
 	MemberIDs    []int    // stack members hosting MemberPorts
 	StormControl StormControl
@@ -157,7 +159,7 @@ type LACP struct {
 }
 
 type StormControl struct {
-	Broadcast, Multicast, UnknownUnicast int
+	Broadcast, Multicast int
 }
 
 type VLAN struct {
@@ -181,10 +183,14 @@ type RSTPPort struct {
 	Cost       int
 	Priority   int
 	Edge       bool
-	BPDUGuard  bool
 	RootGuard  bool
 	PointToPnt *bool
 	Disabled   bool
+}
+
+type BPDUBlock struct {
+	Interfaces     []string
+	DisableTimeout int // seconds, 0 = never re-enable automatically
 }
 
 type Domain struct {
@@ -316,7 +322,7 @@ func (b *builder) build() {
 		Enabled:           off.Leaf("mode") != "disable",
 		WatchdogInterval:  atoi(off.Leaf("watchdog", "interval"), 5),
 		WatchdogThreshold: atoi(off.Leaf("watchdog", "threshold"), 100),
-		WatchdogAlarmOnly: off.Has("watchdog", "disable"),
+		WatchdogAlarmOnly: off.Has("watchdog", "alarm-only"),
 	}
 
 	// Stack members. Without explicit members the node is member 1.
@@ -378,9 +384,10 @@ func (b *builder) build() {
 		}
 		i.MinLinks = atoi(agg.Leaf("minimum-links"), 1)
 		i.HashPolicy = orDefault(agg.Leaf("hash-policy"), "layer3+4")
-		i.MCLAGID = atoi(agg.Leaf("mclag", "id"), 0)
+		i.MCLAG = agg.Has("mclag")
+		i.LACPPriSet = agg.Leaf("lacp", "system-priority") != ""
 		sc := e.Get("storm-control")
-		i.StormControl = StormControl{Broadcast: atoi(sc.Leaf("broadcast"), 0), Multicast: atoi(sc.Leaf("multicast"), 0), UnknownUnicast: atoi(sc.Leaf("unknown-unicast"), 0)}
+		i.StormControl = StormControl{Broadcast: atoi(sc.Leaf("broadcast"), 0), Multicast: atoi(sc.Leaf("multicast"), 0)}
 		i.MACLimit = atoi(e.Leaf("mac-limit"), 0)
 		i.NoOffload = e.Has("offload", "disable")
 		c.Interfaces[i.Name] = i
@@ -398,7 +405,7 @@ func (b *builder) build() {
 		}
 		for _, e := range rs.Entries("interface") {
 			p := &RSTPPort{Name: e.Key, Cost: atoi(e.Leaf("cost"), 0), Priority: atoi(e.Leaf("priority"), 128),
-				Edge: e.Has("edge"), BPDUGuard: e.Has("bpdu-guard"), RootGuard: e.Has("no-root-port"), Disabled: e.Has("disable")}
+				Edge: e.Has("edge"), RootGuard: e.Has("no-root-port"), Disabled: e.Has("disable")}
 			if m := e.Leaf("mode"); m != "" {
 				v := m == "point-to-point"
 				p.PointToPnt = &v
@@ -441,6 +448,10 @@ func (b *builder) build() {
 		}
 		c.Switch.RemoteVTEPs[e.Key] = vnis
 	}
+
+	// BPDU protection.
+	bb := r.Get("protocols", "layer2-control", "bpdu-block")
+	c.BPDUBlock = BPDUBlock{Interfaces: bb.List("interface"), DisableTimeout: atoi(bb.Leaf("disable-timeout"), 0)}
 
 	// Analyzers.
 	for _, e := range r.Get("forwarding-options").Entries("analyzer") {

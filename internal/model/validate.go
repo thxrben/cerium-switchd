@@ -78,6 +78,9 @@ func (b *builder) validate() {
 	b.validateAnalyzers()
 	b.validateRSTP()
 
+	if n := len(c.System.NameServers); n > 3 {
+		b.warnf("system name-server", "only the first 3 of %d name servers are used", n)
+	}
 	for _, u := range sortedKeys(c.System.Users) {
 		usr := c.System.Users[u]
 		if usr.PasswordHash == "" && len(usr.SSHKeys) == 0 {
@@ -137,7 +140,7 @@ func (b *builder) validateInterfaces() {
 			}
 			continue
 		}
-		if i.LACP != nil || i.MCLAGID != 0 {
+		if i.LACP != nil || i.MCLAG {
 			b.errorf(path+" aggregated-ether-options", "aggregated-ether-options are only valid on ae interfaces")
 		}
 		m, ok := c.Members[i.Member]
@@ -192,44 +195,28 @@ func (b *builder) validateInterfaces() {
 				isPeerLink = true
 			}
 		}
-		if i.MCLAGID != 0 {
+		if i.MCLAG {
 			if i.LACP == nil {
 				b.errorf(path+" aggregated-ether-options", "MC-LAG interfaces require 'lacp'")
 			}
 			if isPeerLink {
 				b.errorf(path+" aggregated-ether-options mclag", "the peer-link cannot be an MC-LAG interface")
 			}
-			if b.domainFor(i.MemberIDs) == nil && len(i.MemberIDs) > 0 {
+			if d := b.domainFor(i.MemberIDs); d == nil && len(i.MemberIDs) > 0 {
 				b.errorf(path+" aggregated-ether-options mclag", "no mclag domain contains member(s) %s", joinInts(i.MemberIDs))
+			} else if d != nil && i.LACPPriSet && i.LACP != nil && i.LACP.SystemPriority != d.SystemPriority {
+				b.warnf(path+" aggregated-ether-options lacp system-priority", "ignored on MC-LAG interfaces; mclag domain %d system-priority %d is used", d.ID, d.SystemPriority)
 			}
 		}
 		switch {
 		case len(i.MemberIDs) > 2:
 			b.errorf(path, "ports on %d stack members (%s); at most two are possible (MC-LAG)", len(i.MemberIDs), joinInts(i.MemberIDs))
-		case len(i.MemberIDs) == 2 && i.MCLAGID == 0 && !isPeerLink:
-			b.errorf(path, "ports on members %s require 'aggregated-ether-options mclag id' or use as a peer-link", joinInts(i.MemberIDs))
+		case len(i.MemberIDs) == 2 && !i.MCLAG && !isPeerLink:
+			b.errorf(path, "ports on members %s require 'aggregated-ether-options mclag' or use as a peer-link", joinInts(i.MemberIDs))
 		}
 		if isPeerLink && i.Switching {
 			b.warnf(path, "the peer-link carries all VLANs automatically; its ethernet-switching settings are ignored")
 		}
-	}
-
-	// MC-LAG ids must be unique per domain.
-	seen := map[[2]int]string{}
-	for _, name := range sortedKeys(c.Interfaces) {
-		i := c.Interfaces[name]
-		if i.MCLAGID == 0 {
-			continue
-		}
-		d := b.domainFor(i.MemberIDs)
-		if d == nil {
-			continue
-		}
-		k := [2]int{d.ID, i.MCLAGID}
-		if o, dup := seen[k]; dup {
-			b.errorf("interfaces "+name+" aggregated-ether-options mclag id", "mclag id %d is already used by %s", i.MCLAGID, o)
-		}
-		seen[k] = name
 	}
 }
 
@@ -293,7 +280,7 @@ func (b *builder) validateMTU() {
 		}
 		for _, name := range sortedKeys(c.Interfaces) {
 			i := c.Interfaces[name]
-			if i.MCLAGID != 0 && b.domainFor(i.MemberIDs) == d && i.MTU > pl.MTU {
+			if i.MCLAG && b.domainFor(i.MemberIDs) == d && i.MTU > pl.MTU {
 				b.errorf("interfaces "+d.PeerLink+" mtu", "peer-link MTU %d is smaller than MTU %d of MC-LAG interface %s", pl.MTU, i.MTU, name)
 			}
 		}
@@ -368,6 +355,36 @@ func (b *builder) validateVXLAN() {
 			b.errorf(fmt.Sprintf("stack member %d", id), "vtep-address is required when VLANs are extended over VXLAN")
 		}
 	}
+	// The underlay must carry the largest extended frame plus encapsulation.
+	maxMTU := 1500
+	for _, v := range c.VLANs {
+		if v.VNI != 0 && v.MTU > maxMTU {
+			maxMTU = v.MTU
+		}
+	}
+	for _, id := range sortedKeys(c.Members) {
+		m := c.Members[id]
+		if m.Underlay.Interface == "" {
+			continue
+		}
+		overhead := 50 // IPv4 + UDP + VXLAN + inner Ethernet
+		if strings.Contains(m.VTEPAddress, ":") {
+			overhead = 70
+		}
+		if c.Switch.VXLANEncrypt {
+			overhead += 80 // WireGuard over IPv6 worst case
+		}
+		name := fmt.Sprintf("%d/%s", id, m.Underlay.Interface)
+		mtu := 1500
+		if i, ok := c.Interfaces[name]; ok {
+			mtu = i.MTU
+		} else if b.inv == nil {
+			continue
+		}
+		if mtu < maxMTU+overhead {
+			b.warnf("interfaces "+name+" mtu", "underlay MTU %d is below %d (largest VXLAN VLAN MTU %d + %d bytes encapsulation); larger frames are dropped at the tunnel", mtu, maxMTU+overhead, maxMTU, overhead)
+		}
+	}
 	for vtep, list := range c.Switch.RemoteVTEPs {
 		for _, vni := range list {
 			if _, ok := vnis[vni]; !ok {
@@ -432,8 +449,30 @@ func (b *builder) validateAnalyzers() {
 
 func (b *builder) validateRSTP() {
 	c := b.cfg
+	for _, name := range c.BPDUBlock.Interfaces {
+		i, ok := c.Interfaces[name]
+		path := "protocols layer2-control bpdu-block interface"
+		if !ok {
+			b.errorf(path, "%s is not configured under 'interfaces'", name)
+			continue
+		}
+		if i.Parent != "" {
+			b.errorf(path, "%s is a member of %s; protect the aggregated interface", name, i.Parent)
+		}
+		if c.RSTP != nil {
+			if p, ok := c.RSTP.Ports[name]; ok && !p.Edge && !p.Disabled {
+				b.warnf(path, "%s runs RSTP as a non-edge port; any BPDU from a neighbouring switch will shut it down", name)
+			}
+		}
+	}
 	if c.RSTP == nil {
 		return
+	}
+	// IEEE 802.1D timer relation: 2*(fwd-1) >= max-age >= 2*(hello+1).
+	r := c.RSTP
+	if r.MaxAge > 2*(r.ForwardDelay-1) || r.MaxAge < 2*(r.HelloTime+1) {
+		b.errorf("protocols rstp", "timers violate 2*(forward-delay-1) >= max-age >= 2*(hello-time+1): forward-delay %d, max-age %d, hello-time %d",
+			r.ForwardDelay, r.MaxAge, r.HelloTime)
 	}
 	for _, name := range sortedKeys(c.RSTP.Ports) {
 		i, ok := c.Interfaces[name]

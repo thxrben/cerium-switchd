@@ -27,7 +27,7 @@ set interfaces ae0 mtu 9216
 set interfaces ae0 aggregated-ether-options lacp active
 set interfaces ae1 mtu 9000
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag id 1
+set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members [ users 20 ]
 set interfaces ae1 native-vlan-id users
@@ -114,7 +114,9 @@ func TestInvalidConfigs(t *testing.T) {
 		{"member with family", "set interfaces 1/eth1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},
 		{"phys agg options", "set interfaces 1/eth3 aggregated-ether-options lacp active", "only valid on ae interfaces"},
-		{"span without mclag", "delete interfaces ae1 aggregated-ether-options mclag", "require 'aggregated-ether-options mclag id'"},
+		{"span without mclag", "delete interfaces ae1 aggregated-ether-options mclag", "require 'aggregated-ether-options mclag'"},
+		{"rstp timers", "set protocols rstp max-age 40", "timers violate"},
+		{"bpdu-block unknown", "set protocols layer2-control bpdu-block interface 1/eth9", "1/eth9 is not configured"},
 		{"mclag without lacp", "delete interfaces ae1 aggregated-ether-options lacp", "require 'lacp'"},
 		{"peer-link mtu", "set interfaces ae0 mtu 1500", "peer-link MTU 1500 is smaller"},
 		{"domain members", "set mclag domain 1 members 3", "exactly two members"},
@@ -147,6 +149,10 @@ func TestWarnings(t *testing.T) {
 		{"set interfaces 1/eth3 mtu 1500\nset vlans storage mtu 9000", "larger frames are dropped"},
 		{"set interfaces ae1 aggregated-ether-options minimum-links 3", "can never come up"},
 		{"set system login user bob class operator", "cannot log in"},
+		{"set interfaces ae1 aggregated-ether-options lacp system-priority 100", "ignored on MC-LAG interfaces"},
+		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
+		{"set stack member 1 underlay interface eth5\nset interfaces 1/eth5 mtu 1500", "underlay MTU 1500 is below 1550"},
+		{"set protocols layer2-control bpdu-block interface ae1\nset protocols rstp interface ae1 cost 10\ndelete protocols rstp interface ae1 edge", "non-edge port"},
 		{"set interfaces 1/eth4 unit 0 family ethernet-switching vlan members storage", "carries switched traffic"},
 	}
 	for _, c := range cases {

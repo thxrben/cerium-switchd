@@ -48,7 +48,7 @@ set interfaces 1/eth2 mtu 9216
 set interfaces 1/eth10 description "uplink to core"
 set interfaces 1/eth10 disable
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag id 1
+set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members 10
 set interfaces ae1 unit 0 family ethernet-switching vlan members storage
@@ -393,7 +393,10 @@ func FuzzLexResolve(f *testing.F) {
 }
 
 func FuzzParseCurly(f *testing.F) {
-	tr, _ := ParseSet(sample)
+	tr, err := ParseSet(sample)
+	if err != nil {
+		f.Fatal(err)
+	}
 	f.Add(FormatCurly(tr.Root))
 	f.Add("interfaces { 1/eth0; }")
 	f.Add("a { b { c; } }}")

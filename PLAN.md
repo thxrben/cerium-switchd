@@ -70,8 +70,9 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   VXLAN underlay < overlay + 50, etc.).
 
 ### 4.3 MC-LAG
-* The pair is 2 members that share a **peer link** (a LAG between them) and a
-  **keepalive** path (mgmt network, UDP+HMAC or mTLS) for split-brain detection.
+* The pair is 2 members that share a **peer link** (a direct 1:1 LAG between them, **no IP and no reserved VLAN**:
+  control runs as untagged EtherType-0x88b5 frames carrying a reliable L2 stream with TLS 1.3 mTLS) and a
+  **keepalive** path (mgmt network, mTLS) for split-brain detection.
 * Both peers announce the same LACP system ID/priority and disjoint port-number
   ranges, so the partner sees one LAG.
 * **MAC sync**: switchd watches netlink FDB events. MACs learned on an MC-LAG
@@ -324,8 +325,10 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
 4. Interop test against a normal Linux 802.3ad bond on srv1.
 
 ### Phase 7: MC-LAG (VMs: sw1, sw2, srv1)
-1. Peer session: control over the peer link (link-local IP on reserved VLAN 4094) and keepalive over mgmt,
-   both mTLS. Primary/secondary role election (priority, then member ID).
+1. Peer session **without IP** on the peer-link: untagged frames with EtherType 0x88b5, captured with AF_PACKET
+   and filtered away from the bridge by a tc ingress rule. A reliable L2 stream (sequencing, acks, retransmit,
+   fragmentation) implemented as a `net.Conn`, with crypto/tls 1.3 mTLS on top. Per-port hellos.
+   Keepalive over mgmt (IP, mTLS). Primary/secondary role election (priority, then member ID).
 2. Shared LACP system ID and disjoint port-number ranges, so srv1 sees one partner.
 3. Consistency checks (VLANs, MTU, LACP parameters). On a mismatch the bond is set to proto-down with a reason.
 4. **MAC sync**: learned MACs, moves, coordinated ageing and flush on link down.

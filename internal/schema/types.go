@@ -228,6 +228,20 @@ var (
 		return Identifier.Check(s)
 	}}
 
+	// VlanSingle references exactly one VLAN by name or id.
+	VlanSingle = &Type{Name: "<vlan>", Ref: "vlan", Check: func(s string) (string, error) {
+		if lo, hi, ok := ParseVlanRange(s); ok {
+			if lo != hi {
+				return "", fmt.Errorf("a single VLAN is required, not a range")
+			}
+			return s, nil
+		}
+		if s == "all" {
+			return "", fmt.Errorf("a single VLAN is required")
+		}
+		return Identifier.Check(s)
+	}}
+
 	// LinuxIfName is a raw kernel interface name.
 	LinuxIfName = String("<linux-interface>", 15, `^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
 
