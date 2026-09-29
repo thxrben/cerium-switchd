@@ -31,6 +31,18 @@ type Operational interface {
 	Power(action string, minutes int, user string) error
 	// CancelPower cancels a scheduled reboot/halt/power-off.
 	CancelPower(user string) error
+	// Offload lists the hardware capabilities per port (reference 1.7).
+	Offload() ([]OffloadPort, error)
+}
+
+// OffloadPort is one line of "show system offload". Feature values are
+// "on", "off" (available but off) or "-" (not supported).
+type OffloadPort struct {
+	Name, Linux, Driver            string
+	MaxSpeedMbps                   int
+	Pause                          string // yes, no, "-" (unknown)
+	Switchdev                      bool
+	TC, VLANFilter, Csum, TSO, GRO string
 }
 
 // Neighbor is one entry of "show arp" / "show ipv6 neighbors".
@@ -404,6 +416,32 @@ func (sh *Shell) showNeighbors(c *call, ipv6 bool) error {
 	return nil
 }
 
+func (sh *Shell) showOffload(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("hardware information is not available")
+	}
+	ps, err := sh.env.Ops.Offload()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %s\n",
+		"Interface", "Linux name", "Driver", "Speed", "Pause", "Switchdev", "TC", "VLAN", "Csum", "TSO", "GRO")
+	for _, p := range ps {
+		sd := "no"
+		if p.Switchdev {
+			sd = "yes"
+		}
+		fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %s\n",
+			p.Name, p.Linux, p.Driver, speed(p.MaxSpeedMbps), p.Pause, sd, p.TC, p.VLANFilter, p.Csum, p.TSO, p.GRO)
+	}
+	c.out.WriteString("Speed: highest supported link speed. TC: tc rule offload (storm control, filters). VLAN: VLAN filter offload.\n" +
+		"on = active, off = available but off, - = not supported by the NIC or driver.\n")
+	return nil
+}
+
 func (sh *Shell) showUptime(c *call) error {
 	if err := noArgs(c); err != nil {
 		return err
@@ -559,7 +597,8 @@ func registerOperational() {
 			for _, sc := range cmd.sub {
 				if sc.name == "system" {
 					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog},
-						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime})
+						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime},
+						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })

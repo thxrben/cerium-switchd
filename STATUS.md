@@ -65,9 +65,12 @@ Last updated: 2026-09-29 (late).
   ipv6 neighbors, show system uptime, request system reboot/halt/power-off, host name + resolv.conf in the OS.
   18 lab tests pass.
 
-## Next (in order) — see PLAN.md Phase 4b
-1. NIC capability checks at commit (ethtool link modes, pause, offloads; per-port speed class), show system offload.
-2. Then Phase 5 stacking (PKI, stacking transport, topology, Raft, per-member apply).
+- Phase 4b step 4 done: hardware capability checks (max speed, pause support, vlan-challenged, bundle speed
+  mix) and show system offload.
+
+## Next (in order)
+1. Phase 5 stacking (PKI, stacking transport, topology, Raft, per-member apply) — see PLAN.md.
+2. Open items from Phase 3/4: management DHCP, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover (4.15).
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

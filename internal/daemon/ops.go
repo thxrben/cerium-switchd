@@ -322,3 +322,29 @@ func (o *ops) CancelPower(user string) error {
 	o.notify(user + ": scheduled reboot/halt/power-off cancelled")
 	return nil
 }
+
+func (o *ops) Offload() ([]cli.OffloadPort, error) {
+	o.names.Refresh()
+	feat := func(fs map[string]string, names ...string) string {
+		for _, n := range names {
+			if v, ok := fs[n]; ok {
+				return v
+			}
+		}
+		return "-"
+	}
+	var out []cli.OffloadPort
+	for _, p := range o.names.Ports() {
+		c := inventory.ReadCaps("/sys", p.Linux)
+		pause := map[inventory.Tristate]string{inventory.Yes: "yes", inventory.No: "no", inventory.Unknown: "-"}[c.Pause]
+		out = append(out, cli.OffloadPort{Name: p.Name, Linux: p.Linux, Driver: p.Driver, MaxSpeedMbps: c.MaxSpeedMbps,
+			Pause: pause, Switchdev: c.Switchdev,
+			TC:         feat(c.Features, "hw-tc-offload"),
+			VLANFilter: feat(c.Features, "rx-vlan-filter"),
+			Csum:       feat(c.Features, "tx-checksum-ip-generic", "tx-checksum-ipv4"),
+			TSO:        feat(c.Features, "tx-tcp-segmentation"),
+			GRO:        feat(c.Features, "rx-gro"),
+		})
+	}
+	return out, nil
+}

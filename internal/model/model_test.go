@@ -418,3 +418,40 @@ set routing-options static route 2001:db8:99::/48 next-hop 2001:db8:10::fe
 		t.Errorf("no management warning:\n%s", issues)
 	}
 }
+
+type capsInv map[string]PortInfo
+
+func (c capsInv) Ports(member int) (map[string]PortInfo, bool) { return c, member == 1 }
+
+func TestCapabilityChecks(t *testing.T) {
+	inv := capsInv{
+		"1/0/0": {Linux: "a", MaxSpeedMbps: 1000},
+		"1/0/1": {Linux: "b", MaxSpeedMbps: 10000},
+		"1/0/2": {Linux: "c", NoPause: true},
+		"1/0/3": {Linux: "d", VlanChallenged: true},
+	}
+	base := "set vlans v vlan-id 10\nset vlans w vlan-id 20\n"
+	_, issues := build(t, base+"set interfaces ae0 unit 0 family ethernet-switching vlan members v\n"+
+		"set interfaces 1/0/0 ether-options 802.3ad ae0\nset interfaces 1/0/1 ether-options 802.3ad ae0\n", inv)
+	if !strings.Contains(issues.String(), "different maximum speeds (1G: 1/0/0; 10G: 1/0/1)") || issues.HasErrors() {
+		t.Errorf("bundle speeds:\n%s", issues)
+	}
+	_, issues = build(t, base+"set interfaces 1/0/2 ether-options flow-control\n", inv)
+	if !strings.Contains(issues.String(), "no pause-frame support") || issues.HasErrors() {
+		t.Errorf("pause:\n%s", issues)
+	}
+	_, issues = build(t, base+"set interfaces 1/0/3 unit 0 family ethernet-switching interface-mode trunk\nset interfaces 1/0/3 unit 0 family ethernet-switching vlan members [ v w ]\n", inv)
+	if !strings.Contains(issues.String(), "cannot carry VLAN tags") || !issues.HasErrors() {
+		t.Errorf("vlan-challenged trunk:\n%s", issues)
+	}
+	_, issues = build(t, base+"set interfaces 1/0/3 unit 0 family ethernet-switching vlan members v\n", inv)
+	if issues.HasErrors() {
+		t.Errorf("vlan-challenged access port must be fine:\n%s", issues)
+	}
+	// Unknown speeds: no check.
+	_, issues = build(t, base+"set interfaces ae0 unit 0 family ethernet-switching vlan members v\n"+
+		"set interfaces 1/0/0 ether-options 802.3ad ae0\nset interfaces 1/0/2 ether-options 802.3ad ae0\n", inv)
+	if strings.Contains(issues.String(), "different maximum speeds") {
+		t.Errorf("unknown speed compared:\n%s", issues)
+	}
+}

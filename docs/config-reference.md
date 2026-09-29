@@ -151,6 +151,21 @@ Physical ports are named `<member>/<card>/<port>`, like Junos (`ge-0/1/2` become
   `<member>/<linux-name>` (e.g. `1/ens19`) is converted automatically when it is loaded from the member's storage
   (active configuration, rollback revisions and the shared candidate), as long as the port exists.
 
+### 1.7 Hardware capability checks
+
+`commit check` (and every commit) compares the configuration with what each port's NIC and driver can do, on every
+member whose hardware is known. The facts come from the kernel (ethtool: supported link modes, pause support,
+features such as `vlan-challenged` and `hw-tc-offload`). Where a driver reports nothing, no check is made.
+* E: `mtu` above the NIC's maximum (5.3.2).
+* E: a trunk port, `native-vlan-id`, or routed subinterfaces (`vlan-tagging`) on a NIC that cannot carry VLAN tags
+  (`vlan-challenged`).
+* W: `flow-control` or `no-flow-control` on a NIC without pause-frame support (the setting has no effect).
+* W: an `ae` bundle whose member ports have different maximum speeds (e.g. 1G and 10G): traffic is hashed evenly,
+  so the slowest port limits each flow's share. For MC-LAG bundles this is checked across both members (5.6).
+* `show system offload` lists per port: maximum speed, pause support, switchdev (hardware switch), tc offload,
+  VLAN filter offload, checksum/TSO/GRO, and whether switchd's rules on the port are in hardware.
+* The PCIe link of each NIC (negotiated vs. possible speed and width) is part of the system diagnostics (PLAN.md Phase 13).
+
 ## 2. Configuration formats
 
 The same configuration can be shown and loaded in three equivalent formats. All three round-trip
@@ -350,6 +365,7 @@ vlans {
 |---|---|
 | `show interfaces [terse\|extensive] [<interface>]` | Status, role, VLANs and counters of the ports and bundles. |
 | `show chassis hardware` | Every physical port with Linux name, bus address, driver and MAC address (1.6). |
+| `show system offload` | Hardware capabilities and acceleration per port (1.7). |
 | `show vlans` | VLANs with their ports (`*` = tagged). |
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
 | `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default and `mgmt`), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
@@ -720,7 +736,7 @@ Only on physical ports (E on `ae`).
   Still effective on a member port: `description`, `disable`, `ether-options flow-control`, `offload disable`.
 * `flow-control` / `no-flow-control` (mutually exclusive): enable or disable IEEE 802.3x pause frames. Pause frames
   let a congested receiver slow the sender down instead of dropping frames. That helps against drops, at the cost of
-  head-of-line blocking. Default: leave the driver's default.
+  head-of-line blocking. Default: leave the driver's default. W: the NIC has no pause-frame support (1.7).
 
 #### `aggregated-ether-options { … }`
 Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W, and stays down.
@@ -1233,6 +1249,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
 | L3: `interfaces irb`, routed ports and subinterfaces, `vlans <v> l3-interface`, `routing-options static` | implemented, unit and lab tested (IPv4 and IPv6); anycast MAC across the stack with Phase 5 |
 | `system host-name` / `stack member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through VRF mgmt not yet |
+| Hardware capability checks (1.7), `show system offload` | implemented, unit tested and checked on physical NICs (tg3, igb, r8169) and virtio |
 | Operational commands of 3.5 (`show arp`, `show system uptime`, `show system rollback`, `request system reboot` …) | implemented and tested; stack drain before reboot with Phase 5/7 |
 | Multi-user notices, persistent shared candidate, CLI surviving switchd restarts and its own crashes | implemented, unit and lab tested |
 | `system services web-management`, `system login message` on serial consoles | not implemented yet |

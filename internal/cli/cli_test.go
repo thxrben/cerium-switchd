@@ -484,6 +484,10 @@ func (f *fakeOps) Power(action string, minutes int, user string) error {
 	return nil
 }
 
+func (f *fakeOps) Offload() ([]OffloadPort, error) {
+	return []OffloadPort{{Name: "1/0/0", Linux: "enp1s0f0", Driver: "tg3", MaxSpeedMbps: 1000, Pause: "yes", TC: "-", VLANFilter: "-", Csum: "on", TSO: "on", GRO: "on"}}, nil
+}
+
 func (f *fakeOps) CancelPower(user string) error {
 	f.power = append(f.power, "cancel "+user)
 	return nil
@@ -660,6 +664,7 @@ func TestSystemOperationalCommands(t *testing.T) {
 		t.Errorf("not sorted by instance:\n%s", out)
 	}
 	contains(t, ts.ok("show ipv6 neighbors"), "fe80::1")
+	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")
 
 	ts.term.answers = []string{"no"}

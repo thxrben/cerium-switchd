@@ -66,6 +66,10 @@ type PortInfo struct {
 	// HasIP: the operating system has configured IP addresses on the port
 	// (typically the installer's management NIC).
 	HasIP bool
+	// Hardware capabilities (reference 1.7); zero values mean unknown.
+	MaxSpeedMbps   int
+	NoPause        bool // the driver has no pause-frame settings
+	VlanChallenged bool // the NIC cannot carry VLAN tags
 }
 
 // Inventory supplies hardware facts for validation.
@@ -92,6 +96,7 @@ func (b *builder) port(member int, name string) (info PortInfo, ok, known bool) 
 func (b *builder) validate() {
 	c := b.cfg
 	b.validateInterfaces() // attaches bundle member ports, needed below
+	b.checkBundleSpeeds()
 	b.validateRouting()
 	b.validateMembers()
 	b.validateMTU()
@@ -240,12 +245,17 @@ func (b *builder) validateInterfaces() {
 		} else if m.Witness {
 			b.errorf(path, "member %d is a witness and has no switch ports", i.Member)
 		}
-		if info, ok, known := b.port(i.Member, name); known && !ok {
+		info, present, known := b.port(i.Member, name)
+		switch {
+		case known && !present:
 			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", name, i.Member)
-		} else if ok && info.StackPort {
+		case present && info.StackPort:
 			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", name, i.Member)
-		} else if ok && info.HasIP && !b.reservedPort(i.Member, name) {
+		case present && info.HasIP && !b.reservedPort(i.Member, name):
 			b.warnf(path, "%s (%s) has IP addresses configured by the operating system (management port?); managing it may cut access to member %d", name, info.Linux, i.Member)
+		}
+		if present {
+			b.checkCapabilities(i, info, path)
 		}
 		if i.Parent == "" {
 			continue
@@ -626,4 +636,56 @@ func joinInts(ids []int) string {
 		s[i] = fmt.Sprint(v)
 	}
 	return strings.Join(s, ",")
+}
+
+// checkCapabilities compares a port's configuration with what its NIC can
+// do (reference 1.7).
+func (b *builder) checkCapabilities(i *Interface, info PortInfo, path string) {
+	if info.NoPause && i.FlowControl != nil {
+		b.warnf(path+" ether-options", "%s has no pause-frame support; flow-control settings have no effect", i.Name)
+	}
+	if info.VlanChallenged {
+		switch {
+		case i.Switching && i.Mode == "trunk":
+			b.errorf(path+" unit 0 family ethernet-switching interface-mode", "the NIC of %s cannot carry VLAN tags; it can only be an access port", i.Name)
+		case i.VlanTagging:
+			b.errorf(path+" vlan-tagging", "the NIC of %s cannot carry VLAN tags", i.Name)
+		}
+	}
+}
+
+// checkBundleSpeeds warns about bundles mixing port speeds.
+func (b *builder) checkBundleSpeeds() {
+	for _, name := range sortedKeys(b.cfg.Interfaces) {
+		i := b.cfg.Interfaces[name]
+		if !i.AE || len(i.MemberPorts) < 2 {
+			continue
+		}
+		speeds := map[int][]string{}
+		for _, p := range i.MemberPorts {
+			pi := b.cfg.Interfaces[p]
+			if pi == nil {
+				continue
+			}
+			info, ok, _ := b.port(pi.Member, p)
+			if !ok || info.MaxSpeedMbps == 0 {
+				return // unknown: no check
+			}
+			speeds[info.MaxSpeedMbps] = append(speeds[info.MaxSpeedMbps], p)
+		}
+		if len(speeds) > 1 {
+			var parts []string
+			for _, sp := range sortedKeys(speeds) {
+				parts = append(parts, fmt.Sprintf("%s: %s", speedName(sp), strings.Join(speeds[sp], ", ")))
+			}
+			b.warnf("interfaces "+name, "member ports have different maximum speeds (%s); traffic is hashed evenly, so the slower ports limit their share", strings.Join(parts, "; "))
+		}
+	}
+}
+
+func speedName(mbps int) string {
+	if mbps >= 1000 && mbps%1000 == 0 {
+		return fmt.Sprintf("%dG", mbps/1000)
+	}
+	return fmt.Sprintf("%dM", mbps)
 }

@@ -26,7 +26,9 @@ func (k *kernelInventory) Ports(member int) (map[string]model.PortInfo, bool) {
 	}
 	out := map[string]model.PortInfo{}
 	for _, p := range k.names.Ports() {
-		info := model.PortInfo{Linux: p.Linux, HasIP: hasIP(p.Linux)}
+		caps := inventory.ReadCaps("/sys", p.Linux)
+		info := model.PortInfo{Linux: p.Linux, HasIP: hasIP(p.Linux), MaxSpeedMbps: caps.MaxSpeedMbps,
+			NoPause: caps.Pause == inventory.No, VlanChallenged: caps.Features["vlan-challenged"] == "on"}
 		if l := st.Links[p.Linux]; l != nil {
 			info.MTU, info.MaxMTU = l.MTU, l.MaxMTU
 		}
