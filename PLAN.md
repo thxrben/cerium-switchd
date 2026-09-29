@@ -59,7 +59,7 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 ### 4.1 L2 switching
 * One bridge `br0` per member, `vlan_filtering=1`, access/trunk/native VLAN per port.
 * MAC ageing, static MACs, per-port MAC limits, storm control (tc police), BPDU guard.
-* Loop prevention v1: BPDU guard + MC-LAG consistency checks (STP question below).
+* Loop prevention: **RSTP (802.1w)** plus BPDU guard/root guard/edge ports (see 4.10).
 
 ### 4.2 Jumbo frames
 * **Per port**: native (`mtu 9216` → netdev MTU on port/bond/member ports).
@@ -131,6 +131,19 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   grid per member, live counters, FDB search, config editor with diff and commit, and alarms.
 * Auth: the same users/classes as the CLI.
 
+### 4.10 RSTP
+* **Own RSTP implementation in Go**. The bridge runs with `stp_state=2` (user mode)
+  and switchd sends/receives BPDUs via AF_PACKET and sets port states via netlink.
+  Why not `mstpd`: an MC-LAG pair has to act as **one logical STP bridge**, and
+  mstpd cannot do that. Owning the implementation makes it possible:
+  * Both peers use the same bridge ID (derived from the shared MC-LAG system MAC).
+  * The primary peer computes the STP state for MC-LAG ports and syncs it to the
+    secondary. The secondary relays BPDUs received on its MC-LAG leg to the primary.
+  * The peer link is never blocked.
+  * On peer loss, the survivor continues with the same bridge ID, so the rest of the network sees no topology change.
+* Per-port: `edge`, `bpdu-guard`, `root-guard`, `cost`, `priority`. Per-bridge: priority, timers.
+* Later option: MSTP (per-VLAN-group instances), if needed.
+
 ### 4.9 Syslog
 * `system syslog host <ip> [port N] [transport udp|tcp|tls] [facility …] [severity …]`.
 * RFC 5424, buffered with retry for TCP/TLS, source in mgmt VRF. Also a local ring buffer
@@ -192,6 +205,7 @@ packaging/          systemd units, arch PKGBUILD, deb
 3. **Access**: user management, SSH (login shell), serial getty, web API, health, metrics, minimal UI.
 4. **Stacking**: CA/mTLS, join, Raft, per-member apply, `show stack`.
 5. **LACP + MC-LAG**: userspace LACP, peer link, keepalive, FDB sync, split horizon, failover. Netns tests with a simulated partner switch.
+5b. **RSTP**: standalone RSTP first, then MC-LAG integration (one logical bridge).
 6. **VXLAN**: vnifilter device, control-plane mesh, anycast VTEP for MC-LAG pairs.
 7. **Security extras**: MACsec peer link, WireGuard underlay option.
 8. **Polish**: full web UI, packaging, docs, `commit confirmed`, alarms.
@@ -199,4 +213,29 @@ packaging/          systemd units, arch PKGBUILD, deb
 ## 9. Known limits / non-goals
 * No inter-VLAN routing (only mgmt IP).
 * Throughput is bounded by the host/NIC (kernel bridge). Expect roughly 10–40 Gbit/s on decent x86 with large frames, and lower with small packets. Hardware offload is only available where switchdev drivers exist.
-* STP: see open question.
+* Target scale: 2–4 members typical, **up to 16** supported (Raft: max 5 voters, the rest are non-voting
+  replicas), ARM + x86 mixed, ≤10G today. 100G later → XDP/eBPF fast path and switchdev offload
+  are kept as a future milestone. The dataplane package is an interface, so a fast path can be added.
+
+## 10. Decisions taken (2026-09-29)
+* SSH: system OpenSSH, with swcli as login shell for config-defined users. The serial console uses the same flow (getty → login → swcli).
+* Data-plane encryption: opt-in per link (MACsec peer link, WireGuard underlay). The control plane always uses mTLS.
+* RSTP is required in v1, with MC-LAG-aware integration.
+* Dev machine = build and unit tests only. Integration tests run on Proxmox VMs running Debian 13 (see §11).
+
+## 11. Test lab (Proxmox)
+All VMs: **Debian 13 (trixie)**, 2 vCPU, 2 GB RAM, 16 GB disk, virtio NICs, plus a serial port
+(`serial0: socket`) for console tests. Root SSH with the dev machine's key.
+
+| VM | Role | NICs |
+|---|---|---|
+| sw1 | MC-LAG peer A | mgmt, peer1, peer2, srv1-a, underlay, loop-13 |
+| sw2 | MC-LAG peer B | mgmt, peer1, peer2, srv1-b, underlay, loop-23 |
+| sw3 | 3rd stack member (Raft quorum, VXLAN remote, RSTP loop) | mgmt, underlay, srv2, loop-13, loop-23 |
+| srv1 | dual-homed server (LACP bond to sw1+sw2) | mgmt, srv1-a, srv1-b |
+| srv2 | single-homed server on sw3 | mgmt, srv2 |
+
+Each non-mgmt link is its own point-to-point bridge on Proxmox (the `underlay` bridge is shared by sw1/2/3), with **MTU 9000+**.
+**Important:** Proxmox *Linux* bridges never forward LACP (01:80:C2:00:00:02) and drop
+BPDUs when STP is on. The p2p link bridges must therefore be **OVS bridges with
+`other-config:forward-bpdu=true`**, or directly connected via something equally transparent.
