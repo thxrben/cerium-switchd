@@ -431,6 +431,10 @@ In this order (the user's priorities; each step is spec first, then implementati
    reach the stack code.
 5. **Raft store** (over the stacking transport) replaces the local store. Config locks work across the whole stack. Voter management is automatic
    (up to 7 voters, the rest are non-voters). Witness mode (a member without a data plane).
+5b. **Mastership migration and decommissioning** (requested 2026-09-29): Raft leadership transfer via
+   `request chassis routing-engine master switch [member <id>]`; `request virtual-chassis member remove <id>`
+   (move mastership if needed, drain, leave quorum, promote a replacement voter). No member is special (stack key on
+   all members). Lab test: remove the master of a 3-member ring under traffic; no config loss, forwarding continues.
 6. Per-member apply with results reported back: `commit` prints the result per member (like Junos VC).
 7. Stack-wide operational commands: `show interfaces` / `show virtual-chassis` for all members, `request … member N`.
    CLI and web work from any member.

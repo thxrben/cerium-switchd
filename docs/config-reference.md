@@ -632,6 +632,18 @@ working path, so a ring survives one broken cable.
 * **Joining**: a new switch with designated stacking ports announces itself on them. `request virtual-chassis join token <t>`
   on the new switch, or `request virtual-chassis member add <id> token <t>` on the stack, authorises it. It then receives its
   certificate and the configuration.
+* **Mastership can move at any time.** No member is special: the stack key and the configuration are on every
+  member, so any member can be master (the leader that coordinates commits), and the member that created the stack
+  can be removed like any other.
+  * `request chassis routing-engine master switch [member <id>]` (Junos VC command) hands mastership to another
+    member (default: the next by `mastership-priority`). A running commit finishes first; forwarding is not affected.
+  * `request virtual-chassis member remove <id>` decommissions a member: if it is master, mastership moves first; then
+    its traffic is drained (LACP partners are told the links go away, stacking paths are rerouted), it leaves the
+    quorum and the member list, and another member takes its vote if needed. Its configuration stays until you delete
+    it. The removed switch keeps running standalone with the last configuration, without its stack keys.
+  * `mastership-priority 0` means "never master" (useful for a switch that is about to be replaced). The member with
+    the highest priority becomes master when it is available, but a working master is only replaced by an explicit
+    switch (no flapping when a higher-priority member reboots).
 * Stack control needs a majority of members (Raft). Without a majority, the data plane keeps forwarding with the last
   committed configuration, and only commits are blocked.
 
