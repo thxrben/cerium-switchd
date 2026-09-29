@@ -1,0 +1,87 @@
+# Switch the management NIC from DHCP to a static address (the current one).
+# Safety net like "commit confirmed": after the reboot a revert service
+# restores the DHCP configuration and reboots again unless this playbook
+# reconnects and confirms within 5 minutes.
+#   ansible-playbook static-ip.yml -u root [-l host]
+- hosts: lab
+  serial: 1
+  vars:
+    mgmt_prefix: 16
+    mgmt_gateway: 10.5.0.1
+    mgmt_dns: [10.5.150.1, "fc00::5:0:150:0:1"]
+    mgmt_if: "{{ ansible_interfaces | map('regex_replace', '-', '_') | map('extract', ansible_facts) | selectattr('macaddress', 'defined') | selectattr('macaddress', 'equalto', mgmt_mac) | map(attribute='device') | first }}"
+  tasks:
+    - name: Keep the DHCP configuration as backup
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: /etc/network/interfaces.dhcp-backup
+        remote_src: true
+        force: false
+
+    - name: Install the revert guard
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/net-revert-guard.service
+        content: |
+          [Unit]
+          Description=Revert to the DHCP network configuration unless confirmed
+          After=network-online.target
+          [Service]
+          Type=simple
+          ExecStart=/bin/sh -c 'sleep 300; if [ ! -e /run/net-confirmed ]; then cp /etc/network/interfaces.dhcp-backup /etc/network/interfaces; systemctl disable net-revert-guard; systemctl reboot; fi'
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+
+    - name: Enable the revert guard
+      ansible.builtin.systemd:
+        name: net-revert-guard
+        enabled: true
+        daemon_reload: true
+
+    - name: Static configuration
+      ansible.builtin.copy:
+        dest: /etc/network/interfaces
+        content: |
+          # Managed by lab/static-ip.yml (backup: interfaces.dhcp-backup)
+          source /etc/network/interfaces.d/*
+
+          auto lo
+          iface lo inet loopback
+
+          auto {{ mgmt_if }}
+          iface {{ mgmt_if }} inet static
+              address {{ ansible_host }}/{{ mgmt_prefix }}
+              gateway {{ mgmt_gateway }}
+          iface {{ mgmt_if }} inet6 auto
+        mode: "0644"
+
+    - name: dhcpcd (still used for IPv6 autoconfiguration) must not rewrite resolv.conf
+      ansible.builtin.lineinfile:
+        path: /etc/dhcpcd.conf
+        line: nohook resolv.conf
+        create: true
+        mode: "0644"
+
+    - name: DNS
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          {% for ns in mgmt_dns %}
+          nameserver {{ ns }}
+          {% endfor %}
+        mode: "0644"
+
+    - name: Reboot into the static configuration
+      ansible.builtin.reboot:
+        reboot_timeout: 240
+
+    - name: Verify the static address and route
+      ansible.builtin.shell: ip -4 route show default | grep -v dhcp | grep -q 'via {{ mgmt_gateway }}' && ip -4 addr show {{ mgmt_if }} | grep -q '{{ ansible_host }}/{{ mgmt_prefix }}'
+      changed_when: false
+
+    - name: Verify DNS resolution
+      ansible.builtin.command: getent hosts deb.debian.org
+      changed_when: false
+
+    - name: Confirm (stop the revert guard)
+      ansible.builtin.shell: touch /run/net-confirmed && systemctl stop net-revert-guard && systemctl disable net-revert-guard && rm -f /etc/systemd/system/net-revert-guard.service && systemctl daemon-reload

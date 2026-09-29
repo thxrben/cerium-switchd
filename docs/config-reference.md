@@ -96,6 +96,12 @@ excluding 802.1Q tags. Each VLAN tag may add 4 bytes on top, so a trunk with `mt
     not changed. New NICs never start switching traffic unless a wildcard `interface-range` selects them on purpose (5.3.1).
   * An interface that is configured but not physically present (not plugged in, or on a member that has not joined yet)
     keeps its configuration. The configuration is applied as soon as the interface appears. `commit check` warns about this.
+  * An interface that is **removed** from the configuration (or no longer selected by a range) is **released**: it is
+    taken administratively down first, then removed from the bridge or bundle. Its MTU and description are left as
+    they are. It does not return to the state before switchd managed it, because a released port that stayed up
+    could leak traffic into whatever network it is cabled to.
+  * switchd creates and owns the bridge `swbr0` and one bond device per `ae` interface (named like the `ae`). It never
+    modifies other bridges, bonds or VLAN devices.
 
 ### 1.5 The three planes
 

@@ -79,6 +79,11 @@ Stacking ring: stk-12, stk-13, stk-23. MC-LAG peer-link: peer1 + peer2 (sw1–sw
 srv1-a (sw1) and srv1-b (sw2). loop-13 (sw1–sw3) and loop-23 (sw2–sw3) are data links that form a loop
 together with the peer-link, for RSTP tests.
 
+## Management network
+
+10.5.0.0/16, gateway 10.5.0.1, DNS/DHCP server 10.5.150.1. The VMs use their addresses **statically**
+(`static-ip.yml`, applied 2026-09-29; the DHCP pool should exclude or reserve them). IPv6 stays on SLAAC.
+
 ## Usage
 
 ```
@@ -86,6 +91,8 @@ cd lab
 # first run per VM (only 'user' + password, no sudo, no python):
 ansible-playbook bootstrap.yml -u user -e ansible_become_method=su -e ansible_become_password=<root password>
 # afterwards: ansible-playbook <play>.yml -u root
+ansible-playbook static-ip.yml -u root   # DHCP -> static, with an automatic revert guard
+make cross && ansible-playbook deploy.yml -u root   # deploy switchd to the switches
 ```
 
 Kernel interface names are not fixed; playbooks and tests resolve NICs by MAC from `host_vars/<host>.yml` (`nics`).
