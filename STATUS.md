@@ -34,16 +34,16 @@ Last updated: 2026-09-29.
 - Real apply on sw1 (switchd without --dry-run): `test/lab` (go test -tags lab ./test/lab) passes: access
   isolation, tagged frames dropped on access ports, trunk + native VLAN, 0 loss during 5 commits on another
   port, released port goes down, restart plans nothing.
+- Static LAG + jumbo MTU lab tests; show interfaces/ethernet-switching table/vlans, clear table.
+- Self-healing: link events + 30 s periodic reconcile against the last applied config (reverts foreign
+  changes in ~1.2 s, configures appearing ports); inventory with IFLA_MAX_MTU and HasIP (wildcards never
+  select ports with OS IP addresses, explicit use warns). 10 lab tests pass.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)
-1. Static LAG test in the lab (sw1 ens21+ens22 <-> host bond on sw2), MTU/jumbo tests, VLAN MTU filter,
-   storm control (tc police), mac-limit, flow control; netlink link events (hot-plug + foreign-change
-   revert, wildcard interface-range re-evaluation).
-2. Inventory (IFLA_MAX_MTU, present ports) → model.Inventory for commit check; `show interfaces [terse]`,
-   `show ethernet-switching table`, `show vlans`.
-3. Management plane (VRF mgmt, IRB-like VLAN interface, static/DHCP), syslog.
-4. `set … authentication plain-text-password`; `start shell`; swcli as login shell (Phase 4).
+1. VLAN MTU filter, storm control (tc police), mac-limit, flow control; hardware-offload watchdog.
+2. Management plane (VRF mgmt, IRB-like VLAN interface, static/DHCP), syslog.
+3. `set … authentication plain-text-password`; `start shell`; swcli as login shell (Phase 4).
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

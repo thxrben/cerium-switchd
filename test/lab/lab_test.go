@@ -300,3 +300,60 @@ func TestJumboMTU(t *testing.T) {
 		t.Error("9000-byte packets do not pass with mtu 9014")
 	}
 }
+
+// waitFor polls cmd on sw1 until its output contains want.
+func waitFor(t *testing.T, cmd, want string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if out, _ := ssh(sw1, cmd); strings.Contains(out, want) {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+func TestForeignChangesReverted(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10"))
+	start := time.Now()
+	mustSSH(t, sw1, "ip link set ens23 down")
+	if !waitFor(t, "ip -o link show ens23", ",UP", 5*time.Second) {
+		t.Fatal("link taken down by someone else was not brought back up")
+	}
+	t.Logf("link state restored after %v", time.Since(start).Round(time.Millisecond))
+	start = time.Now()
+	mustSSH(t, sw1, "bridge vlan del dev ens23 vid 10")
+	if !waitFor(t, "bridge vlan show dev ens23", "10 PVID", 40*time.Second) {
+		t.Fatal("removed VLAN was not restored")
+	}
+	t.Logf("VLAN restored after %v", time.Since(start).Round(time.Millisecond))
+	out := mustSSH(t, sw1, "journalctl -u switchd --no-pager -o cat --since -60s")
+	if !strings.Contains(out, "correcting kernel state") {
+		t.Error("correction not logged")
+	}
+	if !reach(t, hSrv1, hSw3, 1) {
+		t.Error("traffic not restored")
+	}
+}
+
+func TestHotplug(t *testing.T) {
+	// Park ens20 in another namespace: switchd sees it as absent.
+	mustSSH(t, sw1, "ip netns add parked 2>/dev/null; ip link set ens20 netns parked 2>/dev/null; true")
+	defer ssh(sw1, "ip -n parked link set ens20 netns 1 2>/dev/null; true")
+	configure(t, vlans+"set interfaces 1/ens20 unit 0 family ethernet-switching vlan members v30\n")
+	if out, _ := ssh(sw1, "ip link show ens20"); !strings.Contains(out, "does not exist") {
+		t.Fatalf("ens20 should be absent: %s", out)
+	}
+	start := time.Now()
+	mustSSH(t, sw1, "ip -n parked link set ens20 netns 1")
+	if !waitFor(t, "bridge vlan show dev ens20", "30 PVID", 10*time.Second) {
+		t.Fatal("appearing port was not configured")
+	}
+	t.Logf("port configured %v after it appeared", time.Since(start).Round(time.Millisecond))
+	if !waitFor(t, "ip -o link show ens20", ",UP", 5*time.Second) {
+		t.Error("appearing port not brought up")
+	}
+}

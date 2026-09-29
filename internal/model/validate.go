@@ -61,6 +61,9 @@ type PortInfo struct {
 	MTU       int  // current kernel (Linux) MTU
 	MaxMTU    int  // kernel (Linux) maximum MTU, 0 = unknown
 	StackPort bool // designated stacking port (never a data port)
+	// HasIP: the operating system has configured IP addresses on the port
+	// (typically the installer's management NIC).
+	HasIP bool
 }
 
 // Inventory supplies hardware facts for validation.
@@ -234,6 +237,8 @@ func (b *builder) validateInterfaces() {
 			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", i.Linux, i.Member)
 		} else if ok && info.StackPort {
 			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", i.Linux, i.Member)
+		} else if ok && info.HasIP && !b.reservedPort(i.Member, i.Linux) {
+			b.warnf(path, "%s has IP addresses configured by the operating system (management port?); managing it may cut access to member %d", i.Linux, i.Member)
 		}
 		if i.Parent == "" {
 			continue

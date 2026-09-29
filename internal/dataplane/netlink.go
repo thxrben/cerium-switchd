@@ -41,17 +41,17 @@ func (k *Netlink) Read() (*State, error) {
 		byIndex[l.Attrs().Index] = l.Attrs().Name
 	}
 	s := &State{Links: map[string]*Link{}}
+	maxes := maxMTUs()
 	for _, l := range links {
 		a := l.Attrs()
 		if a.Name == "lo" {
 			continue
 		}
 		ln := &Link{
-			Name: a.Name,
-			Up:   a.Flags&net.FlagUp != 0,
-			MTU:  a.MTU,
-			// MaxMTU (IFLA_MAX_MTU) is not exposed by the netlink library;
-			// the inventory reads it separately.
+			Name:    a.Name,
+			Up:      a.Flags&net.FlagUp != 0,
+			MTU:     a.MTU,
+			MaxMTU:  maxes[a.Name],
 			Alias:   a.Alias,
 			Master:  byIndex[a.MasterIndex],
 			Present: true,

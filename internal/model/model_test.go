@@ -188,7 +188,9 @@ func (f fakeInv) Ports(member int) (map[string]PortInfo, bool) {
 	}
 	out := map[string]PortInfo{}
 	for name, mtu := range f {
-		if mtu < 0 {
+		if mtu == -2 {
+			out[name] = PortInfo{MTU: 1500, MaxMTU: 9000, HasIP: true} // OS management NIC
+		} else if mtu < 0 {
 			out[name] = PortInfo{MTU: 1500, MaxMTU: 1500, StackPort: true}
 		} else {
 			out[name] = PortInfo{MTU: 1500, MaxMTU: mtu}
@@ -307,5 +309,25 @@ deactivate vlans dup
 	}
 	if _, issues := Build(tr, nil); !issues.HasErrors() {
 		t.Error("duplicate vlan-id not reported after activation")
+	}
+}
+
+func TestWildcardSkipsPortsWithIP(t *testing.T) {
+	inv := fakeInv{"eth0": 9000, "eth1": 9000, "eth9": -2}
+	cfg, issues := build(t, "set vlans v vlan-id 10\n"+
+		"set interface-range all member \"1/eth*\"\n"+
+		"set interface-range all unit 0 family ethernet-switching vlan members v\n", inv)
+	if issues.HasErrors() {
+		t.Fatal(issues)
+	}
+	if _, ok := cfg.Interfaces["1/eth9"]; ok {
+		t.Error("wildcard selected the port with OS IP addresses")
+	}
+	if _, ok := cfg.Interfaces["1/eth0"]; !ok {
+		t.Error("wildcard did not select eth0")
+	}
+	_, issues = build(t, "set interfaces 1/eth9 disable\n", inv)
+	if !strings.Contains(issues.String(), "eth9 has IP addresses configured by the operating system") {
+		t.Errorf("no warning for an explicit management NIC:\n%s", issues)
 	}
 }

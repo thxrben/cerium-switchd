@@ -36,14 +36,19 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("state: %w", err)
 	}
 	srv := &rpc.Server{Log: log}
+	kernel := &dataplane.Netlink{}
+	inv := &kernelInventory{kernel: kernel, member: 1}
+	applier := newKernelApplier(o.StateDir, o.DryRun, log)
+	applier.inv = inv
 	engine, err := commit.New(commit.Options{
-		Store: store, Applier: newKernelApplier(o.StateDir, o.DryRun, log), Notify: srv.Notify, Log: log,
+		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
 	})
 	if err != nil {
 		return err
 	}
 	defer engine.Close()
 	engine.Start(ctx)
+	go applier.watch(ctx)
 
 	hostName := func() string {
 		if h := engine.Active().Active().Root.Leaf("system", "host-name"); h != "" {
@@ -61,7 +66,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return out
 	}
-	liveOps := &ops{kernel: &dataplane.Netlink{}, engine: engine, member: 1}
+	liveOps := &ops{kernel: kernel, engine: engine, member: 1}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
 			HostName: hostName, Ports: ports, Ops: liveOps, Log: log}

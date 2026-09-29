@@ -576,7 +576,9 @@ Applies one block of interface statements to many ports. It takes every statemen
     plugged NIC matching a wildcard is configured immediately, without a commit, and this is logged.
   * If the new port cannot take the configuration (e.g. the MTU exceeds its hardware maximum), it stays unconfigured
     and an alarm is raised.
-  * Wildcards **never** select stacking ports or the member's management/underlay port.
+  * Wildcards **never** select stacking ports, the member's management/underlay port, or a port that has IP
+    addresses configured by the operating system (e.g. the installer's management NIC before the takeover).
+    Naming such a port explicitly under `interfaces` is allowed but gives a W, because it can cut management access.
 * **Precedence**: a port that is also listed under `interfaces` uses its explicit statements. The range fills in only
   what the explicit entry does not set:
   * Leaves: the explicit value wins.

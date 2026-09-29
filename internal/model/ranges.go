@@ -102,7 +102,7 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 			continue
 		}
 		for _, linux := range sortedKeys(ports) {
-			if ports[linux].StackPort || b.reservedPort(id, linux) {
+			if ports[linux].StackPort || ports[linux].HasIP || b.reservedPort(id, linux) {
 				continue // never swallowed by wildcards
 			}
 			for _, p := range patterns {
