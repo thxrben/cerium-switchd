@@ -111,6 +111,8 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   `show`, `show | compare`, `show | display set`, `commit`, `commit check`,
   `commit and-quit`, `commit confirmed N`, `commit comment "…"`, `rollback N`, `exit`.
 * Tab completion and `?` help are driven by the same schema that validates config.
+* **The CLI must never fail**: parsing and completion run server-side in switchd with panic recovery per command,
+  and parsers are fuzz-tested. swcli degrades gracefully (it reconnects and explains) when switchd is unavailable.
 * Pipes: `| match`, `| except`, `| count`, `| no-more`, `| display set|json`.
 * Users/classes defined in config (`system login user …`). They are synced to local
   accounts (with swcli as shell) plus SSH keys.
@@ -148,6 +150,44 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   * On peer loss, the survivor continues with the same bridge ID, so the rest of the network sees no topology change.
 * Per-port: `edge`, `bpdu-guard`, `root-guard`, `cost`, `priority`. Per-bridge: priority, timers.
 * Later option: MSTP (per-VLAN-group instances), if needed.
+
+### 4.11 Hardware acceleration and drop watchdog
+Priority order: **1. no dropped frames, 2. speed.** Offload is used wherever the hardware can do it, but never in
+a way that can drop traffic when the hardware misbehaves:
+* **Never `skip_sw`**: tc rules (mirroring, storm control, per-VLAN MTU filters) are always installed so that
+  the kernel offloads them when possible (`in_hw`) and keeps the software path otherwise. The same applies to
+  bridge FDB/VLAN offload via switchdev: the kernel falls back to software for anything the ASIC rejects.
+* **Capability probe** per NIC at startup and on hot-plug: driver, switchdev support, `ethtool -k` features
+  (TSO/GSO/GRO, checksum, rx/tx VLAN offload, UDP tunnel (VXLAN) offload, MACsec offload, hw-tc-offload),
+  ring sizes, max MTU, and the number of queues.
+* **Tuning for no drops**: RX/TX rings at max, RSS across all queues, IRQ affinity spread, optional pause frames,
+  GRO on. Each tuning step is recorded, so it can be reverted.
+* **Runtime offload watchdog** (every few seconds): reads kernel and driver counters (rx_missed, rx_fifo, rx_crc,
+  rx/tx_dropped, `ethtool -S` drop/discard/error counters) and tc/FDB `in_hw`/`not_in_hw` state.
+  If drops or errors rise and correlate with an offload feature (for example checksum errors after enabling
+  rx-checksum, or VXLAN offload errors), the feature is **disabled on that port** (software fallback) and an
+  alarm is raised (`show system alarms`, syslog). The change is kept until an operator clears it.
+  Pure capacity drops (rx_missed at line rate) raise an alarm with a hint instead (rings, queues, CPU).
+* Config: `system offload mode auto|disable`, per-interface `offload disable`, and `system offload watchdog { interval; threshold }`.
+* Future: XDP/eBPF fast path for 25G+/100G, with the same "fall back instead of drop" rule.
+
+### 4.12 Port mirroring (analyzer)
+* Junos syntax: `forwarding-options analyzer <name> input ingress|egress interface <if>` / `output interface <if>`.
+* Implementation: tc `clsact` + `matchall` + `mirred egress mirror`. It is offloaded to the ASIC when supported
+  (switchdev), with the software path otherwise (no skip_sw).
+* Optional VLAN-based input (`input vlan <v>`, via a flower match on the VLAN ID).
+* Commit checks: the output port must not be an input port. A warning is shown if the output port also carries switched traffic.
+
+### 4.13 Commit semantics (safety)
+* `commit check` validates the candidate (schema, cross-references, per-member hardware limits such as max MTU)
+  and prints errors (which block the commit) and warnings (which don't).
+* **Every commit must be confirmed** (default `system commit confirmation required`, timeout 10 min,
+  configurable): a `commit` applies the change and starts a rollback timer. `commit` (again, with no changes) or `confirm`
+  makes it permanent. If it isn't confirmed in time, switchd **automatically reverts** to the last confirmed revision.
+  The pending state is persisted, so a reboot or crash during the window also reverts.
+* A failed apply on any member causes an immediate automatic revert, whatever the timer says.
+* Later phases add post-commit health checks (mgmt still reachable, stack peers up, MC-LAG healthy). If a check fails
+  inside the window, the commit is reverted automatically.
 
 ## 5. Config example
 ```
