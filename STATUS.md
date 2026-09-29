@@ -31,16 +31,18 @@ Last updated: 2026-09-29.
   Execute, Fake kernel with Linux semantics), plan_test.go (property test: subset rule after every op,
   untouched links, idempotence, convergence; example plans; Compute notes).
 - Reference 1.4 updated: released interfaces go down and leave bridge/bundle; switchd owns `swbr0` and ae bonds.
+- Real apply on sw1 (switchd without --dry-run): `test/lab` (go test -tags lab ./test/lab) passes: access
+  isolation, tagged frames dropped on access ports, trunk + native VLAN, 0 loss during 5 commits on another
+  port, released port goes down, restart plans nothing.
 - Property test verified by mutation (deleting VLANs after adding them is caught as a leak).
 
 ## Next (in order)
-1. Netlink Kernel (`netlink.go`, written, compiles; not yet run on a VM): Read
-   (links, masters, bridge VLANs), Apply for each Op; bridge with vlan_filtering=1, default_pvid=0,
-   mcast snooping off, stp off. Deferred Ops: drop-tagged (tc flower), flow-control (ethtool),
-   max-learned (IFLA_BRPORT_MAX_LEARNED) — log as unsupported until implemented.
-2. Real Applier in the daemon: Compute → Read → Plan → Execute; persist owned links; netns
-   integration tests on a lab VM; then real traffic tests with srv1.
-3. Inventory (incl. IFLA_MAX_MTU, not exposed by the library) (model.Inventory from netlink: MTU max, present ports), `show interfaces terse`.
+1. Static LAG test in the lab (sw1 ens21+ens22 <-> host bond on sw2), MTU/jumbo tests, VLAN MTU filter,
+   storm control (tc police), mac-limit, flow control; netlink link events (hot-plug + foreign-change
+   revert, wildcard interface-range re-evaluation).
+2. Inventory (IFLA_MAX_MTU, present ports) → model.Inventory for commit check; `show interfaces [terse]`,
+   `show ethernet-switching table`, `show vlans`.
+3. Management plane (VRF mgmt, IRB-like VLAN interface, static/DHCP), syslog.
 4. `set … authentication plain-text-password`; `start shell`; swcli as login shell (Phase 4).
 
 ## Notes

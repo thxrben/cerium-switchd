@@ -90,7 +90,7 @@ func ingressPrios(l netlink.Link) map[uint16]bool {
 	return out
 }
 
-func delFilter(l netlink.Link, prio uint16) error {
+func delFilter(l netlink.Link, prio uint16, kind string) error {
 	err := netlink.FilterDel(&netlink.GenericFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: l.Attrs().Index,
@@ -98,7 +98,7 @@ func delFilter(l netlink.Link, prio uint16) error {
 			Priority:  prio,
 			Protocol:  ethP8021Q,
 		},
-		FilterType: "matchall",
+		FilterType: kind,
 	})
 	if errors.Is(err, unix.ENOENT) {
 		return nil
@@ -126,12 +126,12 @@ func setDropTagged(l netlink.Link, on bool) error {
 		return nil
 	}
 	if have[prioDropTagged] {
-		if err := delFilter(l, prioDropTagged); err != nil {
+		if err := delFilter(l, prioDropTagged, "matchall"); err != nil {
 			return err
 		}
 	}
 	if have[prioPassPrioTagged] {
-		return delFilter(l, prioPassPrioTagged)
+		return delFilter(l, prioPassPrioTagged, "flower")
 	}
 	return nil
 }
