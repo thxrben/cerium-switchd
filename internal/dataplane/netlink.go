@@ -3,7 +3,6 @@
 package dataplane
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,10 +11,6 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
-
-// ErrUnsupported marks operations that are not implemented on this kernel
-// yet. The executor logs them instead of failing the commit.
-var ErrUnsupported = errors.New("not supported yet")
 
 // Netlink is the real Kernel.
 type Netlink struct {
@@ -84,6 +79,10 @@ func (k *Netlink) Read() (*State, error) {
 			} else {
 				ln.Kind = Other
 			}
+		}
+		if ln.Kind == Physical || ln.Kind == Bond {
+			p := ingressPrios(l)
+			ln.DropTagged = p[prioDropTagged] && p[prioPassPrioTagged]
 		}
 		s.Links[a.Name] = ln
 	}
@@ -177,7 +176,9 @@ func (k *Netlink) Apply(op Op) error {
 		return netlink.BridgeVlanDel(l, op.VID, false, false, false, true)
 	case OpVlanSet:
 		return netlink.BridgeVlanAdd(l, op.VID, op.Flags.PVID, op.Flags.Untagged, false, true)
-	case OpSetFlowControl, OpSetMaxLearned, OpSetDropTagged:
+	case OpSetDropTagged:
+		return setDropTagged(l, op.Bool)
+	case OpSetFlowControl, OpSetMaxLearned:
 		return fmt.Errorf("%s: %w", op, ErrUnsupported)
 	}
 	return fmt.Errorf("unknown op %d", op.Kind)

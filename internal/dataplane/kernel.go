@@ -1,9 +1,14 @@
 package dataplane
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 )
+
+// ErrUnsupported marks operations that are not implemented on this kernel
+// yet. ExecuteLenient logs them instead of failing the commit.
+var ErrUnsupported = errors.New("not supported yet")
 
 // Kernel reads and changes the managed kernel state.
 type Kernel interface {
@@ -180,4 +185,20 @@ func vlanSet(m map[uint16]VlanFlags) map[uint16]VlanFlags {
 		return map[uint16]VlanFlags{}
 	}
 	return maps.Clone(m)
+}
+
+// ExecuteLenient is Execute, except that operations failing with
+// ErrUnsupported are reported to warn and skipped.
+func ExecuteLenient(k Kernel, ops []Op, warn func(Op, error)) error {
+	for i, op := range ops {
+		err := k.Apply(op)
+		if errors.Is(err, ErrUnsupported) {
+			warn(op, err)
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("step %d/%d (%s): %w", i+1, len(ops), op, err)
+		}
+	}
+	return nil
 }
