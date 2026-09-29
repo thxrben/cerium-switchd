@@ -8,6 +8,7 @@ Last updated: 2026-09-29.
 - Spec: `docs/config-reference.md` (tests keep index, prose coverage and examples valid).
 - Directives: `inactive:` / activate / deactivate (all formats, diff `!` lines, `Tree.Active()` used by
   `model.Build`), `load merge|replace|override|set` (atomic, `replace:`/`delete:`), `copy`, `rename`.
+- Plan §4.15: OS ownership (takeover/release, masking conflicts, sysctls, foreign-change revert); lab install steps in §11.
 - Plan §4.14: hitless reconfiguration (diff-driven, no link down, tighten-before-loosen, planner property tests).
 
 ## Next (in order)
