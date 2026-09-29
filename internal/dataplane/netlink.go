@@ -52,9 +52,9 @@ func (k *Netlink) Read() (*State, error) {
 			continue
 		}
 		ln := &Link{
-			Name:    a.Name,
-			Up:      a.Flags&net.FlagUp != 0,
-			MTU:     a.MTU,
+			Name: a.Name,
+			Up:   a.Flags&net.FlagUp != 0,
+			MTU:  a.MTU,
 			// MaxMTU (IFLA_MAX_MTU) is not exposed by the netlink library;
 			// the inventory reads it separately.
 			Alias:   a.Alias,
