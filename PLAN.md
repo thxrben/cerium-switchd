@@ -131,6 +131,11 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   grid per member, live counters, FDB search, config editor with diff and commit, and alarms.
 * Auth: the same users/classes as the CLI.
 
+### 4.9 Syslog
+* `system syslog host <ip> [port N] [transport udp|tcp|tls] [facility …] [severity …]`.
+* RFC 5424, buffered with retry for TCP/TLS, source in mgmt VRF. Also a local ring buffer
+  (`show log`) and journald.
+
 ### 4.10 RSTP
 * **Own RSTP implementation in Go**. The bridge runs with `stp_state=2` (user mode)
   and switchd sends/receives BPDUs via AF_PACKET and sets port states via netlink.
@@ -143,11 +148,6 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   * On peer loss, the survivor continues with the same bridge ID, so the rest of the network sees no topology change.
 * Per-port: `edge`, `bpdu-guard`, `root-guard`, `cost`, `priority`. Per-bridge: priority, timers.
 * Later option: MSTP (per-VLAN-group instances), if needed.
-
-### 4.9 Syslog
-* `system syslog host <ip> [port N] [transport udp|tcp|tls] [facility …] [severity …]`.
-* RFC 5424, buffered with retry for TCP/TLS, source in mgmt VRF. Also a local ring buffer
-  (`show log`) and journald.
 
 ## 5. Config example
 ```
@@ -199,16 +199,140 @@ test/netns/         integration tests using network namespaces + veth
 packaging/          systemd units, arch PKGBUILD, deb
 ```
 
-## 8. Milestones (each ends with a commit + tests)
-1. **Config core**: schema, tree, set/delete, commit/rollback/compare, persistent store; CLI REPL over unix socket.
-2. **Local data plane**: bridge, VLANs, access/trunk, MTU per port and VLAN, mgmt VRF, syslog. Netns tests.
-3. **Access**: user management, SSH (login shell), serial getty, web API, health, metrics, minimal UI.
-4. **Stacking**: CA/mTLS, join, Raft, per-member apply, `show stack`.
-5. **LACP + MC-LAG**: userspace LACP, peer link, keepalive, FDB sync, split horizon, failover. Netns tests with a simulated partner switch.
-5b. **RSTP**: standalone RSTP first, then MC-LAG integration (one logical bridge).
-6. **VXLAN**: vnifilter device, control-plane mesh, anycast VTEP for MC-LAG pairs.
-7. **Security extras**: MACsec peer link, WireGuard underlay option.
-8. **Polish**: full web UI, packaging, docs, `commit confirmed`, alarms.
+## 8. Implementation order
+
+Guiding rules:
+* Build bottom-up. Every phase leaves a working, testable system and ends with commits and tests.
+* Everything that does not need a real network (config engine, CLI, protocol state machines)
+  is built and unit-tested **locally first**. Anything that touches the kernel runs on the **Proxmox VMs**.
+* Stacking comes **before** MC-LAG and VXLAN, because both rely on the member-to-member mTLS channel
+  and on config that spans members.
+* Protocol state machines (LACP, RSTP, MC-LAG sync) are pure Go logic behind small I/O
+  interfaces, so they can be unit-tested with simulated links before they hit the VMs.
+
+### Phase 0: Foundations (local)
+1. Go module, directory layout (§7), Makefile, cross-compiling for amd64/arm64/armv7, linting, `make test`.
+2. Daemon skeleton: structured logging, signal handling, systemd notify, `--dry-run` mode (no kernel changes).
+3. RPC between swcli and switchd: gRPC over a unix socket. The same API is later reused over mTLS between members.
+
+### Phase 1: Config engine (local, pure unit tests)
+1. **Schema DSL** in Go: containers, keyed lists, leaves with types (int range, enum, string pattern,
+   IP/CIDR, MAC, VLAN list/ranges, interface reference), defaults, help text. It is the single source for
+   validation, CLI completion, `?` help, web forms and generated docs.
+2. **Config tree**: `set` / `delete` / `edit` path handling, `[ a b ]` lists, `inactive:` / annotations later.
+3. **Formats**: parse and print `set` format, curly-brace format and JSON. Round-trip tests.
+4. **Commit engine**:
+   * Candidate per session. `configure` (shared), `configure private`, `configure exclusive`, with locks.
+   * `commit check`, with cross-reference validation: VLAN exists, interface exists on its member, MTU consistency,
+     one interface in one bond only, etc.
+   * `commit`, `commit and-quit`, `commit comment`, `commit confirmed N` (auto-rollback timer).
+   * `rollback N` (50 revisions with user, time and comment), `show | compare [rollback N]`.
+5. **Store interface**: a local file store (bbolt) first. The Raft implementation replaces it in Phase 5.
+6. **Apply pipeline**: committed config → per-member desired state → subsystems with *validate → apply*.
+   If apply fails on a member, it falls back to the previous config and reports the error per member.
+
+### Phase 2: CLI (local)
+1. Line editing and history, prompts `user@host>` (operational) and `user@host#` (configuration), `[edit vlans]` banner.
+2. Schema-driven tab completion, `?` help, unique-prefix abbreviations, `edit` / `up` / `top` / `exit`.
+3. Pipes: `| match`, `| except`, `| count`, `| no-more`, `| display set`, `| display json`, and a pager.
+4. Operational command framework (a registry of `show` / `request` / `clear` / `monitor` commands).
+5. Permission classes: `super-user`, `operator`, `read-only`.
+
+**Checkpoint A:** switchd runs locally in dry-run mode. You can SSH into this box (or run swcli), configure the
+full schema, commit, roll back and compare. Good moment for you to review the CLI feel.
+
+### Phase 3: Local data plane (VM: sw1 [+ srv1 for traffic])
+1. Netlink interface discovery and live link events. Capability detection (driver, speed, offload flags via ethtool).
+   `show interfaces [terse|extensive]` with stats64 counters.
+2. **Reconciler**: desired vs actual, idempotent, and it touches only objects it owns (tagged via ifalias/altname).
+   Kernel state survives a switchd restart, so there is no traffic loss when the daemon restarts.
+3. Bridge `br0` with `vlan_filtering`, access/trunk/native VLAN, admin up/down, descriptions.
+4. **Jumbo frames**: MTU per port (native), per VLAN (nftables bridge rules with counters), and commit-time MTU checks.
+5. Static LAGs (bond without LACP, which comes in Phase 6), hash policy, min-links.
+6. FDB: `show ethernet-switching table`, `clear …`, ageing, static MACs, per-port MAC limits, storm control (tc police), BPDU guard.
+7. **Management**: mgmt VRF, static IP or DHCP, default route, DNS, NTP (via systemd-timesyncd/chrony config).
+8. **Syslog** to remote hosts over UDP/TCP/TLS, a local ring buffer, `show log`.
+9. Netns integration tests (run on the VM) plus real traffic tests with srv1.
+
+### Phase 4: Access (VM: sw1)
+1. `system login user … class … authentication (encrypted-password|ssh-ed25519 …)`, synced to local accounts
+   with swcli as the shell. Stale managed users are removed.
+2. OpenSSH: a managed drop-in config, running inside the mgmt VRF. Root/Linux shell only for an explicit `start shell`
+   privilege.
+3. **Serial**: auto-detect `ttyS*` / `ttyUSB*` / `ttyACM*`, configurable ports and baud rate, managed `serial-getty@` units.
+   Tested via the Proxmox serial socket (`qm terminal`).
+4. **Web / API**: HTTPS server (self-signed or configured cert) in the mgmt VRF, login with the config users,
+   REST for config (candidate / compare / commit / rollback, with the same semantics as the CLI) and state,
+   `/healthz`, `/readyz`, `/metrics` (Prometheus).
+5. Minimal web UI: login, dashboard, interfaces, FDB search, config editor (text + diff + commit).
+
+### Phase 5: Stacking (VMs: sw1, sw2, sw3)
+1. **PKI**: stack CA created on the first member, join tokens, CSR signing, automatic cert renewal.
+2. Member-to-member gRPC over mTLS 1.3 via the mgmt network (seed addresses in config / join command).
+3. **Raft store** replaces the local store. Config locks work across the whole stack. Voter management is automatic
+   (max 5 voters, the rest are non-voters). Witness mode (a member without a data plane).
+4. Per-member apply with results reported back: `commit` prints the result per member (like Junos VC).
+5. Stack-wide operational commands: `show interfaces` / `show stack` for all members, `request … member N`.
+   CLI and web work from any member.
+6. Failure tests: leader killed, network partition, member rejoin, and a check that the data plane keeps forwarding without quorum.
+
+### Phase 6: LACP (VMs: sw1, srv1)
+1. 802.1AX LACP state machines (receive, periodic, selection, mux) in pure Go, unit-tested with simulated partners.
+2. I/O: AF_PACKET + BPF per member port. The bond runs in non-LACP mode, and switchd adds/removes members
+   according to the LACP state. Options: active/passive, fast/slow rate, system priority, port priority, min-links.
+3. `show lacp interfaces`, `show lacp statistics`.
+4. Interop test against a normal Linux 802.3ad bond on srv1.
+
+### Phase 7: MC-LAG (VMs: sw1, sw2, srv1)
+1. Peer session: control over the peer link (link-local IP on reserved VLAN 4094) and keepalive over mgmt,
+   both mTLS. Primary/secondary role election (priority, then member ID).
+2. Shared LACP system ID and disjoint port-number ranges, so srv1 sees one partner.
+3. Consistency checks (VLANs, MTU, LACP parameters). On a mismatch the bond is set to proto-down with a reason.
+4. **MAC sync**: learned MACs, moves, coordinated ageing and flush on link down.
+5. **Split horizon** via nftables, updated dynamically with each leg's state.
+6. Failure handling: leg down, peer link down with keepalive up (the secondary shuts its ports), peer dead,
+   switchd crash, and reboot/rejoin (delay-restore timer).
+7. `show mclag`, `show mclag consistency`, alarms.
+8. Failure-matrix tests with measured convergence (high-rate ping and iperf3 from srv1).
+
+### Phase 8: RSTP (VMs: sw1, sw2, sw3 in a loop, + srv2)
+1. 802.1w state machines in pure Go (port roles, proposal/agreement, edge/p2p, TC → FDB flush), unit-tested.
+2. I/O: bridge in user-mode STP, BPDUs via AF_PACKET, port states via netlink.
+3. Edge ports, BPDU guard, root guard, cost and priority, and 802.1D compatibility.
+4. **MC-LAG integration**: shared bridge ID. The primary computes MC-LAG port states, and BPDUs arriving on the secondary's
+   leg are relayed over the peer link. The peer link is never blocked. When the peer fails, the survivor keeps the bridge ID.
+5. Interop tests against mstpd on a srv VM, plus loop tests (sw1–sw3–sw2 triangle).
+
+### Phase 9: VXLAN (VMs: sw1, sw2, sw3, srv2)
+1. One vxlan device per member in vnifilter mode, VLAN↔VNI mapping, underlay source interface, MTU checks.
+2. Control plane over the stack channel: VTEP and MAC advertisements per VNI, head-end replication (flood) lists,
+   remote MAC installation, MAC moves.
+3. Anycast VTEP for MC-LAG pairs.
+4. Static external VTEPs and a flood-and-learn mode for non-stack peers.
+5. Loop safety: VTEP-to-VTEP forwarding is never allowed (split horizon), so the mesh is loop-free by construction,
+   and VXLAN ports are excluded from RSTP.
+6. `show vxlan`, `show vxlan remote-vteps`, `show ethernet-switching table vni …`.
+
+### Phase 10: Data-plane encryption (opt-in per link)
+1. **MACsec** on the peer link. Keys (SAKs) are generated and rotated by switchd and exchanged over the mTLS channel,
+   so no wpa_supplicant/MKA is needed. Hardware offload is used where the NIC supports it.
+2. **WireGuard** underlay for VXLAN: keys are generated per member and distributed via the stack, and VXLAN runs over WireGuard IPs.
+   Commit checks cover the MTU budget (overlay + 50 + 60).
+3. Benchmarks on x86 and one ARM board, with the numbers documented.
+
+### Phase 11: Polish and packaging
+1. Full web UI: stack view, port grid per member, live graphs, MC-LAG/RSTP/VXLAN status, alarms.
+2. `show system alarms`, `request system software add` (rolling upgrade across the stack), config archival.
+3. `.deb` packages (Debian first) and a bootstrap script. Docs: user guide and a CLI reference generated from the schema.
+
+### VM needs by phase
+| Phase | VMs needed |
+|---|---|
+| 0–2 | none (local) |
+| 3–4 | sw1, srv1 |
+| 5 | sw1, sw2, sw3 |
+| 6–7 | sw1, sw2, srv1 |
+| 8–9 | all five |
 
 ## 9. Known limits / non-goals
 * No inter-VLAN routing (only mgmt IP).
