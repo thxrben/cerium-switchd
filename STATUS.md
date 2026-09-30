@@ -100,10 +100,12 @@ Last updated: 2026-09-30 (early morning).
   creation; its state file was repaired by hand, the log proved switchd created it); swcli batch mode answers
   questions from the input.
 
+- Operational commands on other members (`member <id>` | `all-members` | `local`), witness role, a member shows its
+  own commit at once after a relayed session; lab tests for ring cut, master killed, minority partition (forwarding
+  continues, configure refused), stacking frames on data ports. 23 lab tests pass.
+
 ## Next (in order)
-1. Phase 5 rest: stack-wide show commands and `member <id>` targets (show interfaces of all members, request
-   system reboot member N), ring-cut lab test, witness role, read-your-writes after a relayed commit (members
-   show a commit ~0.6 s later).
+1. Phase 6 LACP (then drain on member removal), Phase 7 MC-LAG.
 2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
 
@@ -121,6 +123,9 @@ Last updated: 2026-09-30 (early morning).
    continue with an explicit, logged override (`request virtual-chassis force-master`), accepting split-brain risk?
 5. A member removed from the stack keeps its member id as the only member of a new stack (so its configuration
    and management access stay valid). Would you rather have it renumbered to member 1 (interface names change)?
+
+6. Operational commands default to the local member; Junos VC defaults many of them (show chassis hardware, show
+   system uptime, request system reboot) to all members. Keep the local default (safer for reboots), or follow Junos?
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

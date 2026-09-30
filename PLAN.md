@@ -441,6 +441,11 @@ In this order (the user's priorities; each step is spec first, then implementati
 8. Failure tests: leader killed, stacking link cut (ring re-route), partition, member rejoin, and a check that the
    data plane keeps forwarding without quorum.
 
+Status 2026-09-30: steps 1–8 done and lab-tested (test/lab: TestVirtualChassis, …RingCut, …MasterKilled,
+…Partition, TestStackingFramesOnDataPorts), witness role (data plane off, never master; no lab member for it yet).
+Open: the "drain" part of member removal (LACP partners) comes with Phase 6; a configuration session relayed to the
+master ends when the stacking path to the master changes (end-to-end retransmission in the mesh would keep it).
+
 ### Phase 6: LACP (VMs: sw1, srv1)
 1. 802.1AX LACP state machines (receive, periodic, selection, mux) in pure Go, unit-tested with simulated partners.
 2. I/O: AF_PACKET + BPF per member port. The bond runs in non-LACP mode, and switchd adds/removes members

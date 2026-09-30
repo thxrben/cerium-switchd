@@ -1167,3 +1167,150 @@ exit"`, time.Now().Unix()))
 		t.Error("mastership moved because of the cut")
 	}
 }
+
+// Stacking frames (EtherType 0x88b5) that arrive on a data port are data:
+// they are switched like any frame, unchanged, and never reach the stack
+// (reference 1.5, planes; PLAN.md Phase 5 step 4).
+func TestStackingFramesOnDataPorts(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10"))
+	capture := make(chan string, 1)
+	go func() {
+		o, _ := ssh(hSw3.vm, "timeout 6 ip netns exec h tcpdump -c 3 -nn -x -i "+hSw3.nic+" ether proto 0x88b5 2>/dev/null")
+		capture <- o
+	}()
+	time.Sleep(2 * time.Second)
+	// Broadcast frames with the stacking EtherType and a recognisable payload.
+	send := `ip netns exec h python3 -c '
+import socket
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind(("` + hSrv1.nic + `", 0))
+mac = open("/sys/class/net/` + hSrv1.nic + `/address").read().strip().replace(":", "")
+f = bytes.fromhex("ffffffffffff" + mac + "88b5") + b"MJOINFORGEDSTACKFRAME" + bytes(40)
+for _ in range(3): s.send(f)
+'`
+	mustSSH(t, hSrv1.vm, send)
+	out := <-capture
+	if strings.Count(out, "0x88b5") < 3 && strings.Count(out, "ethertype Unknown") < 3 {
+		t.Fatalf("stacking-EtherType frames were not switched to the other data port:\n%s", out)
+	}
+	// "MJOI" = 4d4a 4f49: the payload arrives unchanged.
+	if !strings.Contains(strings.ReplaceAll(out, " ", ""), "4d4a4f494e464f52474544") {
+		t.Errorf("payload changed:\n%s", out)
+	}
+	// The frames look like a join attempt; the stack must not have seen them.
+	if logs := mustSSH(t, sw1, "journalctl -u switchd --no-pager -o cat --since -8s"); strings.Contains(logs, "join") {
+		t.Errorf("the stack reacted to frames on a data port:\n%s", logs)
+	}
+}
+
+// The master fails (switchd killed): another member takes over, commits
+// work, and the old master catches up when it is back.
+func TestVirtualChassisMasterKilled(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("the lab stack (sw1-sw3, three voters) is not formed:\n%s", out)
+		}
+	}
+	masterSw1(t)
+	mustSSH(t, sw1, "systemctl kill -s KILL switchd")
+	waitVC(t, sw2Addr, "a new master", func(o string) bool {
+		return vcRow(2, `master`).MatchString(o) || vcRow(3, `master`).MatchString(o)
+	})
+	desc := fmt.Sprintf("after-kill-%d", time.Now().Unix())
+	out = mustSSH(t, sw3Addr, `swcli -c "configure
+set vlans v30 description `+desc+`
+commit
+commit
+exit"`)
+	if !strings.Contains(out, "member2: commit complete") || !strings.Contains(out, "member3: commit complete") {
+		t.Fatalf("commit after the master was killed:\n%s", out)
+	}
+	waitVC(t, sw1, "sw1 back", func(o string) bool { return vcRow(1, `\S+ +\d+ +voter +present`).MatchString(o) })
+	for i := 0; ; i++ {
+		if strings.Contains(mustSSH(t, sw1, "swcli -c 'show configuration vlans v30'"), desc) {
+			break
+		}
+		if i == 50 {
+			t.Fatal("sw1 did not catch up with the commit it missed")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	masterSw1(t)
+}
+
+// A member cut off from the others (minority) keeps forwarding with the
+// last configuration; configuration mode fails with a message; the majority
+// commits; the member catches up when the cables are back.
+func TestVirtualChassisPartition(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("the lab stack (sw1-sw3, three voters) is not formed:\n%s", out)
+		}
+	}
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10"))
+	pingDone := make(chan string, 1)
+	go func() {
+		o, _ := ssh(hSrv1.vm, "ip netns exec h ping -i 0.01 -w 120 -q 192.168.1.3")
+		pingDone <- o
+	}()
+	time.Sleep(time.Second)
+	// Both stacking ports of sw1 (1/0 = ens19, 2/0 = ens20).
+	var cut, heal []string
+	for _, p := range []string{"ens19", "ens20"} {
+		cut = append(cut, "tc qdisc replace dev "+p+" root netem loss 100% && (tc qdisc add dev "+p+" clsact 2>/dev/null; true) && "+
+			"tc filter add dev "+p+" ingress pref 1 matchall action drop")
+		heal = append(heal, "tc qdisc del dev "+p+" root 2>/dev/null; tc filter del dev "+p+" ingress pref 1 2>/dev/null")
+	}
+	healAll := strings.Join(heal, "; ") + "; true"
+	t.Cleanup(func() { ssh(sw1, healAll) })
+	mustSSH(t, sw1, strings.Join(cut, " && "))
+	waitVC(t, sw1, "sw1 without master", func(o string) bool { return strings.Contains(o, "No master") })
+	out = mustSSH(t, sw1, "swcli -c 'configure' || true")
+	if !strings.Contains(out, "configuration unavailable") {
+		t.Errorf("configure on the minority side:\n%s", out)
+	}
+	desc := fmt.Sprintf("during-partition-%d", time.Now().Unix())
+	waitVC(t, sw2Addr, "a master on the majority side", func(o string) bool {
+		return vcRow(2, `master`).MatchString(o) || vcRow(3, `master`).MatchString(o)
+	})
+	out = mustSSH(t, sw2Addr, `swcli -c "configure
+set vlans v30 description `+desc+`
+commit
+commit
+exit"`)
+	if !strings.Contains(out, "member1: pending") || !strings.Contains(out, "member3: commit complete") {
+		t.Fatalf("commit on the majority side:\n%s", out)
+	}
+	mustSSH(t, sw1, healAll)
+	waitVC(t, sw1, "sw1 back in the stack", func(o string) bool {
+		return !strings.Contains(o, "No master") && vcRow(2, `\S+ +\d+ +voter +present`).MatchString(o)
+	})
+	for i := 0; ; i++ {
+		if strings.Contains(mustSSH(t, sw1, "swcli -c 'show configuration vlans v30'"), desc) {
+			break
+		}
+		if i == 100 {
+			t.Fatal("sw1 did not catch up with the commit made during the partition")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	ssh(hSrv1.vm, "pkill -INT -f 'ping -i 0.01'")
+	res := <-pingDone
+	m := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received`).FindStringSubmatch(res)
+	if m == nil {
+		t.Fatalf("ping result:\n%s", res)
+	}
+	tx, _ := strconv.Atoi(m[1])
+	rx, _ := strconv.Atoi(m[2])
+	t.Logf("%d of %d pings answered through the partitioned member", rx, tx)
+	if tx < 300 || rx < tx {
+		t.Errorf("forwarding interrupted during the partition: %d of %d answered", rx, tx)
+	}
+	masterSw1(t)
+}
