@@ -273,6 +273,35 @@ func (r *Runtime) carrier(port string) bool {
 	return err == nil && strings.TrimSpace(string(b)) == "1"
 }
 
+// SetHold holds a bundle's ports out of the bundle (MC-LAG) or releases
+// them.
+func (r *Runtime) SetHold(bundle string, hold bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rb := r.bundles[bundle]; rb != nil && rb.b.Held() != hold {
+		rb.b.SetHold(hold)
+		now := time.Now()
+		rb.b.Tick(now)
+		r.enforce(rb)
+	}
+}
+
+// Legs reports per bundle whether it carries traffic on this switch (at
+// least minimum-links ports are collecting and distributing).
+func (r *Runtime) Legs() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]bool{}
+	for n, rb := range r.bundles {
+		up := false
+		for _, on := range rb.enabled {
+			up = up || on
+		}
+		out[n] = up
+	}
+	return out
+}
+
 // Status reports every bundle.
 func (r *Runtime) Status() []BundleStatus {
 	r.mu.Lock()

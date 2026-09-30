@@ -283,3 +283,26 @@ func TestDefaultedRate(t *testing.T) {
 		t.Errorf("%d LACPDUs in 10 s without a partner", n)
 	}
 }
+
+// A held bundle tells the partner "not in sync"; the partner stops
+// distributing on those ports, and they return when the hold ends.
+func TestHold(t *testing.T) {
+	s := newSim()
+	a := s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1")
+	b := s.add("B", Config{System: sys(2), Key: 1, Active: true, Fast: true}, "p1")
+	s.connect("A/p1", "B/p1")
+	s.run(4 * time.Second)
+	a.SetHold(true)
+	s.run(300 * time.Millisecond)
+	if len(dist(a)) != 0 || len(dist(b)) != 0 {
+		t.Fatalf("held bundle still distributing: A %v B %v", dist(a), dist(b))
+	}
+	if st := b.Status()[0]; st.Partner.State.Has(Sync) {
+		t.Error("partner still sees the held port in sync")
+	}
+	a.SetHold(false)
+	s.run(4 * time.Second)
+	if len(dist(a)) != 1 || len(dist(b)) != 1 {
+		t.Errorf("after the hold: A %v B %v", dist(a), dist(b))
+	}
+}

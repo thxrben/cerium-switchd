@@ -40,6 +40,7 @@ type ops struct {
 	log     *slog.Logger
 	dryRun  bool
 	lacp    *lacp.Runtime
+	mclag   *mclagCtl
 }
 
 func (o *ops) model() *model.Config {
@@ -478,6 +479,13 @@ func (o *ops) LACP() ([]lacp.BundleStatus, error) {
 		return nil, errors.New("LACP is not running (dry-run mode?)")
 	}
 	return o.lacp.Status(), nil
+}
+
+func (o *ops) MCLAG() (cli.MCLAGStatus, error) {
+	if o.mclag == nil {
+		return cli.MCLAGStatus{}, errors.New("MC-LAG is not running (dry-run mode?)")
+	}
+	return o.mclag.status()
 }
 
 func (o *ops) SwitchMaster(to int, user string) error {

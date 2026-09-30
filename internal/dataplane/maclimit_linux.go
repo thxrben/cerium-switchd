@@ -55,14 +55,22 @@ func (k *Netlink) maxLearned(port string) int {
 // EnforceMACLimits runs until ctx is done.
 func (k *Netlink) EnforceMACLimits(ctx context.Context, log *slog.Logger) {
 	m := k.ml()
-	updates := make(chan netlink.NeighUpdate, 1024)
-	done := make(chan struct{})
-	defer close(done)
-	if err := netlink.NeighSubscribeWithOptions(updates, done, netlink.NeighSubscribeOptions{
-		ErrorCallback: func(err error) { log.Warn("mac-limit: neighbour events", "err", err) },
-	}); err != nil {
-		log.Warn("mac-limit: no FDB events; checking every 5 s", "err", err)
+	var updates chan netlink.NeighUpdate
+	var done chan struct{}
+	subscribe := func() {
+		if done != nil {
+			close(done)
+		}
+		updates, done = make(chan netlink.NeighUpdate, 1024), make(chan struct{})
+		if err := netlink.NeighSubscribeWithOptions(updates, done, netlink.NeighSubscribeOptions{
+			ErrorCallback: func(err error) { log.Debug("mac-limit: neighbour events", "err", err) },
+		}); err != nil {
+			log.Warn("mac-limit: no FDB events; checking every 5 s", "err", err)
+			updates = nil
+		}
 	}
+	subscribe()
+	defer func() { close(done) }()
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -71,14 +79,19 @@ func (k *Netlink) EnforceMACLimits(ctx context.Context, log *slog.Logger) {
 			return
 		case u, ok := <-updates:
 			if !ok {
-				updates = nil
-				continue
+				// The subscription ended (the socket overflowed under a flood of
+				// new addresses): subscribe again and check at once.
+				subscribe()
+				break
 			}
 			if u.Family != unix.AF_BRIDGE {
 				continue
 			}
 		case <-m.kick:
 		case <-tick.C:
+			if updates == nil {
+				subscribe()
+			}
 		}
 		k.enforceOnce(log)
 	}

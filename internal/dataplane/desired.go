@@ -62,7 +62,15 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			// collecting and distributing (minimum-links is enforced there).
 			l.Bond = &BondOpts{Mode: "lacp", HashPolicy: l.Bond.HashPolicy}
 		}
-		if i.Switching {
+		switch {
+		case isPeerLink(cfg, i.Name):
+			// All VLANs, tagged; untagged frames have no VLAN and are dropped
+			// (reference 5.6).
+			l.Master, l.VLANs, l.NoLearning = BridgeName, map[uint16]VlanFlags{}, true
+			for id := range cfg.VLANByID {
+				l.VLANs[uint16(id)] = VlanFlags{}
+			}
+		case i.Switching:
 			l.Master = BridgeName
 			l.VLANs, l.DropTagged = portVLANs(i)
 		}
@@ -224,4 +232,14 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 		}
 	}
 	return l
+}
+
+// isPeerLink reports whether bundle name is an MC-LAG domain's peer-link.
+func isPeerLink(cfg *model.Config, name string) bool {
+	for _, d := range cfg.Domains {
+		if d.PeerLink == name {
+			return true
+		}
+	}
+	return false
 }

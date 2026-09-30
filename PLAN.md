@@ -469,6 +469,24 @@ master ends when the stacking path to the master changes (end-to-end retransmiss
 7. `show mclag`, `show mclag consistency`, alarms.
 8. Failure-matrix tests with measured convergence (high-rate ping and iperf3 from srv1).
 
+### Phase 7b: Rolling upgrades without impact (requested 2026-09-30)
+Members of a stack and of an MC-LAG domain must keep working together while they run different software versions,
+so a pair can be updated one switch at a time: maintenance mode (drain: LACP out of sync, mastership moved,
+MAC sync complete), update, rejoin (delay-restore), then the other switch.
+* **Compatibility window**: a version works with its predecessor and successor release line, including across a major
+  step: 1.9 (the last 1.x) ↔ 2.0 must work; larger jumps (e.g. 1.4 ↔ 2.5) are not supported and are refused with a
+  clear message ("update to 1.9 first") instead of misbehaving.
+* **Protocol versions**: every stack/MC-LAG message family (stacking link, mesh, Raft entries, control RPC, leg state,
+  MAC sync, micro-BFD, LACP state files) carries a version; each side announces the range it speaks in the session
+  hello, and both use the highest common one. Unknown fields are ignored, removed fields keep being sent for one
+  release line. Replicated configuration: the config schema is versioned; the master commits only what every member
+  can apply (new statements are refused while an older member is present), and upgrades of stored revisions
+  (internal/daemon/upgrade.go) stay reversible within the window.
+* `request system maintenance-mode enter|exit` (drain before an update; exit rejoins), `show version all-members`
+  shows mixed versions, and a commit check warns while versions differ.
+* Tests: a compatibility matrix in CI (N-1 ↔ N for every message family, recorded fixtures of older versions), and a
+  lab rolling-upgrade test under traffic (0 loss) from the previous release to the current one.
+
 ### Phase 8: RSTP (VMs: sw1, sw2, sw3 in a loop, + srv2)
 1. 802.1w state machines in pure Go (port roles, proposal/agreement, edge/p2p, TC → FDB flush), unit-tested.
 2. I/O: bridge in user-mode STP, BPDUs via AF_PACKET, port states via netlink.

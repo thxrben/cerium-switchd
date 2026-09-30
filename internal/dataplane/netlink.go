@@ -114,6 +114,13 @@ func (k *Netlink) Read() (*State, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, l := range links {
+		if ln := s.Links[l.Attrs().Name]; ln != nil && ln.Master == BridgeName {
+			if pi, err := netlink.LinkGetProtinfo(l); err == nil {
+				ln.NoLearning = !pi.Learning
+			}
+		}
+	}
 	for idx, infos := range vlans {
 		l := s.Links[byIndex[int(idx)]]
 		if l == nil || l.Master != BridgeName {
@@ -222,6 +229,8 @@ func (k *Netlink) Apply(op Op) error {
 	case OpSetMaxLearned:
 		k.setMaxLearned(op.Link, op.Int)
 		return nil
+	case OpSetLearning:
+		return netlink.LinkSetLearning(l, op.Bool)
 	case OpSetFlowControl:
 		return setFlowControl(op.Link, op.Bool)
 	}

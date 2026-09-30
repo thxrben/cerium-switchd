@@ -530,6 +530,14 @@ func (f *fakeOps) LACP() ([]lacp.BundleStatus, error) {
 	}}}, nil
 }
 
+func (f *fakeOps) MCLAG() (MCLAGStatus, error) {
+	return MCLAGStatus{Domain: 1, Member: 1, Peer: 2, Primary: true, PeerReachable: true, PeerLink: "ae10", PeerLinkUp: true,
+		PeerKnown: true, PeerSeen: time.Now(), Bundles: []MCLAGBundle{
+			{Name: "ae1", LocalUp: true, PeerUp: true, PeerKnown: true, SplitHorizon: true},
+			{Name: "ae2", LocalUp: false, PeerUp: false, PeerKnown: true, Hold: "delay-restore (4m50s left)"},
+		}}, nil
+}
+
 func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
 func (f *fakeOps) RemoveVCMember(id int, user string) error { return nil }
 func (f *fakeOps) JoinVC(token, user string) (int, error)   { return 2, nil }
@@ -849,4 +857,14 @@ func TestShowLACP(t *testing.T) {
 	contains(t, ts.run("show lacp interfaces 1/2/0"), "expecting an aggregated interface")
 	contains(t, ts.ok("show lacp statistics interfaces"), "      1/2/0                30         31            0            0",
 		"      1/3/0                 0          5            0            1")
+}
+
+func TestShowMCLAG(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.ok("show mclag"), "MC-LAG domain 1: member 1 (primary), peer member 2",
+		"Peer over the stacking plane: reachable", "Peer-link ae10: up",
+		"  ae1        up     up       on             -",
+		"  ae2        down   down     off            delay-restore (4m50s left)")
 }

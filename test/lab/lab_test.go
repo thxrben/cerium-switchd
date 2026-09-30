@@ -1422,3 +1422,215 @@ func TestLACP(t *testing.T) {
 		t.Errorf("statistics:\n%s", o)
 	}
 }
+
+// memberPort returns member addr's switch name of a Linux port.
+func memberPort(t *testing.T, addr, linux string) string {
+	t.Helper()
+	for _, l := range strings.Split(mustSSH(t, addr, "swcli -c 'show chassis hardware'"), "\n") {
+		if f := strings.Fields(l); len(f) >= 2 && f[1] == linux && strings.Count(f[0], "/") == 2 {
+			return f[0]
+		}
+	}
+	t.Fatalf("%s has no port %s", addr, linux)
+	return ""
+}
+
+// MC-LAG (reference 5.6): srv1 bonds srv1-a (to sw1) and srv1-b (to sw2)
+// with LACP and sees one partner; sw1 and sw2 are the domain, with the
+// peer-link over peer1/peer2. Traffic reaches a single-homed host on sw1
+// without duplicates, survives the loss of either leg, and the secondary
+// holds its leg when the peer-link fails.
+func TestMCLAG(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 2; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("sw1 and sw2 are not in one stack:\n%s", out)
+		}
+	}
+	// sw2's peer1/peer2 become switch ports again (the LAG tests use them in
+	// a namespace), srv1 bonds its two NICs.
+	mustSSH(t, sw2Addr, "for i in ens21 ens22; do ip -n b link set $i netns 1 2>/dev/null; done; ip netns del b 2>/dev/null; true")
+	mustSSH(t, hSrv1.vm, `ip netns add m 2>/dev/null; ip -n h link set ens19 netns m 2>/dev/null; ip link set ens19 netns m 2>/dev/null; ip link set ens20 netns m 2>/dev/null
+ip -n m link del bond0 2>/dev/null; ip -n m link set lo up
+ip -n m link add bond0 type bond mode 802.3ad lacp_rate fast xmit_hash_policy layer3+4 miimon 100
+for i in ens19 ens20; do ip netns exec m ethtool -s $i speed 10000 duplex full autoneg off; ip -n m link set $i down; ip -n m link set $i master bond0; done
+ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
+	t.Cleanup(func() {
+		if t.Failed() && os.Getenv("LAB_KEEP") != "" {
+			return // leave the setup for inspection
+		}
+		ssh(hSrv1.vm, "ip -n m link del bond0; ip -n m link set ens19 netns h; ip -n m link set ens20 netns 1; ip netns del m")
+		setupBondHost(t, 1500) // sw2's peer1/peer2 back into namespace b
+	})
+	setupHost(t, hSw3)
+	time.Sleep(2 * time.Second) // sw2 numbers the returned ports
+	p1, p2, srv1b := memberPort(t, sw2Addr, "ens21"), memberPort(t, sw2Addr, "ens22"), memberPort(t, sw2Addr, "ens23")
+	cfg := vlans + access(hSw3.sw1Port, "v10") +
+		"set interfaces 1/ens21 ether-options 802.3ad ae10\nset interfaces 1/ens22 ether-options 802.3ad ae10\n" +
+		"set interfaces " + p1 + " ether-options 802.3ad ae10\nset interfaces " + p2 + " ether-options 802.3ad ae10\n" +
+		"set interfaces ae10 description peer-link\n" +
+		"set interfaces ae1 aggregated-ether-options lacp active\nset interfaces ae1 aggregated-ether-options lacp periodic fast\n" +
+		"set interfaces ae1 aggregated-ether-options mclag\nset interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
+		"set interfaces 1/ens23 ether-options 802.3ad ae1\nset interfaces " + srv1b + " ether-options 802.3ad ae1\n" +
+		"set mclag domain 1 members [ 1 2 ]\nset mclag domain 1 peer-link ae10\nset mclag domain 1 delay-restore 5\n"
+	configure(t, cfg)
+
+	// srv1 aggregates both legs towards one partner.
+	var bond string
+	for i := 0; ; i++ {
+		bond = mustSSH(t, hSrv1.vm, "ip netns exec m cat /proc/net/bonding/bond0")
+		if strings.Contains(bond, "Number of ports: 2") {
+			break
+		}
+		if i == 100 {
+			t.Fatalf("srv1 did not aggregate both legs:\n%s\nsw1:\n%s\nsw2:\n%s", bond,
+				mustSSH(t, sw1, "swcli -c 'show mclag'; swcli -c 'show lacp interfaces ae1'"),
+				mustSSH(t, sw2Addr, "swcli -c 'show mclag'; swcli -c 'show lacp interfaces ae1'"))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	ping := func(what string, n int) bool {
+		t.Helper()
+		o, _ := ssh(hSw3.vm, fmt.Sprintf("ip netns exec h ping -i 0.01 -c %d 192.168.1.1", n))
+		m := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received`).FindStringSubmatch(o)
+		if m == nil {
+			t.Fatalf("%s: ping:\n%s", what, o)
+		}
+		if m[1] != m[2] || strings.Contains(o, "DUP!") {
+			t.Errorf("%s: %s of %s answered, duplicates: %v", what, m[2], m[1], strings.Contains(o, "DUP!"))
+			srvMAC := strings.TrimSpace(mustSSH(t, hSrv1.vm, "ip netns exec m cat /sys/class/net/bond0/address"))
+			t.Logf("srv1 bond0 %s\nsw1:\n%s\nsw2:\n%s\nsrv1:\n%s", srvMAC,
+				mustSSH(t, sw1, "swcli -c 'show mclag'; swcli -c 'show lacp interfaces ae1'; bridge fdb show br swbr0 | grep -v permanent; nft list table bridge switchd_mclag 2>&1 | grep -v '^$'; tc filter show dev ens2 ingress; tc filter show dev ae1 ingress; ip -o link show ae1 | cut -c1-100; journalctl -u switchd --since -25s --no-pager -o cat | grep -v 'cli command\\|cli: log'; true"),
+				mustSSH(t, sw2Addr, "swcli -c 'show mclag'; swcli -c 'show lacp interfaces ae1'; bridge fdb show br swbr0 | grep -v permanent; nft list table bridge switchd_mclag; tc filter show dev ae1 ingress; ip -o link show ae1 | cut -c1-100; journalctl -u switchd --since -25s --no-pager -o cat | grep -v 'cli command\\|cli: log'; true"),
+				mustSSH(t, hSrv1.vm, "ip netns exec m cat /proc/net/bonding/bond0 | grep -E 'Slave Interface|MII|Aggregator ID|port state'; ip -n m -o link show | cut -c1-90; true"))
+			return false
+		}
+		return true
+	}
+	waitLeg0 := regexp.MustCompile(`ae1 +up +up `)
+	for i := 0; !waitLeg0.MatchString(mustSSH(t, sw2Addr, "swcli -c 'show mclag'")); i++ {
+		if i == 50 {
+			t.Fatal("sw2's leg not up")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	ping("both legs", 300)
+	if o := mustSSH(t, sw1, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +on`).MatchString(o) {
+		t.Errorf("sw1 show mclag:\n%s", o)
+	}
+	// MAC synchronisation: sw2 knows hSw3 (single-homed on sw1) via the
+	// peer-link and srv1 on its own leg, whichever leg srv1's frames took;
+	// the peer-link learns nothing.
+	h3MAC := strings.TrimSpace(mustSSH(t, hSw3.vm, "ip netns exec h cat /sys/class/net/"+hSw3.nic+"/address"))
+	s1MAC := strings.TrimSpace(mustSSH(t, hSrv1.vm, "ip netns exec m cat /sys/class/net/bond0/address"))
+	for i := 0; ; i++ {
+		fdb := mustSSH(t, sw2Addr, "bridge fdb show br swbr0 | grep -v permanent")
+		if regexp.MustCompile(`(?m)^`+h3MAC+` dev ae10 vlan 10 extern_learn`).MatchString(fdb) &&
+			regexp.MustCompile(`(?m)^`+s1MAC+` dev ae1 vlan 10`).MatchString(fdb) {
+			break
+		}
+		if i == 25 {
+			t.Fatalf("sw2's address table is not synchronised (hSw3 %s, srv1 %s):\n%s", h3MAC, s1MAC, fdb)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if o := mustSSH(t, sw1, "bridge link show dev ae10; bridge -d link show dev ae10"); !strings.Contains(o, "learning off") {
+		t.Errorf("sw1's peer-link learns addresses:\n%s", o)
+	}
+
+	// Either leg fails: traffic continues through the other member. (A VM
+	// link keeps its carrier when the other end goes down, so the switch
+	// notices through the LACP timeout, 3 s; the test waits for that.)
+	waitLeg := func(addr, state string) {
+		t.Helper()
+		re := regexp.MustCompile(`ae1 +` + state + ` `)
+		for i := 0; ; i++ {
+			o := mustSSH(t, addr, "swcli -c 'show mclag'")
+			if re.MatchString(o) {
+				return
+			}
+			if i == 50 {
+				t.Fatalf("%s: leg not %s:\n%s", addr, state, o)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	for _, leg := range []struct{ nic, sw string }{{"ens19", sw1}, {"ens20", sw2Addr}} {
+		mustSSH(t, hSrv1.vm, "ip -n m link set "+leg.nic+" down")
+		waitLeg(leg.sw, "down")
+		time.Sleep(500 * time.Millisecond)
+		pre := mustSSH(t, sw1, "bridge fdb show br swbr0 | grep -i "+s1MAC+" || echo none") + mustSSH(t, sw2Addr, "bridge fdb show br swbr0 | grep -i "+s1MAC+" || echo none")
+		if !ping("without "+leg.nic, 200) {
+			t.Logf("srv1's address before the ping (sw1, sw2):\n%s", pre)
+			t.Logf("where the frames go:\n%s", traceHops(t))
+			if os.Getenv("LAB_KEEP") != "" {
+				t.FailNow() // keep the state for inspection
+			}
+		}
+		leg := leg.nic
+		mustSSH(t, hSrv1.vm, "ip -n m link set "+leg+" up")
+		waitLeg(sw1, "up +up")
+		waitLeg(sw2Addr, "up +up")
+	}
+
+	// The peer-link fails while the stack is up: the secondary (sw2) holds
+	// its leg, srv1 uses sw1 only, traffic continues.
+	// (A traffic cut that keeps the links up, as a failed media converter
+	// would; switchd would put a port that is set down up again, and
+	// micro-BFD detects the cut.)
+	var heal []string
+	for _, p := range []string{"ens21", "ens22"} {
+		mustSSH(t, sw2Addr, "tc qdisc replace dev "+p+" root netem loss 100% && (tc qdisc add dev "+p+" clsact 2>/dev/null; true) && "+
+			"tc filter add dev "+p+" ingress pref 1 matchall action drop")
+		heal = append(heal, "tc qdisc del dev "+p+" root 2>/dev/null; tc filter del dev "+p+" ingress pref 1 2>/dev/null")
+	}
+	t.Cleanup(func() { ssh(sw2Addr, strings.Join(heal, "; ")+"; true") })
+	for i := 0; ; i++ {
+		o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'")
+		if strings.Contains(o, "peer-link down, peer alive") {
+			break
+		}
+		if i == 50 {
+			t.Fatalf("sw2 does not hold its leg:\n%s", o)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// srv1's bond: sw2's port (ens20) has a partner that is not in sync.
+	for i := 0; ; i++ {
+		b := mustSSH(t, hSrv1.vm, "ip netns exec m cat /proc/net/bonding/bond0")
+		m := regexp.MustCompile(`(?s)Slave Interface: ens20.*?details partner lacp pdu:.*?port state: (\d+)`).FindStringSubmatch(b)
+		if m != nil {
+			if st, _ := strconv.Atoi(m[1]); st&0x08 == 0 {
+				break
+			}
+		}
+		if i == 30 {
+			t.Fatalf("srv1 still sees sw2's held leg in sync:\n%s", b)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	ping("peer-link down", 200)
+}
+
+// traceHops pings srv1 from hSw3 three times while capturing on every hop
+// of the MC-LAG test (diagnostics).
+func traceHops(t *testing.T) string {
+	t.Helper()
+	f := `"icmp or (vlan and icmp)"`
+	type cap struct{ addr, dev string }
+	caps := []cap{{sw1, "ens2"}, {sw1, "ens21"}, {sw1, "ens22"}, {sw1, "ens23"}, {sw2Addr, "ens21"}, {sw2Addr, "ens22"}, {sw2Addr, "ens23"}}
+	out := make([]string, len(caps))
+	var wg sync.WaitGroup
+	for i, c := range caps {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o, _ := ssh(c.addr, "timeout 4 tcpdump -nn -e -i "+c.dev+" "+f+" 2>/dev/null | grep -o 'echo [a-z]*' | sort | uniq -c")
+			out[i] = fmt.Sprintf("%s %s: %s", c.addr, c.dev, strings.Join(strings.Fields(o), " "))
+		}()
+	}
+	time.Sleep(time.Second)
+	ssh(hSw3.vm, "ip netns exec h ping -c 3 -i 0.3 -W1 192.168.1.1")
+	wg.Wait()
+	return strings.Join(out, "\n")
+}

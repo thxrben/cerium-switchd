@@ -1017,18 +1017,25 @@ Statements:
 * `peer-link <aeN>`: the data bundle that connects the two members directly.
   * It must have ports on both members (E). Each member's side is a local bundle between the two switches. With `lacp`,
     each side uses its own LACP system id, not the shared one.
-  * It carries **all VLANs, tagged**, and nothing else. Its own ethernet-switching settings are ignored (W). It has no IP.
+  * It carries **all VLANs, tagged**, and nothing else (untagged frames on it are dropped). Its own ethernet-switching
+    settings are ignored (W). It has no IP.
   * The peer-link must be at least as large as every MC-LAG bundle (E: MTU smaller than an MC-LAG bundle of the domain).
   * It is never blocked by RSTP.
-  * **Split horizon**: traffic that arrives over the peer-link is never sent out of an MC-LAG bundle that is up on the
-    receiving member, because the peer already delivered it on its own leg. When a member's leg of a bundle fails,
-    this filter is lifted for that bundle, and the peer's traffic reaches the device via the peer-link.
+  * **Split horizon**: traffic that arrives over the peer-link is never sent out of an MC-LAG bundle whose other leg
+    (on the peer) is up: flooded traffic was already delivered by the peer on its own leg, and with MAC
+    synchronisation known unicast for a dual-homed device only crosses the peer-link while the sending member's leg is
+    down. When a member's leg of a bundle fails, the peer lifts this filter for that bundle, and the traffic reaches the
+    device via the peer-link. Leg changes reach the peer within 50 ms.
 * `peer-link-bfd { minimum-interval <ms>; multiplier <n>; }`: micro-BFD on **each physical port** of the peer-link.
   It is IP-less (stacking-protocol EtherType, authenticated with keys agreed over the stacking plane) and is consumed
   only on peer-link ports.
   * A port that stops forwarding while its link stays up (for example a broken media converter) leaves the bundle after
     `interval × multiplier` (default 100 ms × 3). LACP alone would need 3 seconds.
   * The port rejoins when BFD is up again.
+  * The peer-link counts as down (failure handling below) when no port passes BFD.
+  * Frames: EtherType `0x88b5` to `01:80:c2:00:00:0e` (never forwarded by a bridge), carrying the domain, the member
+    and a sequence number. Implemented so far: the peer-link state and the per-port state in `show mclag`; taking a
+    single failed port out of the bundle and the authentication follow.
 * `heartbeat { minimum-interval <ms>; multiplier <n>; }`: BFD over UDP (RFC 5881/5883) between the members'
   management addresses, authenticated. Default 300 ms × 3.
   * It carries no configuration or state. Its only job is to tell "peer dead" apart from "paths to the peer cut" (split-brain).
@@ -1044,9 +1051,15 @@ Statements:
 **Behaviour:**
 
 * **MAC synchronisation** (stacking plane):
-  * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle.
-  * A MAC ages out only when it has aged out on **both** members.
+  * The peer-link does not learn addresses (a dual-homed device's frames cross it when they are flooded, which
+    would make the peer point that device at the peer-link).
+  * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle (on the peer-link while the peer's
+    own leg of that bundle is down).
   * MACs learned on single-homed ports are installed on the peer pointing to the peer-link.
+  * An address a member learns itself replaces a synchronised one. A synchronised address is removed when it ages out
+    on the member that learned it; if it is still in use on the peer, the peer learns it again at once. Addresses that
+    point to the peer-link are removed when the peer-link goes down.
+  * The members exchange changes as they happen and their whole tables every 30 s and when they meet again.
 * **Failure handling** (*primary* = higher `virtual-chassis member mastership-priority`, ties: lower id):
   | Stacking path | Peer-link | Heartbeat | Interpretation | Behaviour |
   |---|---|---|---|---|
@@ -1057,6 +1070,18 @@ Statements:
   | – | one port down | – | peer-link degraded | The port leaves the peer-link bundle (micro-BFD or link loss). The others continue. |
   | A member's leg of an MC-LAG bundle fails | | | | The bundle continues on the other member. The receiving member lifts split horizon for that bundle, and MACs point to the peer-link. |
   | Member returns | | | | `delay-restore` applies, then its legs rejoin. |
+* **LACP identity** of an MC-LAG bundle: both members announce the domain's `system-mac`/`system-priority` and the same
+  key (`N+1` for `aeN`); port numbers are unique per member (5.1.3), so the partner sees one system with one bundle.
+* **Leg state**: each member tells its peer over the stacking plane, on every change and every second, which of its
+  MC-LAG legs are up (have ports that LACP has collecting and distributing). Split horizon for a bundle on a member
+  applies while the **peer's** leg of that bundle is up; if the stacking path is down, the last known state is kept.
+* A leg that is *held* stays out of the bundle: LACP tells the partner "not in sync" on its ports, so the partner moves
+  its traffic to the other member without loss. Holds: the secondary while the peer-link is down and the peer alive,
+  and `delay-restore` after the member booted or was cut off from its peer. A restart of switchd alone (the legs still
+  up) does not hold anything.
+* `show mclag`: per domain the role (primary/secondary), the peer's reachability over the stacking plane, the
+  peer-link and heartbeat state; per MC-LAG bundle the local and peer leg state, split horizon, and a hold with its
+  reason and remaining time.
 * **Consistency checks** at runtime: VLAN membership, MTU, LACP mode and rate of each MC-LAG bundle are compared
   between the members. A mismatch (for example because a member runs an older software version) keeps the
   bundle's leg on the secondary down, with the reason shown in `show mclag consistency`.

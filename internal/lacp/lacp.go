@@ -101,6 +101,9 @@ type Bundle struct {
 	cfg   Config
 	ports map[string]*Port
 	send  func(port string, p *PDU)
+	// hold keeps every port out of the bundle (an MC-LAG leg that must not
+	// attract traffic); LACP tells the partner "not in sync".
+	hold bool
 	// agg is the partner the aggregator is attached to (zero: none).
 	agg struct {
 		set    bool
@@ -123,6 +126,12 @@ func (b *Bundle) SetConfig(cfg Config) {
 		}
 	}
 }
+
+// SetHold keeps all ports out of the bundle (true) or lets them in again.
+func (b *Bundle) SetHold(h bool) { b.hold = h }
+
+// Held reports whether the bundle is held.
+func (b *Bundle) Held() bool { return b.hold }
 
 // AddPort adds a member port (down until SetLink).
 func (b *Bundle) AddPort(name string, number, priority uint16) {
@@ -309,7 +318,7 @@ func (b *Bundle) selection(names []string) {
 	}
 	for _, n := range names {
 		p := b.ports[n]
-		p.selected = b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key
+		p.selected = !b.hold && b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"mclag/internal/config"
 	"mclag/internal/lacp"
@@ -146,6 +147,68 @@ func (sh *Shell) showLACPStats(c *call) error {
 		for _, p := range b.Ports {
 			fmt.Fprintf(c.out, "      %-12s %10d %10d %12d %12d\n", b.PortNames[p.Name], p.Stats.RxPDUs, p.Stats.TxPDUs, 0, p.Stats.RxErrors)
 		}
+	}
+	return nil
+}
+
+// showMCLAG implements "show mclag".
+func (sh *Shell) showMCLAG(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("MC-LAG information is not available")
+	}
+	st, err := sh.env.Ops.MCLAG()
+	if err != nil {
+		return err
+	}
+	if st.Domain == 0 {
+		c.out.WriteString("This member is not in an MC-LAG domain.\n")
+		return nil
+	}
+	role := "secondary"
+	if st.Primary {
+		role = "primary"
+	}
+	stack := "reachable"
+	if !st.PeerReachable {
+		stack = "not reachable"
+	}
+	fmt.Fprintf(c.out, "MC-LAG domain %d: member %d (%s), peer member %d\n", st.Domain, st.Member, role, st.Peer)
+	fmt.Fprintf(c.out, "  Peer over the stacking plane: %s\n", stack)
+	fmt.Fprintf(c.out, "  Peer-link %s: %s\n", st.PeerLink, upDown(st.PeerLinkUp))
+	if len(st.PeerLinkPorts) > 0 {
+		var ps []string
+		for _, p := range st.PeerLinkPorts {
+			ps = append(ps, p.Name+" "+upDown(p.Up))
+		}
+		fmt.Fprintf(c.out, "    BFD: %s\n", strings.Join(ps, ", "))
+	}
+	if st.PeerKnown {
+		fmt.Fprintf(c.out, "  Peer leg states: received %s ago\n", fmtDuration(time.Since(st.PeerSeen)))
+	} else {
+		c.out.WriteString("  Peer leg states: not received yet (split horizon assumes the peer's legs are up)\n")
+	}
+	if len(st.Bundles) == 0 {
+		c.out.WriteString("\nNo MC-LAG bundles with a leg on this member.\n")
+		return nil
+	}
+	fmt.Fprintf(c.out, "\n  %-10s %-6s %-8s %-14s %s\n", "Bundle", "Local", "Peer", "Split horizon", "Hold")
+	for _, b := range st.Bundles {
+		peer := upDown(b.PeerUp)
+		if !b.PeerKnown {
+			peer = "unknown"
+		}
+		split := "off"
+		if b.SplitHorizon {
+			split = "on"
+		}
+		hold := "-"
+		if b.Hold != "" {
+			hold = b.Hold
+		}
+		fmt.Fprintf(c.out, "  %-10s %-6s %-8s %-14s %s\n", b.Name, upDown(b.LocalUp), peer, split, hold)
 	}
 	return nil
 }

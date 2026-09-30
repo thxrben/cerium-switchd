@@ -3,6 +3,7 @@ package daemon
 import (
 	"crypto/sha256"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,7 +39,7 @@ func lacpPortNumber(name string) uint16 {
 }
 
 // lacpSpecs lists this member's LACP bundles.
-func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool), sysMAC [6]byte) []lacp.BundleSpec {
+func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool), sysMAC [6]byte, stackID string) []lacp.BundleSpec {
 	var out []lacp.BundleSpec
 	for _, i := range cfg.Interfaces {
 		if !i.AE || i.LACP == nil || i.Disabled {
@@ -49,6 +50,14 @@ func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool),
 			System: lacp.SystemID{Priority: uint16(i.LACP.SystemPriority), MAC: sysMAC},
 			Key:    uint16(n + 1), Active: i.LACP.Active, Fast: i.LACP.Fast,
 		}}
+		if i.MCLAG {
+			// Both members present the domain's system (reference 5.6).
+			for _, d := range cfg.Domains {
+				if slices.Contains(d.Members, member) {
+					spec.Config.System = mclagSystem(d, stackID)
+				}
+			}
+		}
 		for _, p := range cfg.Interfaces {
 			if p.Parent != i.Name || p.Member != member || p.Disabled {
 				continue

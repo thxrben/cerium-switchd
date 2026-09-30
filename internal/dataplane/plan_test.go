@@ -404,3 +404,26 @@ func mustRead(t *testing.T, k Kernel) *State {
 	}
 	return s
 }
+
+// Learning is off on a peer-link; a port whose learning mac-limit switched
+// off is left alone, other ports get it back.
+func TestPlanLearning(t *testing.T) {
+	k := NewFake(&State{Bridge: &BridgeOpts{AgeingSeconds: 300}, Links: map[string]*Link{
+		"eth0": {Name: "eth0", Kind: Physical, MTU: 1500, Present: true, Up: true, Master: BridgeName, VLANs: map[uint16]VlanFlags{}, NoLearning: true, MaxLearned: 3},
+		"eth1": {Name: "eth1", Kind: Physical, MTU: 1500, Present: true, Up: true, Master: BridgeName, VLANs: map[uint16]VlanFlags{}, NoLearning: true},
+	}})
+	d := mustRead(t, k).Clone()
+	d.L3 = &L3{}
+	d.Links["eth0"].NoLearning = false // mac-limit decides
+	d.Links["eth1"].NoLearning = false
+	ops := Plan(mustRead(t, k), d, names(d))
+	if len(ops) != 1 || ops[0].Kind != OpSetLearning || ops[0].Link != "eth1" || !ops[0].Bool {
+		t.Fatalf("plan:\n%s", FormatPlan(ops))
+	}
+	d.Links["eth1"].NoLearning = true // becomes a peer-link port
+	Execute(k, ops)
+	ops = Plan(mustRead(t, k), d, names(d))
+	if len(ops) != 1 || ops[0].Kind != OpSetLearning || ops[0].Bool {
+		t.Fatalf("peer-link plan:\n%s", FormatPlan(ops))
+	}
+}

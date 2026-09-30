@@ -42,6 +42,8 @@ type Operational interface {
 	VirtualChassis() (VCStatus, error)
 	// LACP reports the LACP bundles of this member.
 	LACP() ([]lacp.BundleStatus, error)
+	// MCLAG reports this member's MC-LAG domain (Domain 0: none).
+	MCLAG() (MCLAGStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
 	SwitchMaster(to int, user string) error
 	// RemoveVCMember removes a member from the stack.
@@ -74,6 +76,33 @@ type VCStatus struct {
 type VCPort struct {
 	Port, Linux, State, Neighbor, PeerPort, LastError string
 	UpSince                                           time.Time
+}
+
+// MCLAGStatus is "show mclag".
+type MCLAGStatus struct {
+	Domain, Member, Peer int
+	Primary              bool
+	PeerReachable        bool // over the stacking plane
+	PeerLink             string
+	PeerLinkUp           bool
+	PeerKnown            bool // leg states received from the peer
+	PeerSeen             time.Time
+	PeerLinkPorts        []MCLAGPort // micro-BFD per port of this member
+	Bundles              []MCLAGBundle
+}
+
+// MCLAGPort is a peer-link port and its micro-BFD state.
+type MCLAGPort struct {
+	Name string
+	Up   bool
+}
+
+// MCLAGBundle is one MC-LAG bundle of "show mclag".
+type MCLAGBundle struct {
+	Name                       string
+	LocalUp, PeerUp, PeerKnown bool
+	SplitHorizon               bool
+	Hold                       string // reason ("": not held)
 }
 
 // Route is one line of "show route".
@@ -954,6 +983,7 @@ func registerOperational() {
 					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
 				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
+				&command{name: "mclag", help: "Show the MC-LAG domain of this member", class: commit.ReadOnly, run: (*Shell).showMCLAG},
 				&command{name: "lacp", help: "Show LACP information", class: commit.ReadOnly, sub: []*command{
 					{name: "interfaces", help: "Show LACP state per bundle and port", class: commit.ReadOnly, run: (*Shell).showLACP, complete: completeAE},
 					{name: "statistics", help: "Show LACP statistics", class: commit.ReadOnly, sub: []*command{

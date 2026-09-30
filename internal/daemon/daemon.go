@@ -106,9 +106,13 @@ func Run(ctx context.Context, o Options) error {
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log}
 	sysMAC := lacpSystemMAC()
+	var mclag *mclagCtl // set once the stack control runs
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.
-		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
+		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC, vc.StackID()))
+		if mclag != nil {
+			mclag.setConfig(cfg)
+		}
 	}
 	applier.onApplied = func(cfg *model.Config) {
 		// switchd's own traffic uses the management instance (reference 1.5).
@@ -158,6 +162,13 @@ func Run(ctx context.Context, o Options) error {
 		ctl.setEngine(engine)
 		go ctl.run(ctx)
 	}
+	if !o.DryRun {
+		mclag = newMCLAG(member, lacpRT, ctl, names.Linux, log)
+		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
+			mclag.setConfig(cfg)
+		}
+		go mclag.run(ctx)
+	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
@@ -190,7 +201,7 @@ func Run(ctx context.Context, o Options) error {
 	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
-		liveOps.lacp = lacpRT
+		liveOps.lacp, liveOps.mclag = lacpRT, mclag
 	}
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.
@@ -213,7 +224,9 @@ func Run(ctx context.Context, o Options) error {
 		srv.Synced = ctl.synced
 		// Configuration mode runs on the master (docs/stack-protocol.md).
 		srv.Relay = func() (net.Conn, error) {
-			deadline := time.Now().Add(3 * time.Second)
+			// An election (e.g. after a stacking cable failed) takes a few
+			// seconds at most.
+			deadline := time.Now().Add(10 * time.Second)
 			for {
 				if ctl.node.MasterReady() {
 					return nil, nil

@@ -199,6 +199,11 @@ func (f *Fake) Apply(op Op) error {
 	case OpSetFlowControl:
 		b := op.Bool
 		l.FlowControl = &b
+	case OpSetLearning:
+		if l.Master != BridgeName {
+			return fmt.Errorf("%s: not a bridge port", l.Name)
+		}
+		l.NoLearning = !op.Bool
 	case OpSetMaxLearned:
 		l.MaxLearned = op.Int
 	case OpSetDropTagged:

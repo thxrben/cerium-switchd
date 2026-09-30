@@ -30,11 +30,12 @@ const (
 	OpSetDropTagged
 	OpSetStormBroadcast
 	OpSetStormMulticast
+	OpSetLearning // Bool: learning on
 )
 
 var opNames = [...]string{"create-bridge", "set-bridge", "create-bond", "set-bond", "delete", "up", "down",
 	"master", "mtu", "alias", "vlan-del", "vlan-set", "flow-control", "max-learned", "drop-tagged",
-	"storm-broadcast", "storm-multicast"}
+	"storm-broadcast", "storm-multicast", "learning"}
 
 // Op is one kernel operation.
 type Op struct {
@@ -64,7 +65,7 @@ func (o Op) String() string {
 		s += fmt.Sprintf(" %d", o.VID)
 	case OpVlanSet:
 		s += fmt.Sprintf(" %d pvid=%v untagged=%v", o.VID, o.Flags.PVID, o.Flags.Untagged)
-	case OpSetFlowControl, OpSetDropTagged:
+	case OpSetFlowControl, OpSetDropTagged, OpSetLearning:
 		s += fmt.Sprintf(" %v", o.Bool)
 	case OpSetMaxLearned, OpSetStormBroadcast, OpSetStormMulticast:
 		s += fmt.Sprintf(" %d", o.Int)
@@ -262,6 +263,11 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		}
 		if d.Alias != cur.Alias {
 			loosen = append(loosen, Op{Kind: OpSetAlias, Link: n, Alias: d.Alias})
+		}
+		// Learning is switchd's on the peer-link; on a port with mac-limit
+		// the enforcement switches it off and on at run time.
+		if d.Master == BridgeName && d.NoLearning != cur.NoLearning && (d.NoLearning || d.MaxLearned == 0) {
+			loosen = append(loosen, Op{Kind: OpSetLearning, Link: n, Bool: !d.NoLearning})
 		}
 		if d.FlowControl != nil && (cur.FlowControl == nil || *cur.FlowControl != *d.FlowControl) {
 			loosen = append(loosen, Op{Kind: OpSetFlowControl, Link: n, Bool: *d.FlowControl})
