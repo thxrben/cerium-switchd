@@ -9,6 +9,9 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 ExecStart=/usr/local/sbin/switchd $SWITCHD_ARGS
+# The stack's management address must never outlive switchd on this member
+# (after a crash another member takes it over).
+ExecStopPost=-/usr/sbin/ip link del cme
 EnvironmentFile=-/etc/default/switchd
 Restart=always
 RestartSec=1

@@ -169,12 +169,13 @@ func TestUpgradeRenamesManagementInstance(t *testing.T) {
 // A configuration from a newer version: what this version does not know
 // is left out, the rest applies (reference 3.6, mixed versions).
 func TestUpgradeIgnoresUnknownStatements(t *testing.T) {
-	raw := `{"system":{"host-name":"core","future-thing":{"x":"1"}},
+	raw := `{"system":{"host-name":"core","future-thing":{"x":"1"},"syslog":{"host":{"10.0.0.1":{"transport":"quantum"}}}},
 	  "protocols":{"lldp":{"advertisement-interval":"30","new-knob":true}},
 	  "vlans":{"v10":{"vlan-id":"10","shiny":"yes"}},
+	  "switch-options":{"vxlan":{"mode":"control-plane"}},
 	  "interfaces":{"1/0/0":{"mtu":"99999999"}}}`
 	got := UnknownStatements([]byte(raw))
-	want := []string{"interfaces 1/0/0 mtu 99999999", "protocols lldp new-knob", "system future-thing", "vlans v10 shiny"}
+	want := []string{"interfaces 1/0/0 mtu 99999999", "protocols lldp new-knob", "system future-thing", "system syslog host 10.0.0.1 transport quantum", "vlans v10 shiny"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("unknown: %q", got)
 	}

@@ -156,7 +156,7 @@ func dropUnknown(sn *schema.Node, m map[string]any, path string, out *[]string) 
 			if c.Type == nil {
 				return true
 			}
-			_, err := c.Type.Check(s)
+			_, err := c.Type.Validate(s)
 			return err == nil
 		}
 		switch c.Kind {
