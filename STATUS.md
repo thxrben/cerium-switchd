@@ -163,13 +163,22 @@ Last updated: 2026-09-30 (evening).
   live with ovs-vsctl). LACP, MC-LAG, storm control pass again.
 
 ## Next (in order)
+- Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in
+  the mesh LSAs (0 byte; transit avoided where another path exists, never master), mastership handed on, MC-LAG legs
+  reported down to the peer 300 ms before the hold, learned addresses moved to the peer tunnel before LACP says
+  "not in sync" and again before the last port leaves; LACP keeps a held port in the kernel bundle until the partner
+  stops distributing (DrainWait 2 s). Persistent (`<state>/maintenance`). Reboot/halt/power-off, member removal (RPC
+  "drain") and system shutdown (SIGTERM while `systemctl is-system-running` = stopping) drain first. Lab: TestMCLAG
+  drains sw2 and the master sw1 under 10 ms pings: 0 lost. User order next: RSTP (with MC-LAG), family inet dhcp,
+  port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
+  with the user: management interface design, internal VLAN 4094.
 - Done 2026-09-30 (later, user requests): full names + speed in `show virtual-chassis vc-port`; `show chassis hardware`
   covers all members by default; `?`/Tab offer every member's ports (ports RPC, cached 30 s). Local names already
   used the member id.
 - Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
   (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
   TestConfigAcrossMembers. Full lab suite: 30 tests pass.
-1. Phase 7 rest: drain (maintenance mode) for reboot/member removal, then Phase 7b (rolling upgrades / version
+1. Phase 7 rest: Phase 7b (rolling upgrades / version
    window). Internal management VLAN 4094 (Phase 7c step 6).
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
 3. Lab (ask the user): the stacking NICs' maximum frame is 9014, so the stack carries data mtu 8956 (hosts 8942)

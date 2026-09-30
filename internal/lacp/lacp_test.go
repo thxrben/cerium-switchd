@@ -306,3 +306,48 @@ func TestHold(t *testing.T) {
 		t.Errorf("after the hold: A %v B %v", dist(a), dist(b))
 	}
 }
+
+// A held port leaves the kernel bundle only after the partner stopped
+// distributing to it (no frame on the way is lost), or after DrainWait when
+// the partner does not answer.
+func TestHoldDrains(t *testing.T) {
+	s := newSim()
+	a := s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1")
+	b := s.add("B", Config{System: sys(2), Key: 1, Active: true, Fast: true}, "p1")
+	s.connect("A/p1", "B/p1")
+	s.run(4 * time.Second)
+	a.SetHold(true)
+	a.Tick(s.now)
+	if len(dist(a)) != 1 {
+		t.Fatal("held port left before the partner was told")
+	}
+	// The partner gets "not in sync" and stops; then A leaves.
+	for len(s.queue) > 0 {
+		q := s.queue[0]
+		s.queue = s.queue[1:]
+		bStopped := len(dist(b)) == 0
+		bn, port := split(q.to)
+		s.bundles[bn].Receive(port, &q.pdu, s.now)
+		s.bundles[bn].Tick(s.now)
+		if len(dist(a)) == 0 && !bStopped {
+			t.Fatal("A left before the partner stopped distributing")
+		}
+	}
+	if len(dist(a)) != 0 {
+		t.Fatalf("A still distributing after the partner stopped: %v", dist(a))
+	}
+
+	// A silent partner: out after DrainWait.
+	a.SetHold(false)
+	s.run(4 * time.Second)
+	s.cut["B/p1"] = true
+	a.SetHold(true)
+	s.run(DrainWait - 200*time.Millisecond)
+	if len(dist(a)) != 1 {
+		t.Fatal("left before DrainWait without an answer")
+	}
+	s.run(400 * time.Millisecond)
+	if len(dist(a)) != 0 {
+		t.Fatal("still in after DrainWait")
+	}
+}

@@ -65,6 +65,7 @@ type Port struct {
 	selected     bool
 	currentWhile time.Time // deadlines; zero: stopped
 	waitWhile    time.Time
+	drainUntil   time.Time // held while distributing: out once the partner stopped sending
 	periodicAt   time.Time
 	ntt          bool
 	txTimes      []time.Time
@@ -349,6 +350,9 @@ func (b *Bundle) muxStep(p *Port, now time.Time) {
 				p.ntt = true
 			}
 		case MuxCollectingDistributing:
+			if b.draining(p, now) {
+				break
+			}
 			if !p.selected || !p.partner.State.Has(Sync) {
 				p.mux = MuxAttached
 				p.actor &^= Collecting | Distributing
@@ -361,7 +365,36 @@ func (b *Bundle) muxStep(p *Port, now time.Time) {
 	}
 }
 
+// DrainWait bounds how long a held port keeps collecting while its partner
+// takes it out of its bundle.
+const DrainWait = 2 * time.Second
+
+// draining handles a port that is held while collecting and distributing:
+// the partner is told "not in sync" first and the port stays in the kernel
+// bundle until the partner reports it no longer distributes to it (frames
+// on the way still arrive), at most DrainWait. True: stay.
+func (b *Bundle) draining(p *Port, now time.Time) bool {
+	if p.selected {
+		if !p.drainUntil.IsZero() {
+			p.drainUntil = time.Time{}
+			p.actor |= Sync
+			p.ntt = true
+		}
+		return false
+	}
+	if !b.hold || !p.up || p.rx != RxCurrent {
+		return false
+	}
+	if p.drainUntil.IsZero() {
+		p.drainUntil = now.Add(DrainWait)
+		p.actor &^= Sync
+		p.ntt = true
+	}
+	return p.partner.State.Has(Distributing) && !expired(p.drainUntil, now)
+}
+
 func (b *Bundle) detach(p *Port) {
+	p.drainUntil = time.Time{}
 	p.mux = MuxDetached
 	if p.actor.Has(Sync) {
 		p.ntt = true

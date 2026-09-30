@@ -294,3 +294,32 @@ func TestFirstHops(t *testing.T) {
 		return len(got) == len(want)
 	})
 }
+
+// A draining member (maintenance mode) carries no transit where another path
+// exists, but stays reachable itself and in a chain.
+func TestDrainingMember(t *testing.T) {
+	m := meshes(5)
+	// Ring 1-2-3-4-1 and a spur 5 behind 2.
+	link(m[1], m[2])
+	link(m[2], m[3])
+	link(m[3], m[4])
+	link(m[4], m[1])
+	link(m[2], m[5])
+	waitFor(t, "1 reaches all", reaches(m[1], 2, 3, 4, 5))
+	waitFor(t, "equal-cost 1 -> 3", func() bool { return len(m[1].FirstHops()[3]) == 2 })
+	m[2].SetDraining(true)
+	waitFor(t, "1 routes around 2", func() bool {
+		return slices.Equal(m[1].FirstHops()[3], []int{4}) && m[1].NextHop(3) == 4
+	})
+	if !slices.Equal(m[1].Draining(), []int{2}) {
+		t.Errorf("draining seen on 1: %v", m[1].Draining())
+	}
+	if m[1].NextHop(2) != 2 || m[1].NextHop(5) != 2 {
+		t.Errorf("2 itself and the spur behind it: via %d and %d", m[1].NextHop(2), m[1].NextHop(5))
+	}
+	if !slices.Equal(m[1].FirstHops()[5], []int{2}) {
+		t.Errorf("spur first hops %v", m[1].FirstHops()[5])
+	}
+	m[2].SetDraining(false)
+	waitFor(t, "equal-cost again", func() bool { return len(m[1].FirstHops()[3]) == 2 })
+}

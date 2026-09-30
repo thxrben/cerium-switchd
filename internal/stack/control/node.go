@@ -434,6 +434,9 @@ func (n *Node) Transfer(to int) error {
 	return n.raft.LeadershipTransferToServer(serverID(to), raft.ServerAddress(serverID(to))).Error()
 }
 
+// draining: this member is in maintenance mode.
+func (n *Node) draining() bool { return slices.Contains(n.Mesh.Draining(), n.Self) }
+
 func (n *Node) isVoter(member int) bool {
 	for _, s := range n.Servers() {
 		if s.Member == member {
@@ -449,6 +452,9 @@ func (n *Node) bestVoter(ok func(prio int) bool) int {
 	reach := map[int]bool{}
 	for _, m := range n.Mesh.Reachable() {
 		reach[m] = true
+	}
+	for _, m := range n.Mesh.Draining() {
+		delete(reach, m) // maintenance mode: never master
 	}
 	best, bestPrio := 0, -1
 	for _, s := range n.Servers() {
@@ -547,6 +553,9 @@ func (n *Node) becameMaster() {
 	// Hand mastership on right after an election if a better member is
 	// there (no preemption later on).
 	mine := n.Priority(n.Self)
+	if n.draining() {
+		mine = 0
+	}
 	if to := n.bestVoter(func(p int) bool { return mine <= 0 || p > mine }); to != 0 {
 		n.Log.Info("stack control: handing mastership to the member with the higher priority", "member", to)
 		if err := n.raft.LeadershipTransferToServer(serverID(to), raft.ServerAddress(serverID(to))).Error(); err == nil {
@@ -624,8 +633,9 @@ func (n *Node) reconcileServers() {
 			return
 		}
 	}
-	if !wantVoter[n.Self] || n.Priority(n.Self) <= 0 {
-		// This master should not vote, or never be master: hand mastership
+	if !wantVoter[n.Self] || n.Priority(n.Self) <= 0 || n.draining() {
+		// This master should not vote, or never be master (or is in
+		// maintenance mode): hand mastership
 		// on as soon as another voter can take it.
 		if to := n.bestVoter(func(int) bool { return true }); to != 0 {
 			n.Log.Info("stack control: handing mastership on (priority 0 or not voting)", "member", to)

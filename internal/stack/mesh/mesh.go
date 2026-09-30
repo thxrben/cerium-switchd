@@ -97,6 +97,7 @@ func (p *peer) close() {
 type lsaEntry struct {
 	seq       uint64
 	neighbors []int
+	draining  bool // maintenance mode: no transit through this member
 	at        time.Time
 }
 
@@ -119,6 +120,7 @@ type Mesh struct {
 	streams  map[streamKey]*Stream
 	nextID   uint32
 	changed  chan struct{} // closed and replaced on topology changes
+	draining bool          // announced: other members route around this one
 }
 
 // New creates the mesh of member self.
@@ -206,13 +208,46 @@ func (p *peer) send(x *msg) {
 	}
 }
 
+// lsaMsg encodes an announcement: sequence number, then one byte per
+// neighbour. A 0 byte (no member has id 0) marks a draining member; older
+// versions read it as an adjacency nobody confirms, which changes nothing.
 func lsaMsg(origin int, e lsaEntry) *msg {
-	pl := make([]byte, 8+len(e.neighbors))
-	binary.BigEndian.PutUint64(pl, e.seq)
-	for i, n := range e.neighbors {
-		pl[8+i] = byte(n)
+	pl := binary.BigEndian.AppendUint64(nil, e.seq)
+	if e.draining {
+		pl = append(pl, 0)
+	}
+	for _, n := range e.neighbors {
+		pl = append(pl, byte(n))
 	}
 	return &msg{typ: tLSA, hops: maxHops, src: byte(origin), payload: pl}
+}
+
+// SetDraining announces that this member is in maintenance mode: the other
+// members stop routing through it wherever another path exists.
+func (m *Mesh) SetDraining(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.draining == v {
+		return
+	}
+	m.draining = v
+	m.announceLocked()
+	m.recomputeLocked()
+}
+
+// Draining lists the members that announce maintenance mode (this one
+// included).
+func (m *Mesh) Draining() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []int
+	for id, e := range m.lsas {
+		if e.draining {
+			out = append(out, id)
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 // announceLocked floods this member's current neighbours.
@@ -223,7 +258,7 @@ func (m *Mesh) announceLocked() {
 		ns = append(ns, id)
 	}
 	sort.Ints(ns)
-	e := lsaEntry{seq: m.ownSeq, neighbors: ns, at: time.Now()}
+	e := lsaEntry{seq: m.ownSeq, neighbors: ns, draining: m.draining, at: time.Now()}
 	m.lsas[m.Self] = e
 	x := lsaMsg(m.Self, e)
 	for _, ps := range m.peers {
@@ -261,27 +296,12 @@ func (m *Mesh) adjLocked(a int) []int {
 }
 
 func (m *Mesh) recomputeLocked() {
-	adj := m.adjLocked
-	routes := map[int]int{}
-	type item struct{ node, first int }
-	seen := map[int]bool{m.Self: true}
-	var q []item
-	for _, n := range adj(m.Self) {
-		if len(m.peers[n]) > 0 {
-			seen[n] = true
-			routes[n] = n
-			q = append(q, item{n, n})
-		}
-	}
-	for len(q) > 0 {
-		it := q[0]
-		q = q[1:]
-		for _, n := range adj(it.node) {
-			if !seen[n] {
-				seen[n] = true
-				routes[n] = it.first
-				q = append(q, item{n, it.first})
-			}
+	// Paths avoid draining members as transit; a member reachable only
+	// through one is still reached (a chain has no other path).
+	routes := m.bfsLocked(true)
+	for n, first := range m.bfsLocked(false) {
+		if _, ok := routes[n]; !ok {
+			routes[n] = first
 		}
 	}
 	if !mapsEqual(routes, m.routes) {
@@ -305,6 +325,37 @@ func (m *Mesh) recomputeLocked() {
 			}
 		}
 	}
+}
+
+// bfsLocked returns destination -> first hop along shortest paths from this
+// member; avoid: never through a draining member.
+func (m *Mesh) bfsLocked(avoid bool) map[int]int {
+	routes := map[int]int{}
+	type item struct{ node, first int }
+	seen := map[int]bool{m.Self: true}
+	var q []item
+	for _, n := range m.adjLocked(m.Self) {
+		if len(m.peers[n]) > 0 {
+			seen[n] = true
+			routes[n] = n
+			q = append(q, item{n, n})
+		}
+	}
+	for len(q) > 0 {
+		it := q[0]
+		q = q[1:]
+		if avoid && m.lsas[it.node].draining {
+			continue
+		}
+		for _, n := range m.adjLocked(it.node) {
+			if !seen[n] {
+				seen[n] = true
+				routes[n] = it.first
+				q = append(q, item{n, it.first})
+			}
+		}
+	}
+	return routes
 }
 
 func mapsEqual(a, b map[int]int) bool {
@@ -355,12 +406,15 @@ func (m *Mesh) NextHop(member int) int {
 func (m *Mesh) FirstHops() map[int][]int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	dist := func(from int) map[int]int {
+	dist := func(from int, avoid bool) map[int]int {
 		d := map[int]int{from: 0}
 		q := []int{from}
 		for len(q) > 0 {
 			a := q[0]
 			q = q[1:]
+			if avoid && m.lsas[a].draining {
+				continue
+			}
 			for _, b := range m.adjLocked(a) {
 				if _, ok := d[b]; !ok {
 					d[b] = d[a] + 1
@@ -377,20 +431,25 @@ func (m *Mesh) FirstHops() map[int][]int {
 			direct = append(direct, n)
 		}
 	}
-	from := map[int]map[int]int{}
+	from := [2]map[int]map[int]int{{}, {}} // [0]: around draining members, [1]: any path
 	for _, n := range direct {
-		from[n] = dist(n)
+		from[0][n], from[1][n] = dist(n, true), dist(n, false)
 	}
 	for dest := range m.routes {
-		best := -1
-		for _, n := range direct {
-			if d, ok := from[n][dest]; ok && (best < 0 || d < best) {
-				best = d
+		for _, f := range from {
+			best := -1
+			for _, n := range direct {
+				if d, ok := f[n][dest]; ok && (best < 0 || d < best) {
+					best = d
+				}
 			}
-		}
-		for _, n := range direct {
-			if d, ok := from[n][dest]; ok && d == best {
-				out[dest] = append(out[dest], n)
+			for _, n := range direct {
+				if d, ok := f[n][dest]; ok && d == best {
+					out[dest] = append(out[dest], n)
+				}
+			}
+			if best >= 0 {
+				break
 			}
 		}
 	}
@@ -435,10 +494,15 @@ func (m *Mesh) receive(from *peer, x *msg) {
 			return
 		}
 		var ns []int
+		draining := false
 		for _, b := range x.payload[8:] {
+			if b == 0 {
+				draining = true
+				continue
+			}
 			ns = append(ns, int(b))
 		}
-		m.lsas[origin] = lsaEntry{seq: seq, neighbors: ns, at: time.Now()}
+		m.lsas[origin] = lsaEntry{seq: seq, neighbors: ns, draining: draining, at: time.Now()}
 		for _, ps := range m.peers {
 			for _, p := range ps {
 				if p != from {

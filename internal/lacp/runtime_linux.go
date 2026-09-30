@@ -45,6 +45,11 @@ type Runtime struct {
 	StateFile string // negotiated state, for hitless restarts
 	SysRoot   string // "/sys"
 	Log       *slog.Logger
+	// BeforeLeave runs when a held bundle is about to lose its last port
+	// in the kernel (its partner has stopped sending on it): the traffic
+	// towards the partner can be moved elsewhere first. Called with the
+	// runtime locked; it must not call back.
+	BeforeLeave func(bundle string)
 
 	mu       sync.Mutex
 	bundles  map[string]*rtBundle
@@ -220,6 +225,14 @@ func (r *Runtime) enforce(rb *rtBundle) {
 	dist := rb.b.Distributing()
 	if len(dist) < max(rb.spec.MinLinks, 1) {
 		dist = nil
+	}
+	if len(dist) == 0 && rb.b.Held() && r.BeforeLeave != nil {
+		for _, on := range rb.enabled {
+			if on {
+				r.BeforeLeave(rb.spec.Name)
+				break
+			}
+		}
 	}
 	for _, p := range rb.b.Ports() {
 		on := slices.Contains(dist, p)

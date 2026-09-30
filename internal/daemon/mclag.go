@@ -6,12 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"mclag/internal/cli"
 	"mclag/internal/dataplane"
@@ -48,7 +53,21 @@ type mclagCtl struct {
 	macs       *macSync
 	peerFacts  map[string]string    // the peer's bundle facts (nil: not sent)
 	differs    map[string]time.Time // bundle -> facts differ since
+	maint      bool                 // maintenance mode: legs held
+	maintEnd   time.Time            // maintenance mode ended: legs held until then
+	drainFrom  map[string]time.Time // maintenance: leg reported down to the peer since
+	leaveTo    sync.Map             // bundle -> peer tunnel for beforeLeave (read under the LACP lock)
+	// moved: addresses beforeLeave pointed at the peer's tunnel (they do
+	// not age); removed when the leg is back or the peer is gone, unless
+	// MAC synchronisation has taken them over.
+	movedMu sync.Mutex
+	moved   map[macKey]string // -> tunnel
 }
+
+// mclagDrainNotice: in maintenance mode a leg is reported down to the peer
+// this long before it leaves its bundle (the peer lets traffic from the
+// tunnel out on its own leg by then).
+const mclagDrainNotice = 300 * time.Millisecond
 
 // mclagInconsistentAfter: how long a bundle may differ from the peer's
 // before the secondary holds it.
@@ -99,7 +118,8 @@ func bundleFacts(cfg *model.Config, name string) string {
 }
 
 func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *mclagCtl {
-	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{}, differs: map[string]time.Time{}}
+	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{},
+		differs: map[string]time.Time{}, drainFrom: map[string]time.Time{}}
 	m.macs = newMACSync(m, log)
 	if stack != nil {
 		stack.node.Handle("mclag-legs", func(from int, req json.RawMessage) (any, error) {
@@ -280,6 +300,13 @@ func (m *mclagCtl) step(now time.Time) {
 	default:
 		m.minority = false // e.g. the peer is gone, but this part is the majority
 	}
+	switch {
+	case reason != "":
+	case m.maint:
+		reason = "maintenance mode"
+	case now.Before(m.maintEnd):
+		reason = "rejoining after maintenance mode (MAC tables are exchanged)"
+	}
 	if reason == "" && now.Before(m.restoreEnd) {
 		reason = fmt.Sprintf("delay-restore (%s left)", m.restoreEnd.Sub(now).Round(time.Second))
 	}
@@ -288,6 +315,16 @@ func (m *mclagCtl) step(now time.Time) {
 	for _, b := range bundles {
 		facts[b] = bundleFacts(m.cfg, b)
 		switch pf, ok := m.peerFacts[b]; {
+		case reason == "maintenance mode" && legs[b] && reachable && m.peerLegs[b]:
+			// Planned: the peer hears first that this leg goes away, then
+			// it leaves the bundle.
+			if m.drainFrom[b].IsZero() {
+				m.drainFrom[b] = now
+				m.leaveTo.Store(b, dataplane.TunnelName(peer))
+			}
+			if now.Sub(m.drainFrom[b]) >= mclagDrainNotice || m.holds[b] != "" {
+				newHolds[b] = reason
+			}
 		case reason != "":
 			newHolds[b] = reason
 		case ok && m.peerKnown && pf != facts[b]:
@@ -351,6 +388,16 @@ func (m *mclagCtl) step(now time.Time) {
 	flush := m.legState != "" && state != m.legState
 	m.legState = state
 
+	if !m.maint {
+		for b := range m.drainFrom {
+			m.leaveTo.Delete(b)
+		}
+		m.drainFrom = map[string]time.Time{}
+	}
+	for b := range m.drainFrom {
+		legs[b] = false // reported down while it drains
+	}
+
 	// Tell the peer about our legs: on change and every second.
 	send := reachable && m.stack != nil && (!mapsEqualBool(legs, m.lastLegs) || now.Sub(m.lastSent) >= time.Second)
 	if send {
@@ -358,9 +405,17 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	domain := d.ID
 	peerTunnel := dataplane.TunnelName(peer)
+	// Moved addresses stay while a leg drains or is held for maintenance
+	// and the peer is there to carry them.
+	maintHeld := (m.maint || now.Before(m.maintEnd) || len(m.drainFrom) > 0) && reachable
 	m.mu.Unlock()
 
 	for b, h := range changedHold {
+		if h {
+			// Maintenance: this member's traffic towards the partner takes
+			// the peer's leg before the partner stops collecting here.
+			m.beforeLeave(b)
+		}
 		m.lacp.SetHold(b, h)
 		if h {
 			m.log.Warn("mclag: leg held out of the bundle", "bundle", b, "reason", newHolds[b])
@@ -371,6 +426,7 @@ func (m *mclagCtl) step(now time.Time) {
 	if err := dataplane.SyncSplitHorizon(sh); err != nil {
 		m.log.Warn("mclag: split horizon", "err", err)
 	}
+	m.releaseMoved(maintHeld)
 	if flush {
 		if n, err := dataplane.FlushLearned(peerTunnel); err == nil && n > 0 {
 			m.log.Info("mclag: leg changed, addresses learned on the peer's tunnel flushed", "count", n)
@@ -395,6 +451,132 @@ func mapsEqualBool(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// beforeLeave moves what this member's bridge learned on a bundle to the
+// peer's tunnel before the bundle's last port leaves in maintenance mode
+// (lacp.Runtime.BeforeLeave): traffic to those devices goes through the
+// peer's leg at once instead of being lost until the addresses are learned
+// again.
+func (m *mclagCtl) beforeLeave(bundle string) {
+	v, ok := m.leaveTo.Load(bundle)
+	if !ok {
+		return
+	}
+	tunnel := v.(string)
+	l, err := netlink.LinkByName(bundle)
+	if err != nil {
+		return
+	}
+	neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+	if err != nil {
+		return
+	}
+	moved := 0
+	for _, n := range neighs {
+		if n.Vlan == 0 || n.State&(unix.NUD_PERMANENT|unix.NUD_NOARP) != 0 || len(n.HardwareAddr) != 6 {
+			continue
+		}
+		k := macKey{MAC: macOf(&n), VLAN: n.Vlan}
+		if fdbSet(tunnel, k) == nil {
+			moved++
+			m.movedMu.Lock()
+			if m.moved == nil {
+				m.moved = map[macKey]string{}
+			}
+			m.moved[k] = tunnel
+			m.movedMu.Unlock()
+		}
+	}
+	if moved > 0 {
+		m.log.Info("mclag: addresses behind the leg moved to the peer before it leaves", "bundle", bundle, "count", moved)
+	}
+}
+
+// releaseMoved removes the addresses beforeLeave moved, once no leg of
+// this member drains and the peer's tunnel is no longer the way (the leg is
+// back, or the peer is gone): the bridge learns them again or floods.
+func (m *mclagCtl) releaseMoved(draining bool) {
+	if draining {
+		return
+	}
+	m.movedMu.Lock()
+	moved := m.moved
+	m.moved = nil
+	m.movedMu.Unlock()
+	if len(moved) == 0 {
+		return
+	}
+	m.macs.mu.Lock()
+	installed := maps.Clone(m.macs.installed)
+	m.macs.mu.Unlock()
+	n := 0
+	for k, tunnel := range moved {
+		if installed[k] == tunnel {
+			continue // MAC synchronisation installed it there
+		}
+		if fdbDel(tunnel, k) == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		m.log.Info("mclag: addresses moved to the peer for maintenance mode released", "count", n)
+	}
+}
+
+// setMaintenance holds (on) or, after mclagRejoinAfter, releases the legs.
+func (m *mclagCtl) setMaintenance(on bool, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.maint && !on {
+		m.maintEnd = now.Add(mclagRejoinAfter)
+	}
+	m.maint = on
+}
+
+// legsUp lists this member's MC-LAG legs that carry traffic.
+func (m *mclagCtl) legsUp() []string {
+	m.mu.Lock()
+	d := m.domainLocked()
+	var bundles []string
+	if d != nil {
+		bundles = m.bundlesLocked(d)
+	}
+	m.mu.Unlock()
+	all := m.lacp.Legs()
+	var out []string
+	for _, b := range bundles {
+		if all[b] {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// drainBlockers explains why holding this member's legs would cut traffic:
+// a bundle whose leg on the peer is down, or a peer in maintenance mode.
+func (m *mclagCtl) drainBlockers(draining []int) []string {
+	up := m.legsUp()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.domainLocked()
+	if d == nil || len(up) == 0 {
+		return nil
+	}
+	peer := m.peerOf(d)
+	if slices.Contains(draining, peer) {
+		return []string{fmt.Sprintf("the MC-LAG peer (member %d) is in maintenance mode", peer)}
+	}
+	if !m.peerReachable(peer) {
+		return []string{fmt.Sprintf("the MC-LAG peer (member %d) is not reachable, draining would cut %s", peer, strings.Join(up, ", "))}
+	}
+	var out []string
+	for _, b := range up {
+		if pl, ok := m.peerLegs[b]; !m.peerKnown || !ok || !pl {
+			out = append(out, b+": the peer's leg is down, draining would cut the bundle")
+		}
+	}
+	return out
 }
 
 // status is "show mclag".

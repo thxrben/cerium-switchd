@@ -382,7 +382,7 @@ vlans {
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
-| `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first moves its traffic to the peers (LACP out of sync, stacking links drained); until then it simply shuts down. |
+| `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
 | `start shell` | A Linux shell (4.3); `exit` returns to the CLI. |
 
 #### 3.5.1 `show system limits`
@@ -685,7 +685,7 @@ working path, so a ring survives one broken cable.
   does not exist), link speed, the neighbour (member id and host name, `other stack`, or `-`), the neighbour's port
   (full name, e.g. `3/2/0`) and how long the link is up.
 * `show virtual-chassis`: the stack id, this member, and per member its id, host name, role (`master`, `backup`,
-  `linecard`), `mastership-priority` and status (`present`, `not present`).
+  `linecard`), `mastership-priority` and status (`present`, `not present`, `maintenance`).
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
   reliable stream (sequence numbers, acknowledgements, retransmission, fragmentation to the link MTU). **TLS 1.3 with
   mutual certificate authentication** runs on top, using the stack's own key. Frames from unauthenticated devices are ignored.
@@ -721,6 +721,30 @@ working path, so a ring survives one broken cable.
     configuration history (what it committed alone is dropped) and votes again. **Risk**: if the other members are
     still running and only the cables are cut, both sides can commit different configurations, and one side's
     changes are lost when they meet. The override is logged (`change-log`).
+* **Maintenance mode** takes one member out of service without losing traffic, e.g. before an update, a reboot or
+  re-cabling: `request system maintenance-mode enter [force] [member <id>]` (super-user, after a `[yes,no] (no)`
+  question) and `request system maintenance-mode exit [member <id>]`. Entering **drains** the member:
+  1. It announces maintenance mode in its stack topology announcements. The other members stop routing stack traffic
+     through it wherever another path exists (a ring routes around it; in a chain it still carries transit, and the
+     command says so), and it is never chosen as master.
+  2. If it is master, mastership moves to the reachable voter with the highest priority (it keeps its vote).
+  3. Its MC-LAG legs are held out of their bundles. The peer hears first that the leg goes away (it lets traffic from
+     the stack out on its own leg), 300 ms later this member sends its traffic for the bundle through the peer, and
+     LACP tells each partner "not in sync". A port leaves the bundle only once the partner has stopped sending on it
+     (at most 2 s), so frames already on the way still arrive.
+  4. The command waits (at most 30 s) and then reports `drained`, or what is still carrying traffic. Ports that only
+     this member serves (single-homed access ports, bundles without `mclag`) cannot be drained; they are listed as
+     `not drained: …`.
+
+  Entering is refused when it would cut traffic that has somewhere else to go only through this member: an MC-LAG
+  bundle whose leg on the peer is down (`error: ae1: the peer's leg is down, draining would cut the bundle`), or a
+  peer that is itself in maintenance mode. `force` enters anyway. Maintenance mode survives a reboot of the member
+  (it comes back drained) until `exit`. Exiting ends the announcement and releases the legs after 2 s (the MAC tables
+  are exchanged meanwhile); after a reboot, `delay-restore` still applies. Mastership does not move back by itself.
+  Both commands are logged (`change-log`). `show virtual-chassis` shows the member's status as `maintenance`, and
+  `show mclag` shows the held legs with the reason `maintenance mode`.
+  `request system reboot|halt|power-off` and `request virtual-chassis member remove` drain the member first in the
+  same way (without the refusals: the member goes away anyway) and then continue.
 * **Configuration mode runs on the master**, as in Junos VC: `configure` on any member opens the configuration
   session on the master (the prompt shows the master's host name). In a stack with more than one member, the line
   above the prompt shows the role of the member the session runs on: `{master:1}`, `{backup:2}`, `{linecard:3}`,
@@ -734,7 +758,7 @@ working path, so a ring survives one broken cable.
   * Commands with targets: `show interfaces`, `show ethernet-switching table`, `show vlans`, `show chassis hardware`,
     `show system uptime|ntp|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
     `show virtual-chassis vc-port`, `clear ethernet-switching table`, `request system reboot|halt|power-off`,
-    `clear system reboot`.
+    `request system maintenance-mode enter|exit`, `clear system reboot`.
   * `show chassis hardware` covers every member by default (as in Junos VC); `local` or `member <id>` narrows it.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
     one. (Junos reboots all members by default; here the default is the local member.)
@@ -1072,9 +1096,31 @@ These are never part of RSTP:
 * **VXLAN tunnels**: the VXLAN mesh is loop-free by design (5.7),
 * **plain ports**.
 
-The two members of an MC-LAG domain act as **one** RSTP bridge. They use the same bridge id, the primary member
-computes the state of MC-LAG ports, and BPDUs received on the secondary's leg are relayed over the stacking plane.
-Neighbours therefore see one switch, and one peer failing does not cause a topology change.
+**The stack is one RSTP bridge** (as a Junos virtual chassis): every member uses the same bridge id, and neighbours
+see one switch whatever member their cable ends on. A cable between two ports of the stack is a loop of that one
+bridge, and one of its ends becomes a backup port (discarding).
+* **Bridge id**: `bridge-priority` and a MAC derived from the stack id (locally administered, stable: it does not
+  change when members join, leave or fail). `show spanning-tree bridge` shows it.
+* **One decision point**: the RSTP state machines of all ports of all members run on one member, the **RSTP owner**:
+  the member with the lowest id among the members it reaches (members in maintenance mode only if no other is
+  reachable). BPDUs received on any member are relayed to the owner over the stacking links (milliseconds), and the
+  owner sends each member its port states and the BPDUs to transmit. The owner copies its complete state (roles,
+  port states, received information, timers) to every member on each change and every second. When the owner
+  changes (it fails, reboots, or a member with a lower id joins), the next one continues from that copy: no port
+  changes state, no BPDU is missed by the neighbours (they allow 3 × `hello-time`), and nothing is reconverged.
+  Until a member hears from an owner, its ports keep the states they have.
+* A stack that splits into parts that cannot reach each other runs one owner per part, all with the same bridge id.
+  If the parts are still connected through other switches, each part receives BPDUs with its own bridge id from the
+  other part, and those ports become backup ports (discarding): the split cannot form a loop.
+* **MC-LAG**: an MC-LAG bundle is **one** RSTP port with one role and state, applied to its legs on both members.
+  BPDUs from the partner arrive on either leg; BPDUs to the partner leave on one leg that is up (the leg of the
+  member with the lowest id). The port's path cost follows the speed of all active legs of both members. One leg
+  failing, or one member of the domain failing, is no topology change for RSTP.
+* **Stack tunnels** are the bridge's internal fabric: always forwarding, never sending or receiving BPDUs. When RSTP
+  runs, BPDUs are consumed on every switch port and never forwarded (not even between members).
+* Topology changes flush the learned addresses of the affected ports on every member.
+* switchd restarts and upgrades are hitless: port states stay in the kernel and the member takes its state from the
+  owner (or, as owner, from its last copy).
 
 Without `protocols rstp` (or with `disable`), the switch does not run STP and **forwards BPDUs transparently**
 (it floods them like other multicast). A loop through this switch is then still detected by the neighbours' STP.
@@ -1095,6 +1141,18 @@ Without `protocols rstp` (or with `disable`), the switch does not run STP and **
   * `disable`: the port does not run RSTP. It is **always forwarding**, and BPDUs received on it are dropped.
     Use it only when you are sure the port cannot form a loop.
   * E: the interface is not configured or is a bundle member. W: it is not a switch port.
+
+Operational commands:
+* `show spanning-tree bridge`: this bridge's id, the root bridge id, root path cost and root port, the timers in use,
+  the RSTP owner member, time since the last topology change and the number of topology changes.
+* `show spanning-tree interface [<if>] [detail]`: per RSTP port (full names, e.g. `2/0/3`, `ae1`): role (`root`,
+  `designated`, `alternate`, `backup`, `disabled`), state (`forwarding`, `learning`, `discarding`), cost, priority
+  and port id, designated bridge and port, edge (`edge` configured, `oper-edge`), link type, protocol (`rstp`, or `stp`
+  when the neighbour speaks 802.1D only), and flags (`root-inconsistent`, `bpdu-blocked`). `detail` adds BPDU counters.
+* `show spanning-tree statistics`: BPDUs sent and received per port, topology changes.
+* `clear spanning-tree protocol-migration [interface <if>]`: send RSTP BPDUs again on ports that fell back to 802.1D
+  (the neighbour was replaced).
+* `clear spanning-tree statistics`.
 
 #### `protocols layer2-control bpdu-block { interface [ <if> … ]; disable-timeout <s>; }`
 BPDU protection. It works with or without RSTP. A listed port that receives any BPDU (STP/RSTP/MSTP, or Cisco PVST+
