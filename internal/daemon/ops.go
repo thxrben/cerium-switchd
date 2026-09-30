@@ -363,6 +363,8 @@ func (o *ops) Power(action string, minutes int, user string) error {
 	return command("shutdown", "--no-wall", p.flag, fmt.Sprintf("+%d", minutes))
 }
 
+func (o *ops) VLANMTUDrops() (map[int]uint64, error) { return dataplane.VLANMTUDrops() }
+
 func (o *ops) DHCPBindings() ([]cli.DHCPBinding, error) {
 	if o.dhcp == nil {
 		return nil, errors.New("not available (dry-run mode?)")

@@ -180,6 +180,8 @@ Last updated: 2026-09-30 (evening).
 - Done 2026-09-30: port mirroring (dataplane/mirror*.go: tc clsact matchall/flower + mirred, before the storm
   filters, classification continues; per-VLAN via vlan_id and num_of_vlans 0). TestPortMirroring (capture on sw1's
   output port: the lab's OVS link learns the mirrored MACs).
+- Done 2026-09-30: VLAN mtu filter (nft bridge table switchd_vlanmtu, forward+input, tagged by vlan id, untagged by
+  ibrpvid; counters in show vlans extensive). TestVLANMTU (access ports; the tagged path is not lab-tested yet).
   User order next:
   port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
   with the user: management interface design, internal VLAN 4094.

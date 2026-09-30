@@ -28,6 +28,8 @@ type Kernel interface {
 	SyncL3(l *L3) (changed bool, warnings []string, err error)
 	// SyncMirrors converges the port mirroring filters (by device).
 	SyncMirrors(want map[string]*MirrorPort) (bool, error)
+	// SyncVLANMTU converges the per-VLAN MTU filters (vid -> frame size).
+	SyncVLANMTU(mtus map[int]int) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -45,6 +47,7 @@ func Execute(k Kernel, ops []Op) error {
 type Fake struct {
 	S       *State
 	Mirrors map[string]*MirrorPort
+	VLANMTU map[int]int
 }
 
 // NewFake returns a fake kernel holding a copy of s.
@@ -62,6 +65,13 @@ func (f *Fake) Read() (*State, error) { return f.S.Clone(), nil }
 func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 	changed := !slices.Equal(f.S.SelfVLANs, vids)
 	f.S.SelfVLANs = slices.Clone(vids)
+	return changed, nil
+}
+
+// SyncVLANMTU records the VLAN MTU filters.
+func (f *Fake) SyncVLANMTU(mtus map[int]int) (bool, error) {
+	changed := !reflect.DeepEqual(f.VLANMTU, mtus)
+	f.VLANMTU = mtus
 	return changed, nil
 }
 

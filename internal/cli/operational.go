@@ -53,6 +53,8 @@ type Operational interface {
 	// ForceMaster lets this member continue alone after the stack lost
 	// its majority (restarts switchd).
 	ForceMaster(user string) error
+	// VLANMTUDrops counts frames dropped per VLAN for exceeding its mtu.
+	VLANMTUDrops() (map[int]uint64, error)
 	// DHCPBindings reports this member's DHCP clients.
 	DHCPBindings() ([]DHCPBinding, error)
 	// SpanningTree reports the stack's RSTP bridge (from the RSTP owner).
@@ -1155,8 +1157,17 @@ func (sh *Shell) cancelPower(c *call) error {
 }
 
 func (sh *Shell) showVLANs(c *call) error {
-	if err := noArgs(c); err != nil {
-		return err
+	extensive := false
+	switch {
+	case len(c.args) == 0:
+	case len(c.args) == 1 && prefixOf(c.args[0].Text, "extensive"):
+		extensive = true
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'extensive' or nothing"}
+	}
+	var drops map[int]uint64
+	if extensive && sh.env.Ops != nil {
+		drops, _ = sh.env.Ops.VLANMTUDrops()
 	}
 	cfg := sh.activeModel()
 	var vs []*model.VLAN
@@ -1191,6 +1202,9 @@ func (sh *Shell) showVLANs(c *call) error {
 			vni = strconv.Itoa(v.VNI)
 		}
 		fmt.Fprintf(c.out, "%-14s %-5d %-6s %-9s %s\n", v.Name, v.ID, mtu, vni, strings.Join(ports, ", "))
+		if extensive && v.MTU != 0 {
+			fmt.Fprintf(c.out, "  mtu-exceeded drops: %d\n", drops[v.ID])
+		}
 	}
 	c.out.WriteString("* = tagged\n")
 	return nil
@@ -1208,7 +1222,8 @@ func registerOperational() {
 				&command{name: "ethernet-switching", help: "Show switching information", class: commit.ReadOnly, sub: []*command{
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},
-				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
+				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs,
+					complete: words(Completion{Text: "extensive", Help: "With the frames dropped for exceeding the VLAN mtu"})},
 				&command{name: "virtual-chassis", help: "Show the virtual chassis (stack)", class: commit.ReadOnly, run: (*Shell).showVC, sub: []*command{
 					{name: "vc-port", help: "Show the stacking ports and their neighbours", class: commit.ReadOnly, run: (*Shell).showVCPorts},
 					{name: "mtu", help: "Show the frame sizes the stack tunnels carry", class: commit.ReadOnly, run: (*Shell).showStackMTU},

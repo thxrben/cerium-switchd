@@ -1079,7 +1079,8 @@ Free text.
 Maximum frame size (1.3) **within this VLAN**, independent of port MTUs. Use it for example to allow jumbo frames
 only in a storage VLAN (`mtu 9014` for 9000-byte hosts) while the trunks carry `mtu 9216`.
 * Frames larger than this are dropped when they are **received** (on any port or tunnel), and counted per VLAN in `show vlans extensive`.
-* Implemented as an ingress filter (tc/nftables). It is offloaded where possible and costs a little CPU per frame in software.
+* Implemented as an nftables bridge filter on receipt (forwarded or delivered to the switch): tagged frames by their
+  VLAN id, untagged ones by the VLAN of their ingress port. It costs a little CPU per frame in software.
   Without `mtu` no VLAN filter is installed, and only port MTUs apply.
 * W: a member port with a smaller MTU (frames that fit the VLAN are dropped at that port).
 * If the VLAN is extended over VXLAN, the tunnel MTU follows the largest VXLAN VLAN MTU (5.7).

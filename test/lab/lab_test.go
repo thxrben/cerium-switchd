@@ -2616,3 +2616,41 @@ func TestPortMirroring(t *testing.T) {
 		t.Errorf("mirror filters left after removal: %s", o)
 	}
 }
+
+// vlans <v> mtu: frames larger than the VLAN's mtu are dropped on receipt
+// and counted in show vlans extensive; the ports keep their larger MTU.
+func TestVLANMTU(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupHost(t, hSw2)
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw2.sw1Port, "v10")+"set vlans v10 mtu 1400\n")
+	t.Cleanup(func() { configure(t, vlans) })
+	drops := func() int {
+		t.Helper()
+		out := mustSSH(t, sw1, "swcli -c 'show vlans extensive'")
+		m := regexp.MustCompile(`(?m)^v10 .*\n  mtu-exceeded drops: (\d+)`).FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("show vlans extensive:\n%s", out)
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	before := drops()
+	// 1300 bytes of payload: 1342-byte frames fit; 1400: 1442 do not.
+	if !reachSize(t, hSrv1, hSw2, 1, 1300) {
+		t.Error("frames within the VLAN mtu dropped")
+	}
+	if reachSize(t, hSrv1, hSw2, 1, 1400) {
+		t.Error("frames above the VLAN mtu passed")
+	}
+	if n := drops() - before; n < 2 {
+		t.Errorf("drop counter grew by %d, want the 2 pings", n)
+	}
+	// Without mtu the filter goes.
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw2.sw1Port, "v10"))
+	if !reachSize(t, hSrv1, hSw2, 1, 1400) {
+		t.Error("large frames dropped after the VLAN mtu was removed")
+	}
+	if o, _ := ssh(sw1, "nft list table bridge switchd_vlanmtu"); strings.Contains(o, "vlan id") {
+		t.Errorf("filter left:\n%s", o)
+	}
+}

@@ -197,6 +197,18 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, true); err != nil {
 		return fmt.Errorf("bridge VLANs: %w", err)
 	}
+	// Per-VLAN MTU (vlans <v> mtu).
+	mtus := map[int]int{}
+	for _, v := range cfg.VLANs {
+		if v.MTU != 0 {
+			mtus[v.ID] = v.MTU
+		}
+	}
+	if changed, err := a.kernel.SyncVLANMTU(mtus); err != nil {
+		a.log.Error("VLAN mtu", "err", err)
+	} else if changed {
+		a.log.Log(context.Background(), level, "VLAN mtu filters updated", "reason", reason)
+	}
 	// Port mirroring (forwarding-options analyzer): after the devices exist.
 	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, a.names.Linux)); err != nil {
 		a.log.Error("port mirroring", "err", err)

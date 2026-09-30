@@ -558,6 +558,8 @@ func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 
 func (f *fakeOps) SwitchMaster(to int, user string) error { return nil }
 func (f *fakeOps) ForceMaster(user string) error          { return nil }
+func (f *fakeOps) VLANMTUDrops() (map[int]uint64, error)  { return map[int]uint64{10: 7}, nil }
+
 func (f *fakeOps) DHCPBindings() ([]DHCPBinding, error) {
 	return []DHCPBinding{{Unit: "1/0/6.0", State: "bound", Address: "10.1.2.50/24", Server: "10.1.2.1", Router: "10.1.2.1",
 		DNS: []string{"10.1.2.53"}, Lease: time.Hour, Renew: time.Now().Add(30 * time.Minute), Expires: time.Now().Add(time.Hour)}}, nil
