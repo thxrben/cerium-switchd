@@ -275,12 +275,9 @@ func build() *Node {
 	mclag := C("mclag", "Multi-chassis link aggregation",
 		L("domain", "MC-LAG domain (a pair of stack members)", Uint("<domain-id>", 1, 255),
 			LL("members", "The two stack members forming this domain", MemberID),
-			V("peer-link", "Aggregated interface connecting the two peers", AEInterface),
 			V("system-mac", "Shared LACP system MAC (derived if unset)", MAC),
 			VD("system-priority", "Shared LACP system priority", Uint("<priority>", 1, 65535), "32768"),
 			V("anycast-vtep", "Shared VTEP address of the pair", IP),
-			bfd("heartbeat", "BFD heartbeat over the management network (split-brain detection)", "300"),
-			bfd("peer-link-bfd", "Micro-BFD on every peer-link port (IP-less)", "100"),
 			VD("delay-restore", "Seconds to wait after reboot before enabling MC-LAG ports", Uint("<seconds>", 0, 3600), "300"),
 		),
 	)

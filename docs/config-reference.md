@@ -112,27 +112,27 @@ Every port belongs to exactly one plane. Traffic never crosses from one plane to
 
 | Plane | Ports | Carries | IP |
 |---|---|---|---|
-| **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, MC-LAG peer-links, VXLAN tunnels, and the routed interfaces of the default and data routing instances (irb, routed ports) | Client traffic, routed between VLANs where configured (5.3.2, 5.3.3) | only on routed interfaces |
-| **Stacking plane** | Dedicated **stacking ports** (VC ports), direct 1:1 cables between members | Stack configuration, member state, MC-LAG synchronisation, RSTP coordination, BFD | none: IP-less protocol |
-| **Management plane** | The interfaces of routing instance `mgmt_junos` (`system management-instance`): a dedicated port or an irb unit per member | SSH, web/API, syslog, NTP, DNS, MC-LAG heartbeat | yes, in `mgmt_junos` only |
+| **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, VXLAN tunnels, and the routed interfaces of the default and data routing instances (irb, routed ports) | Client traffic, routed between VLANs where configured (5.3.2, 5.3.3) | only on routed interfaces |
+| **Stacking plane** | Dedicated **stacking ports** (VC ports), direct 1:1 cables between members, cabled as a ring | Stack configuration, member state, MC-LAG synchronisation, BFD (the stacking protocol, untagged), and client traffic between members inside the **stack tunnels** (5.2) | internal only: a hidden routing instance that carries the stack tunnels, never configurable or reachable from other planes |
+| **Management plane** | The interfaces of routing instance `mgmt_junos` (`system management-instance`): a dedicated port or an irb unit per member | Administration only: SSH and the CLI, web/API, ping, syslog, NTP, DNS, software updates | yes, in `mgmt_junos` only |
 
 Rules that follow from this:
 
 * **Stacking protocol frames on data ports are client traffic.** The stacking protocol uses untagged frames with
-  EtherType `0x88b5`. switchd receives these frames *only* on designated stacking ports (and peer-link ports, for
-  micro-BFD; see 5.6). On access, trunk or VXLAN ports, a frame with this EtherType is **never interpreted and never
+  EtherType `0x88b5`. switchd receives these frames *only* on designated stacking ports. On access, trunk or VXLAN ports, a frame with this EtherType is **never interpreted and never
   influences stacking or MC-LAG**. It is switched like any other frame and is not dropped.
 * The protocols a switch port legitimately terminates are the data plane's own link-local protocols. LACP is consumed on
   bundle members. BPDUs are consumed when RSTP runs, and trigger `bpdu-block`.
-* **No IP on switch ports or stacking ports.** switchd disables IPv6 (link-local addresses, router solicitations,
-  neighbour discovery) on them and never assigns addresses. IP exists only on routed interfaces (5.3.2, 5.3.3).
-* **Stack traffic never uses the management network**, and management traffic never uses the stacking ports.
-  Configuration sync runs only over stacking ports. The management network carries only access to the switch,
-  its services, and the MC-LAG heartbeat (which tells "peer dead" from "stacking cables cut").
+* **No IP on switch ports.** switchd disables IPv6 (link-local addresses, router solicitations, neighbour discovery)
+  on them and never assigns addresses. IP exists only on routed interfaces (5.3.2, 5.3.3). Stacking ports carry only
+  the internal addresses of the hidden stack instance (5.2), never configured ones, and IPv6 stays disabled on them.
+* **Stack traffic never uses the management network.** Configuration sync, MC-LAG synchronisation and client traffic
+  between members run only over stacking ports. The management network carries only administration of the switch.
+  Management traffic crosses stacking ports only inside the reserved internal management VLAN (5.2).
 * Routing instances are separate routing tables: nothing is routed between `mgmt_junos` and the data plane, or between
   two instances.
 * **Services live in the management instance.** With `system management-instance`, switchd's own traffic (syslog,
-  NTP, DNS lookups, heartbeat) goes out through `mgmt_junos`. The addresses of data routed interfaces are protected:
+  NTP, DNS lookups) goes out through `mgmt_junos`. The addresses of data routed interfaces are protected:
   they answer ping, ARP and neighbour discovery (and routing protocols once they exist), replies to connections the
   switch opened, and nothing else. So the SSH servers (the OS's and the CLI's) are reachable only through the
   management interfaces, or through the OS's own interfaces that switchd does not manage.
@@ -570,8 +570,7 @@ at first start. `certificate` and `key` must be given together (E otherwise). `d
 
 #### `system management-instance`
 Makes routing instance `mgmt_junos` the management instance (1.5), as in Junos. Its interfaces are the members'
-management interfaces, and switchd's services use it: syslog, NTP and DNS lookups go out through it, and the MC-LAG
-heartbeat runs over it. See 5.9 for the instance itself.
+management interfaces, and switchd's services use it: syslog, NTP and DNS lookups go out through it. See 5.9 for the instance itself.
 * E: `system management-instance` without `routing-instances mgmt_junos`, or the reverse.
 * W: an instance `mgmt_junos` without an interface of some member (that member has no management address).
 * **Without `management-instance`, switchd does not touch the host's existing management network configuration**
@@ -697,6 +696,52 @@ working path, so a ring survives one broken cable.
   commands by the member they run on.
 * `show virtual-chassis` roles: `master` (Raft leader), `backup` (the voter with the highest priority after the
   master), `linecard` (all others); per member also `voter` or `non-voter`.
+
+#### Data between members (stack tunnels)
+
+Client traffic between members travels over the stacking ports, inside **stack tunnels**. Nothing about them is
+configured; they follow from the member list and the stacking cables.
+
+* **Cabling: a ring.** Two members use two cables between them; three or more are cabled `1–2`, `2–3`, …, `n–1`. Every
+  single cable can fail without losing a member. Chains and other meshes work too, with less redundancy.
+* **Underlay**: every member has an internal address `169.254.64.<member>` in a hidden routing instance (`swstack`)
+  that contains only the stacking ports. switchd routes between the members' addresses over the stacking links along
+  the shortest paths of the stack topology it already knows (5.2 protocol, `show virtual-chassis`). Equal paths are
+  used together (two members: both cables carry traffic). When a link fails (stacking BFD, loss of carrier), the
+  routes move to the remaining paths within the BFD detection time. No ARP runs on stacking ports: the neighbour's
+  address is bound to the MAC address the stacking protocol learned on that link. The instance is not visible in
+  `show route` and can be neither configured nor reached from the data or management planes.
+* **Tunnels**: every member has one VXLAN tunnel to every other switch member (UDP 4789 inside `swstack`, one VNI
+  per pair of members). Each tunnel is a port of the member's bridge and carries, **tagged**, every VLAN that exists on both ends. A frame
+  therefore always arrives on the tunnel of the member it came from:
+  * Tunnels never forward to other tunnels (split horizon: flooded traffic is replicated by the member where it
+    entered the stack, to every other member). No frame can loop, whatever the cabling, and RSTP never sees tunnels.
+  * MAC addresses are learned on tunnels like on ports (`show ethernet-switching table` shows the tunnel as `vc-<member>`),
+    except on the tunnel to the MC-LAG peer (5.6).
+  * The outer IPv4 header has "don't fragment" set: a frame that is too large is dropped and counted, never
+    fragmented. The MTU rule below makes sure that this never happens to a frame a data port accepted.
+* **Stack MTU.** A frame between members carries 58 bytes on top of its own size on the stacking link: the tunnel
+  (outer Ethernet 14, IPv4 20, UDP 8, VXLAN 8 = 50), the VLAN tag inside the tunnel (4) and one more VLAN tag of the
+  frame itself (4: a QinQ customer tag or a host's own tag, which every port also accepts, 1.3).
+  * switchd sets every stacking port to the largest MTU its NIC supports (up to a frame size of 16058) when the port is
+    designated, and never changes it because of a commit (an MTU change can restart a link). Ports designated by an
+    older version are set once when the new version starts.
+  * E: the largest `mtu` of any switched interface, bundle or VLAN in the stack plus 58 is larger than the largest frame of
+    some member's stacking port. The message names the member and the port, and the largest `mtu` the stack can
+    carry. Example: stacking NICs with a maximum frame size of 9216 carry data `mtu 9158`, so hosts up to MTU 9144;
+    hosts with MTU 9000 (`mtu 9014`) need 9072 on the stacking ports, which any NIC with jumbo frames supports.
+  * A member whose NICs are not known yet (not joined) is checked when it joins: then the stacking ports that cannot
+    carry the stack MTU raise an alarm, and `show virtual-chassis mtu` shows them.
+  * Frames that are larger than the stack MTU are not fragmented: they are dropped where they enter the tunnel, exactly
+    like on a port whose MTU is too small, and counted.
+* `show virtual-chassis mtu`: the largest data `mtu` in the stack and where it is configured, the frame size the
+  stacking links need for it, the largest data `mtu` (and host MTU) the stacking ports allow, and per member and
+  stacking port its current MTU, its NIC maximum and whether it suffices. All values are frame sizes (1.3).
+* **Internal management VLAN**: VLAN id **4094 is reserved**. It exists only on the stack tunnels and connects the
+  members' management instances, so a member without its own management cable is still reachable (the details
+  follow with the management takeover; until then the VLAN is only reserved). It is never carried by access, trunk,
+  bundle or VXLAN ports and cannot be routed into other instances. E: a VLAN with `vlan-id 4094` (the tag of a routed
+  subinterface, `unit <n> vlan-id`, is not a VLAN of the switch and may be 4094).
 
 #### `virtual-chassis bfd { minimum-interval <ms>; multiplier <n>; }`
 Failure detection on every stacking link, BFD-style inside the stacking protocol (IP-less): each side sends a frame
@@ -828,10 +873,9 @@ Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W
   (a single-homed device, or during a migration).
   * E: `lacp` missing.
   * E: there is no domain containing the bundle's members.
-  * E: the bundle is the peer-link.
 
   Rules for all bundles:
-  * E: an `ae` with ports on two members that is neither `mclag` nor a domain's `peer-link`.
+  * E: an `ae` with ports on two members that is not `mclag`.
   * E: ports on more than two members.
 
 #### `storm-control { broadcast <pps>; multicast <pps>; }`
@@ -929,8 +973,9 @@ OS-managed interfaces that use router advertisements first (they keep their SLAA
 `vlans <name> { … }` defines a VLAN (a broadcast domain). The name is what you reference in `vlan members`.
 
 #### `vlan-id <1-4094>`
-802.1Q id. E: missing. E: the same id in two VLANs. No VLAN id is reserved: all of 1–4094 are available.
-A VLAN exists on a member's bridge only if a port of that member, the peer-link or VXLAN needs it.
+802.1Q id. E: missing. E: the same id in two VLANs. E: 4094, the reserved internal management VLAN of the stack (5.2);
+1–4093 are available. A VLAN exists on a member's bridge only if a port of that member or VXLAN needs it; the stack
+tunnel between two members carries the VLANs that both of them have.
 
 #### `description <text>`
 Free text.
@@ -963,12 +1008,12 @@ Enables Rapid Spanning Tree (IEEE 802.1w) on **all** switch ports of all members
 `interface` entries only tune individual ports.
 
 These are never part of RSTP:
-* **peer-links**: always forwarding,
+* **stack tunnels**: loop-free by design (5.2),
 * **VXLAN tunnels**: the VXLAN mesh is loop-free by design (5.7),
 * **plain ports**.
 
 The two members of an MC-LAG domain act as **one** RSTP bridge. They use the same bridge id, the primary member
-computes the state of MC-LAG ports, and BPDUs received on the secondary's leg are relayed over the peer-link.
+computes the state of MC-LAG ports, and BPDUs received on the secondary's leg are relayed over the stacking plane.
 Neighbours therefore see one switch, and one peer failing does not cause a topology change.
 
 Without `protocols rstp` (or with `disable`), the switch does not run STP and **forwards BPDUs transparently**
@@ -1005,82 +1050,69 @@ BPDU protection. It works with or without RSTP. A listed port that receives any 
 An MC-LAG domain is a pair of stack members that act as one LACP partner towards devices connected to both
 (`aggregated-ether-options mclag`). Each member can be in at most one domain.
 
-The domain uses all three planes, each for its own purpose:
-* **Data plane**: the **peer-link**, a pure data link between the pair.
-* **Stacking plane**: MAC synchronisation, bundle state, consistency checks and RSTP relay between the two members.
-  If they are not cabled directly, messages are relayed by other members.
-* **Management plane**: the BFD **heartbeat**, which decides who stays active when the other paths fail.
+Both members of a domain are members of the same stack, and everything between them runs over the stacking ring
+(5.2): the stack tunnel between the two members takes the role that a dedicated peer-link has in other MC-LAG
+implementations, and the stacking protocol carries MAC synchronisation, leg states and consistency checks. No extra
+cable is needed. If the two are not cabled directly, both run through other members.
 
 Statements:
 * `members [ <a> <b> ]`: exactly two configured, non-witness stack members.
   E: not exactly two. E: unknown member. E: witness. E: member already in another domain.
-* `peer-link <aeN>`: the data bundle that connects the two members directly.
-  * It must have ports on both members (E). Each member's side is a local bundle between the two switches. With `lacp`,
-    each side uses its own LACP system id, not the shared one.
-  * It carries **all VLANs, tagged**, and nothing else (untagged frames on it are dropped). Its own ethernet-switching
-    settings are ignored (W). It has no IP.
-  * The peer-link must be at least as large as every MC-LAG bundle (E: MTU smaller than an MC-LAG bundle of the domain).
-  * It is never blocked by RSTP.
-  * **Split horizon**: traffic that arrives over the peer-link is never sent out of an MC-LAG bundle whose other leg
-    (on the peer) is up: flooded traffic was already delivered by the peer on its own leg, and with MAC
-    synchronisation known unicast for a dual-homed device only crosses the peer-link while the sending member's leg is
-    down. When a member's leg of a bundle fails, the peer lifts this filter for that bundle, and the traffic reaches the
-    device via the peer-link. Leg changes reach the peer within 50 ms.
-* `peer-link-bfd { minimum-interval <ms>; multiplier <n>; }`: micro-BFD on **each physical port** of the peer-link.
-  It is IP-less (stacking-protocol EtherType, authenticated with keys agreed over the stacking plane) and is consumed
-  only on peer-link ports.
-  * A port that stops forwarding while its link stays up (for example a broken media converter) leaves the bundle after
-    `interval × multiplier` (default 100 ms × 3). LACP alone would need 3 seconds.
-  * The port rejoins when BFD is up again.
-  * The peer-link counts as down (failure handling below) when no port passes BFD.
-  * Frames: EtherType `0x88b5` to `01:80:c2:00:00:0e` (never forwarded by a bridge), carrying the domain, the member
-    and a sequence number. Implemented so far: the peer-link state and the per-port state in `show mclag`; taking a
-    single failed port out of the bundle and the authentication follow.
-* `heartbeat { minimum-interval <ms>; multiplier <n>; }`: BFD over UDP (RFC 5881/5883) between the members'
-  management addresses, authenticated. Default 300 ms × 3.
-  * It carries no configuration or state. Its only job is to tell "peer dead" apart from "paths to the peer cut" (split-brain).
-  * W: a member without a management address.
+* `peer-link`, `peer-link-bfd` and `heartbeat` of earlier versions no longer exist (E: the stacking links replace the
+  peer-link; remove the statement and the bundle that served as peer-link).
 * `system-mac <mac>` / `system-priority <n>`: the shared LACP system id presented by both members on MC-LAG bundles.
   If `system-mac` is unset, a stable locally administered MAC is derived from the stack id and domain id. It never
   changes, because a change would make partners re-negotiate. Default priority 32768.
-* `delay-restore <s>`: after a member boots or rejoins, its MC-LAG ports stay out of the bundle for this long
-  (default 300 s). During that time the MAC table is synchronised and RSTP converges before traffic is attracted.
+* `delay-restore <s>`: after a member boots, its MC-LAG ports stay out of the bundle for this long (default 300 s).
+  During that time the MAC table is synchronised and RSTP converges before traffic is attracted. A member that only
+  lost its connection to the peer is not delayed (see failure handling).
 * `anycast-vtep <ip>`: VXLAN source address shared by the pair. Remote VTEPs send traffic for devices behind MC-LAG
   bundles to this one address, and either member can receive it (5.7).
 
 **Behaviour:**
 
+* **The peer's tunnel** (the stack tunnel between the two members) carries the VLANs like every tunnel, with two rules:
+  * It does not learn addresses (a dual-homed device's frames cross it when they are flooded, which would make the
+    peer point that device at the tunnel). MAC synchronisation fills it instead.
+  * **Split horizon**: traffic that arrives over the peer's tunnel is never sent out of an MC-LAG bundle whose other
+    leg (on the peer) is up: flooded traffic was already delivered by the peer on its own leg, and with MAC
+    synchronisation known unicast for a dual-homed device only crosses to the peer while the sending member's leg is
+    down. When a member's leg of a bundle fails, the peer lifts this filter for that bundle, and the traffic reaches the
+    device via the peer. Leg changes reach the peer within 50 ms.
+* **Traffic from other members** (stacks with more than two members): flooded traffic from a third member reaches
+  both members of the domain on their own tunnels. For every MC-LAG bundle only one of them delivers broadcast and
+  multicast: the primary while its leg is up, otherwise the secondary. Known unicast is delivered by the member it
+  was sent to. Unknown unicast from a third member can reach a dual-homed device twice until its address is learned.
+  When a member's leg fails, the other members forget the addresses behind that bundle that point to this member,
+  so their traffic floods and reaches the device via the remaining leg at once.
 * **MAC synchronisation** (stacking plane):
-  * The peer-link does not learn addresses (a dual-homed device's frames cross it when they are flooded, which
-    would make the peer point that device at the peer-link).
-  * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle (on the peer-link while the peer's
-    own leg of that bundle is down).
-  * MACs learned on single-homed ports are installed on the peer pointing to the peer-link.
+  * A MAC learned on an MC-LAG bundle is installed on the peer on the same bundle (on the peer's tunnel while the
+    peer's own leg of that bundle is down).
+  * MACs learned on single-homed ports are installed on the peer pointing to the tunnel of the member that learned them.
   * An address a member learns itself replaces a synchronised one. A synchronised address is removed when it ages out
     on the member that learned it; if it is still in use on the peer, the peer learns it again at once. Addresses that
-    point to the peer-link are removed when the peer-link goes down.
+    point to the peer's tunnel are removed when the peer becomes unreachable.
   * The members exchange changes as they happen and their whole tables every 30 s and when they meet again.
 * **Failure handling** (*primary* = higher `virtual-chassis member mastership-priority`, ties: lower id):
-  | Stacking path | Peer-link | Heartbeat | Interpretation | Behaviour |
-  |---|---|---|---|---|
-  | down | down | down | peer dead | Survivor carries all traffic as primary. |
-  | down | down | **up** | peer alive, both paths cut | **Secondary** takes its MC-LAG ports out of the bundles (LACP out-of-sync). The primary carries all traffic. |
-  | up | down | any | peer-link cut | Same as above: the secondary disables its MC-LAG legs, because frames could no longer be delivered via the peer. |
-  | down | up | any | stacking path cut | MAC sync pauses. Forwarding continues. Learned MACs are flooded via the peer-link until the stacking path returns. An alarm is raised. |
-  | – | one port down | – | peer-link degraded | The port leaves the peer-link bundle (micro-BFD or link loss). The others continue. |
-  | A member's leg of an MC-LAG bundle fails | | | | The bundle continues on the other member. The receiving member lifts split horizon for that bundle, and MACs point to the peer-link. |
-  | Member returns | | | | `delay-restore` applies, then its legs rejoin. |
+  | Situation | Behaviour |
+  |---|---|
+  | One stacking cable fails | Nothing visible: the stack tunnels move to the other way around the ring within the stacking BFD time. |
+  | A member's leg of an MC-LAG bundle fails | The bundle continues on the other member. The peer lifts split horizon for that bundle, and MACs point to the peer. |
+  | The peer is not reachable, **two-member stack** (peer dead, or both cables cut) | Both keep forwarding at all costs: every member keeps its legs up and keeps learning. Addresses that pointed to the peer are removed (their traffic floods locally). A device behind a bundle keeps working on both legs; a device connected only to the other member is unreachable while the stack is split. |
+  | The peer is not reachable, **three or more members** | A member that reaches less than half of the stack's switch members (itself included) is in the minority part: it takes its MC-LAG legs out of the bundles (LACP out-of-sync), so the partners use the majority part. Otherwise, including an exact half, it keeps forwarding as above. |
+  | The peer returns | The whole MAC tables are exchanged at once. Legs that stayed up stay up; legs that were held for the minority rule rejoin once the tables are exchanged. |
+  | A member boots | `delay-restore` applies, then its legs rejoin. |
 * **LACP identity** of an MC-LAG bundle: both members announce the domain's `system-mac`/`system-priority` and the same
   key (`N+1` for `aeN`); port numbers are unique per member (5.1.3), so the partner sees one system with one bundle.
 * **Leg state**: each member tells its peer over the stacking plane, on every change and every second, which of its
   MC-LAG legs are up (have ports that LACP has collecting and distributing). Split horizon for a bundle on a member
-  applies while the **peer's** leg of that bundle is up; if the stacking path is down, the last known state is kept.
+  applies while the **peer's** leg of that bundle is up.
 * A leg that is *held* stays out of the bundle: LACP tells the partner "not in sync" on its ports, so the partner moves
-  its traffic to the other member without loss. Holds: the secondary while the peer-link is down and the peer alive,
-  and `delay-restore` after the member booted or was cut off from its peer. A restart of switchd alone (the legs still
-  up) does not hold anything.
-* `show mclag`: per domain the role (primary/secondary), the peer's reachability over the stacking plane, the
-  peer-link and heartbeat state; per MC-LAG bundle the local and peer leg state, split horizon, and a hold with its
+  its traffic to the other member without loss. Holds: the minority rule above, a lasting configuration difference
+  (below), and `delay-restore` after the member booted. A restart of switchd alone (the legs still up) does not hold
+  anything.
+* `show mclag`: per domain the role (primary/secondary), the peer's reachability over the stack and its tunnel; per
+  MC-LAG bundle the local and peer leg state, split horizon, and a hold with its
   reason and remaining time.
 * **Consistency checks** at runtime: VLAN membership (and native VLAN), MTU, LACP mode and rate of each MC-LAG
   bundle as each member applies them are compared between the members (sent with the leg states). Both members
@@ -1221,8 +1253,8 @@ Additional rules, applied in this order:
 4. Storm control on the ingress port.
 5. VLAN classification (tables above), then the VLAN MTU filter.
 6. MAC learning (subject to `mac-limit`), then forwarding by MAC table. Unknown destinations, broadcast and
-   multicast are flooded to all ports in the VLAN, including VXLAN tunnels. Split horizon applies to peer-link
-   and tunnels.
+   multicast are flooded to all ports in the VLAN, including VXLAN tunnels. Split horizon applies to stack
+   tunnels (5.2, 5.6) and VXLAN tunnels.
 7. Mirroring copies are taken at ingress (step 1, before any filter) and at egress (as sent).
 
 ---
@@ -1340,13 +1372,6 @@ set virtual-chassis member 2 underlay interface 2/5/0
 set virtual-chassis member 2 underlay address 10.99.0.2/24
 set interfaces 1/5/0 mtu 9216
 set interfaces 2/5/0 mtu 9216
-set interfaces 1/2/0 ether-options 802.3ad ae0
-set interfaces 1/2/1 ether-options 802.3ad ae0
-set interfaces 2/2/0 ether-options 802.3ad ae0
-set interfaces 2/2/1 ether-options 802.3ad ae0
-set interfaces ae0 description peer-link
-set interfaces ae0 mtu 9216
-set interfaces ae0 aggregated-ether-options lacp active
 set interfaces 1/1/0 ether-options 802.3ad ae1
 set interfaces 2/1/0 ether-options 802.3ad ae1
 set interfaces ae1 description "server A (dual-homed)"
@@ -1373,7 +1398,6 @@ set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
 set vlans storage mtu 9014
 set mclag domain 1 members [ 1 2 ]
-set mclag domain 1 peer-link ae0
 set protocols rstp
 set forwarding-options analyzer debug input ingress interface ae1
 set forwarding-options analyzer debug input egress interface ae1
@@ -1407,7 +1431,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
 | Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
 | Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
-| Data plane, services, LACP, MC-LAG (incl. micro-BFD, heartbeat), RSTP, VXLAN | later phases (see PLAN.md §8) |
+| Data plane, services, LACP, MC-LAG, stack tunnels, RSTP, VXLAN | later phases (see PLAN.md §8) |
 
 ---
 
@@ -1597,16 +1621,9 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `mclag` | container |  |  | Multi-chassis link aggregation |
 | `mclag domain <domain-id>` | list | &lt;domain-id&gt; 1..255 |  | MC-LAG domain (a pair of stack members) |
 | `mclag domain <domain-id> members` | leaf-list | &lt;member-id&gt; 1..16 |  | The two stack members forming this domain |
-| `mclag domain <domain-id> peer-link` | leaf | &lt;ae-interface&gt; |  | Aggregated interface connecting the two peers |
 | `mclag domain <domain-id> system-mac` | leaf | &lt;mac-address&gt; |  | Shared LACP system MAC (derived if unset) |
 | `mclag domain <domain-id> system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | Shared LACP system priority |
 | `mclag domain <domain-id> anycast-vtep` | leaf | &lt;ip-address&gt; |  | Shared VTEP address of the pair |
-| `mclag domain <domain-id> heartbeat` | container |  |  | BFD heartbeat over the management network (split-brain detection) |
-| `mclag domain <domain-id> heartbeat minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 300 | Transmit/receive interval in milliseconds |
-| `mclag domain <domain-id> heartbeat multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
-| `mclag domain <domain-id> peer-link-bfd` | container |  |  | Micro-BFD on every peer-link port (IP-less) |
-| `mclag domain <domain-id> peer-link-bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
-| `mclag domain <domain-id> peer-link-bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
 | `mclag domain <domain-id> delay-restore` | leaf | &lt;seconds&gt; 0..3600 | 300 | Seconds to wait after reboot before enabling MC-LAG ports |
 | `switch-options` | container |  |  | Global switching options |
 | `switch-options mac-table-aging-time` | leaf | &lt;seconds&gt; 10..1000000 | 300 | MAC table aging time in seconds |

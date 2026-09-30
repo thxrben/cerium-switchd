@@ -262,3 +262,35 @@ func TestMalformed(t *testing.T) {
 		t.Fatalf("round trip: %+v %v", y, err)
 	}
 }
+
+// In a ring of four, the opposite member is reached both ways around; the
+// others only directly.
+func TestFirstHops(t *testing.T) {
+	m := meshes(4)
+	link(m[1], m[2])
+	link(m[2], m[3])
+	link(m[3], m[4])
+	cut := link(m[4], m[1])
+	waitFor(t, "ring", reaches(m[1], 2, 3, 4))
+	want := map[int][]int{2: {2}, 3: {2, 4}, 4: {4}}
+	waitFor(t, "equal-cost hops", func() bool {
+		got := m[1].FirstHops()
+		for d, h := range want {
+			if !slices.Equal(got[d], h) {
+				return false
+			}
+		}
+		return len(got) == len(want)
+	})
+	cut()
+	want = map[int][]int{2: {2}, 3: {2}, 4: {2}}
+	waitFor(t, "hops after the cut", func() bool {
+		got := m[1].FirstHops()
+		for d, h := range want {
+			if !slices.Equal(got[d], h) {
+				return false
+			}
+		}
+		return len(got) == len(want)
+	})
+}

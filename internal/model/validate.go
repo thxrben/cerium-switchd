@@ -80,6 +80,15 @@ type Inventory interface {
 	Ports(member int) (ports map[string]PortInfo, known bool)
 }
 
+// portsOf returns the ports of a member; known is false if the member is
+// unknown.
+func (b *builder) portsOf(member int) (map[string]PortInfo, bool) {
+	if b.inv == nil {
+		return nil, false
+	}
+	return b.inv.Ports(member)
+}
+
 // port looks up one port. known is false if the member is unknown.
 func (b *builder) port(member int, name string) (info PortInfo, ok, known bool) {
 	if b.inv == nil {
@@ -285,18 +294,9 @@ func (b *builder) validateInterfaces() {
 		if len(i.MemberPorts) > 0 && i.MinLinks > len(i.MemberPorts) {
 			b.warnf(path+" aggregated-ether-options minimum-links", "minimum-links %d exceeds the %d member ports; the bundle can never come up", i.MinLinks, len(i.MemberPorts))
 		}
-		isPeerLink := false
-		for _, d := range c.Domains {
-			if d.PeerLink == name {
-				isPeerLink = true
-			}
-		}
 		if i.MCLAG {
 			if i.LACP == nil {
 				b.errorf(path+" aggregated-ether-options", "MC-LAG interfaces require 'lacp'")
-			}
-			if isPeerLink {
-				b.errorf(path+" aggregated-ether-options mclag", "the peer-link cannot be an MC-LAG interface")
 			}
 			if d := b.domainFor(i.MemberIDs); d == nil && len(i.MemberIDs) > 0 {
 				b.errorf(path+" aggregated-ether-options mclag", "no mclag domain contains member(s) %s", joinInts(i.MemberIDs))
@@ -307,11 +307,8 @@ func (b *builder) validateInterfaces() {
 		switch {
 		case len(i.MemberIDs) > 2:
 			b.errorf(path, "ports on %d stack members (%s); at most two are possible (MC-LAG)", len(i.MemberIDs), joinInts(i.MemberIDs))
-		case len(i.MemberIDs) == 2 && !i.MCLAG && !isPeerLink:
-			b.errorf(path, "ports on members %s require 'aggregated-ether-options mclag' or use as a peer-link", joinInts(i.MemberIDs))
-		}
-		if isPeerLink && i.Switching {
-			b.warnf(path, "the peer-link carries all VLANs automatically; its ethernet-switching settings are ignored")
+		case len(i.MemberIDs) == 2 && !i.MCLAG:
+			b.errorf(path, "ports on members %s require 'aggregated-ether-options mclag'", joinInts(i.MemberIDs))
 		}
 	}
 }
@@ -367,17 +364,30 @@ func (b *builder) validateMTU() {
 			}
 		}
 	}
-	// The peer-link must carry everything its domain's MC-LAG ports carry.
-	for _, did := range sortedKeys(c.Domains) {
-		d := c.Domains[did]
-		pl, ok := c.Interfaces[d.PeerLink]
-		if !ok {
+	b.validateStackMTU()
+}
+
+// validateStackMTU checks that the stacking ports of every member carry the
+// largest data frame through the stack tunnels (reference 5.2, stack MTU).
+func (b *builder) validateStackMTU() {
+	c := b.cfg
+	if len(c.SwitchMembers()) < 2 {
+		return
+	}
+	mtu, where := c.MaxDataMTU()
+	for _, m := range c.SwitchMembers() {
+		ports, known := b.portsOf(m)
+		if !known {
 			continue
 		}
-		for _, name := range sortedKeys(c.Interfaces) {
-			i := c.Interfaces[name]
-			if i.MCLAG && b.domainFor(i.MemberIDs) == d && i.MTU > pl.MTU {
-				b.errorf("interfaces "+d.PeerLink+" mtu", "peer-link MTU %d is smaller than MTU %d of MC-LAG interface %s", pl.MTU, i.MTU, name)
+		for _, name := range sortedKeys(ports) {
+			p := ports[name]
+			if !p.StackPort || p.MaxMTU <= 0 {
+				continue
+			}
+			if max := min(p.MaxMTU, MaxStackPortMTU) + EthHeader; mtu+StackOverhead > max {
+				b.errorf(where, "frames of %d bytes need %d on the stacking links, but stacking port %s of member %d carries at most %d; the largest mtu the stack can carry is %d",
+					mtu, mtu+StackOverhead, name, m, max, max-StackOverhead)
 			}
 		}
 	}
@@ -405,24 +415,6 @@ func (b *builder) validateDomains() {
 				b.errorf(path+" members", "member %d is already part of domain %d", m, o)
 			}
 			inDomain[m] = did
-			if len(c.MgmtAddrs(m)) == 0 {
-				b.warnf(path, "member %d has no management address; the BFD split-brain heartbeat is not possible", m)
-			}
-		}
-		if d.PeerLink == "" {
-			b.errorf(path, "peer-link is required")
-			continue
-		}
-		pl, ok := c.Interfaces[d.PeerLink]
-		if !ok {
-			b.errorf(path+" peer-link", "%s is not configured under 'interfaces'", d.PeerLink)
-			continue
-		}
-		if len(d.Members) == 2 {
-			want := []int{min(d.Members[0], d.Members[1]), max(d.Members[0], d.Members[1])}
-			if len(pl.MemberIDs) != 2 || pl.MemberIDs[0] != want[0] || pl.MemberIDs[1] != want[1] {
-				b.errorf(path+" peer-link", "%s must have ports on both members %s", d.PeerLink, joinInts(want))
-			}
 		}
 	}
 }

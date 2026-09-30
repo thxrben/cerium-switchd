@@ -44,6 +44,7 @@ type Operational interface {
 	LACP() ([]lacp.BundleStatus, error)
 	// MCLAG reports this member's MC-LAG domain (Domain 0: none).
 	MCLAG() (MCLAGStatus, error)
+	StackMTU() (StackMTUStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
 	SwitchMaster(to int, user string) error
 	// RemoveVCMember removes a member from the stack.
@@ -78,23 +79,31 @@ type VCPort struct {
 	UpSince                                           time.Time
 }
 
+// StackMTUStatus is "show virtual-chassis mtu" of one member (frame sizes,
+// reference 1.3).
+type StackMTUStatus struct {
+	Member  int
+	DataMTU int    // the largest data mtu in the stack
+	Where   string // the statement that sets it
+	Stack   bool   // there are other switch members (stack tunnels exist)
+	Ports   []StackMTUPort
+}
+
+// StackMTUPort is a stacking port: its current and largest frame size.
+type StackMTUPort struct {
+	Port        string
+	MTU, MaxMTU int
+}
+
 // MCLAGStatus is "show mclag".
 type MCLAGStatus struct {
 	Domain, Member, Peer int
 	Primary              bool
-	PeerReachable        bool // over the stacking plane
-	PeerLink             string
-	PeerLinkUp           bool
+	PeerReachable        bool // over the stack (and so its stack tunnel)
 	PeerKnown            bool // leg states received from the peer
 	PeerSeen             time.Time
-	PeerLinkPorts        []MCLAGPort // micro-BFD per port of this member
+	Reach, Members       int // switch members reached (itself included) / in the stack
 	Bundles              []MCLAGBundle
-}
-
-// MCLAGPort is a peer-link port and its micro-BFD state.
-type MCLAGPort struct {
-	Name string
-	Up   bool
 }
 
 // MCLAGBundle is one MC-LAG bundle of "show mclag".
@@ -703,6 +712,60 @@ func (sh *Shell) showVCPorts(c *call) error {
 	return nil
 }
 
+// showStackMTU is "show virtual-chassis mtu" (reference 5.2, stack MTU).
+func (sh *Shell) showStackMTU(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("stack information is not available")
+	}
+	st, err := sh.env.Ops.StackMTU()
+	if err != nil {
+		return err
+	}
+	need := st.DataMTU + model.StackOverhead
+	fmt.Fprintf(c.out, "Frame sizes including the Ethernet header, without VLAN tags (reference 1.3)\n")
+	fmt.Fprintf(c.out, "  Largest data mtu in the stack:  %d (%s; hosts up to MTU %d)\n", st.DataMTU, st.Where, st.DataMTU-model.EthHeader)
+	if !st.Stack {
+		c.out.WriteString("  No other switch member: no stack tunnels.\n")
+	} else {
+		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: tunnel 50, VLAN tags 8)\n", need, model.StackOverhead)
+	}
+	if len(st.Ports) == 0 {
+		fmt.Fprintf(c.out, "\nMember %d has no stacking ports.\n", st.Member)
+		return nil
+	}
+	limit := 0
+	for _, p := range st.Ports {
+		if p.MaxMTU > 0 && (limit == 0 || p.MaxMTU < limit) {
+			limit = p.MaxMTU
+		}
+	}
+	if limit > 0 {
+		carry := min(limit-model.StackOverhead, 16000) // the largest configurable mtu
+		fmt.Fprintf(c.out, "  Member %d's stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", st.Member, carry, carry-model.EthHeader)
+	}
+	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %s\n", "Port", "MTU", "Maximum", "Status")
+	for _, p := range st.Ports {
+		status := "ok"
+		switch {
+		case !st.Stack:
+			status = "-"
+		case p.MaxMTU > 0 && p.MaxMTU < need:
+			status = fmt.Sprintf("too small: the NIC carries at most %d", p.MaxMTU)
+		case p.MTU < need:
+			status = "too small (set to the maximum when switchd starts)"
+		}
+		max := "unknown"
+		if p.MaxMTU > 0 {
+			max = strconv.Itoa(p.MaxMTU)
+		}
+		fmt.Fprintf(c.out, "  %-8s %-7d %-8s %s\n", p.Port, p.MTU, max, status)
+	}
+	return nil
+}
+
 func dash(s string) string {
 	if s == "" {
 		return "-"
@@ -975,6 +1038,7 @@ func registerOperational() {
 				&command{name: "vlans", help: "Show VLANs and their interfaces", class: commit.ReadOnly, run: (*Shell).showVLANs},
 				&command{name: "virtual-chassis", help: "Show the virtual chassis (stack)", class: commit.ReadOnly, run: (*Shell).showVC, sub: []*command{
 					{name: "vc-port", help: "Show the stacking ports and their neighbours", class: commit.ReadOnly, run: (*Shell).showVCPorts},
+					{name: "mtu", help: "Show the frame sizes the stack tunnels carry", class: commit.ReadOnly, run: (*Shell).showStackMTU},
 				}},
 				&command{name: "route", help: "Show a routing table", class: commit.ReadOnly, run: (*Shell).showRoute, complete: completeRoute},
 				&command{name: "arp", help: "Show the IPv4 neighbour (ARP) table", class: commit.ReadOnly, run: (*Shell).showARP,

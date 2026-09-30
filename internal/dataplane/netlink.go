@@ -5,6 +5,7 @@ package dataplane
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -79,6 +80,14 @@ func (k *Netlink) Read() (*State, error) {
 					s.Bridge.AgeingSeconds = int(*v.AgeingTime) / 100
 				}
 			}
+		case *netlink.Vxlan:
+			ln.Kind = Other
+			if TunnelMember(a.Name) > 0 {
+				ln.Kind = Tunnel
+				ln.Tunnel = &TunnelOpts{VNI: v.VxlanId}
+				ln.Tunnel.Local, _ = netip.AddrFromSlice(v.SrcAddr.To4())
+				ln.Tunnel.Remote, _ = netip.AddrFromSlice(v.Group.To4())
+			}
 		case *netlink.Bond:
 			ln.Kind = Bond
 			ln.Bond = &BondOpts{
@@ -117,7 +126,7 @@ func (k *Netlink) Read() (*State, error) {
 	for _, l := range links {
 		if ln := s.Links[l.Attrs().Name]; ln != nil && ln.Master == BridgeName {
 			if pi, err := netlink.LinkGetProtinfo(l); err == nil {
-				ln.NoLearning = !pi.Learning
+				ln.NoLearning, ln.Isolated = !pi.Learning, pi.Isolated
 			}
 		}
 	}
@@ -170,6 +179,8 @@ func (k *Netlink) Apply(op Op) error {
 			return netlink.LinkAdd(br)
 		}
 		return netlink.LinkModify(br)
+	case OpCreateTunnel:
+		return createTunnel(op.Link, *op.Tunnel, op.MTU)
 	case OpCreateBond:
 		if op.Bond.Team() {
 			return createTeam(op.Link, op.Bond.HashPolicy)
@@ -231,6 +242,8 @@ func (k *Netlink) Apply(op Op) error {
 		return nil
 	case OpSetLearning:
 		return netlink.LinkSetLearning(l, op.Bool)
+	case OpSetIsolated:
+		return netlink.LinkSetIsolated(l, op.Bool)
 	case OpSetFlowControl:
 		return setFlowControl(op.Link, op.Bool)
 	}

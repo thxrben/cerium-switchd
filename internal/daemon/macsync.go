@@ -19,7 +19,10 @@ import (
 
 // MAC synchronisation between the two members of an MC-LAG domain
 // (reference 5.6): what one member's bridge learns on its own ports is
-// installed on the peer, on the same MC-LAG bundle or on the peer-link.
+// installed on the peer, on the same MC-LAG bundle or on the peer's stack
+// tunnel. Addresses behind a bundle that one member loses are forgotten by
+// the other members (third members of the stack), so their traffic floods
+// and reaches the device through the remaining leg.
 
 type macKey struct {
 	MAC  string `json:"mac"` // lower case, colon separated
@@ -57,6 +60,13 @@ type macSync struct {
 	lastFull  time.Time
 	wasReach  bool
 	lostSince time.Time
+	forget    []macKey // addresses behind a bundle removed here: for third members
+}
+
+// forgetMsg asks a third member to forget addresses it learned on the
+// sender's tunnel.
+type forgetMsg struct {
+	Keys []macKey `json:"keys"`
 }
 
 func newMACSync(m *mclagCtl, log *slog.Logger) *macSync {
@@ -70,19 +80,50 @@ func newMACSync(m *mclagCtl, log *slog.Logger) *macSync {
 			}
 			return nil, s.receive(from, msg)
 		})
+		m.stack.node.Handle("mac-forget", func(from int, req json.RawMessage) (any, error) {
+			var msg forgetMsg
+			if err := json.Unmarshal(req, &msg); err != nil {
+				return nil, err
+			}
+			n := 0
+			for _, k := range msg.Keys {
+				if forgetLearned(dataplane.TunnelName(from), k) == nil {
+					n++
+				}
+			}
+			if n > 0 {
+				s.log.Debug("mclag: forgot addresses behind a lost leg", "member", from, "count", n)
+			}
+			return nil, nil
+		})
 	}
 	return s
 }
 
+// forgetLearned removes an address the bridge learned on dev (if it is
+// there; entries elsewhere or installed from outside stay).
+func forgetLearned(dev string, k macKey) error {
+	l, err := netlink.LinkByName(dev)
+	if err != nil {
+		return err
+	}
+	mac, err := net.ParseMAC(k.MAC)
+	if err != nil {
+		return err
+	}
+	return netlink.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_MASTER,
+		HardwareAddr: mac, Vlan: k.VLAN})
+}
+
 // domainView is what MAC sync needs from the MC-LAG controller.
 type domainView struct {
-	domain   int
-	peer     int
-	peerLink string
-	bundles  []string        // MC-LAG bundles with a leg here
-	legs     map[string]bool // local legs up
-	linkUp   bool            // peer-link
-	reach    bool            // peer over the stacking plane
+	domain     int
+	peer       int
+	peerTunnel string
+	bundles    []string        // MC-LAG bundles with a leg here
+	legs       map[string]bool // local legs up
+	reach      bool            // peer over the stack (and so its tunnel)
+	thirds     []int           // switch members outside the domain
 }
 
 func (s *macSync) view() (domainView, bool) {
@@ -93,12 +134,17 @@ func (s *macSync) view() (domainView, bool) {
 	if d == nil {
 		return domainView{}, false
 	}
-	v := domainView{domain: d.ID, peer: m.peerOf(d), peerLink: d.PeerLink, bundles: m.bundlesLocked(d), legs: map[string]bool{}}
+	v := domainView{domain: d.ID, peer: m.peerOf(d), bundles: m.bundlesLocked(d), legs: map[string]bool{}}
+	v.peerTunnel = dataplane.TunnelName(v.peer)
 	for b, up := range m.curLegs {
 		v.legs[b] = up
 	}
-	v.linkUp = m.carrier(d.PeerLink)
 	v.reach = m.peerReachable(v.peer)
+	for _, id := range m.cfg.SwitchMembers() {
+		if !slices.Contains(d.Members, id) {
+			v.thirds = append(v.thirds, id)
+		}
+	}
 	return v, true
 }
 
@@ -178,16 +224,21 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 		return // ours (installed from the peer)
 	}
 	if u.Type == unix.RTM_DELNEIGH {
-		if _, had := s.local[key]; had {
+		if origin, had := s.local[key]; had {
 			delete(s.local, key)
 			delete(s.adds, key)
 			s.dels[key] = true
+			if origin != "" && len(v.thirds) > 0 {
+				s.forget = append(s.forget, key)
+			}
 		}
 		delete(s.installed, key) // gone either way
 		return
 	}
-	if name == v.peerLink {
-		return // (learning is off there)
+	if dataplane.TunnelMember(name) > 0 {
+		// Learned from another member: each member learns those itself
+		// (the peer's tunnel does not learn).
+		return
 	}
 	origin := ""
 	if slices.Contains(v.bundles, name) {
@@ -238,8 +289,8 @@ func (s *macSync) target(v domainView, origin string) string {
 	if origin != "" && v.legs[origin] {
 		return origin
 	}
-	if v.linkUp {
-		return v.peerLink
+	if v.reach {
+		return v.peerTunnel
 	}
 	return ""
 }
@@ -330,7 +381,18 @@ func (s *macSync) tick(now time.Time) {
 		}
 		s.adds, s.dels = map[macKey]string{}, map[macKey]bool{}
 	}
+	forget := s.forget
+	s.forget = nil
 	s.mu.Unlock()
+	if len(forget) > 0 && s.m.stack != nil {
+		for _, id := range v.thirds {
+			go func() {
+				if _, err := s.m.stack.node.Call(id, "mac-forget", forgetMsg{Keys: forget}, 2*time.Second); err != nil {
+					s.log.Debug("mclag: addresses to forget", "member", id, "err", err)
+				}
+			}()
+		}
+	}
 	if msg.Domain != 0 {
 		go func() {
 			if _, err := s.m.stack.node.Call(v.peer, "macsync", msg, 2*time.Second); err != nil {
@@ -414,7 +476,7 @@ func (s *macSync) rescan(v domainView) {
 			}
 			names[n.LinkIndex] = name
 		}
-		if name == "" || name == v.peerLink {
+		if name == "" || dataplane.TunnelMember(name) > 0 {
 			continue
 		}
 		origin := ""

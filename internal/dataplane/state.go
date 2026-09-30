@@ -17,6 +17,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"mclag/internal/model"
 )
 
 // BridgeName is the switch bridge owned by switchd.
@@ -29,10 +31,46 @@ const (
 	Physical Kind = iota
 	Bond
 	BridgeKind
-	Other // any other virtual device (never touched)
+	Other  // any other virtual device (never touched)
+	Tunnel // a stack tunnel (VXLAN to another member, reference 5.2)
 )
 
-func (k Kind) String() string { return [...]string{"physical", "bond", "bridge", "other"}[k] }
+func (k Kind) String() string {
+	return [...]string{"physical", "bond", "bridge", "other", "tunnel"}[k]
+}
+
+// The stack tunnels and their hidden underlay instance (reference 5.2,
+// docs/stack-protocol.md "Stack tunnels").
+const (
+	StackVRF        = "swstack"
+	StackTable      = 999
+	StackUDPPort    = 4789
+	MaxStackPortMTU = model.MaxStackPortMTU
+)
+
+// StackAddr is the underlay address of a member.
+func StackAddr(member int) netip.Addr { return netip.AddrFrom4([4]byte{169, 254, 64, byte(member)}) }
+
+// TunnelName is the kernel name of the stack tunnel to a member.
+func TunnelName(member int) string { return fmt.Sprintf("swvc%d", member) }
+
+// TunnelMember returns the member a stack tunnel leads to (0: not a tunnel).
+func TunnelMember(name string) int {
+	var m int
+	if _, err := fmt.Sscanf(name, "swvc%d", &m); err != nil || TunnelName(m) != name {
+		return 0
+	}
+	return m
+}
+
+// TunnelVNI is the VNI of the tunnel between two members.
+func TunnelVNI(a, b int) int { return 32*min(a, b) + max(a, b) }
+
+// TunnelOpts are the parameters of a stack tunnel.
+type TunnelOpts struct {
+	VNI           int
+	Local, Remote netip.Addr
+}
 
 // VlanFlags are the per-VLAN flags of a bridge port.
 type VlanFlags struct {
@@ -71,11 +109,16 @@ type Link struct {
 	// DropTagged drops 802.1Q-tagged frames on ingress (access ports).
 	DropTagged bool
 	// NoLearning: the bridge does not learn addresses on this port (the
-	// MC-LAG peer-link).
+	// tunnel to the MC-LAG peer).
 	NoLearning bool
 	// Storm control: received broadcast / multicast packets per second
 	// (0 = unlimited). IEEE link-local multicast is never limited.
 	StormBroadcast, StormMulticast int
+	// Tunnel: Kind == Tunnel.
+	Tunnel *TunnelOpts
+	// Isolated: the bridge never forwards between two isolated ports (stack
+	// tunnels).
+	Isolated bool
 
 	// Actual state only.
 	Present bool // exists in the kernel
@@ -93,6 +136,10 @@ func (l *Link) Clone() *Link {
 	if l.FlowControl != nil {
 		f := *l.FlowControl
 		c.FlowControl = &f
+	}
+	if l.Tunnel != nil {
+		t := *l.Tunnel
+		c.Tunnel = &t
 	}
 	return &c
 }

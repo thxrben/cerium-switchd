@@ -185,14 +185,9 @@ func (sh *Shell) showMCLAG(c *call) error {
 		stack = "not reachable"
 	}
 	fmt.Fprintf(c.out, "MC-LAG domain %d: member %d (%s), peer member %d\n", st.Domain, st.Member, role, st.Peer)
-	fmt.Fprintf(c.out, "  Peer over the stacking plane: %s\n", stack)
-	fmt.Fprintf(c.out, "  Peer-link %s: %s\n", st.PeerLink, upDown(st.PeerLinkUp))
-	if len(st.PeerLinkPorts) > 0 {
-		var ps []string
-		for _, p := range st.PeerLinkPorts {
-			ps = append(ps, p.Name+" "+upDown(p.Up))
-		}
-		fmt.Fprintf(c.out, "    BFD: %s\n", strings.Join(ps, ", "))
+	fmt.Fprintf(c.out, "  Peer and its stack tunnel vc-%d: %s\n", st.Peer, stack)
+	if st.Members > 2 {
+		fmt.Fprintf(c.out, "  Stack members reached: %d of %d\n", st.Reach, st.Members)
 	}
 	if st.PeerKnown {
 		fmt.Fprintf(c.out, "  Peer leg states: received %s ago\n", fmtDuration(time.Since(st.PeerSeen)))

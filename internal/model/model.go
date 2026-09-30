@@ -4,6 +4,8 @@ package model
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,6 +143,54 @@ const DefaultMTU = 1514
 // EthHeader is the Ethernet header length included in configured MTUs.
 const EthHeader = 14
 
+// The stack tunnels (reference 5.2): a frame between members needs
+// StackOverhead bytes more on a stacking link (tunnel 50, the VLAN tag
+// inside the tunnel 4, one more tag of the frame 4). switchd sets stacking
+// ports to their NIC maximum, at most MaxStackPortMTU (kernel MTU).
+const (
+	StackOverhead   = 58
+	MaxStackPortMTU = 16044
+	// MgmtVLAN is the reserved internal management VLAN of the stack.
+	MgmtVLAN = 4094
+)
+
+// SwitchMembers returns the stack members that switch traffic (not
+// witnesses), sorted; a switch without virtual-chassis members is member 1.
+func (c *Config) SwitchMembers() []int {
+	var out []int
+	for id, m := range c.Members {
+		if !m.Witness {
+			out = append(out, id)
+		}
+	}
+	if len(c.Members) == 0 {
+		out = []int{1}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// MaxDataMTU returns the largest frame (mtu) any switched interface or VLAN
+// allows, and the statement that sets it.
+func (c *Config) MaxDataMTU() (int, string) {
+	mtu, where := DefaultMTU, ""
+	for _, name := range slices.Sorted(maps.Keys(c.Interfaces)) {
+		i := c.Interfaces[name]
+		if i.Switching && i.Parent == "" && i.MTU > mtu {
+			mtu, where = i.MTU, "interfaces "+name+" mtu"
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.VLANs)) {
+		if v := c.VLANs[name]; v.MTU > mtu {
+			mtu, where = v.MTU, "vlans "+name+" mtu"
+		}
+	}
+	if where == "" {
+		where = "virtual-chassis"
+	}
+	return mtu, where
+}
+
 // LinuxMTU converts a configured (frame size) MTU into the kernel MTU.
 func LinuxMTU(mtu int) int { return mtu - EthHeader }
 
@@ -235,12 +285,9 @@ func buildBFD(n *config.Node, interval int) BFD {
 type Domain struct {
 	ID             int
 	Members        []int
-	PeerLink       string
 	SystemMAC      string
 	SystemPriority int
 	AnycastVTEP    string
-	Heartbeat      BFD
-	PeerLinkBFD    BFD
 	DelayRestore   int
 }
 
@@ -380,6 +427,10 @@ func (b *builder) build() {
 			b.errorf(path, "vlan-id is required")
 			continue
 		}
+		if v.ID == MgmtVLAN {
+			b.errorf(path+" vlan-id", "vlan-id %d is reserved for the stack's internal management VLAN", MgmtVLAN)
+			continue
+		}
 		if o, dup := c.VLANByID[v.ID]; dup {
 			b.errorf(path, "vlan-id %d is already used by vlan %s", v.ID, o.Name)
 			continue
@@ -473,12 +524,9 @@ func (b *builder) build() {
 	for _, e := range r.Get("mclag").Entries("domain") {
 		d := &Domain{
 			ID:             atoi(e.Key, 0),
-			PeerLink:       e.Leaf("peer-link"),
 			SystemMAC:      e.Leaf("system-mac"),
 			SystemPriority: atoi(e.Leaf("system-priority"), 32768),
 			AnycastVTEP:    e.Leaf("anycast-vtep"),
-			Heartbeat:      buildBFD(e.Get("heartbeat"), 300),
-			PeerLinkBFD:    buildBFD(e.Get("peer-link-bfd"), 100),
 			DelayRestore:   atoi(e.Leaf("delay-restore"), 300),
 		}
 		for _, m := range e.List("members") {

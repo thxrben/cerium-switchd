@@ -29,7 +29,10 @@ type portNames interface {
 //   - interface names "<member>/<linux-name>" became "<member>/<card>/<port>",
 //   - "virtual-chassis member <id> management" became routed interfaces in
 //     routing instance mgmt_junos (reference 5.9),
-//   - address leaf-lists became address entries (with an optional member).
+//   - address leaf-lists became address entries (with an optional member),
+//   - the MC-LAG peer-link, peer-link-bfd and heartbeat were replaced by the
+//     stack tunnels (reference 5.6): the statements and the bundle that
+//     served as peer-link are removed.
 //
 // A name that cannot be converted (its port no longer exists) would make the
 // whole configuration unreadable, so that statement is dropped and logged.
@@ -55,6 +58,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	renameStack(m)
 	normalizeAddresses(m)
 	u.convertManagement(m)
+	u.removePeerLink(m)
 	u.walk(schema.Root(), m, "")
 	out, err := json.Marshal(m)
 	if err != nil {
@@ -409,5 +413,52 @@ func (u *upgrader) convertManagement(m map[string]any) {
 			}
 		}
 		obj(m, "system")["management-instance"] = true
+	}
+}
+
+// removePeerLink drops the MC-LAG peer-link of older versions together with
+// its bundle: the stacking links carry the peer traffic now, and the old
+// bundle between the two members would make a loop with the stack tunnels.
+func (u *upgrader) removePeerLink(m map[string]any) {
+	mclag, _ := m["mclag"].(map[string]any)
+	domains, _ := mclag["domain"].(map[string]any)
+	for id, dv := range domains {
+		d, ok := dv.(map[string]any)
+		if !ok {
+			continue
+		}
+		pl, _ := d["peer-link"].(string)
+		for _, k := range []string{"peer-link", "peer-link-bfd", "heartbeat"} {
+			if _, ok := d[k]; ok {
+				delete(d, k)
+				u.dropped("mclag domain " + id + " " + k)
+			}
+		}
+		if pl == "" {
+			continue
+		}
+		ifs, _ := m["interfaces"].(map[string]any)
+		if _, ok := ifs[pl]; ok {
+			delete(ifs, pl)
+			u.dropped("interfaces " + pl + " (the former peer-link)")
+		}
+		for _, top := range []string{"interfaces", "interface-range"} {
+			entries, _ := m[top].(map[string]any)
+			for name, ev := range entries {
+				e, _ := ev.(map[string]any)
+				eo, _ := e["ether-options"].(map[string]any)
+				if eo == nil || eo["802.3ad"] != pl {
+					continue
+				}
+				delete(eo, "802.3ad")
+				if len(eo) == 0 {
+					delete(e, "ether-options")
+				}
+				if len(e) == 0 {
+					delete(entries, name)
+				}
+				u.dropped(top + " " + name + " ether-options 802.3ad " + pl)
+			}
+		}
 	}
 }

@@ -163,7 +163,7 @@ func Run(ctx context.Context, o Options) error {
 		go ctl.run(ctx)
 	}
 	if !o.DryRun {
-		mclag = newMCLAG(member, lacpRT, ctl, names.Linux, log)
+		mclag = newMCLAG(member, lacpRT, ctl, log)
 		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
 			mclag.setConfig(cfg)
 		}
@@ -208,6 +208,8 @@ func Run(ctx context.Context, o Options) error {
 	if !o.DryRun {
 		if err := vc.Start(ctx); err != nil {
 			log.Error("stack", "err", err)
+		} else {
+			go runStackNet(ctx, vc, log)
 		}
 	}
 	srv.Env = func(name string, class commit.Class) cli.Env {

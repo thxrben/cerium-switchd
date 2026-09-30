@@ -54,6 +54,9 @@ func (o *ops) cfgName(link string, kind dataplane.Kind) string {
 	if kind == dataplane.Bond {
 		return link
 	}
+	if m := dataplane.TunnelMember(link); m > 0 {
+		return fmt.Sprintf("vc-%d", m) // stack tunnel (reference 5.2)
+	}
 	n, _ := o.names.Name(link)
 	return n
 }
@@ -211,6 +214,10 @@ func (o *ops) MACTable() ([]cli.MACEntry, error) {
 
 func (o *ops) ClearMACTable(vlan int, iface string) (int, error) {
 	port := iface // ae interfaces: same name in the kernel
+	var m int
+	if _, err := fmt.Sscanf(iface, "vc-%d", &m); err == nil && fmt.Sprintf("vc-%d", m) == iface {
+		port = dataplane.TunnelName(m)
+	}
 	if _, ok := schema.ParsePhysical(iface); ok {
 		l, ok := o.names.Linux(iface)
 		if !ok {
@@ -470,6 +477,32 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		if m := o.vc.Mesh(); m != nil {
 			st.Reachable = m.Reachable()
 		}
+	}
+	return st, nil
+}
+
+// StackMTU is "show virtual-chassis mtu" of this member.
+func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
+	cfg := o.model()
+	if cfg == nil {
+		return cli.StackMTUStatus{}, errors.New("no valid configuration")
+	}
+	mtu, where := cfg.MaxDataMTU()
+	st := cli.StackMTUStatus{Member: o.member, DataMTU: mtu, Where: where, Stack: len(cfg.SwitchMembers()) > 1}
+	ks, err := o.kernel.Read()
+	if err != nil {
+		return st, err
+	}
+	for _, p := range o.vc.Ports() {
+		l := ks.Links[p.Linux]
+		if l == nil {
+			continue
+		}
+		sp := cli.StackMTUPort{Port: fmt.Sprintf("%d/%s", o.member, p.Port), MTU: l.MTU + model.EthHeader}
+		if l.MaxMTU > 0 {
+			sp.MaxMTU = min(l.MaxMTU, model.MaxStackPortMTU) + model.EthHeader
+		}
+		st.Ports = append(st.Ports, sp)
 	}
 	return st, nil
 }

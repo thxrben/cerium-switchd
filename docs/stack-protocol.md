@@ -103,6 +103,27 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
 * When the path to a member changes, streams to it are reset as well: messages may have been lost on the old path,
   and a stream that waits for an answer would not notice. Their users (Raft, RPC) reconnect over the new path.
 
+## Stack tunnels (data between members)
+
+Client frames between members do not use the stacking protocol: they travel in VXLAN over an internal IPv4 network
+on the stacking ports (config reference 5.2). All of it is fixed; nothing is configurable.
+
+* **Instance**: VRF device `swstack`, routing table 999. Its only members are the stacking ports (IPv6 stays
+  disabled on them; IPv4 forwarding is on for them only, reverse-path filtering off). The member's address
+  `169.254.64.<member>/32` sits on the VRF device.
+* **Neighbours**: no ARP. For every stacking link whose session is up (member session, not "other stack"), switchd
+  adds a permanent neighbour entry `169.254.64.<neighbour>` → the MAC the link learned from the neighbour's frames,
+  on that port, and removes it when the session ends.
+* **Routes** (protocol 250, table 999): for every reachable member `m`, `169.254.64.<m>/32` with one next hop per up
+  link to each neighbour that lies on a shortest path to `m` (hops of the mesh topology, all equal-cost first hops,
+  so two parallel cables are both used), each `via 169.254.64.<neighbour> dev <port> onlink`. Recomputed with the
+  mesh topology; a route whose member becomes unreachable is removed.
+* **Tunnels**: per other switch member `m`, the VXLAN device `swvc<m>`: VNI `32 × min(self, m) + max(self, m)`,
+  local `169.254.64.<self>`, remote `169.254.64.<m>`, UDP 4789, lower device `swstack`, TTL 16, outer DF set,
+  no VXLAN learning, MTU = the stack MTU minus 58 (config reference 5.2). The device is a port of `swbr0`: `isolated`
+  (never forwards to another tunnel), VLANs tagged, no PVID; learning on except towards the MC-LAG peer.
+* **Stacking port MTU**: the NIC maximum, at most 16044 (Linux MTU; frame 16058), set when the port is designated.
+
 ## Stack control (Raft)
 
 Every member runs Raft (hashicorp/raft) over mesh streams (service `raft`); the Raft server id and address of a member

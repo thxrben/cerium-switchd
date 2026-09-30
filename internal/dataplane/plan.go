@@ -31,11 +31,13 @@ const (
 	OpSetStormBroadcast
 	OpSetStormMulticast
 	OpSetLearning // Bool: learning on
+	OpCreateTunnel
+	OpSetIsolated // Bool: isolated on
 )
 
 var opNames = [...]string{"create-bridge", "set-bridge", "create-bond", "set-bond", "delete", "up", "down",
 	"master", "mtu", "alias", "vlan-del", "vlan-set", "flow-control", "max-learned", "drop-tagged",
-	"storm-broadcast", "storm-multicast", "learning"}
+	"storm-broadcast", "storm-multicast", "learning", "create-tunnel", "isolated"}
 
 // Op is one kernel operation.
 type Op struct {
@@ -47,6 +49,7 @@ type Op struct {
 	VID    uint16
 	Flags  VlanFlags
 	Bond   *BondOpts
+	Tunnel *TunnelOpts
 	Bridge *BridgeOpts
 	Bool   bool
 	Int    int
@@ -65,12 +68,14 @@ func (o Op) String() string {
 		s += fmt.Sprintf(" %d", o.VID)
 	case OpVlanSet:
 		s += fmt.Sprintf(" %d pvid=%v untagged=%v", o.VID, o.Flags.PVID, o.Flags.Untagged)
-	case OpSetFlowControl, OpSetDropTagged, OpSetLearning:
+	case OpSetFlowControl, OpSetDropTagged, OpSetLearning, OpSetIsolated:
 		s += fmt.Sprintf(" %v", o.Bool)
 	case OpSetMaxLearned, OpSetStormBroadcast, OpSetStormMulticast:
 		s += fmt.Sprintf(" %d", o.Int)
 	case OpCreateBond, OpSetBond:
 		s += fmt.Sprintf(" %+v", *o.Bond)
+	case OpCreateTunnel:
+		s += fmt.Sprintf(" vni=%d %s->%s mtu=%d", o.Tunnel.VNI, o.Tunnel.Local, o.Tunnel.Remote, o.MTU)
 	case OpCreateBridge, OpSetBridge:
 		s += fmt.Sprintf(" %+v", *o.Bridge)
 	}
@@ -85,6 +90,9 @@ func owned(a *Link, actual *State, prev map[string]bool) bool {
 		return true
 	}
 	if a.Kind == Bond && schema.IsAE(a.Name) {
+		return true
+	}
+	if a.Kind == Tunnel {
 		return true
 	}
 	if a.Master == BridgeName {
@@ -117,10 +125,18 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 
 	// A bundle that changes between static (bond) and LACP (team) is another
 	// kind of device: it is deleted (which releases its ports) and created
-	// anew below.
+	// anew below. So is a stack tunnel whose endpoints change.
 	actual = actual.Clone()
 	for _, n := range desired.names() {
 		d, a := desired.Links[n], actual.Links[n]
+		if d.Kind == Tunnel && a != nil && a.Kind == Tunnel && (a.Tunnel == nil || *a.Tunnel != *d.Tunnel) {
+			if a.Up {
+				tighten = append(tighten, Op{Kind: OpSetDown, Link: n})
+			}
+			tighten = append(tighten, Op{Kind: OpDeleteLink, Link: n})
+			delete(actual.Links, n)
+			continue
+		}
 		if d.Kind != Bond || a == nil || a.Kind != Bond || d.Bond.Team() == a.Bond.Team() {
 			continue
 		}
@@ -153,7 +169,7 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		if a.DropTagged {
 			cleanup = append(cleanup, Op{Kind: OpSetDropTagged, Link: n, Bool: false})
 		}
-		if a.Kind == Bond {
+		if a.Kind == Bond || a.Kind == Tunnel {
 			cleanup = append(cleanup, Op{Kind: OpDeleteLink, Link: n})
 		}
 	}
@@ -172,7 +188,11 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		}
 		var cur *Link
 		restrict := &tighten
-		if a == nil {
+		if a == nil && d.Kind == Tunnel {
+			structure = append(structure, Op{Kind: OpCreateTunnel, Link: n, Tunnel: d.Tunnel, MTU: d.MTU})
+			cur = &Link{Name: n, Kind: Tunnel, MTU: d.MTU, Tunnel: d.Tunnel, Present: true}
+			restrict = &structure
+		} else if a == nil {
 			structure = append(structure, Op{Kind: OpCreateBond, Link: n, Bond: d.Bond})
 			cur = &Link{Name: n, Kind: Bond, MTU: 1500, Bond: d.Bond, Present: true}
 			// A new device is down: its restrictions follow its creation.
@@ -238,7 +258,11 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 			structure = append(structure, Op{Kind: OpSetMaster, Link: n, Master: d.Master})
 			if d.Master == BridgeName {
 				cur.VLANs = map[uint16]VlanFlags{} // default_pvid 0: no VLAN yet
+				cur.Isolated, cur.NoLearning = false, false
 			}
+		}
+		if d.Master == BridgeName && d.Isolated != cur.Isolated {
+			structure = append(structure, Op{Kind: OpSetIsolated, Link: n, Bool: d.Isolated})
 		}
 
 		// Permissions.

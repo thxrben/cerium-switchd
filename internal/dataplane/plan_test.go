@@ -427,3 +427,64 @@ func TestPlanLearning(t *testing.T) {
 		t.Fatalf("peer-link plan:\n%s", FormatPlan(ops))
 	}
 }
+
+// Stack tunnels (reference 5.2): one per other switch member, carrying the
+// VLANs both ends have, isolated; the tunnel to the MC-LAG peer does not
+// learn. The planner creates them down, enslaves, isolates, then brings
+// them up; a changed endpoint recreates the device.
+func TestComputeTunnels(t *testing.T) {
+	cfg := &model.Config{
+		Members: map[int]*model.Member{1: {ID: 1}, 2: {ID: 2}, 3: {ID: 3}, 4: {ID: 4, Witness: true}},
+		Interfaces: map[string]*model.Interface{
+			"1/0/0": {Name: "1/0/0", Member: 1, MTU: 9014, Switching: true, Mode: "trunk", VLANs: []int{10, 20, 30}},
+			"2/0/0": {Name: "2/0/0", Member: 2, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: 20, VLANs: []int{20}},
+			"3/0/0": {Name: "3/0/0", Member: 3, MTU: 1514, Switching: true, Mode: "trunk", VLANs: []int{30, 40}},
+			"ae1": {Name: "ae1", AE: true, MTU: 1514, MCLAG: true, MemberIDs: []int{1, 2}, Switching: true, Mode: "access",
+				AccessVLAN: 10, VLANs: []int{10}, LACP: &model.LACP{Active: true}},
+		},
+		Domains: map[int]*model.Domain{1: {ID: 1, Members: []int{1, 2}}},
+	}
+	s, _ := Compute(cfg, 1, testNames)
+	t2, t3 := s.Links["swvc2"], s.Links["swvc3"]
+	if t2 == nil || t3 == nil || s.Links["swvc4"] != nil || s.Links["swvc1"] != nil {
+		t.Fatalf("tunnels: %v", names(s))
+	}
+	if !reflect.DeepEqual(t2.VLANs, map[uint16]VlanFlags{10: {}, 20: {}}) || !reflect.DeepEqual(t3.VLANs, map[uint16]VlanFlags{30: {}}) {
+		t.Errorf("tunnel VLANs: 2 %v, 3 %v", t2.VLANs, t3.VLANs)
+	}
+	if !t2.NoLearning || t3.NoLearning || !t2.Isolated || !t3.Isolated || t2.MTU != 9000 {
+		t.Errorf("tunnel flags: %+v %+v", t2, t3)
+	}
+	if t2.Tunnel.VNI != 34 || t2.Tunnel.Local.String() != "169.254.64.1" || t2.Tunnel.Remote.String() != "169.254.64.2" {
+		t.Errorf("tunnel 2: %+v", *t2.Tunnel)
+	}
+
+	k := NewFake(&State{Links: map[string]*Link{"eth0": {Name: "eth0", Kind: Physical, MTU: 1500, Present: true}}})
+	ops := Plan(mustRead(t, k), s, nil)
+	if err := Execute(k, ops); err != nil {
+		t.Fatalf("%s%v", FormatPlan(ops), err)
+	}
+	plan := FormatPlan(ops)
+	iso, up := strings.Index(plan, "isolated swvc2 true"), strings.Index(plan, "up swvc2")
+	if iso < 0 || up < iso || strings.Index(plan, "create-tunnel swvc2") > iso {
+		t.Errorf("tunnel order:\n%s", plan)
+	}
+	if ops := Plan(mustRead(t, k), s, names(s)); len(ops) != 0 {
+		t.Errorf("not idempotent:\n%s", FormatPlan(ops))
+	}
+	// Member 3 leaves: its tunnel goes.
+	delete(cfg.Members, 3)
+	delete(cfg.Interfaces, "3/0/0")
+	s2, _ := Compute(cfg, 1, testNames)
+	ops = Plan(mustRead(t, k), s2, names(s))
+	if err := Execute(k, ops); err != nil || mustRead(t, k).Links["swvc3"] != nil {
+		t.Errorf("removing a tunnel:\n%s%v", FormatPlan(ops), err)
+	}
+	// A standalone switch has none.
+	s3, _ := Compute(&model.Config{Interfaces: cfg.Interfaces}, 1, testNames)
+	for n := range s3.Links {
+		if TunnelMember(n) > 0 {
+			t.Errorf("standalone tunnel %s", n)
+		}
+	}
+}

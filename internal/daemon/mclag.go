@@ -7,12 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -39,7 +36,8 @@ type mclagCtl struct {
 	peerKnown  bool
 	started    time.Time
 	restoreEnd time.Time // delay-restore: legs held until then
-	wasHeld    bool      // held for the peer-link: delay-restore when it returns
+	minority   bool      // legs held: this member is in the minority part of the stack
+	backSince  time.Time // the peer is reachable again since (minority hold)
 	holds      map[string]string
 	split      []string
 	lastSent   time.Time
@@ -50,16 +48,17 @@ type mclagCtl struct {
 	macs       *macSync
 	peerFacts  map[string]string    // the peer's bundle facts (nil: not sent)
 	differs    map[string]time.Time // bundle -> facts differ since
-	bfd        *peerBFD
-	linux      func(string) (string, bool) // port name -> kernel name
-	bfdNames   map[string]string           // kernel name -> port name (peer-link ports)
 }
 
-// legsMsg is the leg state a member sends its peer.
 // mclagInconsistentAfter: how long a bundle may differ from the peer's
 // before the secondary holds it.
 const mclagInconsistentAfter = 10 * time.Second
 
+// mclagRejoinAfter: how long legs held for the minority rule wait after the
+// peer is reachable again (the MAC tables are exchanged at once).
+const mclagRejoinAfter = 2 * time.Second
+
+// legsMsg is the leg state a member sends its peer.
 type legsMsg struct {
 	Domain int             `json:"domain"`
 	Legs   map[string]bool `json:"legs"`
@@ -99,9 +98,8 @@ func bundleFacts(cfg *model.Config, name string) string {
 	return fmt.Sprintf("%s, mtu %d, lacp %s", sw, i.MTU, mode)
 }
 
-func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, linux func(string) (string, bool), log *slog.Logger) *mclagCtl {
-	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{}, differs: map[string]time.Time{},
-		bfd: newPeerBFD(), linux: linux, bfdNames: map[string]string{}}
+func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *mclagCtl {
+	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{}, differs: map[string]time.Time{}}
 	m.macs = newMACSync(m, log)
 	if stack != nil {
 		stack.node.Handle("mclag-legs", func(from int, req json.RawMessage) (any, error) {
@@ -153,7 +151,7 @@ func (m *mclagCtl) peerOf(d *model.Domain) int {
 func (m *mclagCtl) bundlesLocked(d *model.Domain) []string {
 	var out []string
 	for n, i := range m.cfg.Interfaces {
-		if i.AE && i.MCLAG && slices.Contains(i.MemberIDs, m.member) && n != d.PeerLink {
+		if i.AE && i.MCLAG && slices.Contains(i.MemberIDs, m.member) {
 			out = append(out, n)
 		}
 	}
@@ -174,18 +172,42 @@ func (m *mclagCtl) primaryLocked(d *model.Domain) bool {
 	return a > b || (a == b && m.member < peer)
 }
 
-func (m *mclagCtl) carrier(dev string) bool {
-	b, err := os.ReadFile(filepath.Join(m.sysRoot, "class", "net", dev, "carrier"))
-	return err == nil && strings.TrimSpace(string(b)) == "1"
-}
-
+// peerReachable: the peer is reachable over the stack (then its stack
+// tunnel works too: both run over the same stacking links).
 func (m *mclagCtl) peerReachable(peer int) bool {
 	return m.stack != nil && slices.Contains(m.stack.node.Mesh.Reachable(), peer)
 }
 
+// reachLocked counts the switch members this member reaches (itself
+// included) and the switch members of the stack.
+func (m *mclagCtl) reachLocked() (reach, total int) {
+	members := m.cfg.SwitchMembers()
+	var up []int
+	if m.stack != nil {
+		up = m.stack.node.Mesh.Reachable()
+	}
+	for _, id := range members {
+		if id == m.member || slices.Contains(up, id) {
+			reach++
+		}
+	}
+	return reach, len(members)
+}
+
+// thirdsLocked returns the stack tunnels to the switch members outside the
+// domain.
+func (m *mclagCtl) thirdsLocked(d *model.Domain) []string {
+	var out []string
+	for _, id := range m.cfg.SwitchMembers() {
+		if !slices.Contains(d.Members, id) {
+			out = append(out, dataplane.TunnelName(id))
+		}
+	}
+	return out
+}
+
 func (m *mclagCtl) run(ctx context.Context) {
 	go m.macs.run(ctx)
-	go m.bfd.run(ctx)
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -206,11 +228,10 @@ func (m *mclagCtl) step(now time.Time) {
 		held := m.holds
 		m.holds, m.split = map[string]string{}, nil
 		m.mu.Unlock()
-		m.bfd.configure(nil, 0, 0, 0, 0, 0)
 		for b := range held {
 			m.lacp.SetHold(b, false)
 		}
-		if err := dataplane.SyncSplitHorizon("", nil); err != nil {
+		if err := dataplane.SyncSplitHorizon(dataplane.SplitHorizon{}); err != nil {
 			m.log.Warn("mclag: split horizon", "err", err)
 		}
 		return
@@ -235,35 +256,29 @@ func (m *mclagCtl) step(now time.Time) {
 			m.restoreEnd = now.Add(time.Duration(d.DelayRestore) * time.Second)
 		}
 	}
-	// Micro-BFD on the peer-link's ports of this member.
-	var bfdPorts []string
-	m.bfdNames = map[string]string{}
-	for n, i := range m.cfg.Interfaces {
-		if i.Parent == d.PeerLink && i.Member == m.member {
-			if l, ok := m.linux(n); ok {
-				bfdPorts = append(bfdPorts, l)
-				m.bfdNames[l] = n
-			}
-		}
-	}
-	m.bfd.configure(bfdPorts, d.ID, m.member, peer, d.PeerLinkBFD.IntervalMS, d.PeerLinkBFD.Multiplier)
-	bfdUp, _ := m.bfd.state(now)
 	reachable := m.peerReachable(peer)
-	peerLinkUp := m.carrier(d.PeerLink) && bfdUp
 	primary := m.primaryLocked(d)
 
-	// Holds.
+	// Holds. The peer unreachable: a two-member stack forwards at all
+	// costs; with more members, the minority part leaves the bundles to the
+	// majority (reference 5.6, failure handling).
 	reason := ""
+	reach, total := m.reachLocked()
 	switch {
-	case !peerLinkUp && reachable && !primary:
-		reason = "peer-link down, peer alive (secondary)"
-		m.wasHeld = true
-	case m.wasHeld && peerLinkUp:
-		// Cut off from the peer, now back: delay-restore first.
-		m.wasHeld = false
-		if d.DelayRestore > 0 {
-			m.restoreEnd = now.Add(time.Duration(d.DelayRestore) * time.Second)
+	case !reachable && total >= 3 && 2*reach < total:
+		reason = fmt.Sprintf("minority part of the stack (reaches %d of %d members)", reach, total)
+		m.minority, m.backSince = true, time.Time{}
+	case m.minority && reachable:
+		if m.backSince.IsZero() {
+			m.backSince = now
 		}
+		if now.Sub(m.backSince) < mclagRejoinAfter {
+			reason = "rejoining (MAC tables are exchanged)"
+		} else {
+			m.minority = false
+		}
+	default:
+		m.minority = false // e.g. the peer is gone, but this part is the majority
 	}
 	if reason == "" && now.Before(m.restoreEnd) {
 		reason = fmt.Sprintf("delay-restore (%s left)", m.restoreEnd.Sub(now).Round(time.Second))
@@ -318,8 +333,20 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	m.split = split
 
+	// Broadcast and multicast from third members: the secondary leaves
+	// bundles to the primary while the primary's leg is up.
+	var df []string
+	if !primary {
+		for _, b := range bundles {
+			if up, ok := m.peerLegs[b]; m.peerKnown && ok && up && reachable {
+				df = append(df, b)
+			}
+		}
+	}
+	sh := dataplane.SplitHorizon{Peer: dataplane.TunnelName(peer), Bundles: split, Thirds: m.thirdsLocked(d), DF: df}
+
 	// A leg changed (here or on the peer): addresses learned on the
-	// peer-link may be behind a leg that went away; flush them.
+	// peer's tunnel may be behind a leg that went away; flush them.
 	state := fmt.Sprint(legs, m.peerLegs)
 	flush := m.legState != "" && state != m.legState
 	m.legState = state
@@ -330,7 +357,7 @@ func (m *mclagCtl) step(now time.Time) {
 		m.lastLegs, m.lastSent = legs, now
 	}
 	domain := d.ID
-	peerLink := d.PeerLink
+	peerTunnel := dataplane.TunnelName(peer)
 	m.mu.Unlock()
 
 	for b, h := range changedHold {
@@ -341,14 +368,12 @@ func (m *mclagCtl) step(now time.Time) {
 			m.log.Info("mclag: leg released", "bundle", b)
 		}
 	}
-	if err := dataplane.SyncSplitHorizon(peerLink, split); err != nil {
+	if err := dataplane.SyncSplitHorizon(sh); err != nil {
 		m.log.Warn("mclag: split horizon", "err", err)
 	}
 	if flush {
-		if n, err := dataplane.FlushLearned(peerLink); err != nil {
-			m.log.Warn("mclag: flushing the peer-link's addresses", "err", err)
-		} else if n > 0 {
-			m.log.Info("mclag: leg changed, addresses learned on the peer-link flushed", "count", n)
+		if n, err := dataplane.FlushLearned(peerTunnel); err == nil && n > 0 {
+			m.log.Info("mclag: leg changed, addresses learned on the peer's tunnel flushed", "count", n)
 		}
 	}
 	if send {
@@ -382,17 +407,8 @@ func (m *mclagCtl) status() (cli.MCLAGStatus, error) {
 	}
 	peer := m.peerOf(d)
 	st := cli.MCLAGStatus{Domain: d.ID, Member: m.member, Peer: peer, Primary: m.primaryLocked(d),
-		PeerReachable: m.peerReachable(peer), PeerLink: d.PeerLink,
-		PeerKnown: m.peerKnown, PeerSeen: m.peerSeen}
-	bfdUp, ports := m.bfd.state(time.Now())
-	st.PeerLinkUp = m.carrier(d.PeerLink) && bfdUp
-	for _, l := range sortedBool(ports) {
-		name := m.bfdNames[l]
-		if name == "" {
-			name = l
-		}
-		st.PeerLinkPorts = append(st.PeerLinkPorts, cli.MCLAGPort{Name: name, Up: ports[l]})
-	}
+		PeerReachable: m.peerReachable(peer), PeerKnown: m.peerKnown, PeerSeen: m.peerSeen}
+	st.Reach, st.Members = m.reachLocked()
 	legs := m.lacp.Legs()
 	for _, b := range m.bundlesLocked(d) {
 		pl, ok := m.peerLegs[b]

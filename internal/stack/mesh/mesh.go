@@ -248,17 +248,20 @@ func (m *Mesh) ageLocked() {
 
 // recomputeLocked computes shortest paths (BFS; an edge counts only if both
 // ends announce it) and resets streams to members that became unreachable.
-func (m *Mesh) recomputeLocked() {
-	adj := func(a int) []int {
-		var out []int
-		for _, b := range m.lsas[a].neighbors {
-			if slices.Contains(m.lsas[b].neighbors, a) || (a == m.Self && len(m.peers[b]) > 0) {
-				out = append(out, b)
-			}
+// adjLocked returns the neighbours of member a that confirm the adjacency.
+func (m *Mesh) adjLocked(a int) []int {
+	var out []int
+	for _, b := range m.lsas[a].neighbors {
+		if slices.Contains(m.lsas[b].neighbors, a) || (a == m.Self && len(m.peers[b]) > 0) {
+			out = append(out, b)
 		}
-		sort.Ints(out)
-		return out
 	}
+	sort.Ints(out)
+	return out
+}
+
+func (m *Mesh) recomputeLocked() {
+	adj := m.adjLocked
 	routes := map[int]int{}
 	type item struct{ node, first int }
 	seen := map[int]bool{m.Self: true}
@@ -344,6 +347,54 @@ func (m *Mesh) NextHop(member int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.routes[member]
+}
+
+// FirstHops returns, per reachable member, every neighbour that lies on one
+// of the shortest paths to it (equal-cost paths; the stack tunnels use them
+// all, reference 5.2).
+func (m *Mesh) FirstHops() map[int][]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dist := func(from int) map[int]int {
+		d := map[int]int{from: 0}
+		q := []int{from}
+		for len(q) > 0 {
+			a := q[0]
+			q = q[1:]
+			for _, b := range m.adjLocked(a) {
+				if _, ok := d[b]; !ok {
+					d[b] = d[a] + 1
+					q = append(q, b)
+				}
+			}
+		}
+		return d
+	}
+	out := map[int][]int{}
+	var direct []int
+	for _, n := range m.adjLocked(m.Self) {
+		if len(m.peers[n]) > 0 {
+			direct = append(direct, n)
+		}
+	}
+	from := map[int]map[int]int{}
+	for _, n := range direct {
+		from[n] = dist(n)
+	}
+	for dest := range m.routes {
+		best := -1
+		for _, n := range direct {
+			if d, ok := from[n][dest]; ok && (best < 0 || d < best) {
+				best = d
+			}
+		}
+		for _, n := range direct {
+			if d, ok := from[n][dest]; ok && d == best {
+				out[dest] = append(out[dest], n)
+			}
+		}
+	}
+	return out
 }
 
 // Changed is closed on the next topology change.

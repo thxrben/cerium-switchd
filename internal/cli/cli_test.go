@@ -531,11 +531,16 @@ func (f *fakeOps) LACP() ([]lacp.BundleStatus, error) {
 }
 
 func (f *fakeOps) MCLAG() (MCLAGStatus, error) {
-	return MCLAGStatus{Domain: 1, Member: 1, Peer: 2, Primary: true, PeerReachable: true, PeerLink: "ae10", PeerLinkUp: true,
+	return MCLAGStatus{Domain: 1, Member: 1, Peer: 2, Primary: true, PeerReachable: true, Reach: 3, Members: 3,
 		PeerKnown: true, PeerSeen: time.Now(), Bundles: []MCLAGBundle{
 			{Name: "ae1", LocalUp: true, PeerUp: true, PeerKnown: true, SplitHorizon: true},
 			{Name: "ae2", LocalUp: false, PeerUp: false, PeerKnown: true, Hold: "delay-restore (4m50s left)"},
 		}}, nil
+}
+
+func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
+	return StackMTUStatus{Member: 1, DataMTU: 9014, Where: "vlans storage mtu", Stack: true, Ports: []StackMTUPort{
+		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058}, {Port: "1/5/2", MTU: 9000, MaxMTU: 9050}}}, nil
 }
 
 func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
@@ -859,12 +864,25 @@ func TestShowLACP(t *testing.T) {
 		"      1/3/0                 0          5            0            1")
 }
 
+func TestShowStackMTU(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.ok("show virtual-chassis mtu"),
+		"Largest data mtu in the stack:  9014 (vlans storage mtu; hosts up to MTU 9000)",
+		"Needed on the stacking links:   9072 (+58: tunnel 50, VLAN tags 8)",
+		"Member 1's stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
+		"  1/5/0    9216    9216     ok",
+		"  1/5/1    1514    16058    too small (set to the maximum when switchd starts)",
+		"  1/5/2    9000    9050     too small: the NIC carries at most 9050")
+}
+
 func TestShowMCLAG(t *testing.T) {
 	e := newEngine(t)
 	ts := newTester(t, e, "alice", commit.ReadOnly)
 	ts.sh.env.Ops = &fakeOps{}
 	contains(t, ts.ok("show mclag"), "MC-LAG domain 1: member 1 (primary), peer member 2",
-		"Peer over the stacking plane: reachable", "Peer-link ae10: up",
+		"Peer and its stack tunnel vc-2: reachable", "Stack members reached: 3 of 3",
 		"  ae1        up     up       on             -",
 		"  ae2        down   down     off            delay-restore (4m50s left)")
 }

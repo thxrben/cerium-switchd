@@ -46,9 +46,9 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 
 | Plane | Ports | Carries |
 |---|---|---|
-| Data | switch ports (e.g. 10G), peer-links, VXLAN | client traffic only, no IP on any port |
-| Stacking | dedicated stacking ports (e.g. 1G), direct 1:1 cables | Raft/config, state, MC-LAG sync, RSTP relay, BFD. IP-less (EtherType 0x88b5) |
-| Management | IP on any VLAN (IRB-like) or a dedicated port, VRF `mgmt` | SSH, web, syslog, NTP, DNS, MC-LAG BFD heartbeat |
+| Data | switch ports (e.g. 10G), VXLAN | client traffic only, no IP on any port |
+| Stacking | dedicated stacking ports, direct 1:1 cables in a ring | Raft/config, state, MC-LAG sync, RSTP relay, BFD (EtherType 0x88b5, untagged), and client traffic between members in stack tunnels (VXLAN over a hidden internal instance; decided 2026-09-30) |
+| Management | IP on any VLAN (IRB-like) or a dedicated port, VRF `mgmt_junos` | administration only: SSH, web, ping, syslog, NTP, DNS, updates |
 
 * Every switch is a **member** with an ID (1–16). Interfaces are named `<member>/<linux-ifname>`, plus
   stack-global `ae<N>`. `interface-range` (member-range, wildcards) handles large and hot-plugged port sets.
@@ -89,22 +89,19 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   nftables `bridge` family rules (`vlan id X meta length > N drop`) plus a counter.
   The effective limit is min(port, VLAN).
 * MTU uses the Junos convention (frame size incl. the 14-byte Ethernet header, default 1514).
-* Commit-time validation catches mismatched MTUs (peer link < MC-LAG MTU,
+* Commit-time validation catches mismatched MTUs (stacking ports < largest data MTU + 58,
   VXLAN underlay < overlay + 50, etc.).
 
 ### 4.3 MC-LAG
-* The pair is 2 members sharing:
-  * a **peer-link**: a pure data bundle, all VLANs tagged, no IP, never blocked by RSTP, with IP-less **micro-BFD**
-    per port;
-  * the **stacking plane** for MAC sync, state and consistency;
-  * a **BFD heartbeat** over mgmt (RFC 5881/5883), for split-brain decisions only.
+* The pair is 2 members of one stack. The **stack tunnel** between them replaces a peer-link (no extra cable, decided
+  2026-09-30); the stacking protocol carries MAC sync, state and consistency. Two-member split: both keep forwarding
+  at all costs; with 3+ members the minority part holds its legs.
 * Both peers announce the same LACP system ID/priority and disjoint port-number ranges, so the partner sees one LAG.
 * **MAC sync**: switchd watches netlink FDB events. MACs learned on an MC-LAG bond are sent to the peer and installed
   as static FDB entries on the same bond there. Ageing is coordinated.
-* **Split horizon**: traffic arriving from the peer-link must not leave on an MC-LAG bond that is up locally (tc/nft
-  rule). It is lifted per bond when the local leg fails.
-* **Failure matrix**: over the stacking path, peer-link and heartbeat (config reference §5.6). The secondary disables
-  its MC-LAG legs whenever the peer is alive but data can no longer flow via the peer-link.
+* **Split horizon**: traffic arriving from the peer's tunnel must not leave on an MC-LAG bond whose peer leg is up
+  (nft rule). Third members' broadcast/multicast is delivered by one member per bundle (primary while its leg is up).
+* **Failure matrix**: config reference §5.6.
 * Consistency checks (VLANs, MTU, LACP params). A mismatch takes the secondary's leg down with a reason in `show mclag`.
 
 ### 4.4 VXLAN
@@ -487,6 +484,19 @@ MAC sync complete), update, rejoin (delay-restore), then the other switch.
 * Tests: a compatibility matrix in CI (N-1 ↔ N for every message family, recorded fixtures of older versions), and a
   lab rolling-upgrade test under traffic (0 loss) from the previous release to the current one.
 
+### Phase 7c: Stack tunnels (requested 2026-09-30; config reference 5.2, 5.6, stack-protocol "Stack tunnels")
+The stacking ring carries client traffic between members and replaces the MC-LAG peer-link.
+1. Underlay: VRF `swstack`, member addresses, permanent neighbours from the stacking links, ECMP routes from the
+   mesh topology; stacking ports at their NIC maximum MTU.
+2. Tunnels `swvc<m>` per other switch member in `swbr0` (isolated, tagged VLANs both ends have, DF set).
+3. MC-LAG on tunnels: peer-link, peer-link-bfd and heartbeat removed (E); split horizon on the peer's tunnel; DF
+   rule for third members; flush of third members' addresses on leg failure; two-member split forwards at all
+   costs, minority rule for 3+.
+4. Stack MTU check (E) and `show virtual-chassis mtu`; VLAN 4094 reserved.
+5. Lab: jumbo (host MTU 9000, DF) between hosts on different members, access VLAN, QinQ (customer tag), host VXLAN;
+   cut one ring cable under traffic; MC-LAG tests on the ring (sw1/sw2 pair, sw3 single-homed host).
+6. Later: the internal management VLAN 4094 (members without their own management cable).
+
 ### Phase 8: RSTP (VMs: sw1, sw2, sw3 in a loop, + srv2)
 1. 802.1w state machines in pure Go (port roles, proposal/agreement, edge/p2p, TC → FDB flush), unit-tested.
 2. I/O: bridge in user-mode STP, BPDUs via AF_PACKET, port states via netlink.
@@ -580,10 +590,10 @@ An overall check that lists what limits the switch, with a recommendation per fi
 ## 10. Decisions taken (2026-09-29)
 * SSH: system OpenSSH, with swcli as login shell for config-defined users. The serial console uses the same flow (getty → login → swcli).
 * Data-plane encryption: opt-in per link (MACsec peer link, WireGuard underlay). The control plane always uses mTLS.
-* Three separate planes: data (switch ports, peer-link), stacking (dedicated 1:1 stacking ports, IP-less, TLS over an
-  L2 stream, multi-hop relay), and mgmt (IRB-like IP on any VLAN or a dedicated port, VRF `mgmt`).
-* Stack control runs **only** over stacking ports. The mgmt network carries just the MC-LAG BFD split-brain heartbeat.
-* BFD everywhere liveness matters: stacking links (IP-less), peer-link ports (IP-less micro-BFD), heartbeat (UDP over mgmt).
+* Three separate planes: data (switch ports), stacking (dedicated 1:1 stacking ports in a ring, TLS over an L2 stream,
+  multi-hop relay, plus client traffic between members in stack tunnels, 2026-09-30), and mgmt (administration only).
+* Stack control runs **only** over stacking ports. The mgmt network carries only administration.
+* BFD everywhere liveness matters: stacking links (IP-less).
 * MTU follows Junos convention (frame size incl. 14-byte header, default 1514).
 * Bulk port config via `interface-range` (member-range and wildcards, also for hot-plugged NICs).
 * RSTP is required in v1, with MC-LAG-aware integration.

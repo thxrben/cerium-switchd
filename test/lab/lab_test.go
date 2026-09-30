@@ -1436,10 +1436,10 @@ func memberPort(t *testing.T, addr, linux string) string {
 }
 
 // MC-LAG (reference 5.6): srv1 bonds srv1-a (to sw1) and srv1-b (to sw2)
-// with LACP and sees one partner; sw1 and sw2 are the domain, with the
-// peer-link over peer1/peer2. Traffic reaches a single-homed host on sw1
-// without duplicates, survives the loss of either leg, and the secondary
-// holds its leg when the peer-link fails.
+// with LACP and sees one partner; sw1 and sw2 are the domain, and the stack
+// tunnel between them replaces a peer-link. Traffic reaches a single-homed
+// host on sw1 without duplicates, survives the loss of either leg and of a
+// ring cable, and a member cut off from the stack (minority) holds its leg.
 func TestMCLAG(t *testing.T) {
 	out := vcShow(t, sw1)
 	for id := 1; id <= 2; id++ {
@@ -1465,14 +1465,12 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 	setupHost(t, hSw3)
 	time.Sleep(2 * time.Second) // sw2 numbers the returned ports
 	p1, p2, srv1b := memberPort(t, sw2Addr, "ens21"), memberPort(t, sw2Addr, "ens22"), memberPort(t, sw2Addr, "ens23")
+	_, _ = p1, p2 // (peer1/peer2 stay unconfigured: no peer-link)
 	cfg := vlans + access(hSw3.sw1Port, "v10") +
-		"set interfaces 1/ens21 ether-options 802.3ad ae10\nset interfaces 1/ens22 ether-options 802.3ad ae10\n" +
-		"set interfaces " + p1 + " ether-options 802.3ad ae10\nset interfaces " + p2 + " ether-options 802.3ad ae10\n" +
-		"set interfaces ae10 description peer-link\n" +
 		"set interfaces ae1 aggregated-ether-options lacp active\nset interfaces ae1 aggregated-ether-options lacp periodic fast\n" +
 		"set interfaces ae1 aggregated-ether-options mclag\nset interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
 		"set interfaces 1/ens23 ether-options 802.3ad ae1\nset interfaces " + srv1b + " ether-options 802.3ad ae1\n" +
-		"set mclag domain 1 members [ 1 2 ]\nset mclag domain 1 peer-link ae10\nset mclag domain 1 delay-restore 5\n"
+		"set mclag domain 1 members [ 1 2 ]\nset mclag domain 1 delay-restore 5\n"
 	configure(t, cfg)
 
 	// srv1 aggregates both legs towards one partner.
@@ -1524,13 +1522,13 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		}
 	}
 	// MAC synchronisation: sw2 knows hSw3 (single-homed on sw1) via the
-	// peer-link and srv1 on its own leg, whichever leg srv1's frames took;
-	// the peer-link learns nothing.
+	// tunnel to sw1 and srv1 on its own leg, whichever leg srv1's frames
+	// took; the tunnel between the peers learns nothing.
 	h3MAC := strings.TrimSpace(mustSSH(t, hSw3.vm, "ip netns exec h cat /sys/class/net/"+hSw3.nic+"/address"))
 	s1MAC := strings.TrimSpace(mustSSH(t, hSrv1.vm, "ip netns exec m cat /sys/class/net/bond0/address"))
 	for i := 0; ; i++ {
 		fdb := mustSSH(t, sw2Addr, "bridge fdb show br swbr0 | grep -v permanent")
-		if regexp.MustCompile(`(?m)^`+h3MAC+` dev ae10 vlan 10 extern_learn`).MatchString(fdb) &&
+		if regexp.MustCompile(`(?m)^`+h3MAC+` dev swvc1 vlan 10 extern_learn`).MatchString(fdb) &&
 			regexp.MustCompile(`(?m)^`+s1MAC+` dev ae1 vlan 10`).MatchString(fdb) {
 			break
 		}
@@ -1539,8 +1537,8 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if o := mustSSH(t, sw1, "bridge link show dev ae10; bridge -d link show dev ae10"); !strings.Contains(o, "learning off") {
-		t.Errorf("sw1's peer-link learns addresses:\n%s", o)
+	if o := mustSSH(t, sw1, "bridge -d link show dev swvc2"); !strings.Contains(o, "learning off") || !strings.Contains(o, "isolated on") {
+		t.Errorf("sw1's tunnel to its peer learns addresses or is not isolated:\n%s", o)
 	}
 
 	// Either leg fails: traffic continues through the other member. (A VM
@@ -1578,21 +1576,68 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		waitLeg(sw2Addr, "up +up")
 	}
 
-	// The peer-link fails while the stack is up: the secondary (sw2) holds
-	// its leg, srv1 uses sw1 only, traffic continues.
-	// (A traffic cut that keeps the links up, as a failed media converter
-	// would; switchd would put a port that is set down up again, and
-	// micro-BFD detects the cut.)
-	var heal []string
-	for _, p := range []string{"ens21", "ens22"} {
-		mustSSH(t, sw2Addr, "tc qdisc replace dev "+p+" root netem loss 100% && (tc qdisc add dev "+p+" clsact 2>/dev/null; true) && "+
-			"tc filter add dev "+p+" ingress pref 1 matchall action drop")
-		heal = append(heal, "tc qdisc del dev "+p+" root 2>/dev/null; tc filter del dev "+p+" ingress pref 1 2>/dev/null")
+	// A ring cable fails (stk-12, sw1-sw2) under traffic: the tunnel
+	// between the peers moves around the ring (via sw3) within the stacking
+	// BFD time; nothing is held. (The cut keeps the links up, as a failed
+	// media converter would: switchd would put a port that is set down up
+	// again.)
+	cut := func(addr string, neighbors ...int) (heal string) {
+		t.Helper()
+		var cmds, heals []string
+		for _, p := range stackPortsTo(t, addr, neighbors...) {
+			cmds = append(cmds, "tc qdisc replace dev "+p+" root netem loss 100% && (tc qdisc add dev "+p+" clsact 2>/dev/null; true) && "+
+				"tc filter add dev "+p+" ingress pref 1 matchall action drop")
+			heals = append(heals, "tc qdisc del dev "+p+" root 2>/dev/null; tc filter del dev "+p+" ingress pref 1 2>/dev/null")
+		}
+		heal = strings.Join(heals, "; ") + "; true"
+		t.Cleanup(func() { ssh(addr, heal) })
+		mustSSH(t, addr, strings.Join(cmds, " && "))
+		return heal
 	}
-	t.Cleanup(func() { ssh(sw2Addr, strings.Join(heal, "; ")+"; true") })
+	pingBg := func(n int) <-chan string {
+		done := make(chan string, 1)
+		go func() {
+			o, _ := ssh(hSw3.vm, fmt.Sprintf("ip netns exec h ping -i 0.01 -c %d -W 1 192.168.1.1", n))
+			done <- o
+		}()
+		return done
+	}
+	lost := func(o string) int {
+		m := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received`).FindStringSubmatch(o)
+		if m == nil {
+			t.Fatalf("ping:\n%s", o)
+		}
+		tx, _ := strconv.Atoi(m[1])
+		rx, _ := strconv.Atoi(m[2])
+		return tx - rx
+	}
+	bg := pingBg(500)
+	time.Sleep(time.Second)
+	heal := cut(sw2Addr, 1)
+	res := <-bg
+	n := lost(res)
+	t.Logf("ring cable sw1-sw2 cut under traffic: %d of 500 pings lost (10 ms apart)", n)
+	if n > 60 || strings.Contains(res, "DUP!") {
+		t.Errorf("ring cable cut: %d lost, duplicates %v", n, strings.Contains(res, "DUP!"))
+	}
+	if o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +\S+ +-`).MatchString(o) {
+		t.Errorf("sw2 after the ring cut:\n%s", o)
+	}
+	ping("ring cable cut", 200)
+	mustSSH(t, sw2Addr, heal)
+	for i := 0; !regexp.MustCompile(`(?m) up +member 1 `).MatchString(mustSSH(t, sw2Addr, "swcli -c 'show virtual-chassis vc-port'")); i++ {
+		if i == 60 {
+			t.Fatal("the sw1-sw2 stacking link did not return")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// sw2 loses both stacking cables: it is the minority (1 of 3) and holds
+	// its leg; srv1 uses sw1 only, traffic continues.
+	cut(sw2Addr, 1, 3)
 	for i := 0; ; i++ {
 		o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'")
-		if strings.Contains(o, "peer-link down, peer alive") {
+		if strings.Contains(o, "minority part of the stack") {
 			break
 		}
 		if i == 50 {
@@ -1614,7 +1659,29 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	ping("peer-link down", 200)
+	ping("sw2 cut off", 200)
+}
+
+// stackPortsTo returns the Linux names of member addr's stacking ports whose
+// neighbour is one of the given members.
+func stackPortsTo(t *testing.T, addr string, neighbors ...int) []string {
+	t.Helper()
+	var out []string
+	for _, l := range strings.Split(mustSSH(t, addr, "swcli -c 'show virtual-chassis vc-port'"), "\n") {
+		f := strings.Fields(l)
+		if len(f) < 5 || f[2] != "up" || f[3] != "member" {
+			continue
+		}
+		for _, n := range neighbors {
+			if f[4] == strconv.Itoa(n) {
+				out = append(out, f[1])
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s has no stacking link to %v", addr, neighbors)
+	}
+	return out
 }
 
 // traceHops pings srv1 from hSw3 three times while capturing on every hop
@@ -1623,7 +1690,7 @@ func traceHops(t *testing.T) string {
 	t.Helper()
 	f := `"icmp or (vlan and icmp)"`
 	type cap struct{ addr, dev string }
-	caps := []cap{{sw1, "ens2"}, {sw1, "ens21"}, {sw1, "ens22"}, {sw1, "ens23"}, {sw2Addr, "ens21"}, {sw2Addr, "ens22"}, {sw2Addr, "ens23"}}
+	caps := []cap{{sw1, "ens2"}, {sw1, "ens19"}, {sw1, "ens20"}, {sw1, "ens23"}, {sw2Addr, "ens19"}, {sw2Addr, "ens2"}, {sw2Addr, "ens23"}}
 	out := make([]string, len(caps))
 	var wg sync.WaitGroup
 	for i, c := range caps {
@@ -1638,4 +1705,91 @@ func traceHops(t *testing.T) string {
 	ssh(hSw3.vm, "ip netns exec h ping -c 3 -i 0.3 -W1 192.168.1.1")
 	wg.Wait()
 	return strings.Join(out, "\n")
+}
+
+// Jumbo frames between members (reference 5.2, stack MTU): srv1-a (sw1)
+// and srv1-b (sw2) are hosts in VLAN 10 on different members, so their
+// frames cross the stack tunnel. The largest frames the stack carries pass
+// with the don't-fragment bit: plain, with a customer VLAN tag inside
+// (QinQ) and as a host's own VXLAN; one byte more is refused by the host.
+// Hosts use MTU 9000 where the stacking NICs allow it (in the lab they
+// carry frames of 9014, so the stack carries data mtu 8956).
+func TestStackJumbo(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 2; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("sw1 and sw2 are not in one stack:\n%s", out)
+		}
+	}
+	limit := 9014
+	for _, addr := range []string{sw1, sw2Addr} {
+		o := mustSSH(t, addr, "swcli -c 'show virtual-chassis mtu'")
+		m := regexp.MustCompile(`allow data mtu up to (\d+)`).FindStringSubmatch(o)
+		if m == nil {
+			t.Fatalf("%s show virtual-chassis mtu:\n%s", addr, o)
+		}
+		if n, _ := strconv.Atoi(m[1]); n < limit {
+			limit = n
+		}
+	}
+	host := limit - 14 // host MTU
+	if host < 9000 {
+		t.Logf("the lab's stacking NICs carry data mtu %d: hosts use MTU %d instead of 9000", limit, host)
+	}
+	srv1b := memberPort(t, sw2Addr, "ens23")
+	mtu := fmt.Sprintf(" mtu %d\n", limit)
+	configure(t, vlans+"set vlans v10 mtu "+strconv.Itoa(limit)+"\n"+
+		"set interfaces 1/ens23"+mtu+"set interfaces "+srv1b+mtu+
+		"set interfaces 1/ens23 unit 0 family ethernet-switching interface-mode trunk\n"+
+		"set interfaces 1/ens23 native-vlan-id v10\nset interfaces 1/ens23 unit 0 family ethernet-switching vlan members v10\n"+
+		"set interfaces "+srv1b+" unit 0 family ethernet-switching interface-mode trunk\n"+
+		"set interfaces "+srv1b+" native-vlan-id v10\nset interfaces "+srv1b+" unit 0 family ethernet-switching vlan members v10\n")
+	if o := mustSSH(t, sw1, "swcli -c 'show virtual-chassis mtu'"); !strings.Contains(o, fmt.Sprintf("Largest data mtu in the stack:  %d", limit)) ||
+		strings.Contains(o, "too small") {
+		t.Errorf("show virtual-chassis mtu:\n%s", o)
+	}
+	// srv1: ens19 in namespace h (on sw1), ens20 in namespace j (on sw2);
+	// untagged (VLAN 10), a customer tag 100 inside VLAN 10 (QinQ), and a
+	// VXLAN between the two.
+	setup := func(ns, nic string, n int) string {
+		return fmt.Sprintf(`ip netns add %[1]s 2>/dev/null; ip link set %[2]s netns %[1]s 2>/dev/null; ip -n %[1]s link set lo up
+for l in $(ip -n %[1]s -o link show | grep -o '%[2]s\.[0-9.]*\|vx0' | sort -u -r); do ip -n %[1]s link del $l 2>/dev/null; done
+ip -n %[1]s addr flush dev %[2]s; ip -n %[1]s link set %[2]s mtu %[3]d up; ip -n %[1]s addr add 192.168.1.%[4]d/24 dev %[2]s
+ip -n %[1]s link add link %[2]s name %[2]s.10 type vlan id 10; ip -n %[1]s link set %[2]s.10 mtu %[3]d up
+ip -n %[1]s link add link %[2]s.10 name %[2]s.10.100 type vlan id 100; ip -n %[1]s link set %[2]s.10.100 mtu %[3]d up
+ip -n %[1]s addr add 192.168.100.%[4]d/24 dev %[2]s.10.100
+ip -n %[1]s link add vx0 type vxlan id 42 dstport 4789 local 192.168.1.%[4]d remote 192.168.1.%[5]d dev %[2]s
+ip -n %[1]s link set vx0 mtu %[6]d up; ip -n %[1]s addr add 192.168.42.%[4]d/24 dev vx0
+ip -n %[1]s neigh flush all`, ns, nic, host, n, 3-n, host-50)
+	}
+	mustSSH(t, hSrv1.vm, setup("h", "ens19", 1)+"\n"+setup("j", "ens20", 2))
+	t.Cleanup(func() {
+		ssh(hSrv1.vm, "ip -n j link set ens20 netns 1; ip netns del j; ip -n h link del vx0; ip -n h link del ens19.10")
+		setupHost(t, hSrv1)
+	})
+	cases := []struct {
+		name, dst string
+		mtu       int
+	}{
+		{"plain", "192.168.1.2", host},
+		{"QinQ (customer tag inside VLAN 10)", "192.168.100.2", host},
+		{"host VXLAN", "192.168.42.2", host - 50},
+	}
+	for _, c := range cases {
+		max := c.mtu - 28 // ICMP payload of a full-size IPv4 packet
+		o, err := ssh(hSrv1.vm, fmt.Sprintf("ip netns exec h ping -M do -s %d -c 20 -i 0.05 -W 1 %s", max, c.dst))
+		if err != nil || !strings.Contains(o, " 0% packet loss") {
+			t.Errorf("%s: %d-byte packets (frames of %d) do not pass the stack:\n%s", c.name, c.mtu, c.mtu+14, o)
+		}
+		if o, err := ssh(hSrv1.vm, fmt.Sprintf("ip netns exec h ping -M do -s %d -c 1 -W 1 %s", max+1, c.dst)); err == nil {
+			t.Errorf("%s: one byte more than the host MTU was sent:\n%s", c.name, o)
+		}
+	}
+	// Nothing was fragmented on the way: the tunnel's outer packets carry
+	// "don't fragment", and no member reassembled anything.
+	for _, addr := range []string{sw1, sw2Addr} {
+		if o := mustSSH(t, addr, "ip -d link show swvc1 2>/dev/null; ip -d link show swvc2 2>/dev/null; true"); !strings.Contains(o, "df set") {
+			t.Errorf("%s: stack tunnel without DF:\n%s", addr, o)
+		}
+	}
 }

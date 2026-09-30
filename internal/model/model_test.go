@@ -21,12 +21,9 @@ set routing-instances mgmt_junos interface 1/9/0.0
 set routing-instances mgmt_junos interface 2/9/0.0
 set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
 set virtual-chassis member 2 vtep-address 10.255.0.2
-set interfaces 1/0/1 ether-options 802.3ad ae0
-set interfaces 2/0/1 ether-options 802.3ad ae0
+set interfaces 1/0/1 ether-options 802.3ad ae1
 set interfaces 1/0/2 ether-options 802.3ad ae1
 set interfaces 2/0/2 ether-options 802.3ad ae1
-set interfaces ae0 mtu 9216
-set interfaces ae0 aggregated-ether-options lacp active
 set interfaces ae1 mtu 9000
 set interfaces ae1 aggregated-ether-options lacp active
 set interfaces ae1 aggregated-ether-options mclag
@@ -40,7 +37,6 @@ set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
 set vlans storage mtu 9000
 set mclag domain 1 members [ 1 2 ]
-set mclag domain 1 peer-link ae0
 set protocols rstp interface ae1 edge
 set forwarding-options analyzer dbg input ingress interface 1/0/3
 set forwarding-options analyzer dbg output interface 1/0/4
@@ -64,7 +60,7 @@ func TestValidConfig(t *testing.T) {
 	if ae1.Mode != "trunk" || len(ae1.VLANs) != 2 || ae1.NativeVLAN != 10 {
 		t.Errorf("ae1 = %+v", ae1)
 	}
-	if strings.Join(ae1.MemberPorts, ",") != "1/0/2,2/0/2" || len(ae1.MemberIDs) != 2 {
+	if strings.Join(ae1.MemberPorts, ",") != "1/0/1,1/0/2,2/0/2" || len(ae1.MemberIDs) != 2 {
 		t.Errorf("ae1 members = %v %v", ae1.MemberPorts, ae1.MemberIDs)
 	}
 	if c.Interfaces["1/0/2"].MTU != 9000 {
@@ -120,9 +116,8 @@ func TestInvalidConfigs(t *testing.T) {
 		{"rstp timers", "set protocols rstp max-age 40", "timers violate"},
 		{"bpdu-block unknown", "set protocols layer2-control bpdu-block interface 1/0/9", "1/0/9 is not configured"},
 		{"mclag without lacp", "delete interfaces ae1 aggregated-ether-options lacp", "require 'lacp'"},
-		{"peer-link mtu", "set interfaces ae0 mtu 1500", "peer-link MTU 1500 is smaller"},
+		{"reserved vlan", "set vlans m vlan-id 4094", "reserved for the stack's internal management VLAN"},
 		{"domain members", "set mclag domain 1 members 3", "exactly two members"},
-		{"no peer-link", "delete mclag domain 1 peer-link", "peer-link is required"},
 		{"analyzer same port", "set forwarding-options analyzer dbg input ingress interface 1/0/4", "both input and output"},
 		{"analyzer no output", "delete forwarding-options analyzer dbg output", "output interface is required"},
 		{"analyzer cross member", "set interfaces 2/0/9 description x\nset forwarding-options analyzer dbg input egress interface 2/0/9", "ports on the output's member"},
@@ -161,7 +156,7 @@ func TestWarnings(t *testing.T) {
 		want   string
 	}{
 		{"set interfaces 1/0/3 mtu 1500\nset vlans storage mtu 9000", "larger frames are dropped"},
-		{"set interfaces ae1 aggregated-ether-options minimum-links 3", "can never come up"},
+		{"set interfaces ae1 aggregated-ether-options minimum-links 4", "can never come up"},
 		{"set system login user bob class operator", "cannot log in"},
 		{"set interfaces ae1 aggregated-ether-options lacp system-priority 100", "ignored on MC-LAG interfaces"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
@@ -183,7 +178,8 @@ func TestWarnings(t *testing.T) {
 }
 
 // fakeInv describes member 1's ports: interface name -> max Linux MTU. A
-// negative value marks a stacking port, -2 a port with OS IP addresses.
+// negative value marks a stacking port (-1: NIC maximum 16044, -3: 9202,
+// i.e. frames of 9216), -2 a port with OS IP addresses.
 type fakeInv map[string]int
 
 func (f fakeInv) Ports(member int) (map[string]PortInfo, bool) {
@@ -195,8 +191,10 @@ func (f fakeInv) Ports(member int) (map[string]PortInfo, bool) {
 		linux := "lx" + strings.ReplaceAll(name, "/", "")
 		if mtu == -2 {
 			out[name] = PortInfo{Linux: linux, MTU: 1500, MaxMTU: 9000, HasIP: true} // OS management NIC
+		} else if mtu == -3 {
+			out[name] = PortInfo{Linux: linux, MTU: 9202, MaxMTU: 9202, StackPort: true}
 		} else if mtu < 0 {
-			out[name] = PortInfo{Linux: linux, MTU: 1500, MaxMTU: 1500, StackPort: true}
+			out[name] = PortInfo{Linux: linux, MTU: 16044, MaxMTU: 16044, StackPort: true}
 		} else {
 			out[name] = PortInfo{Linux: linux, MTU: 1500, MaxMTU: mtu}
 		}
@@ -216,6 +214,42 @@ func TestInventoryChecks(t *testing.T) {
 	}
 	if !strings.Contains(s, "port 1/0/7 does not exist") {
 		t.Errorf("missing nonexistent port warning:\n%s", s)
+	}
+}
+
+// The stack tunnels need the largest data frame + 58 bytes on every
+// stacking port (reference 5.2, stack MTU).
+func TestStackMTU(t *testing.T) {
+	inv := fakeInv{"1/0/1": 9216, "1/0/2": 9216, "1/0/3": 9216, "1/0/4": 9216, "1/9/0": 9000, "1/9/8": -3, "1/9/9": -1}
+	// Hosts with MTU 9000 (mtu 9014) and the reference config's 9000: fine
+	// with stacking NICs limited to 9216-byte frames.
+	_, issues := build(t, valid+"set interfaces 1/0/3 mtu 9014\n", inv)
+	if issues.HasErrors() {
+		t.Fatalf("unexpected errors:\n%s", issues)
+	}
+	for _, c := range []struct{ mutate, where string }{
+		{"set interfaces ae1 mtu 9216", "interfaces ae1 mtu"},
+		{"set interfaces 1/0/3 mtu 9159", "interfaces 1/0/3 mtu"},
+		{"set vlans storage mtu 9200", "vlans storage mtu"},
+	} {
+		_, issues := build(t, valid+c.mutate+"\n", inv)
+		s := issues.String()
+		if !strings.Contains(s, "stacking port 1/9/8 of member 1 carries at most 9216") ||
+			!strings.Contains(s, "the largest mtu the stack can carry is 9158") || !strings.Contains(s, c.where) {
+			t.Errorf("%s: want a stack MTU error at %s, got:\n%s", c.mutate, c.where, s)
+		}
+		if strings.Contains(s, "1/9/9") {
+			t.Errorf("%s: the 16044 stacking port suffices:\n%s", c.mutate, s)
+		}
+	}
+	// 9158 is the limit.
+	if _, issues := build(t, valid+"set interfaces 1/0/3 mtu 9158\n", inv); issues.HasErrors() {
+		t.Errorf("mtu 9158 must fit:\n%s", issues)
+	}
+	// A standalone switch has no stack tunnels.
+	one := "set interfaces 1/0/3 mtu 9216\nset interfaces 1/0/3 unit 0 family ethernet-switching vlan members v\nset vlans v vlan-id 5\n"
+	if _, issues := build(t, one, inv); issues.HasErrors() {
+		t.Errorf("standalone: %s", issues)
 	}
 }
 

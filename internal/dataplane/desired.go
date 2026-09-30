@@ -62,15 +62,7 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			// collecting and distributing (minimum-links is enforced there).
 			l.Bond = &BondOpts{Mode: "lacp", HashPolicy: l.Bond.HashPolicy}
 		}
-		switch {
-		case isPeerLink(cfg, i.Name):
-			// All VLANs, tagged; untagged frames have no VLAN and are dropped
-			// (reference 5.6).
-			l.Master, l.VLANs, l.NoLearning = BridgeName, map[uint16]VlanFlags{}, true
-			for id := range cfg.VLANByID {
-				l.VLANs[uint16(id)] = VlanFlags{}
-			}
-		case i.Switching:
+		if i.Switching {
 			l.Master = BridgeName
 			l.VLANs, l.DropTagged = portVLANs(i)
 		}
@@ -112,6 +104,7 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 		}
 		s.Links[l.Name] = l
 	}
+	computeTunnels(cfg, m, s)
 	s.L3 = computeL3(cfg, m, names, s)
 	self := map[int]bool{}
 	for _, i := range s.L3.Ifs {
@@ -234,12 +227,72 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	return l
 }
 
-// isPeerLink reports whether bundle name is an MC-LAG domain's peer-link.
-func isPeerLink(cfg *model.Config, name string) bool {
-	for _, d := range cfg.Domains {
-		if d.PeerLink == name {
-			return true
+// computeTunnels adds the stack tunnels of member m (reference 5.2): one to
+// every other switch member, carrying tagged the VLANs both ends have,
+// isolated from each other; the tunnel to the MC-LAG peer does not learn.
+func computeTunnels(cfg *model.Config, m int, s *State) {
+	members := cfg.SwitchMembers()
+	if len(members) < 2 || !slices.Contains(members, m) {
+		return
+	}
+	mtu, _ := cfg.MaxDataMTU()
+	mine := memberVLANs(cfg, m)
+	peer := mclagPeer(cfg, m)
+	for _, x := range members {
+		if x == m {
+			continue
+		}
+		l := &Link{
+			Name:       TunnelName(x),
+			Kind:       Tunnel,
+			Up:         true,
+			MTU:        model.LinuxMTU(mtu),
+			Master:     BridgeName,
+			VLANs:      map[uint16]VlanFlags{},
+			Isolated:   true,
+			NoLearning: x == peer,
+			Tunnel:     &TunnelOpts{VNI: TunnelVNI(m, x), Local: StackAddr(m), Remote: StackAddr(x)},
+		}
+		for vid := range memberVLANs(cfg, x) {
+			if mine[vid] {
+				l.VLANs[uint16(vid)] = VlanFlags{}
+			}
+		}
+		s.Links[l.Name] = l
+	}
+}
+
+// memberVLANs returns the VLANs that exist on member x: those of its switch
+// ports and bundles, and of its irb addresses.
+func memberVLANs(cfg *model.Config, x int) map[int]bool {
+	out := map[int]bool{}
+	for _, i := range cfg.Interfaces {
+		if !i.Switching || !(i.Member == x && !i.AE || i.AE && slices.Contains(i.MemberIDs, x)) {
+			continue
+		}
+		for _, v := range i.VLANs {
+			out[v] = true
+		}
+		for _, v := range []int{i.NativeVLAN, i.AccessVLAN} {
+			if v != 0 {
+				out[v] = true
+			}
 		}
 	}
-	return false
+	for _, u := range cfg.L3 {
+		if u.IRB() && u.VLAN != 0 && len(u.AddrsOn(x)) > 0 {
+			out[u.VLAN] = true
+		}
+	}
+	return out
+}
+
+// mclagPeer returns the MC-LAG peer of member m (0: none).
+func mclagPeer(cfg *model.Config, m int) int {
+	for _, d := range cfg.Domains {
+		if len(d.Members) == 2 && slices.Contains(d.Members, m) {
+			return d.Members[0] + d.Members[1] - m
+		}
+	}
+	return 0
 }

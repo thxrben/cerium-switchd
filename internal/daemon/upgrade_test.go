@@ -122,3 +122,33 @@ func TestUpgradeManagement(t *testing.T) {
 		t.Errorf("irb.99 listed %d times:\n%s", n, out)
 	}
 }
+
+// The peer-link of earlier versions and its bundle are removed; the MC-LAG
+// bundles stay.
+func TestUpgradePeerLink(t *testing.T) {
+	tr := upgrade(t, `{
+  "interfaces": {
+    "1/2/0": {"ether-options": {"802.3ad": "ae10"}},
+    "2/2/0": {"ether-options": {"802.3ad": "ae10", "flow-control": true}},
+    "1/3/0": {"ether-options": {"802.3ad": "ae1"}},
+    "ae10": {"mtu": "9216", "aggregated-ether-options": {"lacp": {"active": true}}},
+    "ae1": {"aggregated-ether-options": {"lacp": {"active": true}, "mclag": {}}}
+  },
+  "mclag": {"domain": {"1": {"members": ["1", "2"], "peer-link": "ae10", "peer-link-bfd": {"multiplier": "3"}, "heartbeat": {"multiplier": "3"}}}}
+}`)
+	out := config.FormatSet(tr)
+	for _, gone := range []string{"ae10", "peer-link", "heartbeat"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s left in:\n%s", gone, out)
+		}
+	}
+	for _, want := range []string{"set interfaces 2/2/0 ether-options flow-control", "set interfaces 1/3/0 ether-options 802.3ad ae1",
+		"set interfaces ae1 aggregated-ether-options mclag", "set mclag domain 1 members 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "set interfaces 1/2/0") {
+		t.Errorf("empty former peer-link port left:\n%s", out)
+	}
+}

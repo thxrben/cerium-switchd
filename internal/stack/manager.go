@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"mclag/internal/config"
+	"mclag/internal/dataplane"
 	"mclag/internal/stack/control"
 	"mclag/internal/stack/link"
 	"mclag/internal/stack/mesh"
@@ -100,6 +102,28 @@ type PortStatus struct {
 	PeerPort  string
 	UpSince   time.Time
 	LastError string
+	// The neighbour of an up member session (for the stack tunnels'
+	// underlay, reference 5.2): its member id and its port's MAC address.
+	NeighborID  int
+	NeighborMAC net.HardwareAddr
+}
+
+// StackLink is a stacking link with an up member session.
+type StackLink struct {
+	Linux       string
+	Neighbor    int
+	NeighborMAC net.HardwareAddr
+}
+
+// Links returns the stacking links whose member sessions are up.
+func (m *Manager) Links() []StackLink {
+	var out []StackLink
+	for _, p := range m.Ports() {
+		if p.State == "up" && p.NeighborID > 0 && p.Linux != "" && len(p.NeighborMAC) == 6 {
+			out = append(out, StackLink{Linux: p.Linux, Neighbor: p.NeighborID, NeighborMAC: p.NeighborMAC})
+		}
+	}
+	return out
 }
 
 type vcPort struct {
@@ -427,7 +451,7 @@ func (m *Manager) runPort(ctx context.Context, p *vcPort) {
 		m.sessions(ctx, p, pio, linux)
 		pio.Close()
 	}
-	p.set(func(s *PortStatus) { s.State, s.Neighbor = "down", "-" })
+	p.set(func(s *PortStatus) { s.State, s.Neighbor, s.NeighborID, s.NeighborMAC = "down", "-", 0, nil })
 }
 
 // sessions runs link + TLS sessions on an open port until ctx ends or the
@@ -455,7 +479,10 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 		if errors.Is(err, errOtherStack) {
 			// The cable works, the neighbour belongs to another stack: keep
 			// showing it and try again now and then (it may join us).
-			p.set(func(s *PortStatus) { s.PeerPort, s.UpSince, s.LastError = "", time.Time{}, err.Error() })
+			p.set(func(s *PortStatus) {
+				s.PeerPort, s.UpSince, s.LastError = "", time.Time{}, err.Error()
+				s.NeighborID, s.NeighborMAC = 0, nil
+			})
 			select {
 			case <-ctx.Done():
 			case <-l.Done():
@@ -468,6 +495,7 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 		l.Close()
 		p.set(func(s *PortStatus) {
 			s.State, s.Neighbor, s.PeerPort, s.UpSince = "down", "-", "", time.Time{}
+			s.NeighborID, s.NeighborMAC = 0, nil
 			if err != nil {
 				s.LastError = err.Error()
 			}
@@ -561,6 +589,7 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	conn.SetDeadline(time.Time{})
 	p.set(func(s *PortStatus) {
 		s.State, s.PeerPort, s.UpSince, s.LastError = "up", h.Port, time.Now(), ""
+		s.NeighborID, s.NeighborMAC = h.Member, slices.Clone(pio.Peer())
 		s.Neighbor = fmt.Sprintf("member %d", h.Member)
 		if h.Host != "" {
 			s.Neighbor += " (" + h.Host + ")"
@@ -628,9 +657,13 @@ func preparePort(linux string) error {
 	if err != nil {
 		return err
 	}
-	if ln.Attrs().MasterIndex != 0 {
-		if err := netlink.LinkSetNoMaster(ln); err != nil {
-			return err
+	// The only master a stacking port may have is the hidden instance of
+	// the stack tunnels (reference 5.2), which the data plane adds.
+	if mi := ln.Attrs().MasterIndex; mi != 0 {
+		if m, err := netlink.LinkByIndex(mi); err != nil || m.Attrs().Name != dataplane.StackVRF {
+			if err := netlink.LinkSetNoMaster(ln); err != nil {
+				return err
+			}
 		}
 	}
 	p := "/proc/sys/net/ipv6/conf/" + linux + "/disable_ipv6"
@@ -642,6 +675,14 @@ func preparePort(linux string) error {
 	addrs, _ := netlink.AddrList(ln, netlink.FAMILY_ALL)
 	for _, a := range addrs {
 		_ = netlink.AddrDel(ln, &a)
+	}
+	// The largest frames the NIC can carry, once: the stack tunnels need
+	// room for the largest data frame plus 58 bytes, and a later MTU change
+	// could restart the link (reference 5.2, stack MTU).
+	if want := dataplane.StackPortMTU(linux); want > ln.Attrs().MTU {
+		if err := netlink.LinkSetMTU(ln, want); err != nil {
+			return fmt.Errorf("setting the MTU to %d: %w", want, err)
+		}
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
 		return netlink.LinkSetUp(ln)

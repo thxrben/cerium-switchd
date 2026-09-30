@@ -16,11 +16,13 @@ import (
 )
 
 // mclagTable holds the MC-LAG split horizon (reference 5.6): nothing that
-// arrives over the peer-link leaves an MC-LAG bundle whose other leg (on
-// the peer) is up. (The peer-link learns no addresses and MAC
+// arrives over the peer's stack tunnel leaves an MC-LAG bundle whose other
+// leg (on the peer) is up. (The peer's tunnel learns no addresses and MAC
 // synchronisation points dual-homed devices at the local leg, so unicast
-// for them crosses the peer-link only while the sender's leg is down, and
-// then the filter is lifted.)
+// for them crosses to the peer only while the sender's leg is down, and
+// then the filter is lifted.) On the secondary, broadcast and multicast
+// from third members' tunnels are left to the primary on bundles whose
+// primary leg is up.
 const mclagTable = "switchd_mclag"
 
 var (
@@ -28,30 +30,46 @@ var (
 	splitLast = "\x00" // rules installed last ("\x00": unknown, e.g. after a restart)
 )
 
-// SyncSplitHorizon installs the split horizon: nothing from peerLink goes
-// out of bundles. An empty peerLink or no bundles removes it.
-func SyncSplitHorizon(peerLink string, bundles []string) error {
-	bundles = slices.Clone(bundles)
-	slices.Sort(bundles)
+// SplitHorizon is the filter of one member.
+type SplitHorizon struct {
+	Peer    string   // the peer's stack tunnel
+	Bundles []string // bundles whose peer leg is up
+	Thirds  []string // stack tunnels to members outside the domain
+	DF      []string // bundles whose broadcast/multicast from Thirds the primary delivers
+}
+
+func quoteSet(names []string) string {
+	names = slices.Clone(names)
+	slices.Sort(names)
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = `"` + n + `"`
+	}
+	return "{ " + strings.Join(q, ", ") + " }"
+}
+
+// SyncSplitHorizon installs the split horizon; the zero value removes it.
+func SyncSplitHorizon(sh SplitHorizon) error {
+	var rules []string
+	if sh.Peer != "" && len(sh.Bundles) > 0 {
+		rules = append(rules, fmt.Sprintf("iifname %q oifname %s counter drop", sh.Peer, quoteSet(sh.Bundles)))
+	}
+	if len(sh.Thirds) > 0 && len(sh.DF) > 0 {
+		rules = append(rules, fmt.Sprintf("iifname %s oifname %s meta pkttype { broadcast, multicast } counter drop", quoteSet(sh.Thirds), quoteSet(sh.DF)))
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "table bridge %s\ndelete table bridge %s\n", mclagTable, mclagTable)
-	if peerLink != "" && len(bundles) > 0 {
-		quoted := make([]string, len(bundles))
-		for i, n := range bundles {
-			quoted[i] = `"` + n + `"`
+	if len(rules) > 0 {
+		fmt.Fprintf(&b, "table bridge %s {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n", mclagTable)
+		for _, r := range rules {
+			fmt.Fprintf(&b, "\t\t%s\n", r)
 		}
-		fmt.Fprintf(&b, `table bridge %s {
-	chain forward {
-		type filter hook forward priority filter; policy accept;
-		iifname "%s" oifname { %s } counter drop
+		b.WriteString("\t}\n}\n")
 	}
-}
-`, mclagTable, peerLink, strings.Join(quoted, ", "))
-	}
-	rules := b.String()
+	text := b.String()
 	splitMu.Lock()
 	defer splitMu.Unlock()
-	if rules == splitLast {
+	if text == splitLast {
 		return nil
 	}
 	nft, err := exec.LookPath("nft")
@@ -59,18 +77,18 @@ func SyncSplitHorizon(peerLink string, bundles []string) error {
 		return errors.New("nftables (the nft program) is required for MC-LAG; install the nftables package")
 	}
 	cmd := exec.Command(nft, "-f", "-")
-	cmd.Stdin = strings.NewReader(rules)
+	cmd.Stdin = strings.NewReader(text)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("nft: %v: %s", err, strings.TrimSpace(out.String()))
 	}
-	splitLast = rules
+	splitLast = text
 	return nil
 }
 
 // FlushLearned removes the MAC addresses the bridge learned on dev (not
-// static or externally installed ones). MC-LAG flushes the peer-link when
+// static or externally installed ones). MC-LAG flushes the peer's tunnel when
 // a leg changes: addresses behind a leg that went away were learned there
 // and are found again by flooding.
 func FlushLearned(dev string) (int, error) {

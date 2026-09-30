@@ -95,6 +95,13 @@ func (f *Fake) Apply(op Op) error {
 		b := *op.Bridge
 		f.S.Bridge = &b
 		return nil
+	case OpCreateTunnel:
+		if f.S.Links[op.Link] != nil {
+			return fmt.Errorf("%s: exists", op.Link)
+		}
+		t := *op.Tunnel
+		f.S.Links[op.Link] = &Link{Name: op.Link, Kind: Tunnel, MTU: op.MTU, Tunnel: &t, Present: true}
+		return nil
 	case OpCreateBond:
 		if f.S.Links[op.Link] != nil {
 			return fmt.Errorf("%s: exists", op.Link)
@@ -204,6 +211,11 @@ func (f *Fake) Apply(op Op) error {
 			return fmt.Errorf("%s: not a bridge port", l.Name)
 		}
 		l.NoLearning = !op.Bool
+	case OpSetIsolated:
+		if l.Master != BridgeName {
+			return fmt.Errorf("%s: not a bridge port", l.Name)
+		}
+		l.Isolated = op.Bool
 	case OpSetMaxLearned:
 		l.MaxLearned = op.Int
 	case OpSetDropTagged:

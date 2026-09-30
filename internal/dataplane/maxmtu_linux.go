@@ -43,3 +43,12 @@ func maxMTUs() map[string]int {
 	}
 	return out
 }
+
+// StackPortMTU returns the kernel MTU for a stacking port: its NIC maximum,
+// at most MaxStackPortMTU (0 if unknown).
+func StackPortMTU(linux string) int {
+	if m := maxMTUs()[linux]; m > 0 {
+		return min(m, MaxStackPortMTU)
+	}
+	return 0
+}
