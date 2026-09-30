@@ -2353,9 +2353,8 @@ func nicByMAC(t *testing.T, addr, mac string) string {
 	return n
 }
 
-// RSTP (reference 5.5): the stack is one bridge. The data links loop-13
-// (sw1-sw3) and loop-23 (sw2-sw3) are loops of that bridge: one end of each
-// becomes a backup port, nothing storms. When the RSTP owner (sw1) stops,
+// RSTP (reference 5.5): the stack is one bridge. The data link loop-23
+// (sw2-sw3) is a loop of that bridge: one end a backup port, nothing storms. When the RSTP owner (sw1) stops,
 // sw2 continues from its copy without a port changing state.
 func TestRSTP(t *testing.T) {
 	const sw3Addr = "10.5.176.97"
@@ -2365,8 +2364,7 @@ func TestRSTP(t *testing.T) {
 			t.Skipf("sw1-sw3 are not in one stack:\n%s", out)
 		}
 	}
-	l13a := memberPort(t, sw1, nicByMAC(t, sw1, "bc:24:11:fe:f0:9f"))
-	l13b := memberPort(t, sw3Addr, nicByMAC(t, sw3Addr, "bc:24:11:0b:5f:e7"))
+	// (loop-13 is hSw3's host link: sw3's end is in the host namespace.)
 	l23a := memberPort(t, sw2Addr, nicByMAC(t, sw2Addr, "bc:24:11:b4:ce:3a"))
 	l23b := memberPort(t, sw3Addr, nicByMAC(t, sw3Addr, "bc:24:11:ac:2c:b3"))
 	setupHost(t, hSw3)
@@ -2375,7 +2373,7 @@ func TestRSTP(t *testing.T) {
 	// RSTP first; the loop ports join a bridge that already runs it.
 	configure(t, base)
 	loops := ""
-	for _, p := range []string{l13a, l13b, l23a, l23b} {
+	for _, p := range []string{l23a, l23b} {
 		loops += access(p, "v10")
 	}
 	configure(t, base+loops)
@@ -2398,12 +2396,12 @@ func TestRSTP(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			m = stp(addr)
 			n := 0
-			for _, p := range []string{l13a, l13b, l23a, l23b} {
+			for _, p := range []string{l23a, l23b} {
 				if m[p] == "designated forwarding" || m[p] == "backup discarding" {
 					n++
 				}
 			}
-			if n == 4 {
+			if n == 2 {
 				return m
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -2412,14 +2410,14 @@ func TestRSTP(t *testing.T) {
 		return nil
 	}
 	m := settled(sw1)
-	for _, pair := range [][2]string{{l13a, l13b}, {l23a, l23b}} {
+	for _, pair := range [][2]string{{l23a, l23b}} {
 		a, b := m[pair[0]], m[pair[1]]
 		if !((a == "designated forwarding" && b == "backup discarding") || (b == "designated forwarding" && a == "backup discarding")) {
 			t.Errorf("loop %s-%s: %q / %q", pair[0], pair[1], a, b)
 		}
 	}
-	if m[hSw3.sw1Port] != "designated forwarding" {
-		t.Errorf("edge port %s: %q", hSw3.sw1Port, m[hSw3.sw1Port])
+	if edge := portNames(t, hSw3.sw1Port); m[edge] != "designated forwarding" {
+		t.Errorf("edge port %s: %q", edge, m[edge])
 	}
 	// Every member shows the same (the owner answers).
 	if m3 := stp(sw3Addr); !maps.Equal(m, m3) {
@@ -2431,7 +2429,7 @@ func TestRSTP(t *testing.T) {
 		linux := strings.TrimSpace(mustSSH(t, addr, fmt.Sprintf("swcli -c 'show chassis hardware local' | awk '$1==\"%s\"{print $2}'", port)))
 		return strings.TrimSpace(mustSSH(t, addr, "cat /sys/class/net/"+linux+"/brport/state"))
 	}
-	for _, c := range []struct{ addr, port string }{{sw1, l13a}, {sw3Addr, l13b}, {sw2Addr, l23a}, {sw3Addr, l23b}} {
+	for _, c := range []struct{ addr, port string }{{sw2Addr, l23a}, {sw3Addr, l23b}} {
 		want := "3"
 		if m[c.port] == "backup discarding" {
 			want = "4"
@@ -2455,10 +2453,11 @@ func TestRSTP(t *testing.T) {
 	if o := mustSSH(t, sw3Addr, "swcli -c 'show spanning-tree bridge'"); !strings.Contains(o, "RSTP owner         member 1") {
 		t.Errorf("owner:\n%s", o)
 	}
-	mustSSH(t, sw1, "systemctl kill -s KILL switchd")
+	mustSSH(t, sw1, "systemctl stop switchd") // (a killed one is restarted at once)
+	t.Cleanup(func() { ssh(sw1, "systemctl start switchd") })
 	time.Sleep(3 * time.Second)
 	m2 := settled(sw3Addr)
-	for _, p := range []string{l13b, l23a, l23b} {
+	for _, p := range []string{l23a, l23b} {
 		if m2[p] != m[p] {
 			t.Errorf("%s changed after the owner stopped: %q -> %q", p, m[p], m2[p])
 		}
@@ -2477,7 +2476,7 @@ func TestRSTP(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	m3 := settled(sw1)
-	for _, p := range []string{l13a, l13b, l23a, l23b} {
+	for _, p := range []string{l23a, l23b} {
 		if m3[p] != m[p] {
 			t.Errorf("%s after sw1 returned: %q -> %q", p, m[p], m3[p])
 		}

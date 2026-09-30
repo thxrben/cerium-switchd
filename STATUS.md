@@ -169,7 +169,12 @@ Last updated: 2026-09-30 (evening).
   "not in sync" and again before the last port leaves; LACP keeps a held port in the kernel bundle until the partner
   stops distributing (DrainWait 2 s). Persistent (`<state>/maintenance`). Reboot/halt/power-off, member removal (RPC
   "drain") and system shutdown (SIGTERM while `systemctl is-system-running` = stopping) drain first. Lab: TestMCLAG
-  drains sw2 and the master sw1 under 10 ms pings: 0 lost. User order next: RSTP (with MC-LAG), family inet dhcp,
+  drains sw2 and the master sw1 under 10 ms pings: 0 lost.
+- Done 2026-09-30: RSTP, stack = one bridge (internal/rstp state machines; daemon/rstp.go owner = lowest reachable
+  member, snapshot copy every second, user-space STP via /sbin/bridge-stp). TestRSTP: loop-23 becomes
+  designated/backup, owner stop/start keeps every port state. Open RSTP items: bpdu-block (model only), clear
+  spanning-tree commands, a lab test with an external RSTP bridge (mstpd on srv1) and an MC-LAG port with BPDUs.
+  User order next: family inet dhcp,
   port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
   with the user: management interface design, internal VLAN 4094.
 - Done 2026-09-30 (later, user requests): full names + speed in `show virtual-chassis vc-port`; `show chassis hardware`
