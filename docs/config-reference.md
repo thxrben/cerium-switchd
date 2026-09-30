@@ -464,6 +464,57 @@ target, 3.5, those of that member). Sections and lines (a `-` means no limit app
 Use of a limit is shown as `n of max`. A line whose limit is reached is marked `(full)`; a configured value above a
 hardware limit cannot exist (commit refuses it), so the page never shows one.
 
+### 3.6 Software updates
+
+The stack is updated as one switch: the master fetches the software, checks it, and updates the members **one at a
+time**, each drained first, so traffic keeps flowing (reference 5.2, maintenance mode).
+
+**Package.** A software package is one file, `ceros-<version>.tar.gz`: a `manifest.json` (version, build time, the
+SHA-256 of every file) and the `switchd` program for each architecture (`amd64`, `arm64`, `arm`). One package
+serves a stack of mixed hardware. A SHA-256 of the whole package is verified when one is given (`sha256 <hex>`, or
+a `<package>.sha256` file next to it on the server); the files inside are always verified against the manifest.
+(A signature by a stack signing key follows later.)
+
+**`request system software add <source> [sha256 <hex>] [member <id>] [no-validate]`** (super-user):
+* `<source>`: `http://…`, `https://…`, `ftp://…`, `sftp://user@host/path` (asks for the password unless a key of
+  the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), or a local file of the master (`/var/tmp/…`). Downloads leave through the management instance (1.8).
+* Steps, each reported on the terminal as it happens:
+  1. **Fetch and verify** the package on the master.
+  2. **Check**: every member's architecture is in the package; the new version reads the active configuration and
+     accepts it (it runs the new program's configuration check on the master); with `no-validate` a failed
+     configuration check is only a warning.
+  3. **Distribute** the package to every member over the stacking protocol; each member verifies it.
+  4. **Update the members one by one**, the master last: the member enters maintenance mode (drained), installs
+     the new program (the previous one is kept), restarts switchd, comes back with the stack's configuration,
+     and leaves maintenance mode once it is current again. The next member starts only then. Before its own
+     turn, the master hands mastership to an updated member, which finishes the update.
+* `member <id>`: only that member (e.g. a member that joined with an older version).
+* Members that already run the version are skipped. The command can be repeated: it continues where an update
+  stopped.
+* **Failure**: a member that is not back and current within 5 minutes stops the update; it is reported, and the
+  members not yet updated keep the old version. A member whose new switchd fails to start three times in a row
+  returns to the previous version by itself.
+* The update runs on the master, not in the CLI session: leaving the CLI does not stop it. `show system software`
+  shows its progress.
+
+**`request system software rollback [member <id>]`**: the members (or one) return to the version they ran before,
+the same way (one by one, drained).
+
+**`show system software`**: per member the running version and build time, the previous version (for rollback),
+and the state of a running update (`fetching`, `checking`, `distributing`, `updating member 3`, `done`, `failed:
+<reason>`).
+
+**Mixed versions.** During an update, members run different versions for a while:
+* Stacking, MC-LAG and the stack tunnels keep working between the previous release and the current one.
+* **Configuration**: a version reads every configuration of the previous release line; statements that changed are
+  converted when they are read (as they have been so far). A member with an **older** version applies the stack's
+  configuration **without the statements it does not know** (they are left out, and logged as not supported by that
+  member's version); the members that know them apply them. `commit check` warns while versions differ and names
+  the statements that some members ignore.
+* A new version never stops forwarding because of the configuration: if the active configuration fails its check
+  (a stricter rule), the data plane keeps its current state, the member reports the errors (`show system
+  software`, syslog), and a commit that fixes them applies normally.
+
 ## 4. Commit model
 
 ### 4.1 Candidate, commit check, commit
