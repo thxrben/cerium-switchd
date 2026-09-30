@@ -1082,9 +1082,12 @@ Statements:
 * `show mclag`: per domain the role (primary/secondary), the peer's reachability over the stacking plane, the
   peer-link and heartbeat state; per MC-LAG bundle the local and peer leg state, split horizon, and a hold with its
   reason and remaining time.
-* **Consistency checks** at runtime: VLAN membership, MTU, LACP mode and rate of each MC-LAG bundle are compared
-  between the members. A mismatch (for example because a member runs an older software version) keeps the
-  bundle's leg on the secondary down, with the reason shown in `show mclag consistency`.
+* **Consistency checks** at runtime: VLAN membership (and native VLAN), MTU, LACP mode and rate of each MC-LAG
+  bundle as each member applies them are compared between the members (sent with the leg states). Both members
+  apply the same configuration, so a difference while a commit propagates is ignored; one that lasts 10 seconds
+  (for example because a member runs another software version) holds the bundle's leg on the secondary, with the
+  reason in `show mclag`. The primary's leg stays up. `show mclag consistency` shows what each member applies per
+  bundle and since when they differ.
 
 ### 5.7 switch-options
 

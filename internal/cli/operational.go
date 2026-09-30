@@ -103,6 +103,9 @@ type MCLAGBundle struct {
 	LocalUp, PeerUp, PeerKnown bool
 	SplitHorizon               bool
 	Hold                       string // reason ("": not held)
+	// Consistency check: what each member applies ("": unknown).
+	Facts, PeerFacts string
+	DiffersSince     time.Time // zero: consistent
 }
 
 // Route is one line of "show route".
@@ -983,7 +986,8 @@ func registerOperational() {
 					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
 				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
-				&command{name: "mclag", help: "Show the MC-LAG domain of this member", class: commit.ReadOnly, run: (*Shell).showMCLAG},
+				&command{name: "mclag", help: "Show the MC-LAG domain of this member", class: commit.ReadOnly, run: (*Shell).showMCLAG,
+					complete: words(Completion{Text: "consistency", Help: "Compare the MC-LAG bundles with the peer"})},
 				&command{name: "lacp", help: "Show LACP information", class: commit.ReadOnly, sub: []*command{
 					{name: "interfaces", help: "Show LACP state per bundle and port", class: commit.ReadOnly, run: (*Shell).showLACP, complete: completeAE},
 					{name: "statistics", help: "Show LACP statistics", class: commit.ReadOnly, sub: []*command{

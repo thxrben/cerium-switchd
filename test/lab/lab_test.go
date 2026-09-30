@@ -1518,6 +1518,11 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 	if o := mustSSH(t, sw1, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +on`).MatchString(o) {
 		t.Errorf("sw1 show mclag:\n%s", o)
 	}
+	for _, addr := range []string{sw1, sw2Addr} {
+		if o := mustSSH(t, addr, "swcli -c 'show mclag consistency'"); !strings.Contains(o, "ae1: consistent") {
+			t.Errorf("%s show mclag consistency:\n%s", addr, o)
+		}
+	}
 	// MAC synchronisation: sw2 knows hSw3 (single-homed on sw1) via the
 	// peer-link and srv1 on its own leg, whichever leg srv1's frames took;
 	// the peer-link learns nothing.

@@ -48,19 +48,59 @@ type mclagCtl struct {
 	legState   string          // local and peer legs as last seen (flush on change)
 	curLegs    map[string]bool // local legs, current
 	macs       *macSync
+	peerFacts  map[string]string    // the peer's bundle facts (nil: not sent)
+	differs    map[string]time.Time // bundle -> facts differ since
 	bfd        *peerBFD
 	linux      func(string) (string, bool) // port name -> kernel name
 	bfdNames   map[string]string           // kernel name -> port name (peer-link ports)
 }
 
 // legsMsg is the leg state a member sends its peer.
+// mclagInconsistentAfter: how long a bundle may differ from the peer's
+// before the secondary holds it.
+const mclagInconsistentAfter = 10 * time.Second
+
 type legsMsg struct {
 	Domain int             `json:"domain"`
 	Legs   map[string]bool `json:"legs"`
+	// Facts of each MC-LAG bundle as this member applies them (consistency
+	// check).
+	Facts map[string]string `json:"facts,omitempty"`
+}
+
+// bundleFacts is what both members must agree on for an MC-LAG bundle
+// (reference 5.6, consistency checks).
+func bundleFacts(cfg *model.Config, name string) string {
+	i := cfg.Interfaces[name]
+	if i == nil {
+		return ""
+	}
+	vlans := slices.Clone(i.VLANs)
+	slices.Sort(vlans)
+	mode := "static"
+	if i.LACP != nil {
+		mode = "passive"
+		if i.LACP.Active {
+			mode = "active"
+		}
+		if i.LACP.Fast {
+			mode += ",fast"
+		} else {
+			mode += ",slow"
+		}
+	}
+	sw := "no switching"
+	switch {
+	case i.Switching && i.Mode == "trunk":
+		sw = fmt.Sprintf("trunk vlans %v native %d", vlans, i.NativeVLAN)
+	case i.Switching:
+		sw = fmt.Sprintf("access vlan %d", i.AccessVLAN)
+	}
+	return fmt.Sprintf("%s, mtu %d, lacp %s", sw, i.MTU, mode)
 }
 
 func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, linux func(string) (string, bool), log *slog.Logger) *mclagCtl {
-	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{},
+	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{}, differs: map[string]time.Time{},
 		bfd: newPeerBFD(), linux: linux, bfdNames: map[string]string{}}
 	m.macs = newMACSync(m, log)
 	if stack != nil {
@@ -72,6 +112,7 @@ func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, linux func(string) 
 			m.mu.Lock()
 			if d := m.domainLocked(); d != nil && d.ID == l.Domain && m.peerOf(d) == from {
 				m.peerLegs, m.peerSeen, m.peerKnown = l.Legs, time.Now(), true
+				m.peerFacts = l.Facts
 			}
 			m.mu.Unlock()
 			return nil, nil
@@ -228,9 +269,31 @@ func (m *mclagCtl) step(now time.Time) {
 		reason = fmt.Sprintf("delay-restore (%s left)", m.restoreEnd.Sub(now).Round(time.Second))
 	}
 	newHolds := map[string]string{}
+	facts := map[string]string{}
 	for _, b := range bundles {
-		if reason != "" {
+		facts[b] = bundleFacts(m.cfg, b)
+		switch pf, ok := m.peerFacts[b]; {
+		case reason != "":
 			newHolds[b] = reason
+		case ok && m.peerKnown && pf != facts[b]:
+			// Both members apply the same configuration, so a difference is
+			// a commit still on its way (ignored) or one that stays, e.g. the
+			// peer runs another software version: then the secondary's leg
+			// stays out rather than forwarding differently.
+			if m.differs[b].IsZero() {
+				m.differs[b] = now
+				m.log.Info("mclag: bundle differs from the peer", "bundle", b, "here", facts[b], "peer", pf)
+			}
+			if !primary && now.Sub(m.differs[b]) >= mclagInconsistentAfter {
+				newHolds[b] = fmt.Sprintf("inconsistent with the peer: here %s; peer %s", facts[b], pf)
+			}
+			continue
+		}
+		delete(m.differs, b)
+	}
+	for b := range m.differs {
+		if !slices.Contains(bundles, b) {
+			delete(m.differs, b)
 		}
 	}
 	changedHold := map[string]bool{}
@@ -290,7 +353,7 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	if send {
 		go func() {
-			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs}, time.Second); err != nil {
+			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts}, time.Second); err != nil {
 				m.log.Debug("mclag: leg state to the peer", "err", err)
 			}
 		}()
@@ -334,7 +397,8 @@ func (m *mclagCtl) status() (cli.MCLAGStatus, error) {
 	for _, b := range m.bundlesLocked(d) {
 		pl, ok := m.peerLegs[b]
 		st.Bundles = append(st.Bundles, cli.MCLAGBundle{Name: b, LocalUp: legs[b], PeerUp: pl, PeerKnown: m.peerKnown && ok,
-			SplitHorizon: slices.Contains(m.split, b), Hold: m.holds[b]})
+			SplitHorizon: slices.Contains(m.split, b), Hold: m.holds[b],
+			Facts: bundleFacts(m.cfg, b), PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
 	}
 	return st, nil
 }

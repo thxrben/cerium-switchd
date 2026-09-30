@@ -153,8 +153,14 @@ func (sh *Shell) showLACPStats(c *call) error {
 
 // showMCLAG implements "show mclag".
 func (sh *Shell) showMCLAG(c *call) error {
-	if err := noArgs(c); err != nil {
-		return err
+	consistency := false
+	switch {
+	case len(c.args) == 1 && c.args[0].Text == "consistency":
+		consistency = true
+	default:
+		if err := noArgs(c); err != nil {
+			return err
+		}
 	}
 	if sh.env.Ops == nil {
 		return errors.New("MC-LAG information is not available")
@@ -166,6 +172,9 @@ func (sh *Shell) showMCLAG(c *call) error {
 	if st.Domain == 0 {
 		c.out.WriteString("This member is not in an MC-LAG domain.\n")
 		return nil
+	}
+	if consistency {
+		return showMCLAGConsistency(c, st)
 	}
 	role := "secondary"
 	if st.Primary {
@@ -209,6 +218,31 @@ func (sh *Shell) showMCLAG(c *call) error {
 			hold = b.Hold
 		}
 		fmt.Fprintf(c.out, "  %-10s %-6s %-8s %-14s %s\n", b.Name, upDown(b.LocalUp), peer, split, hold)
+	}
+	return nil
+}
+
+func showMCLAGConsistency(c *call, st MCLAGStatus) error {
+	if len(st.Bundles) == 0 {
+		c.out.WriteString("No MC-LAG bundles with a leg on this member.\n")
+		return nil
+	}
+	for i, b := range st.Bundles {
+		if i > 0 {
+			c.out.WriteString("\n")
+		}
+		state := "consistent"
+		switch {
+		case b.PeerFacts == "":
+			state = "unknown (nothing received from the peer)"
+		case !b.DiffersSince.IsZero():
+			state = "inconsistent for " + fmtDuration(time.Since(b.DiffersSince))
+		}
+		fmt.Fprintf(c.out, "%s: %s\n", b.Name, state)
+		fmt.Fprintf(c.out, "  Member %d: %s\n", st.Member, b.Facts)
+		if b.PeerFacts != "" {
+			fmt.Fprintf(c.out, "  Member %d: %s\n", st.Peer, b.PeerFacts)
+		}
 	}
 	return nil
 }
