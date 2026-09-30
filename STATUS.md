@@ -159,8 +159,8 @@ Last updated: 2026-09-30 (evening).
 - A removed member keeps its VC port designations (deleting them broke re-joining).
 - Lab after the VM restart (stack NICs now 9114): TestStackJumbo passes (host MTU capped by srv1's NIC, still 9000:
   srv1 needs a full Proxmox stop/start). TestForceMaster added and passes.
-- LAB PROBLEM (user): TestLACP, TestMCLAG, TestStormControl fail since the VM restart: the Proxmox bridges no longer
-  pass link-local frames (01:80:c2:00:00:0x, LACP/BPDU). Needs group_fwd_mask / OVS forward-bpdu again.
+- Proxmox bridges: forward-bpdu had not been active after the MTU change (ovs_options does not apply it; user set it
+  live with ovs-vsctl). LACP, MC-LAG, storm control pass again.
 
 ## Next (in order)
 - Done 2026-09-30 (later, user requests): full names + speed in `show virtual-chassis vc-port`; `show chassis hardware`

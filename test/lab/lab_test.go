@@ -2030,7 +2030,7 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 	}
 	ping("ring cable cut", 200)
 	mustSSH(t, sw2Addr, heal)
-	for i := 0; !regexp.MustCompile(`(?m) up +member 1 `).MatchString(mustSSH(t, sw2Addr, "swcli -c 'show virtual-chassis vc-port'")); i++ {
+	for i := 0; !regexp.MustCompile(`(?m) up +\S+ +member 1 `).MatchString(mustSSH(t, sw2Addr, "swcli -c 'show virtual-chassis vc-port'")); i++ {
 		if i == 60 {
 			t.Fatal("the sw1-sw2 stacking link did not return")
 		}
