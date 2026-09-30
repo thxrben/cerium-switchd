@@ -16,6 +16,7 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/config"
 	"mclag/internal/lacp"
+	"mclag/internal/lldp"
 )
 
 type nopApplier struct{}
@@ -512,6 +513,17 @@ func (f *fakeOps) Routes(instance string) ([]Route, error) {
 		{Dest: "10.5.0.0/16", Proto: "direct", Via: "1/2/0"}}, nil
 }
 
+func (f *fakeOps) LLDP() (LLDPStatus, error) {
+	return LLDPStatus{Running: true,
+		System: lldp.System{ChassisMAC: []byte{2, 1, 1, 1, 1, 1}, Name: "core", Desc: "cerOS t", Caps: lldp.CapBridge, Enabled: lldp.CapBridge, Interval: 30, Hold: 4},
+		Ports:  []lldp.PortSpec{{Name: "1/0/1", PVID: 10, MaxFrame: 1514}, {Name: "2/0/1", Bundle: "ae1", MaxFrame: 9014}},
+		Stats:  []lldp.Stats{{Port: "1/0/1", Sent: 5, Received: 3}},
+		Neighbors: []lldp.Neighbor{
+			{Port: "2/0/1", Chassis: "aa:bb:cc:00:00:01", PortID: "Gi0/1", PortDesc: "to core", SysName: "access-1", Caps: lldp.CapBridge, Expires: time.Now().Add(100 * time.Second)},
+			{Port: "1/0/1", Chassis: "aa:bb:cc:00:00:02", PortID: "eth0", SysName: "server", Mgmt: []string{"10.0.0.5"}, Expires: time.Now().Add(90 * time.Second)},
+		}}, nil
+}
+
 func (f *fakeOps) VirtualChassis() (VCStatus, error) {
 	return VCStatus{StackID: "abc", Member: 1, HostName: "sw1", Ports: []VCPort{
 		{Port: "0/1", Linux: "ens19", State: "up", Neighbor: "member 2 (sw2)", PeerPort: "0/1", UpSince: time.Now().Add(-time.Minute)},
@@ -834,6 +846,24 @@ func (f *fakeStack) Exec(_ context.Context, member int, line string, confirmed b
 }
 
 // Operational commands on other stack members (reference 5.2).
+// show lldp: one table for the stack, sorted by port; a target narrows it.
+func TestShowLLDP(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.sh.env.Ops, ts.sh.env.Stack = &fakeOps{}, &fakeStack{}
+	out := ts.ok("show lldp neighbors")
+	contains(t, out, "1/0/1      aa:bb:cc:00:00:02", "2/0/1      aa:bb:cc:00:00:01", "2 neighbours")
+	if strings.Index(out, "1/0/1") > strings.Index(out, "2/0/1") {
+		t.Errorf("not sorted by port:\n%s", out)
+	}
+	if out := ts.ok("show lldp neighbors member 2"); strings.Contains(out, "1/0/1") {
+		t.Errorf("member 2 shows 1/0/1:\n%s", out)
+	}
+	contains(t, ts.ok("show lldp neighbors interface 1/0/1"), "System name: server", "Management addresses: 10.0.0.5")
+	contains(t, ts.ok("show lldp local-information"), "Chassis ID: 02:01:01:01:01:01", "System name: core", "time to live 120s", "2/0/1      2/0/1")
+	contains(t, ts.ok("show lldp statistics"), "1/0/1               5          3")
+}
+
 func TestMemberTargets(t *testing.T) {
 	e := newEngine(t)
 	ops := &fakeOps{}

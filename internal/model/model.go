@@ -22,6 +22,7 @@ type Config struct {
 	VLANs      map[string]*VLAN // by name
 	VLANByID   map[int]*VLAN
 	RSTP       *RSTP // nil when not configured or disabled
+	LLDP       *LLDP
 	Domains    map[int]*Domain
 	Switch     SwitchOptions
 	Analyzers  map[string]*Analyzer
@@ -153,6 +154,25 @@ const (
 	MaxStackPortMTU = 16044
 )
 
+// MemberHostName is member id's own name (reference 5.1, 5.2): its
+// virtual-chassis member host-name, else system host-name ("": none). It is
+// the operating system's host name and the name in the member's logs.
+func (c *Config) MemberHostName(id int) string {
+	if m := c.Members[id]; m != nil && m.HostName != "" {
+		return m.HostName
+	}
+	return c.System.HostName
+}
+
+// ChassisName is the name the stack presents to the outside as one system
+// (LLDP; reference 5.1): system host-name, else member id's own name.
+func (c *Config) ChassisName(id int) string {
+	if c.System.HostName != "" {
+		return c.System.HostName
+	}
+	return c.MemberHostName(id)
+}
+
 // SwitchMembers returns the stack members that switch traffic (not
 // witnesses), sorted; a switch without virtual-chassis members is member 1.
 func (c *Config) SwitchMembers() []int {
@@ -245,6 +265,23 @@ type VLAN struct {
 	MTU         int // 0 = unrestricted by VLAN
 	VNI         int
 	L3          string // l3-interface ("irb.10")
+}
+
+// LLDP is protocols lldp (reference 5.5); nil when not configured or
+// disabled.
+type LLDP struct {
+	Interval, Hold int
+	// Only: the listed interfaces (nil: all); Off: excluded ones.
+	Only, Off map[string]bool
+}
+
+// Runs reports whether LLDP runs on interface name (a port, or the bundle
+// its port is in).
+func (l *LLDP) Runs(name, bundle string) bool {
+	if l == nil || l.Off[name] || (bundle != "" && l.Off[bundle]) {
+		return false
+	}
+	return l.Only == nil || l.Only[name] || (bundle != "" && l.Only[bundle])
 }
 
 type RSTP struct {
@@ -506,6 +543,24 @@ func (b *builder) build() {
 	}
 	c.Routes = b.buildRoutes(r.Get("routing-options"), "routing-options")
 	b.buildInstances()
+
+	// LLDP.
+	if l := r.Get("protocols", "lldp"); l != nil && !l.Has("disable") {
+		c.LLDP = &LLDP{Interval: atoi(l.Leaf("advertisement-interval"), 30), Hold: atoi(l.Leaf("hold-multiplier"), 4), Off: map[string]bool{}}
+		for _, e := range l.Entries("interface") {
+			if e.Has("disable") {
+				c.LLDP.Off[e.Key] = true
+				continue
+			}
+			if e.Key == "all" {
+				continue
+			}
+			if c.LLDP.Only == nil {
+				c.LLDP.Only = map[string]bool{}
+			}
+			c.LLDP.Only[e.Key] = true
+		}
+	}
 
 	// RSTP.
 	if rs := r.Get("protocols", "rstp"); rs != nil && !rs.Has("disable") {

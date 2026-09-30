@@ -381,6 +381,24 @@ deactivate vlans dup
 	}
 }
 
+func TestLLDP(t *testing.T) {
+	c, issues := build(t, valid+"set protocols lldp interface ae1\nset protocols lldp interface 1/0/4 disable\nset protocols lldp interface 1/7/7\n", nil)
+	if issues.HasErrors() || !strings.Contains(issues.String(), "1/7/7 is not configured") {
+		t.Fatalf("issues:\n%s", issues)
+	}
+	l := c.LLDP
+	if l == nil || l.Interval != 30 || l.Hold != 4 || !l.Runs("1/0/1", "ae1") || l.Runs("1/0/3", "") || l.Runs("1/0/4", "") {
+		t.Errorf("lldp: %+v", l)
+	}
+	c, _ = build(t, valid+"set protocols lldp advertisement-interval 10\n", nil)
+	if !c.LLDP.Runs("1/0/3", "") || c.LLDP.Interval != 10 {
+		t.Errorf("lldp on all ports: %+v", c.LLDP)
+	}
+	if c, _ = build(t, valid+"set protocols lldp disable\n", nil); c.LLDP != nil {
+		t.Error("disabled LLDP runs")
+	}
+}
+
 func TestWildcardSkipsManagementPorts(t *testing.T) {
 	inv := fakeInv{"1/0/0": 9000, "1/0/1": 9000, "1/0/9": 9000}
 	cfg, issues := build(t, "set vlans v vlan-id 10\nset interfaces 1/0/9 management\n"+

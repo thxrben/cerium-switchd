@@ -60,6 +60,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.Offload()
 	case "lacp":
 		return o.LACP()
+	case "lldp":
+		return o.LLDP()
 	case "dhcp":
 		return o.DHCPBindings()
 	case "vlan-drops":
@@ -230,6 +232,22 @@ func (s *stackOps) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 func (s *stackOps) Offload() ([]cli.OffloadPort, error) {
 	by, err := each[[]cli.OffloadPort](s, opsRequest{Method: "offload"})
 	return rows(by), err
+}
+
+// LLDP merges every member's ports, counters and neighbours (the system
+// part is the same everywhere: this member's).
+func (s *stackOps) LLDP() (cli.LLDPStatus, error) {
+	by, err := each[cli.LLDPStatus](s, opsRequest{Method: "lldp"})
+	st := by[s.member]
+	st.Ports, st.Stats, st.Neighbors = nil, nil, nil
+	for _, id := range sortedIDs(by) {
+		m := by[id]
+		st.Running = st.Running || m.Running
+		st.Ports = append(st.Ports, m.Ports...)
+		st.Stats = append(st.Stats, m.Stats...)
+		st.Neighbors = append(st.Neighbors, m.Neighbors...)
+	}
+	return st, err
 }
 
 // LACP merges a bundle's ports on every member (MC-LAG bundles span two).

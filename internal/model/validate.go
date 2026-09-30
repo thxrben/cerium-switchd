@@ -108,6 +108,7 @@ func (b *builder) validate() {
 	b.checkBundleSpeeds()
 	b.validateRouting()
 	b.validateMembers()
+	b.validateLLDP()
 	b.validateMTU()
 	b.validateDomains()
 	b.validateVXLAN()
@@ -121,6 +122,15 @@ func (b *builder) validate() {
 		usr := c.System.Users[u]
 		if usr.PasswordHash == "" && len(usr.SSHKeys) == 0 {
 			b.warnf("system login user "+u, "no authentication configured; the user cannot log in")
+		}
+	}
+}
+
+// validateLLDP warns about LLDP interfaces that are not configured.
+func (b *builder) validateLLDP() {
+	for _, e := range b.root.Get("protocols", "lldp").Entries("interface") {
+		if e.Key != "all" && b.cfg.Interfaces[e.Key] == nil {
+			b.warnf("protocols lldp interface "+e.Key, "%s is not configured under 'interfaces'; LLDP runs only on configured ports", e.Key)
 		}
 	}
 }

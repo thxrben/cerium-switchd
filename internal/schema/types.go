@@ -193,6 +193,14 @@ var (
 	// at most 15 characters).
 	InstanceName = String("<instance-name>", 15, `^[A-Za-z][A-Za-z0-9_-]*$`)
 
+	// LLDPInterface is an interface or "all".
+	LLDPInterface = &Type{Name: "<interface-name>", Ref: "interface", Check: func(s string) (string, error) {
+		if s == "all" {
+			return s, nil
+		}
+		return CheckInterfaceName(s)
+	}}
+
 	// InstanceRef references a routing instance.
 	InstanceRef = &Type{Name: "<instance-name>", Ref: "instance", Check: InstanceName.Check}
 

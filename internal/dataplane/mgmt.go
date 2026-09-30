@@ -59,3 +59,9 @@ func Management(s *State, cfg *model.Config, m int, names PortNames, master bool
 func CMEMAC(stackID string) net.HardwareAddr {
 	return derivedMAC("ceros cme mac\x00" + stackID)
 }
+
+// ChassisMAC derives the stack's chassis MAC address (the LLDP chassis ID,
+// the same on every member) from the stack id.
+func ChassisMAC(stackID string) net.HardwareAddr {
+	return derivedMAC("ceros chassis mac\x00" + stackID)
+}

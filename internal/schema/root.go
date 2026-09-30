@@ -257,6 +257,14 @@ func build() *Node {
 	)
 
 	protocols := C("protocols", "Protocol configuration",
+		P("lldp", "Link layer discovery protocol (802.1AB); the stack is one system",
+			F("disable", "Stop LLDP on every port"),
+			L("interface", "Ports LLDP runs on (default: all)", LLDPInterface,
+				F("disable", "No LLDP on this port"),
+			),
+			VD("advertisement-interval", "Seconds between LLDPDUs", Uint("<seconds>", 5, 32768), "30"),
+			VD("hold-multiplier", "Time to live in advertisement intervals", Uint("<multiplier>", 2, 10), "4"),
+		),
 		P("rstp", "Rapid spanning tree (802.1w)",
 			VD("bridge-priority", "Bridge priority", UintStep("<priority>", 0, 61440, 4096), "32768"),
 			VD("hello-time", "Hello interval in seconds", Uint("<seconds>", 1, 10), "2"),

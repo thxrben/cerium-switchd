@@ -30,6 +30,7 @@ import (
 	"mclag/internal/dhcp"
 	"mclag/internal/inventory"
 	"mclag/internal/lacp"
+	"mclag/internal/lldp"
 	"mclag/internal/model"
 	"mclag/internal/ntp"
 	"mclag/internal/rpc"
@@ -160,9 +161,14 @@ func Run(ctx context.Context, o Options) error {
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
+	lldpAgent := &lldp.Agent{Log: log, Carrier: dataplane.Carrier}
+	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.
 		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC, vc.StackID()))
+		if !o.DryRun {
+			lldpAgent.Sync(lldpConfig(cfg, member, names, chassisMAC, vc.IsPort))
+		}
 		if mclag != nil {
 			mclag.setConfig(cfg)
 		}
@@ -254,6 +260,7 @@ func Run(ctx context.Context, o Options) error {
 	go applier.watch(ctx)
 	if !o.DryRun {
 		go lacpRT.Run(ctx)
+		go lldpAgent.Run(ctx)
 	}
 	if !o.DryRun {
 		go kernel.EnforceMACLimits(ctx, log)
@@ -288,6 +295,7 @@ func Run(ctx context.Context, o Options) error {
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
 		liveOps.lacp, liveOps.mclag = lacpRT, mclag
+		liveOps.lldp = lldpAgent
 		liveOps.ntp = ntpClient
 		var node *control.Node
 		if ctl != nil {

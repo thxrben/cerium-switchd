@@ -34,12 +34,7 @@ func (h *Host) Sync(cfg *model.Config, member int) error {
 }
 
 // HostName returns the configured host name of member ("" = none).
-func HostName(cfg *model.Config, member int) string {
-	if m := cfg.Members[member]; m != nil && m.HostName != "" {
-		return m.HostName
-	}
-	return cfg.System.HostName
-}
+func HostName(cfg *model.Config, member int) string { return cfg.MemberHostName(member) }
 
 func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
 	if old, err := os.ReadFile(path); err == nil && string(old) == content {

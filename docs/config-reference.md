@@ -873,7 +873,8 @@ working path, so a ring survives one broken cable.
 * **The stack is one switch.** Everything that lists or selects interfaces covers **every member** and prints **one
   table** (full interface names carry the member): `show interfaces`, `show chassis hardware`, `show virtual-chassis
   vc-port|mtu`, `show system offload`, `show vlans`, `show ethernet-switching table`, `show arp`, `show ipv6 neighbors`,
-  `show lacp interfaces|statistics`, `show dhcp client binding`, `clear ethernet-switching table`, and the completion of
+  `show lacp interfaces|statistics`, `show lldp neighbors|statistics`, `show dhcp client binding`,
+  `clear ethernet-switching table`, and the completion of
   interface names. A target at the end only narrows the rows: `member <id>`, or `local` (the member you are logged in
   to). The MAC table lists an address where it was learned (not the copies on the stack tunnels); an MC-LAG bundle's
   ports on both members are one bundle. A member that does not answer is named in a warning above the table.
@@ -1301,6 +1302,39 @@ Operational commands:
 * `clear spanning-tree protocol-migration [interface <if>]`: send RSTP BPDUs again on ports that fell back to 802.1D
   (the neighbour was replaced).
 * `clear spanning-tree statistics`.
+
+#### `protocols lldp { disable; interface <interface>|all { disable; }; advertisement-interval <5-32768>; hold-multiplier <2-10>; }`
+Link Layer Discovery Protocol (IEEE 802.1AB). The stack presents itself as **one system**: every member sends with the
+same chassis ID and system name, so a neighbour sees one switch with many ports, whichever member a cable is on.
+* `set protocols lldp` runs LLDP on every configured port (switch ports, routed ports, bundle member ports and
+  management ports; never on stacking ports). `interface <interface>` (a port, or an `ae` for all its member ports)
+  restricts it to the listed ones once one is listed; `interface all` is the default. `interface <if> disable` excludes one.
+  `disable` stops LLDP everywhere.
+* Timing: an LLDPDU every `advertisement-interval` seconds (default 30), and at once when a port comes up or what it
+  announces changes; time to live = interval × `hold-multiplier` (default 4, i.e. 120 s). A port going down or
+  losing LLDP sends a shutdown LLDPDU (TTL 0).
+* What each port announces:
+  | TLV | Value |
+  |---|---|
+  | Chassis ID | MAC address (subtype 4), derived from the stack id, the same on every member |
+  | Port ID | interface name (subtype 5), e.g. `2/0/3` |
+  | Time to live | as above |
+  | Port description | the interface's `description`, else its name |
+  | System name | `system host-name` (the chassis name), else the member's host name |
+  | System description | `cerOS <version>` |
+  | System capabilities | bridge (and router when routed interfaces exist); enabled as configured |
+  | Management address | the addresses of `cme` (1.8), when there are any |
+  | Port VLAN ID (802.1) | the untagged VLAN of a switch port |
+  | Link aggregation (802.3) | for bundle member ports: aggregation capable, the bundle and whether the port is in it |
+  | Maximum frame size (802.3) | the port's `mtu` |
+* Received LLDPDUs are kept per port until their time to live runs out (a shutdown LLDPDU removes them at once). At most
+  8 neighbours per port; LLDP frames are never forwarded by the switch.
+* `show lldp neighbors [interface <interface>]`: per port the neighbour's chassis ID, port ID, port description,
+  system name and remaining time to live (one table for the whole stack, 3.5); with `interface`, every TLV of that
+  port's neighbours, including capabilities and management addresses.
+* `show lldp local-information`: what the stack announces (chassis ID, system name and description, capabilities,
+  management addresses) and the ports LLDP runs on.
+* `show lldp statistics`: per port LLDPDUs sent and received, discarded and aged-out neighbours.
 
 #### `protocols layer2-control bpdu-block { interface [ <if> … ]; disable-timeout <s>; }`
 BPDU protection. It works with or without RSTP. A listed port that receives any BPDU (STP/RSTP/MSTP, or Cisco PVST+
@@ -1872,6 +1906,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `vlans <name> vxlan` | container |  |  | Extend this VLAN over VXLAN |
 | `vlans <name> vxlan vni` | leaf | &lt;vni&gt; 1..16777214 |  | VXLAN network identifier |
 | `protocols` | container |  |  | Protocol configuration |
+| `protocols lldp` | presence |  |  | Link layer discovery protocol (802.1AB); the stack is one system |
+| `protocols lldp disable` | flag |  |  | Stop LLDP on every port |
+| `protocols lldp interface <interface-name>` | list | &lt;interface-name&gt; |  | Ports LLDP runs on (default: all) |
+| `protocols lldp interface <interface-name> disable` | flag |  |  | No LLDP on this port |
+| `protocols lldp advertisement-interval` | leaf | &lt;seconds&gt; 5..32768 | 30 | Seconds between LLDPDUs |
+| `protocols lldp hold-multiplier` | leaf | &lt;multiplier&gt; 2..10 | 4 | Time to live in advertisement intervals |
 | `protocols rstp` | presence |  |  | Rapid spanning tree (802.1w) |
 | `protocols rstp bridge-priority` | leaf | &lt;priority&gt; 0..61440 in steps of 4096 | 32768 | Bridge priority |
 | `protocols rstp hello-time` | leaf | &lt;seconds&gt; 1..10 | 2 | Hello interval in seconds |

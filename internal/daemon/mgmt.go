@@ -132,10 +132,7 @@ func (m *mgmtCtl) hostName() string {
 	if m.cfg == nil {
 		return ""
 	}
-	if mem := m.cfg.Members[m.member]; mem != nil && mem.HostName != "" {
-		return mem.HostName
-	}
-	return m.cfg.System.HostName
+	return m.cfg.MemberHostName(m.member)
 }
 
 // relayLoop sends queued messages to the master in batches.

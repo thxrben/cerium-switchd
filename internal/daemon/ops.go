@@ -9,6 +9,7 @@ import (
 	"maps"
 	"mclag/internal/inventory"
 	"mclag/internal/lacp"
+	"mclag/internal/lldp"
 	"mclag/internal/schema"
 	"mclag/internal/stack"
 	"net"
@@ -42,6 +43,7 @@ type ops struct {
 	log     *slog.Logger
 	dryRun  bool
 	lacp    *lacp.Runtime
+	lldp    *lldp.Agent
 	mclag   *mclagCtl
 	ntp     *ntp.Client
 	maint   *maintCtl
@@ -693,6 +695,14 @@ func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
 		st.Ports = append(st.Ports, sp)
 	}
 	return st, nil
+}
+
+func (o *ops) LLDP() (cli.LLDPStatus, error) {
+	if o.lldp == nil {
+		return cli.LLDPStatus{}, nil
+	}
+	sys, ports, stats := o.lldp.Status()
+	return cli.LLDPStatus{Running: len(ports) > 0, System: sys, Ports: ports, Stats: stats, Neighbors: o.lldp.Neighbors()}, nil
 }
 
 func (o *ops) LACP() ([]lacp.BundleStatus, error) {

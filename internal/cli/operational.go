@@ -13,6 +13,7 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/config"
 	"mclag/internal/lacp"
+	"mclag/internal/lldp"
 	"mclag/internal/model"
 	"mclag/internal/schema"
 )
@@ -44,6 +45,8 @@ type Operational interface {
 	VirtualChassis() (VCStatus, error)
 	// LACP reports the LACP bundles of this member.
 	LACP() ([]lacp.BundleStatus, error)
+	// LLDP reports what LLDP announces, its ports, counters and neighbours.
+	LLDP() (LLDPStatus, error)
 	// MCLAG reports this member's MC-LAG domain (Domain 0: none).
 	MCLAG() (MCLAGStatus, error)
 	StackMTU() (StackMTUStatus, error)
@@ -79,6 +82,15 @@ type Operational interface {
 	// JoinVC joins the stack that issued token; it returns the new member id
 	// (switchd restarts afterwards).
 	JoinVC(token, user string) (int, error)
+}
+
+// LLDPStatus is what the show lldp commands need (reference 5.5).
+type LLDPStatus struct {
+	Running   bool
+	System    lldp.System
+	Ports     []lldp.PortSpec
+	Stats     []lldp.Stats
+	Neighbors []lldp.Neighbor
 }
 
 // VCStatus is what "show virtual-chassis" shows.
@@ -1331,6 +1343,7 @@ func registerOperational() {
 					}},
 				}},
 				stpCommand(),
+				lldpCommand(),
 				&command{name: "dhcp", help: "Show DHCP information", class: commit.ReadOnly, sub: []*command{
 					{name: "client", help: "DHCP client", class: commit.ReadOnly, sub: []*command{
 						{name: "binding", help: "Leases of the interfaces with 'family inet dhcp'", class: commit.ReadOnly, run: (*Shell).showDHCPBinding},
