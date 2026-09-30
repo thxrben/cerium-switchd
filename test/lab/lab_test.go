@@ -12,6 +12,7 @@ package lab
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -173,7 +174,8 @@ func masterSw1(t *testing.T) {
 	if regexp.MustCompile(`(?m)^1 +\S+ +master `).MatchString(out) {
 		return
 	}
-	mustSSH(t, sw1, "swcli -c 'request chassis routing-engine master switch member 1'")
+	ssh(sw1, "swcli -c 'request chassis routing-engine master switch member 1'") // (fails when it is already)
+	time.Sleep(2 * time.Second)
 	for i := 0; i < 50; i++ {
 		if regexp.MustCompile(`(?m)^1 +\S+ +master `).MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis'")) {
 			return
@@ -2016,10 +2018,65 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		rx, _ := strconv.Atoi(m[2])
 		return tx - rx
 	}
-	bg := pingBg(500)
+	// Maintenance mode on sw2 under traffic: mastership leaves it, its leg
+	// leaves the bundle after srv1 stopped sending on it; nothing is lost.
+	// Exit brings the leg back, again without loss.
+	bg := pingBg(800)
+	time.Sleep(time.Second)
+	o, err := ssh(sw2Addr, "printf 'request system maintenance-mode enter\\nyes\\n' | swcli")
+	res := <-bg
+	if err != nil || !strings.Contains(o, "drained") {
+		t.Fatalf("maintenance-mode enter on sw2 (%v):\n%s", err, o)
+	}
+	if n := lost(res); n > 0 || strings.Contains(res, "DUP!") {
+		t.Errorf("maintenance-mode enter: %d of 800 pings lost, duplicates %v", n, strings.Contains(res, "DUP!"))
+	}
+	vc := vcShow(t, sw1)
+	if !vcRow(2, `\S+ +\d+ +voter +maintenance`).MatchString(vc) || vcRow(2, `master`).MatchString(vc) {
+		t.Errorf("show virtual-chassis with sw2 in maintenance mode:\n%s", vc)
+	}
+	if o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'"); !strings.Contains(o, "maintenance mode") {
+		t.Errorf("sw2 show mclag in maintenance mode:\n%s", o)
+	}
+	if o, _ := ssh(sw1, "printf 'request system maintenance-mode enter\\nyes\\n' | swcli"); !strings.Contains(o, "is in maintenance mode") {
+		t.Errorf("sw1 entered maintenance mode while its peer is in it:\n%s", o)
+	}
+	ping("sw2 in maintenance mode", 200)
+	bg = pingBg(800)
+	time.Sleep(time.Second)
+	mustSSH(t, sw2Addr, "swcli -c 'request system maintenance-mode exit'")
+	waitLeg(sw2Addr, "up +up")
+	res = <-bg
+	if n := lost(res); n > 0 || strings.Contains(res, "DUP!") {
+		t.Errorf("maintenance-mode exit: %d of 800 pings lost, duplicates %v", n, strings.Contains(res, "DUP!"))
+	}
+	if vc := vcShow(t, sw1); !vcRow(2, `\S+ +\d+ +voter +present`).MatchString(vc) {
+		t.Errorf("show virtual-chassis after exit:\n%s", vc)
+	}
+	// The master (sw1, which also serves hSw3 alone) drains: mastership
+	// moves, hSw3's port is reported as not drained, traffic continues.
+	ssh(sw1, "swcli -c 'request chassis routing-engine master switch member 1'") // (fails when it is already)
+	time.Sleep(2 * time.Second)
+	bg = pingBg(800)
+	time.Sleep(time.Second)
+	o, err = ssh(sw1, "printf 'request system maintenance-mode enter\\nyes\\n' | swcli")
+	res = <-bg
+	if err != nil || !strings.Contains(o, "mastership handed on") || !strings.Contains(o, "not drained (only this member serves them): 1/") {
+		t.Errorf("maintenance-mode enter on the master (%v):\n%s", err, o)
+	}
+	if n := lost(res); n > 0 {
+		t.Errorf("maintenance-mode enter on the master: %d of 800 pings lost", n)
+	}
+	if vc := vcShow(t, sw2Addr); vcRow(1, `master`).MatchString(vc) {
+		t.Errorf("sw1 still master in maintenance mode:\n%s", vc)
+	}
+	mustSSH(t, sw1, "swcli -c 'request system maintenance-mode exit'")
+	waitLeg(sw1, "up +up")
+
+	bg = pingBg(500)
 	time.Sleep(time.Second)
 	heal := cut(sw2Addr, 1)
-	res := <-bg
+	res = <-bg
 	n := lost(res)
 	t.Logf("ring cable sw1-sw2 cut under traffic: %d of 500 pings lost (10 ms apart)", n)
 	if n > 60 || strings.Contains(res, "DUP!") {
@@ -2282,5 +2339,147 @@ func TestConfigAcrossMembers(t *testing.T) {
 	<-a
 	if c := run("10.5.176.97", "configure", "exit"); strings.Contains(c, "locked") {
 		t.Errorf("the lock outlived the session:\n%s", c)
+	}
+}
+
+// nicByMAC returns the Linux name of addr's NIC with the given MAC.
+func nicByMAC(t *testing.T, addr, mac string) string {
+	t.Helper()
+	out := mustSSH(t, addr, "ip -o link show | grep -i '"+mac+"' | cut -d: -f2")
+	n := strings.TrimSpace(strings.Split(strings.TrimSpace(out), "@")[0])
+	if n == "" {
+		t.Fatalf("%s has no NIC %s", addr, mac)
+	}
+	return n
+}
+
+// RSTP (reference 5.5): the stack is one bridge. The data links loop-13
+// (sw1-sw3) and loop-23 (sw2-sw3) are loops of that bridge: one end of each
+// becomes a backup port, nothing storms. When the RSTP owner (sw1) stops,
+// sw2 continues from its copy without a port changing state.
+func TestRSTP(t *testing.T) {
+	const sw3Addr = "10.5.176.97"
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("sw1-sw3 are not in one stack:\n%s", out)
+		}
+	}
+	l13a := memberPort(t, sw1, nicByMAC(t, sw1, "bc:24:11:fe:f0:9f"))
+	l13b := memberPort(t, sw3Addr, nicByMAC(t, sw3Addr, "bc:24:11:0b:5f:e7"))
+	l23a := memberPort(t, sw2Addr, nicByMAC(t, sw2Addr, "bc:24:11:b4:ce:3a"))
+	l23b := memberPort(t, sw3Addr, nicByMAC(t, sw3Addr, "bc:24:11:ac:2c:b3"))
+	setupHost(t, hSw3)
+	base := vlans + access(hSw3.sw1Port, "v10") + "set protocols rstp\n" +
+		"set protocols rstp interface " + hSw3.sw1Port + " edge\n"
+	// RSTP first; the loop ports join a bridge that already runs it.
+	configure(t, base)
+	loops := ""
+	for _, p := range []string{l13a, l13b, l23a, l23b} {
+		loops += access(p, "v10")
+	}
+	configure(t, base+loops)
+	t.Cleanup(func() { configure(t, vlans) })
+
+	stp := func(addr string) map[string]string {
+		t.Helper()
+		out := mustSSH(t, addr, "swcli -c 'show spanning-tree interface'")
+		m := map[string]string{}
+		for _, l := range strings.Split(out, "\n") {
+			if f := strings.Fields(l); len(f) >= 4 && f[0] != "Interface" {
+				m[f[0]] = f[2] + " " + f[3]
+			}
+		}
+		return m
+	}
+	settled := func(addr string) map[string]string {
+		t.Helper()
+		var m map[string]string
+		for i := 0; i < 50; i++ {
+			m = stp(addr)
+			n := 0
+			for _, p := range []string{l13a, l13b, l23a, l23b} {
+				if m[p] == "designated forwarding" || m[p] == "backup discarding" {
+					n++
+				}
+			}
+			if n == 4 {
+				return m
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatalf("RSTP did not settle:\n%s", mustSSH(t, addr, "swcli -c 'show spanning-tree interface'; swcli -c 'show spanning-tree bridge'"))
+		return nil
+	}
+	m := settled(sw1)
+	for _, pair := range [][2]string{{l13a, l13b}, {l23a, l23b}} {
+		a, b := m[pair[0]], m[pair[1]]
+		if !((a == "designated forwarding" && b == "backup discarding") || (b == "designated forwarding" && a == "backup discarding")) {
+			t.Errorf("loop %s-%s: %q / %q", pair[0], pair[1], a, b)
+		}
+	}
+	if m[hSw3.sw1Port] != "designated forwarding" {
+		t.Errorf("edge port %s: %q", hSw3.sw1Port, m[hSw3.sw1Port])
+	}
+	// Every member shows the same (the owner answers).
+	if m3 := stp(sw3Addr); !maps.Equal(m, m3) {
+		t.Errorf("sw3 shows another spanning tree:\n%v\n%v", m, m3)
+	}
+	// Kernel states match on the members that have the ports.
+	kstate := func(addr, port string) string {
+		t.Helper()
+		linux := strings.TrimSpace(mustSSH(t, addr, fmt.Sprintf("swcli -c 'show chassis hardware local' | awk '$1==\"%s\"{print $2}'", port)))
+		return strings.TrimSpace(mustSSH(t, addr, "cat /sys/class/net/"+linux+"/brport/state"))
+	}
+	for _, c := range []struct{ addr, port string }{{sw1, l13a}, {sw3Addr, l13b}, {sw2Addr, l23a}, {sw3Addr, l23b}} {
+		want := "3"
+		if m[c.port] == "backup discarding" {
+			want = "4"
+		}
+		if got := kstate(c.addr, c.port); got != want {
+			t.Errorf("%s kernel state %s, want %s", c.port, got, want)
+		}
+	}
+	// No storm: a broadcast ping gets a sane number of frames through.
+	before := strings.TrimSpace(mustSSH(t, sw1, "cat /sys/class/net/swbr0/statistics/rx_packets"))
+	time.Sleep(2 * time.Second)
+	after := strings.TrimSpace(mustSSH(t, sw1, "cat /sys/class/net/swbr0/statistics/rx_packets"))
+	b0, _ := strconv.Atoi(before)
+	b1, _ := strconv.Atoi(after)
+	if b1-b0 > 2000 {
+		t.Errorf("the bridge received %d frames in 2 s: a loop?", b1-b0)
+	}
+
+	// The owner (sw1) stops: sw2 takes over from its copy; no port changes
+	// state, the loops stay broken.
+	if o := mustSSH(t, sw3Addr, "swcli -c 'show spanning-tree bridge'"); !strings.Contains(o, "RSTP owner         member 1") {
+		t.Errorf("owner:\n%s", o)
+	}
+	mustSSH(t, sw1, "systemctl kill -s KILL switchd")
+	time.Sleep(3 * time.Second)
+	m2 := settled(sw3Addr)
+	for _, p := range []string{l13b, l23a, l23b} {
+		if m2[p] != m[p] {
+			t.Errorf("%s changed after the owner stopped: %q -> %q", p, m[p], m2[p])
+		}
+	}
+	if o := mustSSH(t, sw3Addr, "swcli -c 'show spanning-tree bridge'"); !strings.Contains(o, "RSTP owner         member 2") {
+		t.Errorf("owner after sw1 stopped:\n%s", o)
+	}
+	mustSSH(t, sw1, "systemctl start switchd")
+	for i := 0; ; i++ {
+		if o, _ := ssh(sw1, "swcli -c 'show spanning-tree bridge'"); strings.Contains(o, "RSTP owner         member 1") {
+			break
+		}
+		if i == 60 {
+			t.Fatal("sw1 did not take the spanning tree back")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	m3 := settled(sw1)
+	for _, p := range []string{l13a, l13b, l23a, l23b} {
+		if m3[p] != m[p] {
+			t.Errorf("%s after sw1 returned: %q -> %q", p, m[p], m3[p])
+		}
 	}
 }

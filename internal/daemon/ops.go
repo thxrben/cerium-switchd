@@ -43,6 +43,8 @@ type ops struct {
 	lacp    *lacp.Runtime
 	mclag   *mclagCtl
 	ntp     *ntp.Client
+	maint   *maintCtl
+	stp     *rstpCtl
 	// restart ends switchd so that systemd starts it again.
 	restart func()
 }
@@ -342,9 +344,12 @@ func (o *ops) Power(action string, minutes int, user string) error {
 		return nil
 	}
 	if minutes == 0 {
-		// Give the notice and the reply time to reach the sessions.
+		// Give the notice and the reply time to reach the sessions, then
+		// move the traffic away (a scheduled one drains when the system
+		// stops).
 		go func() {
 			time.Sleep(time.Second)
+			o.maint.drainForShutdown(action)
 			if err := command("systemctl", p.now); err != nil {
 				o.log.Error("system "+action, "err", err)
 			}
@@ -354,6 +359,44 @@ func (o *ops) Power(action string, minutes int, user string) error {
 	// --no-wall: switchd notifies the CLI sessions itself; wall messages
 	// would garble their terminals.
 	return command("shutdown", "--no-wall", p.flag, fmt.Sprintf("+%d", minutes))
+}
+
+func (o *ops) SpanningTree() (cli.STPStatus, error) {
+	if o.stp == nil {
+		return cli.STPStatus{}, errors.New("not available (dry-run mode?)")
+	}
+	st, err := o.stp.status()
+	if err != nil {
+		return cli.STPStatus{}, err
+	}
+	out := cli.STPStatus{Running: st.Running, Owner: st.Owner, BridgeID: st.Bridge.ID.String(), RootID: st.Root.Root.String(),
+		RootCost: st.Root.Cost, RootPort: st.RootPort, HelloTime: st.Times.HelloTime, MaxAge: st.Times.MaxAge,
+		ForwardDelay: st.Times.ForwardDelay, Changes: st.Changes}
+	for _, p := range st.Ports {
+		state := "discarding"
+		switch {
+		case p.Forwarding:
+			state = "forwarding"
+		case p.Learning:
+			state = "learning"
+		}
+		out.Ports = append(out.Ports, cli.STPPort{Name: p.Name, Role: p.Role.String(), State: state, Cost: p.Cost,
+			PortID: p.ID.String(), DesignatedBridge: p.Designated.Bridge.String(), DesignatedPort: p.Designated.Port.String(),
+			Edge: p.Edge, OperEdge: p.OperEdge, P2P: p.P2P, RSTP: p.RSTP, RootInconsistent: p.RootInconsistent,
+			Enabled: p.Enabled, Rx: p.RxBPDUs, Tx: p.TxBPDUs})
+	}
+	return out, nil
+}
+
+func (o *ops) Maintenance(enter, force bool, user string) (string, error) {
+	if o.maint == nil {
+		return "", errors.New("not available (dry-run mode?)")
+	}
+	if enter {
+		o.notify(user + ": this member enters maintenance mode")
+		return o.maint.enter(force, true, user)
+	}
+	return o.maint.exit(user)
 }
 
 func (o *ops) CancelPower(user string) error {
@@ -504,6 +547,7 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		}
 		if m := o.vc.Mesh(); m != nil {
 			st.Reachable = m.Reachable()
+			st.Maintenance = m.Draining()
 		}
 	}
 	return st, nil
@@ -621,6 +665,13 @@ func (o *ops) RemoveVCMember(id int, user string) error {
 		return errors.New("the last member cannot be removed")
 	}
 	o.log.Warn("virtual chassis member removal", "facility", "change-log", "member", id, "user", user)
+	// The member drains first (its MC-LAG partners move to the peer); one
+	// that cannot be reached carries nothing anyway.
+	if id == o.member {
+		o.maint.drainForShutdown("the removal from the stack")
+	} else if _, err := n.Call(id, "drain", "the removal from the stack", maintDrainWait+5*time.Second); err != nil {
+		o.log.Info("virtual chassis member removal: member not drained", "member", id, "err", err)
+	}
 	return n.RemoveMember(id)
 }
 

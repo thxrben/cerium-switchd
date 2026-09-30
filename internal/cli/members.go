@@ -169,6 +169,7 @@ func markPerMember() {
 		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""},
 		{"clear ethernet-switching table", ""}, {"clear system reboot", ""},
 		{"request system reboot", "Reboot"}, {"request system halt", "Halt"}, {"request system power-off", "Power off"},
+		{"request system maintenance-mode enter", "Put into maintenance mode:"}, {"request system maintenance-mode exit", ""},
 	} {
 		cmd := findCmd(operational, strings.Fields(p.path))
 		if cmd == nil {

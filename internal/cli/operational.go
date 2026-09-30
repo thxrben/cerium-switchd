@@ -53,6 +53,11 @@ type Operational interface {
 	// ForceMaster lets this member continue alone after the stack lost
 	// its majority (restarts switchd).
 	ForceMaster(user string) error
+	// SpanningTree reports the stack's RSTP bridge (from the RSTP owner).
+	SpanningTree() (STPStatus, error)
+	// Maintenance enters (drains this member; force: despite the checks)
+	// or exits maintenance mode; the text reports the outcome.
+	Maintenance(enter, force bool, user string) (string, error)
 	// RemoveVCMember removes a member from the stack.
 	RemoveVCMember(id int, user string) error
 	// SetVCPort designates (add) or releases a VC port "<card>/<port>".
@@ -77,6 +82,8 @@ type VCStatus struct {
 	// Members in the member list; Voters: members that vote; Reachable:
 	// members this member can reach over the stacking links.
 	Members, Voters, Reachable []int
+	// Maintenance: members in maintenance mode.
+	Maintenance []int
 }
 
 // VCPort is one VC port.
@@ -662,6 +669,9 @@ func (sh *Shell) showVC(c *call) error {
 		role, status, vote := "linecard", "not present", "-"
 		if present[id] {
 			status = "present"
+			if slices.Contains(st.Maintenance, id) {
+				status = "maintenance"
+			}
 		}
 		switch {
 		case !st.Control && id == st.Member:
@@ -727,6 +737,32 @@ func (sh *Shell) forceMaster(c *call) error {
 	}
 	c.out.WriteString("switchd restarts; this member becomes master and configuration works again in a few seconds.\n")
 	return nil
+}
+
+// maintenance is "request system maintenance-mode enter [force]|exit".
+func (sh *Shell) maintenance(c *call, enter bool) error {
+	force := false
+	switch {
+	case len(c.args) == 0:
+	case enter && len(c.args) == 1 && prefixOf(c.args[0].Text, "force"):
+		force = true
+	case enter:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'force' or nothing"}
+	default:
+		return noArgs(c)
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	if enter {
+		a, err := c.term.Ask("Drain this member and put it into maintenance mode ? [yes,no] (no) ", true)
+		if err != nil || !isYes(a) {
+			return nil
+		}
+	}
+	text, err := sh.env.Ops.Maintenance(enter, force, sh.env.User)
+	c.out.WriteString(text)
+	return err
 }
 
 func (sh *Shell) removeVCMember(c *call) error {
@@ -1193,6 +1229,7 @@ func registerOperational() {
 						{name: "interfaces", help: "Show LACPDU counters per port", class: commit.ReadOnly, run: (*Shell).showLACPStats, complete: completeAE},
 					}},
 				}},
+				stpCommand(),
 			)
 			for _, sc := range cmd.sub {
 				if sc.name == "system" {
@@ -1232,6 +1269,13 @@ func registerOperational() {
 			power("reboot", "Reboot this member"),
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
+			{name: "maintenance-mode", help: "Take this member out of service without losing traffic", class: commit.SuperUser, sub: []*command{
+				{name: "enter", help: "Drain this member (mastership, stack transit, MC-LAG legs)", class: commit.SuperUser,
+					run:      func(sh *Shell, c *call) error { return sh.maintenance(c, true) },
+					complete: words(Completion{Text: "force", Help: "Enter even if traffic would be cut"})},
+				{name: "exit", help: "Return this member to service", class: commit.SuperUser,
+					run: func(sh *Shell, c *call) error { return sh.maintenance(c, false) }},
+			}},
 		}},
 		{name: "chassis", help: "Chassis requests", class: commit.SuperUser, sub: []*command{
 			{name: "routing-engine", help: "Routing engine (stack master) requests", class: commit.SuperUser, sub: []*command{

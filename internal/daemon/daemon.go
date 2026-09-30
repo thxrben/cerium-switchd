@@ -12,6 +12,7 @@ import (
 	"mclag/internal/config"
 	"mclag/internal/osconf"
 	"mclag/internal/stack"
+	"mclag/internal/stack/control"
 	"mclag/internal/stack/pki"
 	"net"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"mclag/internal/access"
@@ -49,6 +51,22 @@ func Run(ctx context.Context, o Options) error {
 	// virtual chassis, the member id changes).
 	ctx, restart := context.WithCancel(ctx)
 	defer restart()
+	// When the machine shuts down, the member drains before switchd stops
+	// (a reboot from the shell or a scheduled one).
+	var maint atomic.Pointer[maintCtl]
+	outer := ctx
+	ctx, stopRun := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopRun()
+	go func() {
+		select {
+		case <-outer.Done():
+			if m := maint.Load(); m != nil && systemStopping() {
+				m.drainForShutdown("the system stops")
+			}
+			stopRun()
+		case <-ctx.Done():
+		}
+	}()
 	// Every record goes to the local buffer, the remote syslog servers and
 	// the journal (stderr).
 	hub := syslog.NewHub(o.Log.Handler(), 5000)
@@ -108,15 +126,25 @@ func Run(ctx context.Context, o Options) error {
 		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
-	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log}
+	var mclagRef atomic.Pointer[mclagCtl]
+	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log,
+		BeforeLeave: func(b string) {
+			if m := mclagRef.Load(); m != nil {
+				m.beforeLeave(b)
+			}
+		}}
 	sysMAC := lacpSystemMAC()
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
+	var stp *rstpCtl
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.
 		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC, vc.StackID()))
 		if mclag != nil {
 			mclag.setConfig(cfg)
+		}
+		if stp != nil {
+			stp.setConfig(cfg)
 		}
 	}
 	applier.onApplied = func(cfg *model.Config) {
@@ -180,10 +208,21 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if !o.DryRun {
 		mclag = newMCLAG(member, lacpRT, ctl, log)
+		mclagRef.Store(mclag)
 		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
 			mclag.setConfig(cfg)
 		}
 		go mclag.run(ctx)
+		var node *control.Node
+		if ctl != nil {
+			node = ctl.node
+		}
+		stp = newRSTP(member, node, vc.Mesh(), names, vc.StackID, o.StateDir, log)
+		stp.legs = lacpRT.Legs
+		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
+			stp.setConfig(cfg)
+		}
+		go stp.run(ctx)
 	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
@@ -224,6 +263,13 @@ func Run(ctx context.Context, o Options) error {
 	if !o.DryRun {
 		liveOps.lacp, liveOps.mclag = lacpRT, mclag
 		liveOps.ntp = ntpClient
+		var node *control.Node
+		if ctl != nil {
+			node = ctl.node
+		}
+		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
+		maint.Store(liveOps.maint)
+		liveOps.stp = stp
 	}
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.

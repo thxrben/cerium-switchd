@@ -558,6 +558,18 @@ func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 
 func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
 func (f *fakeOps) ForceMaster(user string) error            { return nil }
+func (f *fakeOps) SpanningTree() (STPStatus, error) {
+	return STPStatus{Running: true, Owner: 1, BridgeID: "32768.02:aa:bb:cc:dd:ee", RootID: "4096.02:00:00:00:00:01", RootCost: 2000,
+		RootPort: "ae1", HelloTime: 2, MaxAge: 20, ForwardDelay: 15, Changes: 3, Ports: []STPPort{
+			{Name: "ae1", Role: "root", State: "forwarding", Cost: 2000, PortID: "128.3840", DesignatedBridge: "4096.02:00:00:00:00:01", DesignatedPort: "128.1", P2P: true, RSTP: true, Enabled: true, Rx: 10, Tx: 2},
+			{Name: "1/0/3", Role: "designated", State: "forwarding", Cost: 20000, PortID: "128.3", DesignatedBridge: "32768.02:aa:bb:cc:dd:ee", DesignatedPort: "128.3", Edge: true, OperEdge: true, P2P: true, RSTP: true, Enabled: true},
+			{Name: "2/0/4", Role: "alternate", State: "discarding", Cost: 20000, PortID: "128.260", DesignatedBridge: "8192.02:00:00:00:00:02", DesignatedPort: "128.7", P2P: true, Enabled: true, RootInconsistent: true},
+		}}, nil
+}
+
+func (f *fakeOps) Maintenance(enter, force bool, user string) (string, error) {
+	return fmt.Sprintf("maintenance enter=%v force=%v by %s\n", enter, force, user), nil
+}
 func (f *fakeOps) RemoveVCMember(id int, user string) error { return nil }
 func (f *fakeOps) JoinVC(token, user string) (int, error)   { return 2, nil }
 
