@@ -278,6 +278,15 @@ func renameStack(m map[string]any) {
 	}
 }
 
+// lookup returns the object at a path below m (nil: none), without
+// creating anything.
+func lookup(m map[string]any, keys ...string) map[string]any {
+	for _, k := range keys {
+		m, _ = m[k].(map[string]any)
+	}
+	return m
+}
+
 // obj returns the object at a path below m, creating it.
 func obj(m map[string]any, keys ...string) map[string]any {
 	for _, k := range keys {
@@ -442,14 +451,49 @@ func (u *upgrader) convertManagement(m map[string]any) {
 	}
 }
 
-// dropManagementFlag removes the old boolean "system management-instance".
+// dropManagementFlag converts the old boolean "system management-instance"
+// (which meant mgmt_ceros): it names mgmt_ceros where that is valid now
+// (routed ports; no per-member irb addresses), so the switch stays
+// reachable; otherwise it is removed and mgmt_ceros is an ordinary routing
+// instance (the management has to be configured anew, reference 1.8).
 func (u *upgrader) dropManagementFlag(m map[string]any) {
 	sys, _ := m["system"].(map[string]any)
-	if _, old := sys["management-instance"].(bool); old {
-		delete(sys, "management-instance")
-		u.log.Warn("configuration upgrade: 'system management-instance' now names the management instance and uses cme (reference 1.8); "+
-			"the old management setup is an ordinary routing instance now, configure the management anew")
+	if _, old := sys["management-instance"].(bool); !old {
+		return
 	}
+	ri, _ := m["routing-instances"].(map[string]any)
+	inst, _ := ri["mgmt_ceros"].(map[string]any)
+	if inst != nil && !perMemberAddresses(m, inst) {
+		sys["management-instance"] = "mgmt_ceros"
+		return
+	}
+	delete(sys, "management-instance")
+	u.log.Warn("configuration upgrade: 'system management-instance' now names the management instance and uses cme (reference 1.8); " +
+		"the old management setup is an ordinary routing instance now, configure the management anew")
+}
+
+// perMemberAddresses reports whether an instance has irb units with
+// addresses of single members (not valid in the management instance).
+func perMemberAddresses(m, inst map[string]any) bool {
+	units, _ := inst["interface"].([]any)
+	for _, x := range units {
+		name, _ := x.(string)
+		num, ok := strings.CutPrefix(name, "irb.")
+		if !ok {
+			continue
+		}
+		fam := lookup(m, "interfaces", "irb", "unit", num, "family")
+		for _, f := range []string{"inet", "inet6"} {
+			fm, _ := fam[f].(map[string]any)
+			addrs, _ := fm["address"].(map[string]any)
+			for _, a := range addrs {
+				if am, _ := a.(map[string]any); am["member"] != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // removePeerLink drops the MC-LAG peer-link of older versions together with
