@@ -18,7 +18,7 @@ func TestCLISSH(t *testing.T) {
 	// A listener on port 22 (0x0016), e.g. the OS sshd.
 	os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte("  sl  local_address rem_address   st\n   0: 00000000:0016 00000000:0000 0A\n"), 0o644)
 	var calls []string
-	failCheck := false
+	failCheck, inactive := false, false
 	s := &SSH{Dir: filepath.Join(dir, "etc"), UnitPath: filepath.Join(dir, "unit"), ProcNet: filepath.Join(dir, "net"),
 		LegacyDropIn: filepath.Join(dir, "legacy.conf"),
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -26,6 +26,9 @@ func TestCLISSH(t *testing.T) {
 			calls = append(calls, n+" "+strings.Join(a, " "))
 			if n == "sshd" && failCheck {
 				return errors.New("bad")
+			}
+			if len(a) > 0 && a[0] == "is-active" && inactive {
+				return errors.New("inactive")
 			}
 			return nil
 		}}
@@ -60,7 +63,7 @@ func TestCLISSH(t *testing.T) {
 	if fileExists(s.LegacyDropIn) {
 		t.Error("legacy OS drop-in not removed")
 	}
-	for _, want := range []string{"systemctl reload ssh", "sshd -t -f " + s.confPath() + ".new", "systemctl enable switchd-sshd.service", "systemctl restart switchd-sshd.service"} {
+	for _, want := range []string{"systemctl reload ssh", "sshd -t -f " + s.confPath() + ".new", "systemctl disable switchd-sshd.service", "systemctl restart switchd-sshd.service"} {
 		if !strings.Contains(strings.Join(calls, "\n"), want) {
 			t.Errorf("missing call %q in %v", want, calls)
 		}
@@ -75,8 +78,15 @@ func TestCLISSH(t *testing.T) {
 	}
 	calls = nil
 	s.Sync(cfg, true)
-	if len(calls) != 0 {
+	if len(calls) != 1 || !strings.Contains(calls[0], "is-active") {
 		t.Errorf("unchanged config: %v", calls)
+	}
+	// Unchanged but not running (e.g. after a boot): started again.
+	inactive, calls = true, nil
+	s.Sync(cfg, true)
+	inactive = false
+	if !strings.Contains(strings.Join(calls, "\n"), "systemctl restart switchd-sshd.service") {
+		t.Errorf("stopped server not started: %v", calls)
 	}
 	// A rejected configuration keeps the previous one.
 	failCheck = true

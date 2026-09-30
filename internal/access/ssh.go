@@ -92,9 +92,6 @@ RestartPreventExitStatus=255
 RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-
-[Install]
-WantedBy=multi-user.target
 `
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
@@ -203,9 +200,10 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 		if err := s.Run("systemctl", "daemon-reload"); err != nil {
 			return err
 		}
-		if err := s.Run("systemctl", "enable", sshUnit); err != nil {
-			return err
-		}
+		// switchd starts the server itself, once the management instance
+		// exists: started by systemd at boot, it would fail before the
+		// instance's VRF is there.
+		_ = s.Run("systemctl", "disable", sshUnit)
 	}
 	if confChanged || unitChanged {
 		// A changed unit (e.g. now inside the management VRF) needs a real
@@ -219,6 +217,14 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 			return errors.Join(errors.New("ssh: CLI SSH server did not start"), err)
 		}
 		s.Log.Info("ssh: CLI SSH server configured", "port", cfg.System.SSH.Port, "root_login", cfg.System.SSH.RootLogin)
+		return nil
+	}
+	// Unchanged, but not running (after a boot, or it failed): start it.
+	if s.Run("systemctl", "is-active", "--quiet", sshUnit) != nil {
+		if err := s.Run("systemctl", "restart", sshUnit); err != nil {
+			return errors.Join(errors.New("ssh: CLI SSH server did not start"), err)
+		}
+		s.Log.Warn("ssh: CLI SSH server was not running; started")
 	}
 	return nil
 }
