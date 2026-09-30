@@ -312,11 +312,12 @@ func TestHitlessCommits(t *testing.T) {
 		pingOut, pingErr = ssh(hSrv1.vm, "ip netns exec h ping -q -c 2400 -i 0.005 -W1 192.168.1.3")
 	}()
 	time.Sleep(time.Second)
+	jumbo, _ := stackJumbo(t)
 	variants := []string{
 		access(hSw2.sw1Port, "v10"),
 		access(hSw2.sw1Port, "v30") + "set interfaces 1/ens1 description x\n",
 		"set interfaces 1/ens1 unit 0 family ethernet-switching interface-mode trunk\nset interfaces 1/ens1 unit 0 family ethernet-switching vlan members [ v10 v20 ]\n",
-		access(hSw2.sw1Port, "v20") + "set interfaces 1/ens1 mtu 9014\n",
+		access(hSw2.sw1Port, "v20") + fmt.Sprintf("set interfaces 1/ens1 mtu %d\n", jumbo),
 		"set vlans v40 vlan-id 40\n" + access(hSw2.sw1Port, "v40"),
 	}
 	for _, v := range variants {
@@ -386,10 +387,30 @@ func TestStaticLAG(t *testing.T) {
 	}
 }
 
+// stackJumbo returns the largest data mtu (frame size) the lab's stack can
+// carry, at most 9014, and the host MTU that fits it: the lab's stacking
+// NICs carry frames of 9014 and the tunnels need 58 more (reference 5.2),
+// so it is 8956 / 8942 there and 9014 / 9000 where the stacking NICs are
+// larger.
+func stackJumbo(t *testing.T) (mtu, host int) {
+	t.Helper()
+	mtu = 9014
+	for _, addr := range []string{sw1, sw2Addr, "10.5.176.97"} {
+		o := mustSSH(t, addr, "swcli -c 'show virtual-chassis mtu'")
+		if m := regexp.MustCompile(`allow data mtu up to (\d+)`).FindStringSubmatch(o); m != nil {
+			if n, _ := strconv.Atoi(m[1]); n < mtu {
+				mtu = n
+			}
+		}
+	}
+	return mtu, mtu - 14
+}
+
 func TestJumboMTU(t *testing.T) {
+	jumbo, host := stackJumbo(t)
 	setupHost(t, hSrv1)
-	setupBondHost(t, 9000)
-	mustSSH(t, hSrv1.vm, "ip -n h link set ens19 mtu 9000")
+	setupBondHost(t, host)
+	mustSSH(t, hSrv1.vm, fmt.Sprintf("ip -n h link set ens19 mtu %d", host))
 	defer mustSSH(t, hSrv1.vm, "ip -n h link set ens19 mtu 1500")
 	lag := "set interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
 		"set interfaces 1/ens21 ether-options 802.3ad ae1\nset interfaces 1/ens22 ether-options 802.3ad ae1\n"
@@ -398,18 +419,18 @@ func TestJumboMTU(t *testing.T) {
 	if !reachSize(t, hSrv1, bondHost, 1, 1472) {
 		t.Fatal("1500-byte packets do not pass")
 	}
-	if reachSize(t, hSrv1, bondHost, 1, 8972) {
-		t.Error("9000-byte packets pass with mtu 1514")
+	if reachSize(t, hSrv1, bondHost, 1, host-28) {
+		t.Errorf("%d-byte packets pass with mtu 1514", host)
 	}
-	// mtu 9014 on the ports and the bundle (members inherit it).
+	// The jumbo mtu on the ports and the bundle (members inherit it).
 	configure(t, vlans+access(hSrv1.sw1Port, "v10")+lag+
-		"set interfaces 1/ens23 mtu 9014\nset interfaces ae1 mtu 9014\n")
+		fmt.Sprintf("set interfaces 1/ens23 mtu %[1]d\nset interfaces ae1 mtu %[1]d\n", jumbo))
 	out := mustSSH(t, sw1, "ip -o link show ens21 | grep -o 'mtu [0-9]*'; ip -o link show ae1 | grep -o 'mtu [0-9]*'")
-	if strings.Count(out, "mtu 9000") != 2 {
+	if strings.Count(out, fmt.Sprintf("mtu %d", host)) != 2 {
 		t.Errorf("MTU not applied to bundle and member: %s", out)
 	}
-	if !reachSize(t, hSrv1, bondHost, 1, 8972) {
-		t.Error("9000-byte packets do not pass with mtu 9014")
+	if !reachSize(t, hSrv1, bondHost, 1, host-28) {
+		t.Errorf("%d-byte packets do not pass with mtu %d", host, jumbo)
 	}
 }
 

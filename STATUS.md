@@ -122,25 +122,19 @@ Last updated: 2026-09-30.
   stack table's routes; without an unreachable default, tunnel lookups fell through to the main table (mgmt port).
 
 ## Next (in order)
-0. Wireshark dissectors: DONE for the stacking link, mesh and join (tools/wireshark, README there; ALPN names and
-   SWITCHD_TLS_KEYLOG in switchd). Open: decode the Raft msgpack (AppendEntries/RequestVote), the mclag/macsync/
-   lacp RPC payloads are JSON in "ctl" streams (already shown). Then:
-   - Added because of a lab finding: control frames are capped at 1500 bytes whatever the port MTU (the
-     Proxmox stk-12 bridge dropped >1500 frames and the stack link stalled), plus path MTU probes (PROBE frames),
-     shown in show virtual-chassis mtu (Verified) and warned about at commit / in the log.
-   - Config editing across members (asked 2026-09-30): the shared candidate is on the master and every member's
-     `configure` is relayed to it (spec 4/5.2), so two users on different members edit the same candidate,
-     `configure private` and `exclusive` work the same way; answer the user and add a lab test for it.
-   - QinQ across the stack fails in TestStackJumbo (plain and host VXLAN pass): investigate.
-   - CLI: after `?` the prompt is reprinted as `root@host` only, without the `{master:1}` role line and `[edit]`
-     (requested 2026-09-30).
-   - Lab: the stacking NICs (Proxmox stk-* bridges) have max MTU 9000, so hosts reach only MTU 8942 across the
-     stack; for the MTU 9000 test the stk-* NICs and bridges need MTU >= 9058 (ask the user).
-   - Full lab suite on the new stack tunnels.
+- Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
+  (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
+  TestConfigAcrossMembers. Full lab suite: 30 tests pass.
 1. Phase 7 rest: drain (maintenance mode) for reboot/member removal, then Phase 7b (rolling upgrades / version
    window). Internal management VLAN 4094 (Phase 7c step 6).
-2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
+2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
+3. Lab (ask the user): the stacking NICs' maximum frame is 9014, so the stack carries data mtu 8956 (hosts 8942)
+   instead of 9000: for host MTU 9000 across the stack the stk-* NICs need a larger MTU in Proxmox (virtio `mtu=`
+   up to 65520) and the stk-* bridges must carry it (stk-12 dropped >1500-byte frames earlier; it passes now).
+4. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
+5. Later phases: RSTP, IGMP, VXLAN (control plane), GoBGP (full show route), encryption, polish, 802.1X,
+   diagnostics.
 
 ## Questions for the user (collected while they are away)
 1. (superseded 2026-09-30: management is administration only.) Should the management network be an opt-in *backup* path for stack sync (TLS-protected) when all stacking
