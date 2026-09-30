@@ -57,6 +57,9 @@ type swStatus struct {
 	Maintenance bool              `json:"maintenance"`
 	Current     bool              `json:"current"`
 	Packages    map[string]string `json:"packages,omitempty"` // version -> file
+	// Transit: member pairs that have no other stacking path than this
+	// member (cut off while it restarts).
+	Transit []string `json:"transit,omitempty"`
 }
 
 type swInstall struct {
@@ -101,6 +104,7 @@ func (u *updater) status() swStatus {
 		Packages: map[string]string{}}
 	if m := u.maint(); m != nil {
 		st.Maintenance = m.active()
+		st.Transit = m.transit()
 	}
 	st.Current = u.ctl == nil || u.ctl.node.Current()
 	files, _ := filepath.Glob(filepath.Join(u.dir, "ceros-*.tar.gz"))
@@ -348,6 +352,11 @@ func (u *updater) do(req cli.SoftwareRequest) {
 		} else if st.Version == target {
 			u.say("member %d already runs %s", id, target)
 			continue
+		}
+		if len(st.Transit) > 0 && !req.Force {
+			u.finish(fmt.Errorf("member %d is the only stacking path between %s: they would be cut off while it restarts "+
+				"(cable them to another member, or update with 'force'); the update stops here", id, strings.Join(st.Transit, ", ")))
+			return
 		}
 		u.say("member %d: %s -> %s", id, st.Version, want)
 		var text string
