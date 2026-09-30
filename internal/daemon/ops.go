@@ -100,6 +100,8 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 			},
 		}
 		switch {
+		case o.vc != nil && o.vc.IsPort(p.Name):
+			s.Role, s.Configured = "stacking", true
 		case i == nil:
 		case i.Parent != "":
 			s.Role = "member of " + i.Parent
