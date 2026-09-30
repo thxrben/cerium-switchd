@@ -677,7 +677,11 @@ func (sh *Shell) vcStatus() (VCStatus, error) {
 	if sh.env.Ops == nil {
 		return VCStatus{}, errors.New("virtual chassis information is not available")
 	}
-	return sh.env.Ops.VirtualChassis()
+	st, err := sh.env.Ops.VirtualChassis()
+	if errors.As(err, new(*PartialError)) {
+		err = nil // the overview is this member's view; vc-port warns about missing ports
+	}
+	return st, err
 }
 
 func (sh *Shell) showVC(c *call) error {
@@ -866,7 +870,7 @@ func (sh *Shell) showVCPorts(c *call) error {
 	if err := noArgs(c); err != nil {
 		return err
 	}
-	st, err := sh.vcStatus()
+	st, err := sh.env.Ops.VirtualChassis()
 	if err := partial(c, err); err != nil {
 		return err
 	}

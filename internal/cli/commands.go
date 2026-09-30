@@ -148,6 +148,9 @@ func (sh *Shell) showVersion(c *call) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "Hostname: %s\ncerOS (switchd) %s\n", sh.env.HostName(), sh.env.Version)
+	if t, err := time.Parse(time.RFC3339, sh.env.Built); err == nil {
+		fmt.Fprintf(c.out, "Built: %s\n", t.Local().Format("2006-01-02 15:04:05 MST"))
+	}
 	return nil
 }
 

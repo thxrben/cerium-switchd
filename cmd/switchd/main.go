@@ -36,7 +36,7 @@ func main() {
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Parse(os.Args[1:])
 	if *showVersion {
-		fmt.Println(version.Version)
+		fmt.Println(version.Version, version.Date)
 		return
 	}
 	level := slog.LevelInfo

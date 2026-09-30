@@ -318,7 +318,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 	srv.Env = func(name string, class commit.Class) cli.Env {
-		env := cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
+		env := cli.Env{Engine: engine, User: name, Class: class, Version: version.Version, Built: version.Date,
 			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
 		if ctl != nil {
 			env.Role = ctl.role

@@ -72,14 +72,16 @@ func localOps(o *ops, r opsRequest) (any, error) {
 	return nil, fmt.Errorf("unknown listing %q", r.Method)
 }
 
-// each runs r on every member (this one locally) and returns the answers
-// by member; members that did not answer are reported as a
-// *cli.PartialError.
+// each runs r on every member that is present (this one locally) and
+// returns the answers by member; a present member that did not answer is
+// reported as a *cli.PartialError. Members that are not there (not joined,
+// switched off, cut off) have no interfaces to list.
 func each[T any](s *stackOps, r opsRequest) (map[int]T, error) {
 	ids := []int{s.member}
-	if s.ctl != nil {
-		for id := range s.ctl.node.Members() {
-			if id != s.member {
+	if s.ctl != nil && s.vc != nil && s.vc.Mesh() != nil {
+		members := s.ctl.node.Members()
+		for _, id := range s.vc.Mesh().Reachable() {
+			if _, listed := members[id]; listed && id != s.member {
 				ids = append(ids, id)
 			}
 		}

@@ -39,6 +39,8 @@ type Env struct {
 	User    string
 	Class   commit.Class
 	Version string
+	// Built is the build time of the software (RFC 3339; "": unknown).
+	Built string
 	// HostName returns the name shown in the prompt.
 	HostName func() string
 	// Ports lists interface names known from the hardware inventory, for

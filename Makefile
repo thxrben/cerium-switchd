@@ -1,6 +1,7 @@
 GO      ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X mclag/internal/version.Version=$(VERSION)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X mclag/internal/version.Version=$(VERSION) -X mclag/internal/version.Date=$(BUILD_DATE)
 ARCHES  := amd64 arm64 arm
 
 .PHONY: all build test fuzz vet cross clean
