@@ -93,10 +93,13 @@ excluding 802.1Q tags. Each VLAN tag may add 4 bytes on top, so a trunk with `mt
 
 * Every switch is a **stack member** with an id from 1 to 16. A switch without any `virtual-chassis` configuration is member 1.
 * Interface names carry the member id, so the whole stack is configured in one place.
-* **switchd only touches interfaces that appear under `interfaces`, or that an `interface-range` selects**, plus
-  management and underlay ports that are configured explicitly.
-  * A NIC that is not selected stays exactly as the OS left it: it is not brought up, not bridged, and its addresses are
-    not changed. New NICs never start switching traffic unless a wildcard `interface-range` selects them on purpose (5.3.1).
+* **switchd owns every network port of the switch.** There are no operating-system defaults: the OS network
+  configuration (DHCP on an installer NIC, networkd/ifupdown/NetworkManager files) is disabled when cerOS is installed,
+  and a blank switch has no management interface and no address at all. The first access is the local console
+  (serial or display, 5.1 `system ports`).
+  * A port that is not configured (not under `interfaces`, not selected by an `interface-range`, not a stacking port)
+    is administratively down, outside the bridge, without addresses and with IPv6 disabled. New NICs never start
+    switching traffic unless a wildcard `interface-range` selects them on purpose (5.3.1).
   * An interface that is configured but not physically present (not plugged in, or on a member that has not joined yet)
     keeps its configuration. The configuration is applied as soon as the interface appears. `commit check` warns about this.
   * An interface that is **removed** from the configuration (or no longer selected by a range) is **released**: it is
@@ -114,7 +117,7 @@ Every port belongs to exactly one plane. Traffic never crosses from one plane to
 |---|---|---|---|
 | **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, VXLAN tunnels, and the routed interfaces of the default and data routing instances (irb, routed ports) | Client traffic, routed between VLANs where configured (5.3.2, 5.3.3) | only on routed interfaces |
 | **Stacking plane** | Dedicated **stacking ports** (VC ports), direct 1:1 cables between members, cabled as a ring | Stack configuration, member state, MC-LAG synchronisation, BFD (the stacking protocol, untagged), and client traffic between members inside the **stack tunnels** (5.2) | internal only: a hidden routing instance that carries the stack tunnels, never configurable or reachable from other planes |
-| **Management plane** | The interfaces of routing instance `mgmt_ceros` (`system management-instance`): a dedicated port or an irb unit per member | Administration only: SSH and the CLI, web/API, ping, syslog, NTP, DNS, software updates | yes, in `mgmt_ceros` only |
+| **Management plane** | The management instance (`system management-instance <instance>`): the chassis management interface `cme` on the members' management ports, and optionally in-band irb units (1.8) | Administration only: SSH and the CLI, web/API, ping, syslog, NTP, DNS, software updates | yes, in the management instance only, and only on the master |
 
 Rules that follow from this:
 
@@ -126,18 +129,19 @@ Rules that follow from this:
 * **No IP on switch ports.** switchd disables IPv6 (link-local addresses, router solicitations, neighbour discovery)
   on them and never assigns addresses. IP exists only on routed interfaces (5.3.2, 5.3.3). Stacking ports carry only
   the internal addresses of the hidden stack instance (5.2), never configured ones, and IPv6 stays disabled on them.
-* **Stack traffic never uses the management network.** Configuration sync, MC-LAG synchronisation and client traffic
-  between members run only over stacking ports. The management network carries only administration of the switch.
-  Management traffic crosses stacking ports only inside the reserved internal management VLAN (5.2).
-* Routing instances are separate routing tables: nothing is routed between `mgmt_ceros` and the data plane, or between
-  two instances.
-* **Services live in the management instance.** With `system management-instance`, switchd's own traffic (syslog,
-  NTP, DNS lookups) goes out through `mgmt_ceros`. The addresses of data routed interfaces are protected:
+* **Stack traffic never uses the management network.** Configuration sync, CLI sessions forwarded to the master,
+  commands for other members, time and software distribution, MC-LAG synchronisation and client traffic between
+  members run only over stacking ports (the stacking protocol, 5.2). The management network carries only
+  administration of the switch, and no IP traffic of the management plane crosses stacking ports.
+* Routing instances are separate routing tables: nothing is routed between the management instance and the data
+  plane, or between two instances.
+* **Services live in the management instance, on the master.** With `system management-instance`, the master's own
+  traffic (syslog, NTP, DNS lookups, software downloads) goes out through the management instance (1.8). The addresses of data routed interfaces are protected:
   they answer ping, ARP and neighbour discovery (and routing protocols once they exist), replies to connections the
   switch opened, and nothing else. So the SSH servers (the OS's and the CLI's) are reachable only through the
   management interfaces, or through the OS's own interfaces that switchd does not manage.
-* An in-band management VLAN on the data trunks is possible (an irb unit in `mgmt_ceros`). Management then shares the
-  fate of the data plane. Commit confirmation and the serial console are the safety nets. A dedicated port avoids that.
+* An in-band management VLAN on the data trunks is possible (an irb unit in the management instance). Management then
+  shares the fate of the data plane. Commit confirmation and the serial console are the safety nets. A dedicated port avoids that.
 
 ---
 
@@ -183,6 +187,50 @@ features such as `vlan-challenged` and `hw-tc-offload`). Where a driver reports 
 * `show system offload` lists per port: maximum speed, pause support, switchdev (hardware switch), tc offload,
   VLAN filter offload, checksum/TSO/GRO, and whether switchd's rules on the port are in hardware.
 * The PCIe link of each NIC (negotiated vs. possible speed and width) is part of the system diagnostics (PLAN.md Phase 13).
+
+### 1.8 Managing the virtual chassis
+
+The stack is managed as one switch through one address, as a Junos Virtual Chassis is through its VME interface.
+
+* **Management ports.** Any port can be a management port: `set interfaces <port> management` (5.3.4). A member can
+  have several, and a member without one is fine. Management ports are never bridged, carry no VLANs and are not
+  connected to each other through the stack.
+* **One management address: `cme`.** The chassis management interface `cme` (5.3.4) holds the stack's management
+  addresses. It exists **only on the master** (the member the stack's Raft election makes master), on the first of
+  its management ports (by name) whose link is up; as with VRRP, the address is present on exactly one member at any
+  time. On the other members the management ports are up (link established) but have no address and ignore every
+  frame they receive. The management ports of different members are never bridged or otherwise connected.
+* **The address follows mastership.** The mastership election in the stacking protocol decides where it is, so no
+  election traffic appears on the management network. A member that stops being master removes the address before
+  the new master adds it. If the master is alive but none of its management ports has a link, the address stays on
+  the master and cannot be reached until a link returns; in-band management or a console still work.
+  * The MAC address of `cme` is derived from the stack id and is the same on every member, so a move is only a MAC
+    move for the management network. The new master announces it (gratuitous ARP, unsolicited neighbour
+    advertisements). Duplicate address detection is off on `cme`.
+  * **Every management function is on the master:** the CLI SSH server, the web interface, the management instance's
+    routes, syslog forwarding, NTP and DNS. When the master fails and another member is promoted, the new master
+    takes the address and all of them over.
+  * In-band management (irb units in the management instance) follows the same rule: its addresses exist only on
+    the master.
+* **The master works for the stack.** Only the master resolves names, synchronises with NTP servers, forwards syslog
+  messages and downloads software. The other members:
+  * receive the time from the master over the stacking protocol (every 16 seconds; stepped above 128 ms, slewed below),
+  * send their log messages to the master, which forwards them with the member's host name as HOSTNAME,
+  * receive software updates from the master (an update on the master installs on all members),
+  * run no NTP client, resolver or syslog forwarder of their own.
+  Nothing is routed through the stack: the master performs these operations itself and passes the results on.
+* **The CLI always works on the master.** A CLI session (SSH, serial console or display) runs on the member you are
+  connected to, but every command is sent to the master over the stacking protocol and runs there; `member <id>`,
+  `all-members` and `local` (3.5) choose where operational commands take effect. The prompt shows the member you
+  are connected to and the master (`user@host:2 {master:1}>`).
+  * This needs no management address and no `system services ssh` anywhere: it works through the local consoles
+    even when every management port is down.
+  * **When the master is unreachable** (the member is alone, or in a minority partition), the CLI shows
+    `*** master not reachable (member <n>) … ***`, keeps trying, and offers a local shell to users allowed to
+    `start shell`, as when switchd is not available (3.1).
+  * `start shell` opens a shell **on the master**; `start shell local` opens one on the member you are connected to.
+    On the local consoles you are root (5.1 `system ports`) and may open either. Through SSH it needs root or the
+    super-user class (4.3).
 
 ## 2. Configuration formats
 
@@ -387,14 +435,14 @@ vlans {
 | `show system limits` | What this switch can carry and how much of it is used (3.5.1). |
 | `show vlans` | VLANs with their ports (`*` = tagged). |
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
-| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, `mgmt_ceros` and data instances), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
+| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, management and data instances, including `cme`). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
 | `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
-| `start shell` | A Linux shell (4.3); `exit` returns to the CLI. |
+| `start shell [local]` | A Linux shell on the master, or with `local` on the member you are connected to (1.8, 4.3); `exit` returns to the CLI. |
 
 #### 3.5.1 `show system limits`
 
@@ -406,7 +454,7 @@ target, 3.5, those of that member). Sections and lines (a `-` means no limit app
 | Section | Lines |
 |---|---|
 | **Frame sizes** (frame size incl. the Ethernet header, without VLAN tags, 1.3) | configurable `mtu` range and default; the largest configured `mtu` and where it is set (and the host MTU that fits it); the extra bytes the stack tunnels need (58); the largest `mtu` the stack carries (`show virtual-chassis mtu` has the details per stacking port); the hardware maximum of this member's ports (lowest and highest, with the port) |
-| **Switching** | VLAN ids (1–4093, 4094 reserved) and how many are configured; VXLAN VNIs; learned MAC addresses now, the aging range and default, the `mac-limit` range per port |
+| **Switching** | VLAN ids (1–4094) and how many are configured; VXLAN VNIs; learned MAC addresses now, the aging range and default, the `mac-limit` range per port |
 | **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
 | **MC-LAG** | domain numbers (1–255), members per domain (2), domains per member (1); configured domains and bundles |
 | **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
@@ -498,7 +546,7 @@ When confirmation is needed:
 | `configure`, `commit`, `confirm`, `rollback` | ✔ | ✔ | – |
 | change `system login`, `system services`, `virtual-chassis` | ✔ | – | – |
 | `request system reboot/halt`, `request virtual-chassis …` | ✔ | – | – |
-| `start shell` (Linux shell as the logged-in user; `exit` returns to the CLI) | ✔ | – | – |
+| `start shell [local]` (Linux shell as the logged-in user, on the master or with `local` on the connected member, 1.8; `exit` returns to the CLI) | ✔ | – | – |
 
 An operator whose candidate touches a forbidden hierarchy gets an error at commit time naming the forbidden paths.
 
@@ -534,15 +582,16 @@ DNS resolvers.
   replaces is kept and restored when `name-server` is removed again. Without `name-server`, the file is not touched.
 * If another program rewrites the file (e.g. a DHCP client), switchd restores it within 30 seconds and logs a
   warning naming the problem. Disable the other program's resolver handling (OS takeover, plan 4.15).
-* switchd's own lookups (e.g. syslog server names) go through the management instance when it is configured.
+* Only the master resolves names (e.g. syslog server names), through the management instance when it is configured (1.8).
 * W: more than 3 servers (only the first 3 are used).
 
 #### `system ntp server <host> [prefer]`
 NTP servers. switchd has its own NTP client (SNTP, RFC 5905 packets, UDP port 123); no NTP daemon of the operating system
 is used or needed. Without any server, the OS time configuration stays untouched. Correct time matters for logs,
 certificates and the stack's TLS.
-* The queries leave through the management instance (`mgmt_ceros`) when there is one (1.5), like all traffic the
-  switch originates, so the servers must be reachable from there (a static route in `mgmt_ceros`).
+* The master queries the servers through the management instance when there is one (1.5), like all traffic the
+  switch originates, so the servers must be reachable from there (a static route in the instance). The other members
+  get their time from the master (1.8).
 * Every server is queried at start (after 2 seconds) and then every 64 seconds while the clock is not synchronised and
   every 512 seconds afterwards. The client uses the `prefer` server if it answers, otherwise the server with the
   lowest round-trip delay. Replies are checked (server mode, stratum 1 to 15, not "unsynchronised", not a
@@ -555,7 +604,8 @@ certificates and the stack's TLS.
 * `show system ntp` shows the servers and the state.
 
 #### `system syslog host <host> { … }`
-Sends log messages to a remote server, through the management instance (5.9) when there is one. The format is RFC 5424, with the member host name as HOSTNAME.
+Sends log messages to a remote server, through the management instance (5.9) when there is one. The master
+sends the messages of all members (1.8). The format is RFC 5424, with the member host name as HOSTNAME.
 * `transport udp|tcp|tls`: default `udp`. For TCP and TLS a queue of up to 10 000 messages is held in memory while the
   server is unreachable. When the queue is full, the **oldest** messages are dropped, and the count appears in `show system syslog`.
 * `port <1-65535>`: default 514 (udp/tcp) or 6514 (tls).
@@ -606,24 +656,24 @@ automation access on the OS port.
 * It uses the host's SSH host keys, so the fingerprint is the same as on the OS port.
 * Passwords are accepted for users with an `encrypted-password`; keys come from `authentication ssh-key`.
 * The pre-login banner is `system login message`.
-* With `system management-instance` the server runs **inside routing instance `mgmt_ceros`**: it accepts connections
-  through the management interfaces only, not through data interfaces and not through network interfaces the
-  operating system manages outside the instance. Sessions that are open during the change stay open. The server
-  waits for the instance to exist (it retries every 2 seconds), so a commit that creates the instance and enables
-  SSH together works. Without a management instance (the first installation) it listens on every interface of the host.
+* The server runs **on the master only (1.8), inside the management instance**: it accepts connections through the
+  management addresses, not through data interfaces. When mastership moves, the server stops on the old master and
+  starts on the new one; sessions on the old master end. Without a management instance no CLI SSH server runs.
+* The server is for people. The stack itself never uses it: sessions reach the master over the stacking protocol (1.8).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
-HTTPS web interface and REST API, reachable through the management instance. Default: port 443 with a self-signed certificate generated
+HTTPS web interface and REST API, reachable through the management instance on the master (1.8). Default: port 443 with a self-signed certificate generated
 at first start. `certificate` and `key` must be given together (E otherwise). `disable` turns it off.
 
-#### `system management-instance`
-Makes routing instance `mgmt_ceros` the management instance (1.5), as in Junos. Its interfaces are the members'
-management interfaces, and switchd's services use it: syslog, NTP and DNS lookups go out through it. See 5.9 for the instance itself.
-* E: `system management-instance` without `routing-instances mgmt_ceros`, or the reverse.
-* W: an instance `mgmt_ceros` without an interface of some member (that member has no management address).
-* **Without `management-instance`, switchd does not touch the host's existing management network configuration**
-  (e.g. the installer's NIC with DHCP). This is the safe default for the first installation. Once you configure it,
-  switchd takes over, and commit confirmation protects you against locking yourself out.
+#### `system management-instance <instance>`
+Makes routing instance `<instance>` (any name, 5.9) the management instance (1.5, 1.8). Its interfaces are `cme.0` and
+optionally irb units; its addresses and routes exist only on the master (1.8), and the master's services use it: syslog,
+NTP, DNS lookups and software downloads go out through it.
+* E: the instance is not configured under `routing-instances`.
+* E: `cme.0` is configured but not in the management instance, or there is no management instance.
+* E: an address with `member` on an irb unit of the management instance (the management addresses belong to the master).
+* W: the management instance has no interface (the stack has no management address).
+* Without a management instance the switch is managed through its local consoles only (1.4).
 
 #### `system commit confirmation { mode required|optional; timeout <minutes>; }`
 See 4.2. Defaults: `required`, 10 minutes.
@@ -686,8 +736,8 @@ working path, so a ring survives one broken cable.
   switch that has not joined yet does not know it. The setting is stored locally, as in Junos, because a switch needs
   its stacking ports *before* it can receive the stack configuration. `show virtual-chassis vc-port` lists them, and
   `show virtual-chassis` shows the members, their roles and the topology.
-* A stacking port is never a data or management port. E: the port is configured under `interfaces`, or as a
-  management/underlay interface. Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
+* A stacking port is never a data or management port. E: the port is configured under `interfaces` (including
+  `management`), or as an underlay interface. Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
   administratively up, outside the bridge, without IP addresses and with IPv6 disabled, whatever the configuration says.
 * **Every switch is a stack.** A switch that has never joined another stack is member 1 of its own stack (it creates
   its stack key at first start). Two switches of different stacks connected by a stacking cable see each other as
@@ -830,11 +880,8 @@ configured; they follow from the member list and the stacking cables.
     carry the frames the tunnels need (a bridge, converter or switch with a smaller MTU in between) shows
     `the cable carries only <n>` and a warning is logged; frames larger than that are lost, and only jumbo traffic
     is affected.
-* **Internal management VLAN**: VLAN id **4094 is reserved**. It exists only on the stack tunnels and connects the
-  members' management instances, so a member without its own management cable is still reachable (the details
-  follow with the management takeover; until then the VLAN is only reserved). It is never carried by access, trunk,
-  bundle or VXLAN ports and cannot be routed into other instances. E: a VLAN with `vlan-id 4094` (the tag of a routed
-  subinterface, `unit <n> vlan-id`, is not a VLAN of the switch and may be 4094).
+* No VLAN is reserved for the stack: management between members runs in the stacking protocol itself (1.8), not in
+  a VLAN. (Earlier versions reserved VLAN 4094; it is an ordinary VLAN now.)
 
 #### `virtual-chassis bfd { minimum-interval <ms>; multiplier <n>; }`
 Failure detection on every stacking link, BFD-style inside the stacking protocol (IP-less): each side sends a frame
@@ -867,7 +914,7 @@ The IP interface that carries this member's VXLAN tunnels, in the default routin
 block with the Junos form, `switch-options vtep-source-interface`, and a routed interface; it is not implemented yet.)
 * `vlan <vlan>` (IRB-like) or `interface <interface-name>` (a dedicated port), `address [ … ]` static addresses.
 * `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
-* E: the underlay VLAN or port is in routing instance `mgmt_ceros`.
+* E: the underlay VLAN or port is in the management instance.
 * E: the underlay VLAN is itself extended over VXLAN (tunnel traffic would loop into the tunnel).
 * W: underlay MTU (the dedicated port's `mtu`, or the VLAN's `mtu`) is smaller than the largest VXLAN VLAN MTU plus
   encapsulation overhead (5.7).
@@ -885,9 +932,7 @@ Applies one block of interface statements to many ports. It takes every statemen
     plugged NIC matching a wildcard is configured immediately, without a commit, and this is logged.
   * If the new port cannot take the configuration (e.g. the MTU exceeds its hardware maximum), it stays unconfigured
     and an alarm is raised.
-  * Wildcards **never** select stacking ports, the member's management/underlay port, or a port that has IP
-    addresses configured by the operating system (e.g. the installer's management NIC before the takeover).
-    Naming such a port explicitly under `interfaces` is allowed but gives a W, because it can cut management access.
+  * Wildcards **never** select stacking ports, management ports (`management`) or underlay ports.
 * **Precedence**: a port that is also listed under `interfaces` uses its explicit statements. The range fills in only
   what the explicit entry does not set:
   * Leaves: the explicit value wins.
@@ -1053,33 +1098,51 @@ address in that VLAN and **routes between VLANs** (and routed ports) in the defa
 * `irb.<n>` is attached to a VLAN with `vlans <v> l3-interface irb.<n>`. n is any number 0–16385; using the VLAN id
   keeps it readable (`irb.10` for VLAN 10). W: an irb unit that no VLAN references (it has no effect).
 * Addresses follow the same rules as routed interfaces (above), with one addition: an irb address can belong to a
-  single member, `address 10.5.176.95/16 { member 1; }` (set form `… address 10.5.176.95/16 member 1`). This is how
-  every member gets its own management address on a management VLAN. Addresses without `member` exist on every
-  member (anycast gateway). E: `member` on an address of a port or `ae` (those belong to one member already).
+  single member, `address 10.5.176.95/16 { member 1; }` (set form `… address 10.5.176.95/16 member 1`), e.g. for a
+  routing protocol that needs one address per member. Addresses without `member` exist on every member (anycast
+  gateway). E: `member` in the management instance (1.8). E: `member` on an address of a port or `ae` (those belong to one member already).
 * In a stack, the irb interface exists on **every member that has the VLAN**, with the same addresses and the same MAC
   address (derived from the stack), so every member routes locally (anycast gateway). With MC-LAG, both peers
   answer for the gateway address.
   The MAC is derived from the stack id (locally administered). Duplicate address detection is off on irb units,
   because every member holds the same IPv6 addresses.
-* An irb unit can be the management interface: put it into `routing-instances mgmt_ceros` (5.9) and give each member
-  its own address with `member`.
+* An irb unit can be an in-band management interface: put it into the management instance (5.9). Its addresses
+  then exist only on the master (1.8).
 * In the kernel, `irb.<n>` is a VLAN device on the bridge, and the bridge itself joins the VLAN (bridge self VLAN).
 
 **Routing** happens only between switchd's own L3 interfaces (irb, routed ports and subinterfaces): IPv4 forwarding is
-enabled per interface on them only. Interfaces the operating system manages (e.g. its installer management NIC)
-do not forward. For IPv6, Linux can only enable forwarding for the whole system, so switchd sets `accept_ra 2` on the
-OS-managed interfaces that use router advertisements first (they keep their SLAAC addresses and default routes).
-* W: routed interfaces exist in the default instance while the operating system's management NIC (addresses the OS
-  configured) is also in it: data VLANs can then reach the management network through the OS routes. Configure the
-  management port in `mgmt_ceros` to separate them.
+enabled per interface on them only; `cme` does not forward. For IPv6, Linux can only enable forwarding for the whole
+system, so switchd sets `accept_ra 0` everywhere (routes come from the configuration).
 * ICMP redirects are not sent. Reverse-path filtering is loose (`rp_filter 2`) on routed interfaces.
+
+#### 5.3.4 `interfaces <port> management`, `interfaces cme unit 0 { description <text>; family inet|inet6 { address <address/prefix>; } }`
+**Chassis management interface** (1.8), the counterpart of Junos' `vme`.
+* `interfaces <port> management` makes a physical port of any member a management port. The port carries only `cme`:
+  it is never bridged, takes no `unit`, `ether-options` or VLANs (E), and wildcard ranges skip it. `description`,
+  `disable` and `mtu` are allowed. switchd keeps it up with IPv6 disabled; only the master puts `cme` on it.
+* `interfaces cme unit 0` holds the stack's management addresses (IPv4 and IPv6, several allowed). Only unit 0 (E
+  otherwise). `cme.0` must be in the management instance (5.1 `system management-instance`, E otherwise).
+* W: `cme` has addresses but no member has a management port.
+* The MAC address of `cme` is derived from the stack id (locally administered, different from the irb MAC).
+* `show interfaces cme` names the master and the port; `show interfaces` marks management ports as `management`
+  with `active` on the master's port.
+
+Example:
+```
+set interfaces 1/2/0 management
+set interfaces 2/2/0 management
+set interfaces cme unit 0 family inet address 10.5.20.76/16
+set routing-instances oob interface cme.0
+set routing-instances oob routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+set system management-instance oob
+```
 
 ### 5.4 vlans
 
 `vlans <name> { … }` defines a VLAN (a broadcast domain). The name is what you reference in `vlan members`.
 
 #### `vlan-id <1-4094>`
-802.1Q id. E: missing. E: the same id in two VLANs. E: 4094, the reserved internal management VLAN of the stack (5.2);
+802.1Q id. E: missing. E: the same id in two VLANs.
 1–4093 are available. A VLAN exists on a member's bridge only if a port of that member or VXLAN needs it; the stack
 tunnel between two members carries the VLANs that both of them have.
 
@@ -1318,29 +1381,28 @@ routed between instances or to and from the default instance.
 * `routing-options static route …`: as in 5.8, for this instance.
 * Addresses and subnets may overlap between instances, but not within one (E).
 * `instance-type virtual-router` (default and the only type for now; `vrf` with route distinguishers comes with BGP).
-* **`mgmt_ceros`** is the management instance (named `mgmt_junos` in earlier versions; stored configurations are converted when they are read) (with `system management-instance`, 5.1). It takes no `instance-type`.
+* **The management instance** is the one named by `system management-instance <instance>` (5.1, 1.8); any name is
+  allowed. Its interfaces are `cme.0` and optionally in-band irb units, and it exists only on the master.
   Typical configurations:
 
   ```
-  # dedicated management port on each member
-  set system management-instance
-  set interfaces 1/2/0 unit 0 family inet address 10.5.20.76/16
-  set interfaces 2/2/0 unit 0 family inet address 10.5.20.77/16
-  set routing-instances mgmt_ceros interface 1/2/0.0
-  set routing-instances mgmt_ceros interface 2/2/0.0
-  set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+  # management ports (see 5.3.4)
+  set interfaces 1/2/0 management
+  set interfaces 2/2/0 management
+  set interfaces cme unit 0 family inet address 10.5.20.76/16
+  set routing-instances oob interface cme.0
+  set routing-instances oob routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+  set system management-instance oob
 
-  # or a management VLAN
+  # or in-band, on a management VLAN
   set vlans mgmt vlan-id 99
   set vlans mgmt l3-interface irb.99
-  set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1
-  set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2
-  set routing-instances mgmt_ceros interface irb.99
+  set interfaces irb unit 99 family inet address 10.5.176.95/16
+  set routing-instances oob interface irb.99
+  set system management-instance oob
   ```
-  A static route whose next hop is not in a subnet of a member's interfaces is inactive on that member.
-* Configurations of older versions (`virtual-chassis member <id> management { … }`) are converted into this form when
-  they are read: the addresses go onto the port or an irb unit (unit number = VLAN id), the gateways become static
-  routes of `mgmt_ceros`, and `system management-instance` is set.
+* Older configurations (`mgmt_ceros`, `system management-instance` without a name, per-member management
+  addresses) are **not** converted: they fail the commit check and must be rewritten in this form.
 * In the kernel an instance is a VRF device named like the instance, with its own routing table.
 * `show route [instance <name>]` lists the routes; `show interfaces` marks management interfaces.
 
@@ -1409,7 +1471,7 @@ Additional rules, applied in this order:
 ```
 system {
     host-name lab-sw;
-    management-instance;
+    management-instance oob;
     login {
         user admin {
             class super-user;
@@ -1428,6 +1490,9 @@ system {
 interfaces {
     1/3/0 {
         description "management port";
+        management;
+    }
+    cme {
         unit 0 {
             family {
                 inet {
@@ -1474,8 +1539,8 @@ vlans {
     }
 }
 routing-instances {
-    mgmt_ceros {
-        interface 1/3/0.0;
+    oob {
+        interface cme.0;
         routing-options {
             static {
                 route 0.0.0.0/0 {
@@ -1504,7 +1569,7 @@ protocols {
 ```
 # Stacking ports were designated locally beforehand, e.g. on both switches:
 #   request virtual-chassis vc-port set pic-slot 2 port 1
-set system management-instance
+set system management-instance oob
 set virtual-chassis member 1 host-name sw-a
 set virtual-chassis member 1 vtep-address 10.255.0.1
 set virtual-chassis member 1 underlay interface 1/5/0
@@ -1532,10 +1597,9 @@ set interfaces 1/3/1 description "management access (1G)"
 set interfaces 1/3/1 unit 0 family ethernet-switching vlan members mgmt
 set vlans mgmt vlan-id 99
 set vlans mgmt l3-interface irb.99
-set interfaces irb unit 99 family inet address 192.168.1.11/24 member 1
-set interfaces irb unit 99 family inet address 192.168.1.12/24 member 2
-set routing-instances mgmt_ceros interface irb.99
-set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
+set interfaces irb unit 99 family inet address 192.168.1.11/24
+set routing-instances oob interface irb.99
+set routing-instances oob routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
 set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
@@ -1560,7 +1624,8 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_ceros), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` implemented |
+| `routing-instances` (VRFs, static routes), protection of data L3 addresses, `show route`, `family inet dhcp` | implemented, unit and lab tested |
+| Chassis management (1.8): `system management-instance <instance>`, `cme`, management ports, address on the master, services on the master, CLI forwarding to the master, `start shell local`, no OS defaults (1.4), VLAN 4094 no longer reserved | specified, not implemented yet (the fixed `mgmt_ceros` model is implemented) |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
 | `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |

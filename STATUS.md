@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-30 (evening).
+Last updated: 2026-09-30 (night).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -195,36 +195,29 @@ Last updated: 2026-09-30 (evening).
 - Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
   (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
   TestConfigAcrossMembers. Full lab suite: 30 tests pass.
-1. Phase 7 rest: Phase 7b (rolling upgrades / version
-   window). Internal management VLAN 4094 (Phase 7c step 6).
+0. Chassis management (decided with the user 2026-09-30, spec 1.4, 1.8, 5.1, 5.3.4, 5.9 updated): `system management-instance
+   <any instance>`, `interfaces <port> management` + `interfaces cme unit 0` (one address, stack-derived MAC, only on the
+   Raft master, present on exactly one member like VRRP, moves only with mastership; management ports of members never
+   bridged), all management services (CLI SSH, web, NTP, DNS, syslog forwarding, downloads) on the master only, other members get time/logs/updates through the stacking protocol (no IP over
+   the stack), CLI on any member forwards every command to the master (prompt `host:2 {master:1}`), banner + local shell
+   when the master is unreachable, `start shell` = master, `start shell local`. No OS defaults on any port (blank
+   switch: console only). VLAN 4094 no longer reserved. Breaking change: no conversion of `mgmt_ceros` configs (the
+   lab VMs' configs get rewritten by hand). Implementation next.
+1. Phase 7 rest: Phase 7b (rolling upgrades / version window).
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
-3. Lab (ask the user): the stacking NICs' maximum frame is 9014, so the stack carries data mtu 8956 (hosts 8942)
-   instead of 9000: for host MTU 9000 across the stack the stk-* NICs need a larger MTU in Proxmox (virtio `mtu=`
-   up to 65520) and the stk-* bridges must carry it (stk-12 dropped >1500-byte frames earlier; it passes now).
-4. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
-   (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_ceros.
-5. Later phases: RSTP, IGMP, VXLAN (control plane), GoBGP (full show route), encryption, polish, 802.1X,
-   diagnostics.
+3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge
+   (mstpd on srv1) and an MC-LAG port with BPDUs. VLAN MTU filter: lab-test the tagged path.
+4. Kernel messages to syslog (delayed).
+5. Later phases: IGMP, VXLAN (control plane), GoBGP (full show route), encryption, polish, 802.1X, diagnostics.
 
-## Questions for the user (collected while they are away)
-1. (superseded 2026-09-30: management is administration only.) Should the management network be an opt-in *backup* path for stack sync (TLS-protected) when all stacking
-   cables between two members are cut? Current design: no (stack traffic only on stacking ports, like Junos VC).
-2. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
+## Questions for the user
+1. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
    configurable filter (firewall filter on lo0) later, e.g. to allow SSH on a data irb deliberately?
-3. The CLI SSH server (port 2222) still listens on all addresses; with management-instance the filter blocks
-   it on data L3 addresses. Should it additionally listen *only* inside mgmt_ceros (then it is unreachable
-   through OS-managed NICs outside the instance, e.g. before the management port is moved)?
 
-4. Two-member stacks cannot commit while one member is down (Raft majority); the spec recommends a witness. Is a
-   witness (a small board with only stacking ports) realistic for you, or should a two-member stack be able to
-   continue with an explicit, logged override (`request virtual-chassis force-master`), accepting split-brain risk?
-5. A member removed from the stack keeps its member id as the only member of a new stack (so its configuration
-   and management access stay valid). Would you rather have it renumbered to member 1 (interface names change)?
-
-6. Operational commands default to the local member; Junos VC defaults many of them (show chassis hardware, show
-   system uptime, request system reboot) to all members. Keep the local default (safer for reboots), or follow Junos?
-
-7. (answered 2026-09-30: two-member split forwards at all costs; the stack tunnels replace the peer-link.)
+Answered (2026-09-30): management is administration only (no stack sync over it); the CLI SSH server runs inside
+mgmt_ceros when a management instance is set; two-member stacks: `request virtual-chassis force-master`; a removed
+member becomes member 1; operational commands stay local by default (`member <id>` forwards); two-member split
+forwards at all costs (stack tunnels replace the peer-link).
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).
