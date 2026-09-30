@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-30 (early morning).
+Last updated: 2026-09-30.
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -104,8 +104,19 @@ Last updated: 2026-09-30 (early morning).
   own commit at once after a relayed session; lab tests for ring cut, master killed, minority partition (forwarding
   continues, configure refused), stacking frames on data ports. 23 lab tests pass.
 
+- Phase 6 LACP done: internal/lacp (802.1AX machines, pure, tested; fuzzed PDU), LACP bundles are Linux team devices
+  (per-port enable by switchd, link follows distributing ports, BPF transmit hash), state restored across switchd
+  restarts (0 loss in the lab), show lacp interfaces/statistics. Lab interop with a Linux 802.3ad bond (the lab sets
+  virtio speed/duplex: 802.3ad needs them).
+- Phase 7 MC-LAG core done: shared LACP system, peer-link (all VLANs, no learning), split horizon, leg state exchange,
+  holds (peer-link down on the secondary, delay-restore), MAC synchronisation, micro-BFD on peer-link ports (peer-link
+  state only; single-port removal and authentication open), show mclag. Lab TestMCLAG: srv1 dual-homed.
+- Known: TestMCLAG "without ens19" failed intermittently inside the full suite (state before the ping was correct);
+  the test now traces every hop when it happens.
+
 ## Next (in order)
-1. Phase 6 LACP (then drain on member removal), Phase 7 MC-LAG.
+1. Phase 7 rest: heartbeat BFD over mgmt (split-brain), consistency checks, micro-BFD port removal + auth, drain
+   (maintenance mode) for reboot/member removal, then Phase 7b (rolling upgrades / version window).
 2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
 
@@ -126,6 +137,10 @@ Last updated: 2026-09-30 (early morning).
 
 6. Operational commands default to the local member; Junos VC defaults many of them (show chassis hardware, show
    system uptime, request system reboot) to all members. Keep the local default (safer for reboots), or follow Junos?
+
+7. MC-LAG without the management heartbeat: if both the stacking path and the peer-link fail, each member assumes
+   the other is dead and keeps its legs (split brain towards the server until the heartbeat is implemented). OK as an
+   interim state?
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).
