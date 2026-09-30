@@ -673,7 +673,9 @@ working path, so a ring survives one broken cable.
 * Stack control needs a majority of members (Raft). Without a majority, the data plane keeps forwarding with the last
   committed configuration, and only commits are blocked.
 * **Configuration mode runs on the master**, as in Junos VC: `configure` on any member opens the configuration
-  session on the master (the prompt shows the master's host name and the banner `{master:<id>}`). Operational commands
+  session on the master (the prompt shows the master's host name). In a stack with more than one member, the line
+  above the prompt shows the role of the member the session runs on: `{master:1}`, `{backup:2}`, `{linecard:3}`,
+  or `{no-master:2}` without a master. Operational commands
   run on the member you are logged in to. Without a master (no majority), `configure` fails with
   `error: configuration unavailable: no master (the stack has no majority)`; operational commands keep working.
 * `commit` prints the result per member (`member1: commit complete`, `member3: not reachable, applies the

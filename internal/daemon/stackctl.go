@@ -413,3 +413,37 @@ func (s *stackCtl) stackCheck(cand *config.Tree) model.Issues {
 	}
 	return out
 }
+
+// role is this member's role for the CLI banner ("" in a one-member stack).
+func (s *stackCtl) role() string {
+	members := s.node.Members()
+	if len(members) <= 1 {
+		return ""
+	}
+	master := s.node.Master()
+	switch {
+	case master == s.member:
+		return fmt.Sprintf("master:%d", s.member)
+	case master == 0:
+		return fmt.Sprintf("no-master:%d", s.member)
+	}
+	// backup: the voter with the highest priority after the master.
+	e := s.eng()
+	backup, bp := 0, -1
+	for _, sv := range s.node.Servers() {
+		if !sv.Voter || sv.Member == master {
+			continue
+		}
+		p := 128
+		if e != nil {
+			p = mastershipPriority(e.Active(), sv.Member)
+		}
+		if p > bp || (p == bp && sv.Member < backup) {
+			backup, bp = sv.Member, p
+		}
+	}
+	if backup == s.member {
+		return fmt.Sprintf("backup:%d", s.member)
+	}
+	return fmt.Sprintf("linecard:%d", s.member)
+}

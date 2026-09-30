@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-29 (late).
+Last updated: 2026-09-30 (early morning).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -85,10 +85,25 @@ Last updated: 2026-09-29 (late).
   (3d643177f94057f8) over the stk ring; test hosts moved off stacking links (hSw2 on underlay ens1, hotplug on
   ens21).
 
+- Mesh (internal/stack/mesh): link-state topology, hop-by-hop relay, streams (net.Conn, credit flow control).
+- Stack control (internal/stack/control): Raft (hashicorp/raft) over mesh streams; replicated revisions, pending
+  confirmation, shared candidate, member list, join tokens; founder bootstrap carries the old history; 7 voters by
+  priority; priority handoff after elections; leadership transfer; member removal.
+- switchd: configuration mode relayed to the master (prompt/banner {master:N}), commits applied on all members with
+  per-member results, stack-wide commit checks (each member's hardware and OS), catch-up of members that missed a
+  commit, `request chassis routing-engine master switch`, `request virtual-chassis member remove` (the removed
+  switch becomes a stack of its own with its config), member list enforced on sessions. Replicated state is only
+  acted upon once current (a re-joining member replays the log; no old revisions reach the data plane).
+- Lab: sw1-sw3 form one Raft stack (re-joined with tokens after the upgrade). 19 lab tests pass, incl.
+  TestVirtualChassis (commit from sw2, removal and re-join of the master under 100 pps traffic: 0 loss).
+- Fixed on the way: account creation recorded before useradd (sw3 had an orphaned "thorben" from a restart during
+  creation; its state file was repaired by hand, the log proved switchd created it); swcli batch mode answers
+  questions from the input.
+
 ## Next (in order)
-1. Phase 5: message layer over the sessions (link-state topology, hop-by-hop relay), Raft (config store,
-   leader = master, leadership transfer, member remove), per-member apply with results, stack-wide show
-   commands; lab tests for the stack (join, ring cut, master switch, member remove under traffic).
+1. Phase 5 rest: stack-wide show commands and `member <id>` targets (show interfaces of all members, request
+   system reboot member N), ring-cut lab test, witness role, read-your-writes after a relayed commit (members
+   show a commit ~0.6 s later).
 2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
 
@@ -100,6 +115,12 @@ Last updated: 2026-09-29 (late).
 3. The CLI SSH server (port 2222) still listens on all addresses; with management-instance the filter blocks
    it on data L3 addresses. Should it additionally listen *only* inside mgmt_junos (then it is unreachable
    through OS-managed NICs outside the instance, e.g. before the management port is moved)?
+
+4. Two-member stacks cannot commit while one member is down (Raft majority); the spec recommends a witness. Is a
+   witness (a small board with only stacking ports) realistic for you, or should a two-member stack be able to
+   continue with an explicit, logged override (`request virtual-chassis force-master`), accepting split-brain risk?
+5. A member removed from the stack keeps its member id as the only member of a new stack (so its configuration
+   and management access stay valid). Would you rather have it renumbered to member 1 (interface names change)?
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

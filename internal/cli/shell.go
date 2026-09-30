@@ -48,6 +48,10 @@ type Env struct {
 	// Logs supplies "show log" and "show system syslog" (nil: unavailable).
 	Logs Logs
 	Log  *slog.Logger
+	// Role returns this member's role in a stack with more than one
+	// member, e.g. "master:1" or "backup:2", shown above the prompt as in
+	// Junos VC ("": standalone; nil: none).
+	Role func() string
 }
 
 // Reply is the result of executing one line.
@@ -108,6 +112,11 @@ func (sh *Shell) Prompt() string {
 // configuration mode and a pending commit confirmation.
 func (sh *Shell) Banner() string {
 	var b strings.Builder
+	if sh.env.Role != nil {
+		if r := sh.env.Role(); r != "" {
+			b.WriteString("{" + r + "}\n")
+		}
+	}
 	if p := sh.env.Engine.Pending(); p != nil {
 		left := time.Until(p.Deadline)
 		if left < 0 {
