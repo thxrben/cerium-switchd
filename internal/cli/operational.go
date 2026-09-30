@@ -553,35 +553,62 @@ func (sh *Shell) showHardware(c *call) error {
 }
 
 // setVCPort implements "request virtual-chassis vc-port set|delete
-// pic-slot <card> port <port>".
+// <interface>" for a port of any member (the request goes to that member),
+// and the Junos form "... pic-slot <card> port <port>" for this switch.
 func (sh *Shell) setVCPort(c *call, add bool) error {
-	if len(c.args) != 4 || !prefixOf(c.args[0].Text, "pic-slot") || !prefixOf(c.args[2].Text, "port") {
-		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'pic-slot <card> port <port>'"}
-	}
-	card, err1 := strconv.Atoi(c.args[1].Text)
-	port, err2 := strconv.Atoi(c.args[3].Text)
-	if err1 != nil || card < 0 || card > schema.MaxCard {
-		return &posError{pos: c.argPos(1), msg: fmt.Sprintf("expecting a card number (0-%d)", schema.MaxCard)}
-	}
-	if err2 != nil || port < 0 || port > schema.MaxPort {
-		return &posError{pos: c.argPos(3), msg: fmt.Sprintf("expecting a port number (0-%d)", schema.MaxPort)}
-	}
 	if sh.env.Ops == nil {
 		return errors.New("not available")
 	}
-	local := fmt.Sprintf("%d/%d", card, port)
+	verb := "delete"
 	if add {
-		// A configured data port would be taken away from the data plane.
-		st, err := sh.vcStatus()
-		if err != nil {
+		verb = "set"
+	}
+	var name string
+	switch {
+	case len(c.args) == 1:
+		p, ok := schema.ParsePhysical(c.args[0].Text)
+		if !ok {
+			return &posError{pos: c.argPos(0), msg: "expecting a port, e.g. 1/1/0"}
+		}
+		name = p.String()
+	case len(c.args) == 4 && prefixOf(c.args[0].Text, "pic-slot") && prefixOf(c.args[2].Text, "port"):
+		card, err1 := strconv.Atoi(c.args[1].Text)
+		port, err2 := strconv.Atoi(c.args[3].Text)
+		if err1 != nil || card < 0 || card > schema.MaxCard {
+			return &posError{pos: c.argPos(1), msg: fmt.Sprintf("expecting a card number (0-%d)", schema.MaxCard)}
+		}
+		if err2 != nil || port < 0 || port > schema.MaxPort {
+			return &posError{pos: c.argPos(3), msg: fmt.Sprintf("expecting a port number (0-%d)", schema.MaxPort)}
+		}
+		st, err := sh.env.Ops.VirtualChassis()
+		if err != nil && !errors.As(err, new(*PartialError)) {
 			return err
 		}
-		name := fmt.Sprintf("%d/%s", st.Member, local)
-		if cfg := sh.activeModel(); cfg != nil && cfg.Interfaces[name] != nil {
-			return fmt.Errorf("%s is configured under 'interfaces'; delete that configuration first", name)
-		}
+		name = fmt.Sprintf("%d/%d/%d", st.Member, card, port)
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting a port (e.g. 1/1/0)"}
 	}
-	return sh.env.Ops.SetVCPort(local, add, sh.env.User)
+	p, _ := schema.ParsePhysical(name)
+	// A configured data port would be taken away from the data plane.
+	if cfg := sh.activeModel(); add && cfg != nil && cfg.Interfaces[name] != nil {
+		return fmt.Errorf("%s is configured under 'interfaces'; delete that configuration first", name)
+	}
+	if sh.env.Stack != nil && p.Member != sh.env.Stack.Self() {
+		if !slices.Contains(sh.env.Stack.Members(), p.Member) {
+			return fmt.Errorf("member %d is not in this virtual chassis (a switch that has not joined yet is member 1 of its own: run the command on it)", p.Member)
+		}
+		out, err := sh.env.Stack.Exec(c.ctx, p.Member, "request virtual-chassis vc-port "+verb+" "+name, true)
+		c.out.WriteString(out)
+		return err
+	}
+	st, err := sh.env.Ops.VirtualChassis()
+	if err != nil && !errors.As(err, new(*PartialError)) {
+		return err
+	}
+	if st.Member != 0 && p.Member != st.Member {
+		return fmt.Errorf("%s is a port of member %d; this switch is member %d", name, p.Member, st.Member)
+	}
+	return sh.env.Ops.SetVCPort(fmt.Sprintf("%d/%d", p.Card, p.Port), add, sh.env.User)
 }
 
 func (sh *Shell) addVCMember(c *call) error {
@@ -625,16 +652,23 @@ func (sh *Shell) joinVC(c *call) error {
 	return nil
 }
 
-func completeVCPort(_ *Shell, args []config.Token, partial string) []Completion {
-	switch len(args) {
-	case 0:
-		return filter([]Completion{{Text: "pic-slot", Help: "Card number of the port"}}, partial)
-	case 1:
-		return []Completion{{Text: "<card>", Help: "Card number (see show chassis hardware)", Placeholder: true}}
-	case 2:
-		return filter([]Completion{{Text: "port", Help: "Port number on the card"}}, partial)
-	case 3:
-		return []Completion{{Text: "<port>", Help: "Port number", Placeholder: true}}
+func completeVCPort(sh *Shell, args []config.Token, partial string) []Completion {
+	switch {
+	case len(args) == 0:
+		var out []Completion
+		for _, p := range sh.ports() {
+			out = append(out, Completion{Text: p, Help: "Port"})
+		}
+		return append(filter(out, partial), Completion{Text: "<interface>", Help: "Port of any member, e.g. 1/1/0", Placeholder: true})
+	case len(args) >= 1 && prefixOf(args[0].Text, "pic-slot"):
+		switch len(args) {
+		case 1:
+			return []Completion{{Text: "<card>", Help: "Card number of this switch's port", Placeholder: true}}
+		case 2:
+			return filter([]Completion{{Text: "port", Help: "Port number on the card"}}, partial)
+		case 3:
+			return []Completion{{Text: "<port>", Help: "Port number", Placeholder: true}}
+		}
 	}
 	return []Completion{enter}
 }
@@ -839,7 +873,7 @@ func (sh *Shell) showVCPorts(c *call) error {
 	st.Ports = slices.DeleteFunc(st.Ports, func(p VCPort) bool { return !c.shows(p.Port) })
 	sort.SliceStable(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i].Port, st.Ports[j].Port) })
 	if len(st.Ports) == 0 {
-		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set pic-slot <card> port <port>' on the switch).\n")
+		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set <interface>').\n")
 		return nil
 	}
 	fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", "Port", "Linux name", "State", "Speed", "Neighbor", "Peer port", "Up")

@@ -731,12 +731,18 @@ Stacking ports connect members **directly** (1:1 cables, no switch in between). 
 supported. Messages between members that are not directly connected are relayed hop by hop along the shortest
 working path, so a ring survives one broken cable.
 
-* **Designation**: stacking ports (VC ports) are set per switch with the operational command
-  `request virtual-chassis vc-port set pic-slot <card> port <port>` (and `… vc-port delete …`), e.g.
-  `request virtual-chassis vc-port set pic-slot 0 port 2` for the port 1/0/2. The member number is left out because a
-  switch that has not joined yet does not know it. The setting is stored locally, as in Junos, because a switch needs
-  its stacking ports *before* it can receive the stack configuration. `show virtual-chassis vc-port` lists them, and
-  `show virtual-chassis` shows the members, their roles and the topology.
+* **Designation**: stacking ports (VC ports) are set with the operational command
+  `request virtual-chassis vc-port set <interface>` (and `… vc-port delete <interface>`), for a port of any member,
+  e.g. `request virtual-chassis vc-port set 1/1/0`; the request goes to the member the port belongs to. A switch that
+  has not joined yet is member 1 of its own stack, so on it the ports are `1/<card>/<port>`. The Junos form
+  `… vc-port set pic-slot <card> port <port>` names a port of the switch you are working on. The setting is stored on
+  that switch, as in Junos, because a switch needs its stacking ports *before* it can receive the stack
+  configuration. `show virtual-chassis vc-port` lists them, and `show virtual-chassis` shows the members, their roles
+  and the topology.
+* **Topology**: any shape of direct cables works (chain, ring, star, full or partial mesh); the members route
+  stack messages and the stack tunnels over the shortest working paths (equal paths share the load), and a path
+  that fails is replaced within the BFD detection time. A ring (or more cables) survives any single cable failure,
+  a chain does not.
 * A stacking port is never a data or management port. E: the port is configured under `interfaces` (including
   `management`), or as an underlay interface. Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
   administratively up, outside the bridge, without IP addresses and with IPv6 disabled, whatever the configuration says.
@@ -1573,7 +1579,7 @@ protocols {
 
 ```
 # Stacking ports were designated locally beforehand, e.g. on both switches:
-#   request virtual-chassis vc-port set pic-slot 2 port 1
+#   request virtual-chassis vc-port set 1/2/1
 set system management-instance oob
 set virtual-chassis member 1 host-name sw-a
 set virtual-chassis member 1 vtep-address 10.255.0.1

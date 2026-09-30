@@ -781,6 +781,13 @@ func TestSystemOperationalCommands(t *testing.T) {
 		t.Errorf("vc-port set: %v", ops.power)
 	}
 	ops.power = nil
+	ts.ok("request virtual-chassis vc-port delete 1/1/0")
+	if len(ops.power) != 1 || ops.power[0] != "vc 1/0 false" {
+		t.Errorf("vc-port delete 1/1/0: %v", ops.power)
+	}
+	contains(t, ts.run("request virtual-chassis vc-port set 2/1/0"), "port of member 2; this switch is member 1")
+	contains(t, ts.run("request virtual-chassis vc-port set ens19"), "expecting a port")
+	ops.power = nil
 	contains(t, ts.run("request virtual-chassis vc-port set pic-slot 0"), "syntax error")
 	contains(t, ts.run("request virtual-chassis vc-port set pic-slot x port 1"), "expecting a card number")
 	contains(t, ts.ok("request virtual-chassis member add 2"), "Join token for member 2", "request virtual-chassis join token AAAA-BBBB")
@@ -864,6 +871,10 @@ func TestMemberTargets(t *testing.T) {
 		}
 	}
 	contains(t, ts.run("show version member 7"), "expecting a member of this stack")
+	// A VC port of another member: the request goes to that member.
+	st.calls = nil
+	contains(t, ts.ok("request virtual-chassis vc-port set 2/1/0"), "remote 2: request virtual-chassis vc-port set 2/1/0")
+	contains(t, ts.run("request virtual-chassis vc-port set 5/1/0"), "member 5 is not in this virtual chassis")
 	contains(t, ts.run("show version member"), "expecting a member id")
 
 	// Reboot: one question for all targets, the others first, this one last.
