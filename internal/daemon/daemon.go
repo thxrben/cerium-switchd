@@ -88,6 +88,7 @@ func Run(ctx context.Context, o Options) error {
 		} else {
 			member = vc.Member()
 			kernel.GatewayMAC = dataplane.GatewayMAC(vc.StackID())
+			kernel.MemberMAC = dataplane.MemberMAC(vc.StackID(), member)
 		}
 	}
 	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: member}

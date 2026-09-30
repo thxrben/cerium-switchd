@@ -163,6 +163,10 @@ Last updated: 2026-09-30 (evening).
   pass link-local frames (01:80:c2:00:00:0x, LACP/BPDU). Needs group_fwd_mask / OVS forward-bpdu again.
 
 ## Next (in order)
+- User requests 2026-09-30 (later): `show chassis hardware` for all members (full names); `?` completion offers
+  the ports of every member (2/y/z on member 1); `show virtual-chassis vc-port` shows link speed and full port names
+  (port and peer port); full interface names everywhere; every member uses its own member id in its local names
+  (no 1/y/z on member 2).
 - Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
   (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
   TestConfigAcrossMembers. Full lab suite: 30 tests pass.

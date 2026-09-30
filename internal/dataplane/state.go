@@ -173,6 +173,10 @@ type L3If struct {
 	MTU    int // kernel MTU of an own device (0 = default)
 	Addrs  []netip.Prefix
 	VRF    string // routing instance ("" = default)
+	// Anycast: an irb unit with addresses shared by every member; it uses
+	// the stack-wide gateway MAC and no DAD. Other irb units (only
+	// per-member addresses, e.g. management) use this member's own MAC.
+	Anycast bool
 }
 
 // Route is a static route of the default instance.

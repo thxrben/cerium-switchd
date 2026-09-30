@@ -24,6 +24,9 @@ type Netlink struct {
 	// same on every member of a stack (anycast gateway, reference 5.3.3).
 	// nil keeps the kernel's.
 	GatewayMAC net.HardwareAddr
+	// MemberMAC is this member's own MAC for irb units without shared
+	// addresses (per-member management addresses).
+	MemberMAC net.HardwareAddr
 
 	mlOnce sync.Once
 	macl   *macLimits

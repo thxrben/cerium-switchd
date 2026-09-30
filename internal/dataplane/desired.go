@@ -186,6 +186,7 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 				continue
 			}
 			i.Name, i.Parent, i.VID, i.Own = n, BridgeName, u.VLAN, true
+			i.Anycast = len(u.AddrMember) < len(u.Addrs)
 			i.MTU = 1500
 			if v := cfg.VLANByID[u.VLAN]; v != nil && v.MTU != 0 {
 				i.MTU = model.LinuxMTU(v.MTU)

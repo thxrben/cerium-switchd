@@ -445,7 +445,7 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	// (anycast gateway): duplicate address detection would see the other
 	// members' copies and disable them, so it is off there, and addresses
 	// that failed it before are added again.
-	anycast := i.Own && i.Parent == BridgeName
+	anycast := i.Own && i.Parent == BridgeName && i.Anycast
 	if anycast {
 		c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+i.Name+"/accept_dad", "0")
 		changed = changed || c
@@ -613,10 +613,19 @@ func routePresent(cur []netlink.Route, r *netlink.Route) bool {
 // GatewayMAC derives the stack-wide gateway MAC from the stack id: locally
 // administered, unicast.
 func GatewayMAC(stackID string) net.HardwareAddr {
-	if stackID == "" {
-		return nil
+	return derivedMAC("ceros gateway mac\x00" + stackID)
+}
+
+// MemberMAC derives member m's own irb MAC.
+func MemberMAC(stackID string, m int) net.HardwareAddr {
+	return derivedMAC(fmt.Sprintf("ceros member mac\x00%s\x00%d", stackID, m))
+}
+
+func derivedMAC(seed string) net.HardwareAddr {
+	if strings.HasSuffix(seed, "\x00") || strings.Contains(seed, "\x00\x00") {
+		return nil // no stack id
 	}
-	h := sha256.Sum256([]byte("ceros gateway mac\x00" + stackID))
+	h := sha256.Sum256([]byte(seed))
 	mac := net.HardwareAddr(h[:6])
 	mac[0] = mac[0]&^1 | 2
 	return mac
@@ -628,23 +637,26 @@ func (k *Netlink) syncGatewayMAC(l *L3) (bool, error) {
 	if len(k.GatewayMAC) != 6 {
 		return false, nil
 	}
-	names := []string{BridgeName}
+	want := map[string]net.HardwareAddr{BridgeName: k.GatewayMAC}
 	for _, i := range l.Ifs {
 		if i.Own && i.Parent == BridgeName {
-			names = append(names, i.Name)
+			want[i.Name] = k.GatewayMAC
+			if !i.Anycast && len(k.MemberMAC) == 6 {
+				want[i.Name] = k.MemberMAC
+			}
 		}
 	}
 	changed := false
 	var errs []error
-	for _, n := range names {
+	for n, mac := range want {
 		ln, err := netlink.LinkByName(n)
 		if err != nil {
 			continue // created later in this sync; the next one sets it
 		}
-		if ln.Attrs().HardwareAddr.String() == k.GatewayMAC.String() {
+		if ln.Attrs().HardwareAddr.String() == mac.String() {
 			continue
 		}
-		if err := netlink.LinkSetHardwareAddr(ln, k.GatewayMAC); err != nil {
+		if err := netlink.LinkSetHardwareAddr(ln, mac); err != nil {
 			errs = append(errs, fmt.Errorf("%s: gateway MAC: %w", n, err))
 			continue
 		}
