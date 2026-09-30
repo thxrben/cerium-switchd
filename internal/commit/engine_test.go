@@ -643,3 +643,44 @@ func TestSharedCandidatePersists(t *testing.T) {
 		t.Errorf("private candidate stored: %v", err)
 	}
 }
+
+// A member that stops being master ends the configuration sessions; with
+// Writable failing, nothing can be configured or committed, and an
+// expiring confirmation does not roll back (the master does). Resume
+// enforces a deadline that passed meanwhile.
+func TestDemoteAndResume(t *testing.T) {
+	r := newRig(t)
+	s := r.session("alice", SuperUser, Shared)
+	setLines(t, s, "set system host-name one")
+	commit(t, s, CommitOptions{Confirmed: true, Minutes: 5})
+	master := true
+	r.e.o.Writable = func() error {
+		if !master {
+			return errors.New("not master")
+		}
+		return nil
+	}
+	master = false
+	r.e.Demote("mastership moved")
+	if !s.Closed() {
+		t.Fatal("session still open after Demote")
+	}
+	if err := s.Modify(func(*config.Tree) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("modify after demote: %v", err)
+	}
+	if _, _, err := r.e.Configure("bob", SuperUser, Shared); err == nil {
+		t.Fatal("configure without master succeeded")
+	}
+	if err := r.e.Confirm(context.Background(), "bob"); err == nil {
+		t.Fatal("confirm without master succeeded")
+	}
+	r.clock.Advance(10 * time.Minute) // the (stopped) timer must not roll back
+	if r.e.Active().Root.Leaf("system", "host-name") != "one" {
+		t.Fatal("rolled back while not master")
+	}
+	master = true
+	r.e.Resume(context.Background())
+	if r.e.Active().Root.Leaf("system", "host-name") == "one" || r.e.Pending() != nil {
+		t.Fatal("expired confirmation not enforced on resume")
+	}
+}

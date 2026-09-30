@@ -84,10 +84,19 @@ func New(env Env) *Shell {
 }
 
 // InConfig reports whether the shell is in configuration mode.
-func (sh *Shell) InConfig() bool { return sh.sess != nil }
+func (sh *Shell) InConfig() bool { sh.checkSession(); return sh.sess != nil }
+
+// checkSession returns to operational mode if the engine ended the
+// configuration session (mastership moved to another member).
+func (sh *Shell) checkSession() {
+	if sh.sess != nil && sh.sess.Closed() {
+		sh.sess, sh.edit, sh.levels = nil, nil, nil
+	}
+}
 
 // Prompt returns the prompt for the next line.
 func (sh *Shell) Prompt() string {
+	sh.checkSession()
 	c := ">"
 	if sh.sess != nil {
 		c = "#"
@@ -189,6 +198,7 @@ func (sh *Shell) Execute(ctx context.Context, line string, term Terminal) (rep R
 	if len(toks) == 0 {
 		return Reply{}
 	}
+	sh.checkSession()
 	cmdToks, pipeSegs := splitPipes(toks)
 	c := &call{ctx: ctx, line: line, out: &out, term: term, reply: &rep}
 	c.pipes, err = parsePipes(pipeSegs, line)

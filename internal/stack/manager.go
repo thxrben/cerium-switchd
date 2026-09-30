@@ -28,6 +28,7 @@ import (
 
 	"mclag/internal/config"
 	"mclag/internal/stack/link"
+	"mclag/internal/stack/mesh"
 	"mclag/internal/stack/pki"
 )
 
@@ -56,6 +57,7 @@ type Manager struct {
 	join       *joinReq
 	pending    map[string]pendingMember // normalized token -> member
 	kick       chan struct{}            // wakes waiting sessions (join started, member added)
+	mesh       *mesh.Mesh
 }
 
 type joinReq struct {
@@ -155,7 +157,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.kick = make(chan struct{})
 	m.ctx = ctx
 	m.ports = map[string]*vcPort{}
+	m.mesh = mesh.New(m.member, m.Log)
 	m.mu.Unlock()
+	go m.mesh.Run(ctx.Done())
 	var st vcState
 	if raw, err := os.ReadFile(m.path("vc-ports.json")); err == nil {
 		_ = json.Unmarshal(raw, &st)
@@ -475,6 +479,9 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	if err := json.Unmarshal(line, &h); err != nil {
 		return fmt.Errorf("neighbour hello: %w", err)
 	}
+	if h.Member == me {
+		return fmt.Errorf("neighbour has this switch's member id %d", me)
+	}
 	conn.SetDeadline(time.Time{})
 	p.set(func(s *PortStatus) {
 		s.State, s.PeerPort, s.UpSince, s.LastError = "up", h.Port, time.Now(), ""
@@ -484,24 +491,40 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 		}
 	})
 	m.Log.Info("stack: neighbour on VC port", "port", p.local, "member", h.Member, "host", h.Host, "peer_port", h.Port)
-	// Keep the session; later phases carry stack messages here.
-	errc := make(chan error, 1)
+	// The session carries the mesh (topology, relay, streams) from now on.
+	ended := make(chan struct{})
 	go func() {
-		for {
-			if _, err := r.ReadBytes('\n'); err != nil {
-				errc <- err
-				return
-			}
-		}
+		m.mesh.AddPeer(h.Member, sessionConn{r, conn})
+		close(ended)
 	}()
 	select {
 	case <-ctx.Done():
+		conn.Close()
+		<-ended
 		return nil
 	case <-l.Done():
+		conn.Close()
+		<-ended
 		return l.Err()
-	case err := <-errc:
-		return err
+	case <-ended:
+		conn.Close()
+		return errors.New("stack session closed")
 	}
+}
+
+// sessionConn reads through the buffer that read the hello.
+type sessionConn struct {
+	r *bufio.Reader
+	*tls.Conn
+}
+
+func (c sessionConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// Mesh returns the stack's message layer (after Start).
+func (m *Manager) Mesh() *mesh.Mesh {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mesh
 }
 
 // preparePort makes a port usable for stacking and nothing else: up, out

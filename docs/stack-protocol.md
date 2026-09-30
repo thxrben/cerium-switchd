@@ -100,3 +100,47 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
   CLOSE ends the sending direction; RESET ends the stream at once.
 * Messages for a destination without a path are dropped (streams to it are reset); nothing is buffered for members
   that are gone.
+
+## Stack control (Raft)
+
+Every member runs Raft (hashicorp/raft) over mesh streams (service `raft`); the Raft server id and address of a member
+are `member-<id>`. The Raft leader is the **master**.
+
+* **Replicated state** (the Raft state machine): the configuration revisions (the last 50), the pending confirmation,
+  the shared candidate, the member list (id → public key) and open join tokens (id, token, expiry).
+  * Each member keeps the state in its local configuration store (`/var/lib/switchd/config`), written by the state
+    machine. Reads are always local: a member without master or majority still starts with, and forwards with, the
+    last configuration it knows.
+  * The state machine records the Raft index it applied last; entries at or below it (replayed after a restart) and
+    older snapshots are ignored, so the local store never goes back.
+  * Writes (commits, the pending state, the shared candidate, members, tokens) are Raft entries. A member that is not
+    the master forwards them to the master (mesh service `ctl`).
+* **Bootstrap**: a switch that created its stack (member 1, never joined another stack) and has no Raft state forms a
+  one-voter Raft cluster. Its first entry (`load`) carries its existing configuration history, the member list and
+  the cluster id into Raft. A member that joined waits until the master adds it.
+* **Voters**: up to 7 members are voters, chosen by `mastership-priority` (higher first, ties: lower id); the others
+  are non-voters (they get the state, but do not vote). The master adjusts the voter set when members join or leave,
+  or priorities change.
+* **Election**: Raft elects the master. A newly elected master hands mastership to a reachable, up-to-date voter
+  with a higher `mastership-priority` if there is one; a master with priority 0 always hands it on. Afterwards the
+  master stays until it fails or is switched explicitly (no preemption when a higher-priority member returns).
+* **Member list**: stacking sessions and mesh streams are accepted only from members in the list (with their key).
+  A switch that has not yet received the state accepts any member certificate of the stack.
+
+## Commits in a stack
+
+* **Configuration mode runs on the master.** `configure` on another member relays the configuration session to the
+  master over a mesh stream (service `cli`, first line: user, class, originating member); everything until the
+  session leaves configuration mode goes there. Operational commands run on the member the user is logged in to.
+  Without a reachable master, `configure` fails with a message (operational commands keep working).
+* When mastership moves, configuration sessions on the old master end with a notice; the shared candidate is kept
+  (it is replicated), private candidates and exclusive locks are lost.
+* **Apply**: the master applies a commit on every reachable member in parallel (mesh service `ctl`, full
+  configuration, timeout 120 s) and on itself, and prints the result per member. If a member fails, all members
+  return to the previous configuration and the commit fails. Unreachable members are reported as pending.
+* **Catch-up**: a member compares the configuration it applied with the replicated active configuration whenever
+  the replicated state changes, and every 10 s. If they differ and the master has not sent an apply for 60 s (a
+  commit in progress), it applies the replicated configuration. This covers members that were unreachable during a
+  commit and a master that failed in the middle of one.
+* The confirmation timer runs on the master; a new master re-arms it from the replicated pending state (and rolls
+  back at once if the deadline has passed).

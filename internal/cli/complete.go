@@ -46,6 +46,7 @@ func filter(cs []Completion, partial string) []Completion {
 // Complete returns the possible next words for line (the text up to the
 // cursor). The last word is being completed unless line ends in a space.
 func (sh *Shell) Complete(line string) (res []Completion) {
+	sh.checkSession()
 	defer func() {
 		if r := recover(); r != nil {
 			sh.env.Log.Error("cli: completion panic", "line", line, "panic", r)

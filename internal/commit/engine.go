@@ -102,6 +102,11 @@ type Options struct {
 	// context.Background().
 	Notify func(ctx context.Context, msg string)
 	Log    *slog.Logger
+	// Writable reports whether this engine may change the configuration
+	// (in a stack: this member is the master). nil: always. It is checked
+	// by Configure, Commit and Confirm; an expiring confirmation timer
+	// does nothing while it fails (the master rolls back).
+	Writable func() error
 }
 
 // Errors returned by sessions and the engine.
@@ -146,6 +151,15 @@ type Engine struct {
 	timer     Timer
 	gen       uint64 // invalidates stale confirmation timers
 	nextID    uint64 // session order
+
+	// The shared candidate is stored in the background (in a stack, it is
+	// replicated), newest value first; persistMu keeps the writes in order.
+	persistMu   sync.Mutex
+	sharedWant  *config.Tree
+	sharedDirty bool
+	sharedKick  chan struct{}
+	done        chan struct{}
+	closeOnce   sync.Once
 }
 
 // New opens the engine on a store. An empty store gets an empty initial
@@ -160,7 +174,10 @@ func New(o Options) (*Engine, error) {
 	if o.Notify == nil {
 		o.Notify = func(context.Context, string) {}
 	}
-	e := &Engine{o: o, sessions: map[*Session]struct{}{}}
+	if o.Writable == nil {
+		o.Writable = func() error { return nil }
+	}
+	e := &Engine{o: o, sessions: map[*Session]struct{}{}, sharedKick: make(chan struct{}, 1), done: make(chan struct{})}
 	revs := o.Store.Revisions()
 	if len(revs) == 0 {
 		r, err := newRevision(1, o.Clock.Now(), "system", "initial configuration", config.New())
@@ -168,9 +185,13 @@ func New(o Options) (*Engine, error) {
 			return nil, err
 		}
 		if err := o.Store.Put(r, 0); err != nil {
-			return nil, err
+			// A store that cannot be written yet (a stack member that has
+			// not received the replicated state) starts empty.
+			o.Log.Warn("initial configuration not stored", "err", err)
+			revs = []*Revision{r}
+		} else {
+			revs = o.Store.Revisions()
 		}
-		revs = o.Store.Revisions()
 	}
 	last := revs[len(revs)-1]
 	t, err := e.tree(last)
@@ -188,6 +209,7 @@ func New(o Options) (*Engine, error) {
 			e.shared = c
 		}
 	}
+	go e.sharedWriter()
 	return e, nil
 }
 
@@ -205,12 +227,13 @@ func newRevision(seq uint64, now time.Time, user, comment string, t *config.Tree
 func (e *Engine) Start(ctx context.Context) []MemberResult {
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
-	if p := e.o.Store.Pending(); p != nil && !e.o.Clock.Now().Before(p.Deadline) {
+	writable := e.o.Writable() == nil
+	if p := e.o.Store.Pending(); p != nil && writable && !e.o.Clock.Now().Before(p.Deadline) {
 		return e.rollbackPending(ctx, nil)
 	}
 	res := e.o.Applier.Apply(ctx, nil, e.Active())
 	e.logResults("startup apply", res)
-	if p := e.o.Store.Pending(); p != nil {
+	if p := e.o.Store.Pending(); p != nil && writable {
 		e.mu.Lock()
 		e.armTimer(p.Deadline)
 		e.mu.Unlock()
@@ -218,14 +241,96 @@ func (e *Engine) Start(ctx context.Context) []MemberResult {
 	return res
 }
 
-// Close stops the confirmation timer.
+// Close stops the confirmation timer and stores the shared candidate.
 func (e *Engine) Close() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.gen++
 	if e.timer != nil {
 		e.timer.Stop()
 		e.timer = nil
+	}
+	e.mu.Unlock()
+	e.closeOnce.Do(func() { close(e.done) })
+	e.writeShared()
+}
+
+// Reload reads the active configuration and the shared candidate from the
+// store again (a stack member that is not master, after the replicated
+// state changed).
+func (e *Engine) Reload() error {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	return e.reload()
+}
+
+func (e *Engine) reload() error {
+	revs := e.o.Store.Revisions()
+	if len(revs) == 0 {
+		return nil
+	}
+	last := revs[len(revs)-1]
+	t, err := e.tree(last)
+	if err != nil {
+		return err
+	}
+	shared := t.Clone()
+	if cs, ok := e.o.Store.(CandidateStore); ok {
+		if c, err := e.parse(cs.Candidate()); err == nil && c != nil {
+			shared = c
+		}
+	}
+	e.mu.Lock()
+	e.active, e.activeSeq = t, last.Seq
+	if len(e.sessions) == 0 {
+		e.shared = shared
+	}
+	e.mu.Unlock()
+	return nil
+}
+
+// Resume takes over as the configuration master: it reloads the stored
+// state and enforces a pending confirmation (re-arms the timer, or rolls
+// back at once if the deadline has passed).
+func (e *Engine) Resume(ctx context.Context) {
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
+	if err := e.reload(); err != nil {
+		e.o.Log.Error("configuration master: reading the stored configuration", "err", err)
+	}
+	p := e.o.Store.Pending()
+	if p == nil {
+		return
+	}
+	if !e.o.Clock.Now().Before(p.Deadline) {
+		e.rollbackPending(ctx, e.Active())
+		return
+	}
+	e.mu.Lock()
+	e.armTimer(p.Deadline)
+	e.mu.Unlock()
+}
+
+// Demote ends all configuration sessions (this member is no longer the
+// configuration master); msg is announced to the CLI sessions.
+func (e *Engine) Demote(msg string) {
+	e.mu.Lock()
+	n := len(e.sessions)
+	for s := range e.sessions {
+		s.closed = true
+		if s.Mode == Private {
+			s.private = nil
+		}
+	}
+	e.sessions = map[*Session]struct{}{}
+	e.lock = nil
+	e.gen++
+	if e.timer != nil {
+		e.timer.Stop()
+		e.timer = nil
+	}
+	e.mu.Unlock()
+	if n > 0 && msg != "" {
+		e.o.Notify(context.Background(), msg)
 	}
 }
 
@@ -362,6 +467,9 @@ func (e *Engine) Configure(user string, class Class, mode Mode) (*Session, []str
 	if class == ReadOnly {
 		return nil, nil, ErrPermission
 	}
+	if err := e.o.Writable(); err != nil {
+		return nil, nil, fmt.Errorf("configuration unavailable: %w", err)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	sharedChanged := !config.Equal(e.shared, e.active)
@@ -409,6 +517,14 @@ func (s *Session) candidate() *config.Tree {
 		return s.private
 	}
 	return s.e.shared
+}
+
+// Closed reports whether the session ended (it was closed, or the engine
+// ended it because mastership moved).
+func (s *Session) Closed() bool {
+	s.e.mu.Lock()
+	defer s.e.mu.Unlock()
+	return s.closed
 }
 
 // Candidate returns a copy of the session's candidate configuration.
@@ -574,6 +690,12 @@ func (s *Session) Commit(ctx context.Context, opts CommitOptions) (*Result, erro
 	e := s.e
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
+	if err := e.o.Writable(); err != nil {
+		return nil, fmt.Errorf("commit not possible: %w", err)
+	}
+	// The shared candidate as of this commit is stored before the commit
+	// returns (writes are ordered, the newest value wins).
+	defer e.writeShared()
 
 	e.mu.Lock()
 	if s.closed {
@@ -709,6 +831,9 @@ func (e *Engine) logResults(what string, rs []MemberResult) {
 func (e *Engine) Confirm(ctx context.Context, user string) error {
 	e.opMu.Lock()
 	defer e.opMu.Unlock()
+	if err := e.o.Writable(); err != nil {
+		return fmt.Errorf("confirm not possible: %w", err)
+	}
 	return e.confirm(ctx, user)
 }
 
@@ -765,7 +890,7 @@ func (e *Engine) expire(gen uint64) {
 		stale = true
 	}
 	e.mu.Unlock()
-	if stale {
+	if stale || e.o.Writable() != nil {
 		return
 	}
 	e.rollbackPending(context.Background(), e.Active())
@@ -829,16 +954,49 @@ func (e *Engine) rollbackPending(ctx context.Context, from *config.Tree) []Membe
 	return res
 }
 
-// persistShared stores the shared candidate if it has uncommitted changes
-// (else removes the stored one). Caller holds e.mu.
+// persistShared queues the shared candidate for storing if it has
+// uncommitted changes (else the stored one is removed). Caller holds e.mu.
 func (e *Engine) persistShared() {
-	cs, ok := e.o.Store.(CandidateStore)
-	if !ok {
+	if _, ok := e.o.Store.(CandidateStore); !ok {
 		return
 	}
 	var t *config.Tree
 	if !config.Equal(e.shared, e.active) {
-		t = e.shared
+		t = e.shared.Clone()
+	}
+	e.sharedWant, e.sharedDirty = t, true
+	select {
+	case e.sharedKick <- struct{}{}:
+	default:
+	}
+}
+
+func (e *Engine) sharedWriter() {
+	for {
+		select {
+		case <-e.sharedKick:
+			e.writeShared()
+		case <-e.done:
+			return
+		}
+	}
+}
+
+// writeShared stores the newest queued shared candidate. Caller must not
+// hold e.mu.
+func (e *Engine) writeShared() {
+	cs, ok := e.o.Store.(CandidateStore)
+	if !ok {
+		return
+	}
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	e.mu.Lock()
+	t, dirty := e.sharedWant, e.sharedDirty
+	e.sharedWant, e.sharedDirty = nil, false
+	e.mu.Unlock()
+	if !dirty {
+		return
 	}
 	if err := cs.SetCandidate(t); err != nil {
 		e.o.Log.Warn("cannot store the shared candidate", "err", err)

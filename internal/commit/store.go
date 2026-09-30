@@ -283,3 +283,58 @@ func (s *FileStore) SetCandidate(t *config.Tree) error {
 	}
 	return writeAtomic(path, raw, s.fileMode)
 }
+
+// SetCandidateRaw stores a shared candidate given as JSON (nil: remove).
+func (s *FileStore) SetCandidateRaw(raw json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.dir, candidateFile)
+	if raw == nil {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeAtomic(path, raw, s.fileMode)
+}
+
+// Replace makes the store hold exactly revs, p and the candidate (a
+// replicated state that arrived as a whole). Revisions that are not in
+// revs are removed.
+func (s *FileStore) Replace(revs []*Revision, p *Pending, candidate json.RawMessage) error {
+	s.mu.Lock()
+	keepFiles := map[string]bool{}
+	sorted := append([]*Revision(nil), revs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	for _, r := range sorted {
+		raw, err := json.Marshal(r)
+		if err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if err := writeAtomic(s.revPath(r.Seq), raw, s.fileMode); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		keepFiles[filepath.Base(s.revPath(r.Seq))] = true
+	}
+	ents, _ := os.ReadDir(filepath.Join(s.dir, "rev"))
+	for _, e := range ents {
+		if !keepFiles[e.Name()] {
+			_ = os.Remove(filepath.Join(s.dir, "rev", e.Name()))
+		}
+	}
+	s.revs = sorted
+	s.mu.Unlock()
+	if err := s.SetPending(p); err != nil {
+		return err
+	}
+	return s.SetCandidateRaw(candidate)
+}
+
+// Has reports whether revision seq is stored.
+func (s *FileStore) Has(seq uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.find(seq) != nil
+}
