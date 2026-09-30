@@ -201,12 +201,24 @@ Last updated: 2026-09-30 (night).
   distribution, member by member drained, master last, automatic return after 3 failed starts, transit check with
   force, older members ignore unknown statements). Lab: sw1-sw3 + physw4 updated 4c3e25e -> b131b9e -> 2f76bbb by
   the stack itself.
-0. Bugs reported by the user 2026-10-01 (next):
-   - show ethernet-switching table is empty although addresses are learned; show arp shows too few entries.
-   - show lacp interfaces: check the table (4/0/3 appears as Actor and Partner rows: that is the Junos layout, but
-     verify the merge of MC-LAG bundles and kernel/config port names).
-   - sw1 still has the old switchd.service (no ExecStopPost for cme); the unit is not part of the package: switchd
-     should install/refresh its own unit (or the package carries it).
+0. To do (user reports and findings, 2026-10-01), in this order:
+   a. show ethernet-switching table is empty although addresses are learned; show arp shows too few entries
+      (check stackOps.MACTable/Neighbors merge and the per-member ops, e.g. the vc-* filter and FDB read).
+   b. show mclag without a target runs on the master; if the master is not in a domain it says "not in an MC-LAG
+      domain". It must show the stack's domains (stack-wide like the other listings; member <id> narrows).
+   c. commit check / show lacp: warn when a bundle runs `periodic fast` but the partner sends only every 30 s
+      (UniFi does; our side expires after 3 s, stays Defaulted, the LAG never forms) and suggest `periodic slow`.
+      Lab: ae0 (1/9/0 sw1 + 4/0/3 physw4, MC-LAG domain 1 [1 4]) to NET-BRI-01-SW-01 ports 23/24 (LAG 1); the
+      user was told to set `lacp periodic slow`. Re-check the LACP merge of MC-LAG bundles (kernel/config names).
+   d. LLDP on bundle member ports: the UniFi lists only port 14 (4/2/0) as neighbour, not 23/24; re-check once the
+      LAG is up (LLDP on team member ports may not leave).
+   e. The systemd unit is not part of the package: sw1 still has the old switchd.service (no ExecStopPost that
+      removes cme after a crash). switchd should install/refresh its own unit (or the package carries it).
+   f. Lab topology (user's): physw4 has only one stacking link (to sw1, 1/8/0 <-> 4/0/0). sw1 is then the only path
+      to physw4: updating sw1 needs `force`, and if sw1 fails physw4 is a minority and drops its MC-LAG leg. The
+      user was advised to add a second stacking cable (physw4 to sw2 or sw3).
+   g. A stack of 4 voters loses its majority when 2 are unreachable (sw1 restart cuts physw4 too): consider a
+      voter count that tolerates this (odd voter count, or physw4 as non-voter) and document it.
 1. Phase 7b rest: protocol version window (versioned stack messages), signed packages.
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
 3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge
