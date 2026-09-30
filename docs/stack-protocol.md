@@ -75,3 +75,28 @@ When a link is up, each side first writes one byte: `M` (member session) or `J` 
 * A switch that joins gets the stack's current configuration with the answer (continuous replication follows with
   Raft). Its own previous configuration is kept in `/var/lib/switchd/config.pre-join-<time>`; switchd restarts to take
   the new member id (interface names change from `1/…` to `<id>/…`).
+
+## Mesh (topology, relay, streams)
+
+After the hellos, a member session carries **mesh messages**, each `uint32` length-prefixed (big-endian) and then:
+
+| Size | Field |
+|---|---|
+| 1 | type: 1 = LSA, 2 = OPEN, 3 = DATA, 4 = CREDIT, 5 = CLOSE, 6 = RESET |
+| 1 | hop limit (starts at 16; a message reaching 0 is dropped) |
+| 1 | source member |
+| 1 | destination member (0 for LSA: not forwarded as such, flooded) |
+| 4 | stream id (chosen by the opening side; odd = opened by the lower member id) |
+| 4 | sequence number (DATA: per stream and direction, from 0; CREDIT: bytes granted) |
+| n | payload |
+
+* **LSA** (link-state announcement): payload = sequence number (8 bytes), then the member ids of the origin's current
+  neighbours (one byte each). Sent on every neighbour change and every 5 s; a member re-floods an LSA it has not seen
+  (higher sequence number for that origin) to all its other sessions. LSAs older than 20 s are dropped. Paths are
+  the shortest in hops (ties: lower next-hop member id), recomputed on every change.
+* **Streams**: OPEN carries a service name (e.g. `raft`); the destination answers with CREDIT (initial window 256 KiB)
+  or RESET (no such service). DATA is only sent within the granted credit; the receiver grants more as the
+  application reads. A DATA message with an unexpected sequence number (lost on a failed path) resets the stream.
+  CLOSE ends the sending direction; RESET ends the stream at once.
+* Messages for a destination without a path are dropped (streams to it are reset); nothing is buffered for members
+  that are gone.
