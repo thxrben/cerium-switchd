@@ -48,10 +48,22 @@ type Env struct {
 	// Logs supplies "show log" and "show system syslog" (nil: unavailable).
 	Logs Logs
 	Log  *slog.Logger
+	// Stack runs operational commands on other members (nil: standalone).
+	Stack Stack
 	// Role returns this member's role in a stack with more than one
 	// member, e.g. "master:1" or "backup:2", shown above the prompt as in
 	// Junos VC ("": standalone; nil: none).
 	Role func() string
+}
+
+// Stack is what the CLI needs to run commands on other stack members.
+type Stack interface {
+	// Self is this member's id; Members lists all members (sorted).
+	Self() int
+	Members() []int
+	// Exec runs an operational command line on member as the session's
+	// user; confirmed answers its questions with yes.
+	Exec(ctx context.Context, member int, line string, confirmed bool) (string, error)
 }
 
 // Reply is the result of executing one line.
@@ -279,6 +291,16 @@ func (sh *Shell) dispatch(c *call, cmds []*command, toks []config.Token) error {
 		}
 		if (c.pipes.display != "" || c.pipes.compare) && !cmd.display {
 			return errors.New("'| display' and '| compare' are only valid for show commands")
+		}
+		if cmd.perMember && sh.env.Stack != nil {
+			targets, pos, rest, err := sh.parseTarget(toks)
+			if err != nil {
+				return err
+			}
+			if targets != nil {
+				return sh.runOnMembers(c, cmd, rest, targets, pos)
+			}
+			toks = rest
 		}
 		c.args = toks
 		return cmd.run(sh, c)

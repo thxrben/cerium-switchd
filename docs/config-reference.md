@@ -678,6 +678,18 @@ working path, so a ring survives one broken cable.
   or `{no-master:2}` without a master. Operational commands
   run on the member you are logged in to. Without a master (no majority), `configure` fails with
   `error: configuration unavailable: no master (the stack has no majority)`; operational commands keep working.
+* **Operational commands on other members**: commands that report or change one member's state accept a target at
+  the end: `member <id>`, `all-members`, or `local` (the default: the member you are logged in to). With more than one
+  target the output has a section per member (`member2:` and a line), pipes apply to the whole output, e.g.
+  `show interfaces terse all-members | match down`. The command runs on the member as the same user and class.
+  * Commands with targets: `show interfaces`, `show ethernet-switching table`, `show vlans`, `show chassis hardware`,
+    `show system uptime|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
+    `show virtual-chassis vc-port`, `clear ethernet-switching table`, `request system reboot|halt|power-off`,
+    `clear system reboot`.
+  * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
+    one. (Junos reboots all members by default; here the default is the local member.)
+  * A member that cannot be reached is reported in its section (`error: member 3 is not reachable`); the others
+    still answer.
 * `commit` prints the result per member (`member1: commit complete`, `member3: not reachable, applies the
   configuration when it returns`). A member that fails to apply makes every member return to the previous configuration.
 * When mastership moves, open configuration sessions end with a notice; the shared candidate is kept.

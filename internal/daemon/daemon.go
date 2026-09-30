@@ -191,10 +191,12 @@ func Run(ctx context.Context, o Options) error {
 			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
 		if ctl != nil {
 			env.Role = ctl.role
+			env.Stack = sessionStack{s: ctl, user: name, class: class}
 		}
 		return env
 	}
 	if ctl != nil {
+		ctl.serveExec(srv.Env)
 		// Configuration mode runs on the master (docs/stack-protocol.md).
 		srv.Relay = func() (net.Conn, error) {
 			deadline := time.Now().Add(3 * time.Second)

@@ -28,6 +28,12 @@ type command struct {
 	// display allows "| display" and "| compare".
 	display bool
 	hidden  bool
+	// perMember: the command reports or changes one member's state and
+	// accepts a target (member <id> | all-members | local) in a stack.
+	perMember bool
+	// confirm is the question asked before running it on other members
+	// ("Reboot"); the command itself then does not ask again.
+	confirm string
 }
 
 var operational, configuration []*command

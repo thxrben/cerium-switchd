@@ -1040,6 +1040,17 @@ exit"`)
 		}
 	}
 
+	// Operational commands on other members.
+	out = mustSSH(t, sw2Addr, "swcli -c 'show virtual-chassis vc-port all-members'")
+	for id := 1; id <= 3; id++ {
+		if !strings.Contains(out, fmt.Sprintf("member%d:\n", id)) {
+			t.Errorf("show virtual-chassis vc-port all-members lacks member %d:\n%s", id, out)
+		}
+	}
+	if !regexp.MustCompile(`member3:\n-+\n(?s:.*)member 1 \(sw1\)`).MatchString(out) {
+		t.Errorf("member 3's stacking ports missing:\n%s", out)
+	}
+
 	// Traffic through sw1 while it is removed from the stack and joins again.
 	pingDone := make(chan string, 1)
 	go func() {

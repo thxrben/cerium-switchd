@@ -1010,6 +1010,7 @@ func registerOperational() {
 		}},
 	}})
 	sort.Slice(operational, func(i, j int) bool { return operational[i].name < operational[j].name })
+	markPerMember()
 }
 
 var (

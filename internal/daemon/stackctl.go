@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"mclag/internal/cli"
 	"mclag/internal/commit"
 	"mclag/internal/config"
 	"mclag/internal/model"
@@ -449,4 +451,97 @@ func (s *stackCtl) role() string {
 		return fmt.Sprintf("backup:%d", s.member)
 	}
 	return fmt.Sprintf("linecard:%d", s.member)
+}
+
+// ---- operational commands on other members ----
+
+type execRequest struct {
+	User      string `json:"user"`
+	Class     string `json:"class"`
+	Line      string `json:"line"`
+	Confirmed bool   `json:"confirmed,omitempty"`
+}
+
+// serveExec runs operational commands for users of other members
+// (reference 5.2, targets). env builds the CLI environment of a user.
+func (s *stackCtl) serveExec(env func(user string, class commit.Class) cli.Env) {
+	s.node.Handle("exec", func(from int, req json.RawMessage) (any, error) {
+		var r execRequest
+		if err := json.Unmarshal(req, &r); err != nil {
+			return nil, err
+		}
+		e := env(r.User, commit.ParseClass(r.Class))
+		e.Stack, e.Role = nil, nil // no further hops
+		sh := cli.New(e)
+		defer sh.Close()
+		s.log.Info("cli command", "facility", "interactive-commands", "user", r.User, "command", r.Line, "from_member", from)
+		ctx, cancel := context.WithTimeout(context.Background(), memberExecTimeout)
+		defer cancel()
+		rep := sh.Execute(ctx, r.Line, remoteTerm{r.Confirmed})
+		return rep.Output, nil
+	})
+}
+
+const memberExecTimeout = 60 * time.Second
+
+// remoteTerm is the terminal of a command run for another member: it can
+// only answer the command's confirmation (asked on that member already).
+type remoteTerm struct{ confirmed bool }
+
+var errNoTerminal = errors.New("not available when run on another member")
+
+func (t remoteTerm) Ask(string, bool) (string, error) {
+	if t.confirmed {
+		return "yes", nil
+	}
+	return "", errNoTerminal
+}
+func (remoteTerm) ReadText(string) (string, error) { return "", errNoTerminal }
+func (remoteTerm) ReadFile(string) ([]byte, error) { return nil, errNoTerminal }
+func (remoteTerm) WriteFile(string, []byte) error  { return errNoTerminal }
+
+// sessionStack is cli.Stack for one CLI session.
+type sessionStack struct {
+	s     *stackCtl
+	user  string
+	class commit.Class
+}
+
+func (ss sessionStack) Self() int { return ss.s.member }
+
+func (ss sessionStack) Members() []int {
+	var out []int
+	for id := range ss.s.node.Members() {
+		out = append(out, id)
+	}
+	if !slices.Contains(out, ss.s.member) {
+		out = append(out, ss.s.member)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func (ss sessionStack) Exec(ctx context.Context, member int, line string, confirmed bool) (string, error) {
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		raw, err := ss.s.node.Call(member, "exec", execRequest{User: ss.user, Class: ss.class.String(), Line: line, Confirmed: confirmed},
+			memberExecTimeout+5*time.Second)
+		var out string
+		if err == nil {
+			err = json.Unmarshal(raw, &out)
+		} else if !errors.As(err, new(*control.RemoteError)) {
+			err = fmt.Errorf("member %d is not reachable (%v)", member, err)
+		}
+		done <- result{out, err}
+	}()
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }

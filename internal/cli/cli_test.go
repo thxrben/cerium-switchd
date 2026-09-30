@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -737,4 +739,84 @@ func TestSystemOperationalCommands(t *testing.T) {
 	op := newTester(t, e, "bob", commit.Operator)
 	op.sh.env.Ops = ops
 	contains(t, op.run("request system reboot"), "permission denied")
+}
+
+type fakeStack struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (*fakeStack) Self() int      { return 1 }
+func (*fakeStack) Members() []int { return []int{1, 2, 3} }
+func (f *fakeStack) Exec(_ context.Context, member int, line string, confirmed bool) (string, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, fmt.Sprintf("%d %s %v", member, line, confirmed))
+	f.mu.Unlock()
+	if member == 3 {
+		return "", errors.New("member 3 is not reachable")
+	}
+	return fmt.Sprintf("remote %d: %s\n", member, line), nil
+}
+
+// Operational commands on other stack members (reference 5.2).
+func TestMemberTargets(t *testing.T) {
+	e := newEngine(t)
+	ops := &fakeOps{}
+	st := &fakeStack{}
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.sh.env.Ops, ts.sh.env.Stack = ops, st
+
+	out := ts.ok("show version member 2")
+	contains(t, out, "member2:\n-----", "remote 2: show version\n")
+	if strings.Contains(out, "member1:") {
+		t.Errorf("local section for member 2:\n%s", out)
+	}
+	out = ts.run(`show system uptime all-members | match "remote|member|error"`)
+	contains(t, out, "member1:", "member2:", "remote 2: show system uptime", "member3:", "error: member 3 is not reachable")
+	if strings.Index(out, "member1:") > strings.Index(out, "member2:") {
+		t.Errorf("sections not in member order:\n%s", out)
+	}
+	// local and this member's id run here, without sections.
+	for _, l := range []string{"show version local", "show version member 1"} {
+		if out := ts.ok(l); strings.Contains(out, "member1:") || !strings.Contains(out, "test") {
+			t.Errorf("%s:\n%s", l, out)
+		}
+	}
+	contains(t, ts.run("show version member 7"), "expecting a member of this stack")
+	contains(t, ts.run("show version member"), "expecting a member id")
+
+	// Reboot: one question for all targets, the others first, this one last.
+	st.calls, ops.power = nil, nil
+	ts.term.answers = []string{"yes"}
+	out = ts.run("request system reboot all-members")
+	if len(st.calls) != 2 || st.calls[0] != "2 request system reboot true" || st.calls[1] != "3 request system reboot true" {
+		t.Errorf("remote reboots: %v", st.calls)
+	}
+	if len(ops.power) != 1 || !strings.Contains(ops.power[0], "reboot") {
+		t.Errorf("local reboot: %v", ops.power)
+	}
+	st.calls, ops.power = nil, nil
+	ts.term.answers = []string{"no"}
+	ts.run("request system reboot member 2")
+	if len(st.calls) != 0 {
+		t.Errorf("rebooted without confirmation: %v", st.calls)
+	}
+
+	// Completion offers the targets and the member ids.
+	names := func(cs []Completion) []string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.Text)
+		}
+		return out
+	}
+	if got := names(ts.sh.Complete("show version ")); !slices.Contains(got, "all-members") || !slices.Contains(got, "member") {
+		t.Errorf("show version completions: %v", got)
+	}
+	if got := names(ts.sh.Complete("show version member ")); !slices.Equal(got, []string{"1", "2", "3"}) {
+		t.Errorf("member completions: %v", got)
+	}
+	if got := names(ts.sh.Complete("show interfaces 1/1/0 ")); !slices.Contains(got, "local") {
+		t.Errorf("interface completions lack targets: %v", got)
+	}
 }
