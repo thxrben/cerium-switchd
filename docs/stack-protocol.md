@@ -15,7 +15,7 @@ Payload (all integers big-endian):
 |---|---|---|
 | 0 | 2 | magic `0x5354` ("ST") |
 | 2 | 1 | version (1) |
-| 3 | 1 | type: 1 = HELLO, 2 = DATA, 3 = ACK, 4 = RESET, 5 = BFD |
+| 3 | 1 | type: 1 = HELLO, 2 = DATA, 3 = ACK, 4 = RESET, 5 = BFD, 6 = PROBE, 7 = PROBE-REPLY |
 | 4 | 4 | sender epoch (random per link instance; changes when a side restarts) |
 | 8 | 4 | receiver epoch as last seen (0 = unknown) |
 | 12 | 4 | sequence number of the first payload byte (DATA) |
@@ -28,7 +28,9 @@ Payload (all integers big-endian):
   Then the link is up. Sequence numbers start at 0 for each epoch pair.
 * **Restart detection**: a frame whose receiver epoch is neither 0 nor the own epoch, or whose sender epoch changes,
   means the peer restarted: the stream is closed (the TLS session with it), and a new one starts with the new epochs.
-* **Data**: the stream is cut into frames of at most link MTU − 24 bytes. The sender keeps up to the peer's window
+* **Data**: the stream is cut into frames of at most **1500** − 24 bytes, **whatever the port's MTU is**: the stacking
+  protocol must work over every cable, including paths that cannot carry jumbo frames (a bridge or converter in
+  between, a switch port with a smaller MTU). Only the client traffic in the stack tunnels uses larger frames. The sender keeps up to the peer's window
   in flight. ACKs are cumulative; every DATA frame also carries an ACK. The receiver acknowledges at the latest after
   2 frames or 10 ms.
 * **Loss**: retransmission timeout starts at 50 ms (stacking cables are short), adapts to the measured round trip
@@ -38,6 +40,12 @@ Payload (all integers big-endian):
   the sender's interval and multiplier (2 bytes each, big-endian, milliseconds / count); both sides use the larger
   interval and multiplier. No frame for interval × multiplier ends the link.
 * **Close**: RESET, or the liveness timeout.
+* **Path MTU** (PROBE / PROBE-REPLY): once the link is up, and every 5 s, each side sends one PROBE per candidate size
+  above 1500: the port's MTU, and 9000, 4000 and 2000 if they are smaller. A PROBE is a frame padded to exactly that
+  Ethernet payload size; the receiver answers with a small PROBE-REPLY carrying the size it received. The largest
+  size answered within 500 ms is the **path MTU** of the cable (at least 1500 once known). It is shown by
+  `show virtual-chassis mtu` (column Verified), and a warning is logged when it is smaller than the largest data
+  `mtu` + 58 needs (config reference 5.2). Probes do not carry stream data and are not retransmitted.
 * A link never delivers bytes twice or out of order, and never delivers bytes across an epoch change.
 
 ## Keys and joining
@@ -117,8 +125,7 @@ on the stacking ports (config reference 5.2). All of it is fixed; nothing is con
 * **Routes** (protocol 250, table 999): for every reachable member `m`, `169.254.64.<m>/32` with one next hop per up
   link to each neighbour that lies on a shortest path to `m` (hops of the mesh topology, all equal-cost first hops,
   so two parallel cables are both used), each `via 169.254.64.<neighbour> dev <port> onlink`. Recomputed with the
-  mesh topology; a route whose member becomes unreachable is removed. An `unreachable` default route (highest
-  metric) makes lookups for an unreachable member fail inside the instance instead of falling through to the main
+  mesh topology; a route whose member becomes unreachable is removed. An `unreachable` default route (metric 1000000) makes lookups for an unreachable member fail inside the instance instead of falling through to the main
   table (which would send tunnel packets out of the management port).
 * **Tunnels**: per other switch member `m`, the VXLAN device `swvc<m>`: VNI `32 × min(self, m) + max(self, m)`,
   local `169.254.64.<self>`, remote `169.254.64.<m>`, UDP 4789, lower device `swstack`, TTL 16, outer DF set,

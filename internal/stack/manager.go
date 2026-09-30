@@ -106,6 +106,9 @@ type PortStatus struct {
 	// underlay, reference 5.2): its member id and its port's MAC address.
 	NeighborID  int
 	NeighborMAC net.HardwareAddr
+	// PathMTU is the largest frame (Ethernet payload) the cable carried in
+	// the last probe round (0: not known yet; docs/stack-protocol.md).
+	PathMTU int
 }
 
 // StackLink is a stacking link with an up member session.
@@ -495,7 +498,7 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 		l.Close()
 		p.set(func(s *PortStatus) {
 			s.State, s.Neighbor, s.PeerPort, s.UpSince = "down", "-", "", time.Time{}
-			s.NeighborID, s.NeighborMAC = 0, nil
+			s.NeighborID, s.NeighborMAC, s.PathMTU = 0, nil, 0
 			if err != nil {
 				s.LastError = err.Error()
 			}
@@ -511,7 +514,7 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 // the session until it ends.
 func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *link.PacketIO, linux string) error {
 	m.mu.Lock()
-	cfg := pki.TLSConfig(m.stack.Cert, pki.TLSCert(m.memberCert, m.memberKey), m.allowed)
+	cfg := pki.Wire(pki.TLSConfig(m.stack.Cert, pki.TLSCert(m.memberCert, m.memberKey), m.allowed), pki.ALPNMember)
 	me := m.member
 	join := m.join
 	m.mu.Unlock()
@@ -556,6 +559,8 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := conn.Handshake(); err != nil {
+		m.Log.Info("stack: TLS handshake with the neighbour failed", "port", p.local, "tls_client", bytes.Compare(own.HardwareAddr, pio.Peer()) < 0,
+			"own_mac", own.HardwareAddr.String(), "peer_mac", pio.Peer().String(), "err", err)
 		p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
 		return fmt.Errorf("%w: %v", errOtherStack, err)
 	}
@@ -612,8 +617,14 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	// A member removed from the member list loses its sessions.
 	check := time.NewTicker(2 * time.Second)
 	defer check.Stop()
+	probe := time.NewTicker(500 * time.Millisecond)
+	defer probe.Stop()
 	for {
 		select {
+		case <-probe.C:
+			if n := l.PathMTU(); n != 0 {
+				p.set(func(s *PortStatus) { s.PathMTU = n })
+			}
 		case <-ctx.Done():
 			conn.Close()
 			<-ended

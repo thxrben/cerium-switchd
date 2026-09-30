@@ -735,8 +735,15 @@ configured; they follow from the member list and the stacking cables.
   * Frames that are larger than the stack MTU are not fragmented: they are dropped where they enter the tunnel, exactly
     like on a port whose MTU is too small, and counted.
 * `show virtual-chassis mtu`: the largest data `mtu` in the stack and where it is configured, the frame size the
-  stacking links need for it, the largest data `mtu` (and host MTU) the stacking ports allow, and per member and
-  stacking port its current MTU, its NIC maximum and whether it suffices. All values are frame sizes (1.3).
+  stacking links need for it, the largest data `mtu` (and host MTU) the stacking ports allow, and per stacking port
+  its current MTU, its NIC maximum, the frame size **verified** on the cable (probe frames, see
+  stack-protocol.md "Path MTU") and whether it suffices. All values are frame sizes (1.3).
+  * W (`commit`, `commit check`): a stacking cable of this member carries less than the largest data `mtu` + 58
+    needs (verified with probe frames); the message names the port and the `mtu` that would fit.
+  * The stacking protocol itself uses frames of at most 1500 bytes, so it works over any cable. A cable that does not
+    carry the frames the tunnels need (a bridge, converter or switch with a smaller MTU in between) shows
+    `the cable carries only <n>` and a warning is logged; frames larger than that are lost, and only jumbo traffic
+    is affected.
 * **Internal management VLAN**: VLAN id **4094 is reserved**. It exists only on the stack tunnels and connects the
   members' management instances, so a member without its own management cable is still reachable (the details
   follow with the management takeover; until then the VLAN is only reserved). It is never carried by access, trunk,

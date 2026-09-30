@@ -12,6 +12,7 @@ import (
 	"mclag/internal/config"
 	"mclag/internal/osconf"
 	"mclag/internal/stack"
+	"mclag/internal/stack/pki"
 	"net"
 	"os"
 	"os/exec"
@@ -206,10 +207,20 @@ func Run(ctx context.Context, o Options) error {
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.
 	if !o.DryRun {
+		if pki.KeyLogging() {
+			log.Warn("stack: the session keys of stacking TLS sessions are written to $"+pki.KeyLogEnv+" (debugging)", "file", os.Getenv(pki.KeyLogEnv))
+		}
 		if err := vc.Start(ctx); err != nil {
 			log.Error("stack", "err", err)
 		} else {
-			go runStackNet(ctx, vc, log)
+			go runStackNet(ctx, vc, func() int {
+				cfg, _ := model.Build(engine.Active().Active(), nil)
+				if cfg == nil || len(cfg.SwitchMembers()) < 2 {
+					return 0
+				}
+				mtu, _ := cfg.MaxDataMTU()
+				return mtu + model.StackOverhead
+			}, log)
 		}
 	}
 	srv.Env = func(name string, class commit.Class) cli.Env {

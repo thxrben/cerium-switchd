@@ -34,6 +34,13 @@ func (k *kernelInventory) Ports(member int) (map[string]model.PortInfo, bool) {
 		if l := st.Links[p.Linux]; l != nil {
 			info.MTU, info.MaxMTU = l.MTU, l.MaxMTU
 		}
+		if info.StackPort {
+			for _, sp := range k.vc.Ports() {
+				if sp.Linux == p.Linux && sp.PathMTU > 0 {
+					info.PathMTU = sp.PathMTU + model.EthHeader
+				}
+			}
+		}
 		out[p.Name] = info
 	}
 	return out, true

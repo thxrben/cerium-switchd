@@ -122,7 +122,15 @@ Last updated: 2026-09-30.
   stack table's routes; without an unreachable default, tunnel lookups fell through to the main table (mgmt port).
 
 ## Next (in order)
-0. Wireshark dissectors for switchd's protocols (requested 2026-09-30), then:
+0. Wireshark dissectors: DONE for the stacking link, mesh and join (tools/wireshark, README there; ALPN names and
+   SWITCHD_TLS_KEYLOG in switchd). Open: decode the Raft msgpack (AppendEntries/RequestVote), the mclag/macsync/
+   lacp RPC payloads are JSON in "ctl" streams (already shown). Then:
+   - Added because of a lab finding: control frames are capped at 1500 bytes whatever the port MTU (the
+     Proxmox stk-12 bridge dropped >1500 frames and the stack link stalled), plus path MTU probes (PROBE frames),
+     shown in show virtual-chassis mtu (Verified) and warned about at commit / in the log.
+   - Config editing across members (asked 2026-09-30): the shared candidate is on the master and every member's
+     `configure` is relayed to it (spec 4/5.2), so two users on different members edit the same candidate,
+     `configure private` and `exclusive` work the same way; answer the user and add a lab test for it.
    - QinQ across the stack fails in TestStackJumbo (plain and host VXLAN pass): investigate.
    - CLI: after `?` the prompt is reprinted as `root@host` only, without the `{master:1}` role line and `[edit]`
      (requested 2026-09-30).

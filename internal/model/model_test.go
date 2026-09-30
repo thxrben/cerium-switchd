@@ -242,6 +242,13 @@ func TestStackMTU(t *testing.T) {
 			t.Errorf("%s: the 16044 stacking port suffices:\n%s", c.mutate, s)
 		}
 	}
+	// A cable that carries less than the ports do: a warning, not an error.
+	vinv := verifiedInv{fakeInv: inv, path: 9000}
+	_, issues = build(t, valid+"set interfaces 1/0/3 mtu 9158\n", vinv)
+	if issues.HasErrors() || !strings.Contains(issues.String(), "the cable at stacking port 1/9/9 of member 1 carries only 9000") ||
+		!strings.Contains(issues.String(), "or lower the mtu to 8942") {
+		t.Errorf("verified path MTU:\n%s", issues)
+	}
 	// 9158 is the limit.
 	if _, issues := build(t, valid+"set interfaces 1/0/3 mtu 9158\n", inv); issues.HasErrors() {
 		t.Errorf("mtu 9158 must fit:\n%s", issues)
@@ -251,6 +258,23 @@ func TestStackMTU(t *testing.T) {
 	if _, issues := build(t, one, inv); issues.HasErrors() {
 		t.Errorf("standalone: %s", issues)
 	}
+}
+
+// verifiedInv adds a probe-verified cable size to the stacking ports.
+type verifiedInv struct {
+	fakeInv
+	path int
+}
+
+func (v verifiedInv) Ports(member int) (map[string]PortInfo, bool) {
+	ports, ok := v.fakeInv.Ports(member)
+	for n, p := range ports {
+		if p.StackPort {
+			p.PathMTU = v.path
+			ports[n] = p
+		}
+	}
+	return ports, ok
 }
 
 // FuzzBuild ensures that model building never panics on any configuration

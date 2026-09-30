@@ -540,7 +540,8 @@ func (f *fakeOps) MCLAG() (MCLAGStatus, error) {
 
 func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 	return StackMTUStatus{Member: 1, DataMTU: 9014, Where: "vlans storage mtu", Stack: true, Ports: []StackMTUPort{
-		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058}, {Port: "1/5/2", MTU: 9000, MaxMTU: 9050}}}, nil
+		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216, PathMTU: 9202}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058},
+		{Port: "1/5/2", MTU: 9000, MaxMTU: 9050}, {Port: "1/5/3", MTU: 9216, MaxMTU: 9216, PathMTU: 1500}}}, nil
 }
 
 func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
@@ -872,9 +873,10 @@ func TestShowStackMTU(t *testing.T) {
 		"Largest data mtu in the stack:  9014 (vlans storage mtu; hosts up to MTU 9000)",
 		"Needed on the stacking links:   9072 (+58: tunnel 50, VLAN tags 8)",
 		"Member 1's stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
-		"  1/5/0    9216    9216     ok",
-		"  1/5/1    1514    16058    too small (set to the maximum when switchd starts)",
-		"  1/5/2    9000    9050     too small: the NIC carries at most 9050")
+		"  1/5/0    9216    9216     9216      ok",
+		"  1/5/1    1514    16058    -         too small (set to the maximum when switchd starts)",
+		"  1/5/2    9000    9050     -         too small: the NIC carries at most 9050",
+		"  1/5/3    9216    9216     1514      the cable carries only 1514: larger frames are lost")
 }
 
 func TestShowMCLAG(t *testing.T) {

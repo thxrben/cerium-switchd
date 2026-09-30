@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -46,7 +47,15 @@ func (timeoutError) Error() string   { return "stacking link: i/o timeout" }
 func (timeoutError) Timeout() bool   { return true }
 func (timeoutError) Temporary() bool { return true }
 
+// ControlMTU is the largest frame (Ethernet payload) the stream uses,
+// whatever the port's MTU: the stacking protocol must work over any cable,
+// including paths that cannot carry jumbo frames. Only the probes test
+// what the path carries beyond it.
+const ControlMTU = 1500
+
 const (
+	probeEvery = 5 * time.Second        // a round of probes
+	probeWait  = 500 * time.Millisecond // replies to a round arrive within this
 	tick       = 5 * time.Millisecond
 	ackDelay   = 10 * time.Millisecond
 	minRTO     = 10 * time.Millisecond
@@ -89,6 +98,12 @@ type Link struct {
 	ackPending int
 	ackAt      time.Time
 	lastRecv   time.Time
+
+	// Path MTU probing.
+	probeAt   time.Time // next round
+	probeEnd  time.Time // the running round ends (zero: none)
+	probeBest int       // largest probe answered in the running round
+	pathMTU   int       // result of the last round (0: not known yet)
 
 	readDL, writeDL time.Time
 	upCh            chan struct{}
@@ -224,6 +239,11 @@ func (l *Link) receive(b []byte) {
 		l.failLocked(ErrPeerReset)
 		return
 	}
+	if f.Type == tProbeReply && l.up && len(f.Payload) >= 4 {
+		if size := int(binary.BigEndian.Uint32(f.Payload)); size > l.probeBest {
+			l.probeBest = size
+		}
+	}
 	if !l.up {
 		if f.PeerEpoch != l.epoch {
 			l.send(tHello, 0, nil) // it does not know us yet
@@ -232,6 +252,14 @@ func (l *Link) receive(b []byte) {
 		l.up = true
 		close(l.upCh)
 		l.cond.Broadcast()
+	}
+	if f.Type == tProbe {
+		// It arrived whole: tell the sender its size passed. (The size is
+		// the frame's own, not what the sender claims.)
+		var r [4]byte
+		binary.BigEndian.PutUint32(r[:], uint32(len(b))) // b is the Ethernet payload
+		l.send(tProbeReply, l.sndNxt, r[:])
+		return
 	}
 	l.peerWin = f.Window
 	l.handleAck(f, now)
@@ -304,7 +332,7 @@ func (l *Link) transmit(now time.Time) {
 	if !l.up {
 		return
 	}
-	chunk := l.io.MTU() - HeaderLen
+	chunk := min(l.io.MTU(), ControlMTU) - HeaderLen
 	for {
 		off := int(l.sndNxt - l.sndUna)
 		inFlight := l.sndNxt - l.sndUna
@@ -354,12 +382,63 @@ func (l *Link) timers() {
 		l.rtoAt = now.Add(l.rto)
 	}
 	l.transmit(now)
+	l.probes(now)
 	switch {
 	case l.ackPending > 0 && now.After(l.ackAt):
 		l.send(tAck, l.sndNxt, nil)
 	case now.Sub(l.lastSent) >= l.interval-tick:
 		l.send(tAck, l.sndNxt, nil) // liveness, also re-advertises the window
 	}
+}
+
+// probeSizes are the frame sizes (Ethernet payload) tested above the
+// control size: the port's MTU and the usual jumbo sizes below it.
+func (l *Link) probeSizes() []int {
+	var out []int
+	for _, s := range []int{l.io.MTU(), 9000, 4000, 2000} {
+		if s > ControlMTU && s <= l.io.MTU() && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// probes runs the path MTU probing (caller holds l.mu): every probeEvery a
+// round sends one probe per candidate size; the replies that arrive
+// within probeWait decide what the path carries. The first round starts
+// when the link is up.
+func (l *Link) probes(now time.Time) {
+	if !l.probeEnd.IsZero() && now.After(l.probeEnd) {
+		l.pathMTU = max(l.probeBest, ControlMTU) // a link that is up carries the control size
+		l.probeEnd, l.probeBest = time.Time{}, 0
+	}
+	if l.probeEnd.IsZero() && !now.Before(l.probeAt) {
+		l.probeAt = now.Add(probeEvery)
+		sizes := l.probeSizes()
+		if len(sizes) == 0 {
+			l.pathMTU = ControlMTU
+			return
+		}
+		l.probeEnd = now.Add(probeWait)
+		for _, s := range sizes {
+			l.sendProbe(s)
+		}
+	}
+}
+
+func (l *Link) sendProbe(size int) {
+	f := frame{Type: tProbe, Epoch: l.epoch, PeerEpoch: l.peer, Ack: l.rcvNxt, Payload: make([]byte, size-HeaderLen)}
+	l.lastSent = time.Now()
+	_ = l.io.Send(f.encode())
+}
+
+// PathMTU returns the largest frame (Ethernet payload) the cable carried in
+// the last probe round: at least ControlMTU once known, 0 before the first
+// round ended (about half a second after the link came up).
+func (l *Link) PathMTU() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.pathMTU
 }
 
 // wait blocks until ready() or the link ends or the deadline passes.

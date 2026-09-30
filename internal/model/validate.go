@@ -63,6 +63,9 @@ type PortInfo struct {
 	MTU       int    // current kernel (Linux) MTU
 	MaxMTU    int    // kernel (Linux) maximum MTU, 0 = unknown
 	StackPort bool   // designated stacking port (never a data port)
+	// PathMTU is the frame size (Ethernet header included) that probe frames
+	// verified on a stacking port's cable; 0: not known.
+	PathMTU int
 	// HasIP: the operating system has configured IP addresses on the port
 	// (typically the installer's management NIC).
 	HasIP bool
@@ -388,6 +391,9 @@ func (b *builder) validateStackMTU() {
 			if max := min(p.MaxMTU, MaxStackPortMTU) + EthHeader; mtu+StackOverhead > max {
 				b.errorf(where, "frames of %d bytes need %d on the stacking links, but stacking port %s of member %d carries at most %d; the largest mtu the stack can carry is %d",
 					mtu, mtu+StackOverhead, name, m, max, max-StackOverhead)
+			} else if p.PathMTU > 0 && mtu+StackOverhead > p.PathMTU {
+				b.warnf(where, "frames of %d bytes need %d on the stacking links, but the cable at stacking port %s of member %d carries only %d (verified with probe frames); larger frames are lost. Check media converters, bridges and switches in between, or lower the mtu to %d",
+					mtu, mtu+StackOverhead, name, m, p.PathMTU, p.PathMTU-StackOverhead)
 			}
 		}
 	}

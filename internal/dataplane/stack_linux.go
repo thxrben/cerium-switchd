@@ -93,8 +93,8 @@ func EnsureStackPort(linux string) error {
 }
 
 // stackUnreachableMetric is the metric of the stack table's unreachable
-// default route (the highest, as usual for VRFs).
-const stackUnreachableMetric = 4278198272
+// default route (above every real route; fits a 32-bit int).
+const stackUnreachableMetric = 1000000
 
 // IFLA_VXLAN_DF and its value "set" (not in the netlink library).
 const (

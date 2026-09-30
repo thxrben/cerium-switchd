@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"mclag/internal/dataplane"
+	"mclag/internal/model"
 	"mclag/internal/stack"
 )
 
@@ -15,7 +16,8 @@ import (
 // step with the stacking links and the stack topology: it recomputes every
 // 100 ms and on every topology change, applies only when something
 // differs, and checks the kernel fully every 10 s.
-func runStackNet(ctx context.Context, vc *stack.Manager, log *slog.Logger) {
+func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, log *slog.Logger) {
+	warned := map[string]string{}
 	var last string
 	var lastFull time.Time
 	failing := false
@@ -43,6 +45,28 @@ func runStackNet(ctx context.Context, vc *stack.Manager, log *slog.Logger) {
 				}
 				if ch {
 					log.Debug("stack: tunnel underlay updated", "routes", len(u.Hops), "links", len(u.Links))
+				}
+			}
+		}
+		// A cable that verifiably cannot carry the largest data frame + the
+		// tunnel overhead loses those frames (reference 5.2, stack MTU).
+		if n := need(); n > 0 {
+			for _, p := range vc.Ports() {
+				if p.PathMTU == 0 || p.State != "up" {
+					continue
+				}
+				msg := ""
+				if p.PathMTU+model.EthHeader < n {
+					msg = fmt.Sprintf("%d/%d", p.PathMTU+model.EthHeader, n)
+				}
+				if warned[p.Port] != msg {
+					warned[p.Port] = msg
+					if msg != "" {
+						log.Warn("stack: the stacking cable carries smaller frames than the largest data mtu needs; larger frames are lost",
+							"port", p.Port, "cable_frame_bytes", p.PathMTU+model.EthHeader, "needed_frame_bytes", n)
+					} else {
+						log.Info("stack: the stacking cable carries the frames the largest data mtu needs", "port", p.Port)
+					}
 				}
 			}
 		}

@@ -498,7 +498,7 @@ func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
 		if l == nil {
 			continue
 		}
-		sp := cli.StackMTUPort{Port: fmt.Sprintf("%d/%s", o.member, p.Port), MTU: l.MTU + model.EthHeader}
+		sp := cli.StackMTUPort{Port: fmt.Sprintf("%d/%s", o.member, p.Port), MTU: l.MTU + model.EthHeader, PathMTU: p.PathMTU}
 		if l.MaxMTU > 0 {
 			sp.MaxMTU = min(l.MaxMTU, model.MaxStackPortMTU) + model.EthHeader
 		}

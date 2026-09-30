@@ -23,6 +23,7 @@ type cable struct {
 	rnd                *rand.Rand
 	loss, dup, reorder float64
 	down               bool
+	carry              int // the largest frame the path carries (0: any)
 }
 
 type end struct {
@@ -47,6 +48,9 @@ func (e *end) Frames() <-chan []byte { return e.in }
 func (e *end) Send(p []byte) error {
 	if len(p) > e.mtu {
 		return errors.New("frame larger than the MTU")
+	}
+	if e.c.carry > 0 && len(p) > e.c.carry {
+		return nil // the path (a bridge, a media converter) drops it silently
 	}
 	c := e.c
 	c.mu.Lock()
@@ -375,5 +379,59 @@ func TestIntervalNegotiation(t *testing.T) {
 	case <-a.Done():
 		t.Fatalf("a dropped the slow peer: %v", a.Err())
 	default:
+	}
+}
+
+// The stream works over a path that carries only classic frames although
+// the port's MTU is 9000: the control traffic never exceeds ControlMTU, and
+// the probes find out what the path carries.
+func TestJumboPortOverClassicPath(t *testing.T) {
+	ea, eb := newCable(9, 0, 0, 0)
+	ea.mtu, eb.mtu = 9000, 9000
+	ea.c.carry = 1500
+	a, b := New(ea, Options{}), New(eb, Options{})
+	defer a.Close()
+	defer b.Close()
+	waitUp(t, a, b)
+	transfer(t, a, b, 200<<10, 5)
+	for _, l := range []*Link{a, b} {
+		waitFor(t, "path MTU", func() bool { return l.PathMTU() != 0 })
+		if got := l.PathMTU(); got != 1500 {
+			t.Errorf("path MTU %d, want 1500", got)
+		}
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for i := 0; !cond(); i++ {
+		if i == 400 {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The probes report the largest candidate the path carries, and follow a
+// change of the path.
+func TestPathMTUProbes(t *testing.T) {
+	for _, tc := range []struct{ port, carry, want int }{
+		{9000, 0, 9000},    // everything passes
+		{9000, 4200, 4000}, // between two candidates
+		{16000, 9100, 9000},
+		{1500, 0, 1500}, // nothing to probe
+		{2500, 2100, 2000},
+	} {
+		ea, eb := newCable(3, 0, 0, 0)
+		ea.mtu, eb.mtu = tc.port, tc.port
+		ea.c.carry = tc.carry
+		a, b := New(ea, Options{}), New(eb, Options{})
+		waitUp(t, a, b)
+		waitFor(t, "path MTU", func() bool { return a.PathMTU() != 0 && b.PathMTU() != 0 })
+		if a.PathMTU() != tc.want || b.PathMTU() != tc.want {
+			t.Errorf("port %d carry %d: path MTU %d/%d, want %d", tc.port, tc.carry, a.PathMTU(), b.PathMTU(), tc.want)
+		}
+		a.Close()
+		b.Close()
 	}
 }

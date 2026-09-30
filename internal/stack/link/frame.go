@@ -15,6 +15,10 @@ const (
 	tAck   = 3
 	tReset = 4
 	tBFD   = 5
+	// Path MTU probing (docs/stack-protocol.md "Path MTU"): a probe is
+	// padded to the size under test, its reply is small and names the size.
+	tProbe      = 6
+	tProbeReply = 7
 )
 
 const (
@@ -67,7 +71,7 @@ func decode(b []byte) (*frame, error) {
 	}
 	f := &frame{Type: b[3], Epoch: be.Uint32(b[4:]), PeerEpoch: be.Uint32(b[8:]), Seq: be.Uint32(b[12:]),
 		Ack: be.Uint32(b[16:]), Window: uint32(be.Uint16(b[20:])) * 64}
-	if f.Type < tHello || f.Type > tBFD || f.Epoch == 0 {
+	if f.Type < tHello || f.Type > tProbeReply || f.Epoch == 0 {
 		return nil, errBadFrame
 	}
 	f.Payload = append([]byte(nil), b[HeaderLen:HeaderLen+n]...)

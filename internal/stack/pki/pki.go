@@ -16,9 +16,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -158,6 +161,46 @@ func TLSConfig(stackCert *x509.Certificate, own tls.Certificate, allowed Allowed
 		InsecureSkipVerify: true, ClientAuth: tls.RequireAnyClientCert,
 		VerifyConnection: verify,
 	}
+}
+
+// ALPN names of the stacking TLS sessions (docs/stack-protocol.md): they
+// let a protocol analyser pick the dissector for the decrypted data.
+const (
+	ALPNMember = "swstack/1"
+	ALPNJoin   = "swjoin/1"
+)
+
+// KeyLogEnv names the environment variable that makes switchd write the
+// session keys of its stacking TLS sessions to a file (NSS key log format),
+// so captures can be decrypted with Wireshark. For debugging only.
+const KeyLogEnv = "SWITCHD_TLS_KEYLOG"
+
+var (
+	keyLogOnce sync.Once
+	keyLog     io.Writer
+)
+
+// Wire completes a stacking TLS configuration: its ALPN name and, when
+// KeyLogEnv is set, the key log.
+func Wire(c *tls.Config, alpn string) *tls.Config {
+	c.NextProtos = []string{alpn}
+	keyLogOnce.Do(func() {
+		if path := os.Getenv(KeyLogEnv); path != "" {
+			if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+				keyLog = f
+			}
+		}
+	})
+	if keyLog != nil {
+		c.KeyLogWriter = keyLog
+	}
+	return c
+}
+
+// KeyLogging reports whether session keys are written (see KeyLogEnv).
+func KeyLogging() bool {
+	Wire(&tls.Config{}, "")
+	return keyLog != nil
 }
 
 // TLSCert combines a certificate and its key.

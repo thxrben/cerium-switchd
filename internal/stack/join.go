@@ -145,7 +145,7 @@ func (m *Manager) joinClient(l net.Conn, token string) joinResult {
 			stackPub = pub
 			return nil
 		}}
-	conn := tls.Client(l, cfg)
+	conn := tls.Client(l, pki.Wire(cfg, pki.ALPNJoin))
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if err := conn.Handshake(); err != nil {
 		return joinResult{err: fmt.Errorf("join handshake: %w", err)}
@@ -205,7 +205,7 @@ func (m *Manager) joinServer(l net.Conn, port string) {
 			memberPub = pub
 			return nil
 		}}
-	conn := tls.Server(l, cfg)
+	conn := tls.Server(l, pki.Wire(cfg, pki.ALPNJoin))
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if err := conn.Handshake(); err != nil {
 		m.Log.Info("stack: join handshake failed", "port", port, "err", err)

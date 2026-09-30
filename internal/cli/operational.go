@@ -93,6 +93,9 @@ type StackMTUStatus struct {
 type StackMTUPort struct {
 	Port        string
 	MTU, MaxMTU int
+	// PathMTU is what probe frames verified the cable carries (0: not
+	// known: the link is down or the first probe round is running).
+	PathMTU int
 }
 
 // MCLAGStatus is "show mclag".
@@ -705,8 +708,11 @@ func (sh *Shell) showVCPorts(c *call) error {
 			up = fmtDuration(now.Sub(p.UpSince))
 		}
 		fmt.Fprintf(c.out, "%-8s %-12s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, p.Neighbor, dash(p.PeerPort), up)
-		if p.LastError != "" && p.State != "up" {
+		switch {
+		case p.LastError != "" && p.State != "up":
 			fmt.Fprintf(c.out, "         last error: %s\n", p.LastError)
+		case p.LastError != "" && p.Neighbor == "other stack":
+			fmt.Fprintf(c.out, "         detail: %s\n", p.LastError)
 		}
 	}
 	return nil
@@ -746,7 +752,7 @@ func (sh *Shell) showStackMTU(c *call) error {
 		carry := min(limit-model.StackOverhead, 16000) // the largest configurable mtu
 		fmt.Fprintf(c.out, "  Member %d's stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", st.Member, carry, carry-model.EthHeader)
 	}
-	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %s\n", "Port", "MTU", "Maximum", "Status")
+	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %-9s %s\n", "Port", "MTU", "Maximum", "Verified", "Status")
 	for _, p := range st.Ports {
 		status := "ok"
 		switch {
@@ -756,12 +762,17 @@ func (sh *Shell) showStackMTU(c *call) error {
 			status = fmt.Sprintf("too small: the NIC carries at most %d", p.MaxMTU)
 		case p.MTU < need:
 			status = "too small (set to the maximum when switchd starts)"
+		case p.PathMTU > 0 && p.PathMTU+model.EthHeader < need:
+			status = fmt.Sprintf("the cable carries only %d: larger frames are lost (check media converters, bridges, switches in between)", p.PathMTU+model.EthHeader)
 		}
-		max := "unknown"
+		max, verified := "unknown", "-"
 		if p.MaxMTU > 0 {
 			max = strconv.Itoa(p.MaxMTU)
 		}
-		fmt.Fprintf(c.out, "  %-8s %-7d %-8s %s\n", p.Port, p.MTU, max, status)
+		if p.PathMTU > 0 {
+			verified = strconv.Itoa(p.PathMTU + model.EthHeader)
+		}
+		fmt.Fprintf(c.out, "  %-8s %-7d %-8s %-9s %s\n", p.Port, p.MTU, max, verified, status)
 	}
 	return nil
 }
