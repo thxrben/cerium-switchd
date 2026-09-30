@@ -1314,3 +1314,111 @@ exit"`)
 	}
 	masterSw1(t)
 }
+
+// setupLACPHost bonds sw2's peer1/peer2 NICs (cabled to sw1's ens21/ens22)
+// with Linux 802.3ad LACP in namespace "b".
+func setupLACPHost(t *testing.T) {
+	t.Helper()
+	mustSSH(t, bondHost.vm, `ip netns add b 2>/dev/null; for i in ens21 ens22; do ip link set $i netns b 2>/dev/null; done
+ip -n b link del bond0 2>/dev/null; ip -n b link set lo up
+ip -n b link add bond0 type bond mode 802.3ad lacp_rate fast xmit_hash_policy layer3+4 miimon 100
+# 802.3ad needs a known speed and duplex; virtio NICs have none until set.
+for i in ens21 ens22; do ip netns exec b ethtool -s $i speed 10000 duplex full autoneg off; done
+for i in ens21 ens22; do ip -n b link set $i down; ip -n b link set $i master bond0; done
+ip -n b link set bond0 up; ip -n b addr add 192.168.1.22/24 dev bond0`)
+}
+
+// LACP (reference 5.1.3) against a Linux 802.3ad bond: the bundle forms on
+// both ports, a failed port leaves it, and restarting switchd does not
+// disturb the partner.
+func TestLACP(t *testing.T) {
+	setupHost(t, hSrv1)
+	setupLACPHost(t)
+	t.Cleanup(func() { setupBondHost(t, 1500) }) // back to the static bond the other tests expect
+	lag := "set interfaces ae1 aggregated-ether-options lacp active\nset interfaces ae1 aggregated-ether-options lacp periodic fast\n" +
+		"set interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
+		"set interfaces 1/ens21 ether-options 802.3ad ae1\nset interfaces 1/ens22 ether-options 802.3ad ae1\n"
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+lag)
+	both := regexp.MustCompile(`(?s)Current +Fast periodic Collecting distributing.*Current +Fast periodic Collecting distributing`)
+	var out string
+	for i := 0; ; i++ {
+		out = mustSSH(t, sw1, "swcli -c 'show lacp interfaces ae1'")
+		if both.MatchString(out) {
+			break
+		}
+		if i == 60 {
+			t.Fatalf("bundle did not form:\n%s\n%s", out, mustSSH(t, bondHost.vm, "ip netns exec b cat /proc/net/bonding/bond0"))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// The Linux side sees one partner on both ports, in one aggregator.
+	bond := mustSSH(t, bondHost.vm, "ip netns exec b cat /proc/net/bonding/bond0")
+	ids := regexp.MustCompile(`(?m)^\s*Aggregator ID: (\d+)`).FindAllStringSubmatch(bond, -1)
+	if len(ids) != 3 || ids[1][1] != ids[0][1] || ids[2][1] != ids[0][1] || !strings.Contains(bond, "Number of ports: 2") {
+		t.Errorf("the Linux bond did not aggregate both ports:\n%s", bond)
+	}
+	sysMAC := regexp.MustCompile(`Actor system: \d+,(\S+),`).FindStringSubmatch(out)
+	if sysMAC == nil || !strings.Contains(bond, "Partner Mac Address: "+sysMAC[1]) {
+		t.Errorf("the Linux bond's partner is not this switch's LACP system:\n%s", bond)
+	}
+	if !reach(t, hSrv1, bondHost, 1) {
+		t.Fatal("no traffic over the LACP bundle")
+	}
+	res := mustSSH(t, hSrv1.vm, "for p in $(seq 1 20); do ip netns exec h ping -c1 -W1 192.168.1.22 >/dev/null && echo ok; done | wc -l")
+	if strings.TrimSpace(res) != "20" {
+		t.Errorf("only %s of 20 pings over the bundle", strings.TrimSpace(res))
+	}
+
+	// switchd restarts under traffic: the partner must not notice. (A fixed
+	// count: stopping ping early would count the request in flight as lost.)
+	pingDone := make(chan string, 1)
+	go func() {
+		o, _ := ssh(hSrv1.vm, "ip netns exec h ping -i 0.01 -c 800 -q 192.168.1.22")
+		pingDone <- o
+	}()
+	time.Sleep(time.Second)
+	mustSSH(t, sw1, "systemctl restart switchd")
+	res = <-pingDone
+	m := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received`).FindStringSubmatch(res)
+	if m == nil {
+		t.Fatalf("ping result:\n%s", res)
+	}
+	tx, _ := strconv.Atoi(m[1])
+	rx, _ := strconv.Atoi(m[2])
+	t.Logf("%d of %d pings answered across a switchd restart", rx, tx)
+	if rx < tx {
+		t.Errorf("switchd restart disturbed the LACP bundle: %d of %d answered", rx, tx)
+	}
+	if o := mustSSH(t, sw1, "journalctl -u switchd --no-pager -o cat --since -20s"); !strings.Contains(o, "lacp: port state restored") {
+		t.Errorf("LACP state not restored after the restart:\n%s", o)
+	}
+
+	// A port whose partner goes away leaves the bundle; traffic continues.
+	mustSSH(t, bondHost.vm, "ip -n b link set ens21 down")
+	for i := 0; ; i++ {
+		out = mustSSH(t, sw1, "swcli -c 'show lacp interfaces ae1'")
+		if strings.Count(out, "Collecting distributing") == 1 {
+			break
+		}
+		if i == 50 {
+			t.Fatalf("failed port still in the bundle:\n%s", out)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !reach(t, hSrv1, bondHost, 1) {
+		t.Error("no traffic with one port left")
+	}
+	mustSSH(t, bondHost.vm, "ip -n b link set ens21 up")
+	for i := 0; ; i++ {
+		if both.MatchString(mustSSH(t, sw1, "swcli -c 'show lacp interfaces ae1'")) {
+			break
+		}
+		if i == 60 {
+			t.Fatal("port did not rejoin")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if o := mustSSH(t, sw1, "swcli -c 'show lacp statistics interfaces ae1'"); !regexp.MustCompile(`1/\d+/0 +[1-9]\d* +[1-9]`).MatchString(o) {
+		t.Errorf("statistics:\n%s", o)
+	}
+}

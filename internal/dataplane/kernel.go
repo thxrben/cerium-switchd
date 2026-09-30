@@ -112,6 +112,9 @@ func (f *Fake) Apply(op Op) error {
 		if l.Kind != Bond {
 			return fmt.Errorf("%s: not a bond", l.Name)
 		}
+		if l.Bond.Team() != op.Bond.Team() {
+			return fmt.Errorf("%s: a bond cannot become a team or back", l.Name)
+		}
 		b := *op.Bond
 		l.Bond = &b
 	case OpDeleteLink:
@@ -146,6 +149,9 @@ func (f *Fake) Apply(op Op) error {
 		case Bond:
 			if l.Kind != Physical {
 				return fmt.Errorf("%s: only physical ports can join a bond", l.Name)
+			}
+			if l.Up {
+				return fmt.Errorf("%s: device can not be enslaved while up", l.Name)
 			}
 			l.MTU = m.MTU
 		default:

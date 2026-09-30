@@ -36,6 +36,9 @@ type kernelApplier struct {
 	// onApplied is called with each successfully applied configuration
 	// (services that are not part of the data plane, e.g. syslog).
 	onApplied func(*model.Config)
+	// afterApply runs after every successful data plane apply, including
+	// reconciliations (LACP follows the bundles' ports).
+	afterApply func(*model.Config)
 }
 
 func memberName(id int) string { return fmt.Sprintf("member%d", id) }
@@ -194,7 +197,13 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, true); err != nil {
 		return fmt.Errorf("bridge VLANs: %w", err)
 	}
-	return a.saveOwned(desired)
+	if err := a.saveOwned(desired); err != nil {
+		return err
+	}
+	if a.afterApply != nil {
+		a.afterApply(cfg)
+	}
+	return nil
 }
 
 func (a *kernelApplier) execute(ops []dataplane.Op, reason string, actual, desired *dataplane.State) error {

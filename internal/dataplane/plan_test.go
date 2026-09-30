@@ -325,7 +325,8 @@ func TestComputeNotes(t *testing.T) {
 		"2/0/0": {Name: "2/0/0", Member: 2, MTU: 1514},
 	}}
 	s, notes := Compute(cfg, 1, testNames)
-	if s.Links["ae1"].Up || s.Links["eth0"].MTU != 9000 || s.Links["eth0"].Master != "ae1" {
+	// An LACP bundle is a team device; its ports are enabled by LACP.
+	if !s.Links["ae1"].Up || !s.Links["ae1"].Bond.Team() || s.Links["eth0"].MTU != 9000 || s.Links["eth0"].Master != "ae1" {
 		t.Errorf("ae1/eth0: %s %s", s.Links["ae1"], s.Links["eth0"])
 	}
 	if s.Links["eth1"].Up {
@@ -334,8 +335,42 @@ func TestComputeNotes(t *testing.T) {
 	if len(s.Links) != 3 {
 		t.Errorf("member 2 ports leaked into member 1: %v", names(s))
 	}
-	if len(notes) != 2 {
+	if len(notes) != 1 {
 		t.Errorf("notes: %v", notes)
+	}
+}
+
+// Enabling LACP on a static bundle replaces the bond by a team device; the
+// ports go down, the bond is deleted, the team is created and the ports
+// join it (a planned change, the partner has to renegotiate anyway).
+func TestPlanStaticToLACP(t *testing.T) {
+	ae := func(lacp bool) *model.Config {
+		c := &model.Config{Interfaces: map[string]*model.Interface{
+			"ae1":   {Name: "ae1", AE: true, MTU: 1514, MemberIDs: []int{1}, Switching: true, Mode: "access", AccessVLAN: 10, VLANs: []int{10}},
+			"1/0/0": {Name: "1/0/0", Member: 1, MTU: 1514, Parent: "ae1"},
+		}}
+		if lacp {
+			c.Interfaces["ae1"].LACP = &model.LACP{Active: true, Fast: true}
+		}
+		return c
+	}
+	k := NewFake(&State{Links: map[string]*Link{"eth0": {Name: "eth0", Kind: Physical, MTU: 1500, Present: true, Up: true}}})
+	static, _ := Compute(ae(false), 1, testNames)
+	ops := Plan(mustRead(t, k), static, nil)
+	if err := Execute(k, ops); err != nil {
+		t.Fatalf("static bundle (a port that is up must go down to join):\n%s%v", FormatPlan(ops), err)
+	}
+	lacp, _ := Compute(ae(true), 1, testNames)
+	ops = Plan(mustRead(t, k), lacp, names(static))
+	if err := Execute(k, ops); err != nil {
+		t.Fatalf("static -> LACP:\n%s%v", FormatPlan(ops), err)
+	}
+	after := mustRead(t, k)
+	if !after.Links["ae1"].Bond.Team() || after.Links["eth0"].Master != "ae1" || !after.Links["eth0"].Up || after.Links["ae1"].Master != BridgeName {
+		t.Errorf("after static -> LACP:\n%s\nae1 %v eth0 %v", FormatPlan(ops), after.Links["ae1"], after.Links["eth0"])
+	}
+	if ops := Plan(mustRead(t, k), lacp, names(lacp)); len(ops) != 0 {
+		t.Errorf("not idempotent:\n%s", FormatPlan(ops))
 	}
 }
 

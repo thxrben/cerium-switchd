@@ -58,10 +58,9 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			l.Bond.MinLinks = 0
 		}
 		if i.LACP != nil {
-			// LACP runs in userspace (Phase 6). Until then a LACP bundle stays
-			// down rather than forwarding without negotiation (loop risk).
-			l.Up = false
-			notes = append(notes, fmt.Sprintf("%s: LACP is not implemented yet; the bundle is kept down", i.Name))
+			// A team device; its ports carry traffic once LACP has them
+			// collecting and distributing (minimum-links is enforced there).
+			l.Bond = &BondOpts{Mode: "lacp", HashPolicy: l.Bond.HashPolicy}
 		}
 		if i.Switching {
 			l.Master = BridgeName

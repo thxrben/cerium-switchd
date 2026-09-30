@@ -806,8 +806,19 @@ Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W
   * `active` (default) sends LACPDUs, while `passive` only answers. Two passive ends never form a bundle.
   * `periodic fast` (default; Junos defaults to slow) asks the partner to send every second, so a failed partner is
     detected within 3 seconds. `slow` means 30 seconds and 90 seconds.
-  * `system-priority` (default 32768). The LACP system id is the member's bridge MAC. On MC-LAG bundles the domain's
+  * `system-priority` (default 32768). The LACP system id is a MAC derived from the member's machine id (locally
+    administered, stable across restarts and port changes; shown by `show lacp interfaces`). On MC-LAG bundles the domain's
     shared `system-mac`/`system-priority` replace both (W if `system-priority` is set on an MC-LAG bundle).
+  * Actor identity: key `N+1` for `aeN`; port number `member × 1024 + port index` (unique in the whole stack, so the
+    two members of an MC-LAG never announce the same port); port priority 32768.
+  * A member port carries traffic only while LACP has it *collecting and distributing* (in sync with the partner). A
+    port that is not receives nothing but LACPDUs (data frames on it are dropped by the switch, as IEEE 802.1AX
+    requires), and nothing is sent on it. Ports whose partner differs from the bundle's partner (a cabling error) stay
+    out of the bundle and are shown as `not selected`.
+  * With LACP, `minimum-links` counts distributing ports; below it the bundle is down.
+  * `show lacp interfaces [<aeN>]`: per member port the actor and partner state (activity, timeout, aggregation,
+    synchronization, collecting, distributing, defaulted, expired) and the receive and mux machine states, as in
+    Junos. `show lacp statistics interfaces [<aeN>]`: LACPDUs sent and received, and received errors, per port.
 * `minimum-links <n>`: the bundle is operationally down while fewer than n member ports are active. On an MC-LAG
   bundle this counts ports on **both** members. Default 1. W: n larger than the number of configured member ports.
 * `hash-policy layer2|layer2+3|layer3+4`: how flows are spread across the active members of **this** switch.

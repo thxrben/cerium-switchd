@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"mclag/internal/inventory"
+	"mclag/internal/lacp"
 	"mclag/internal/schema"
 	"mclag/internal/stack"
 	"net"
@@ -38,6 +39,7 @@ type ops struct {
 	notify  func(string)
 	log     *slog.Logger
 	dryRun  bool
+	lacp    *lacp.Runtime
 }
 
 func (o *ops) model() *model.Config {
@@ -469,6 +471,13 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		}
 	}
 	return st, nil
+}
+
+func (o *ops) LACP() ([]lacp.BundleStatus, error) {
+	if o.lacp == nil {
+		return nil, errors.New("LACP is not running (dry-run mode?)")
+	}
+	return o.lacp.Status(), nil
 }
 
 func (o *ops) SwitchMaster(to int, user string) error {

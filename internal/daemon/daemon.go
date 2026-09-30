@@ -25,6 +25,7 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
 	"mclag/internal/inventory"
+	"mclag/internal/lacp"
 	"mclag/internal/model"
 	"mclag/internal/rpc"
 	"mclag/internal/syslog"
@@ -103,6 +104,12 @@ func Run(ctx context.Context, o Options) error {
 		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
+	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log}
+	sysMAC := lacpSystemMAC()
+	applier.afterApply = func(cfg *model.Config) {
+		// LACP bundles: after the data plane created their devices.
+		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
+	}
 	applier.onApplied = func(cfg *model.Config) {
 		// switchd's own traffic uses the management instance (reference 1.5).
 		if cfg.System.MgmtInstance {
@@ -154,6 +161,9 @@ func Run(ctx context.Context, o Options) error {
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
+		go lacpRT.Run(ctx)
+	}
+	if !o.DryRun {
 		go kernel.EnforceMACLimits(ctx, log)
 	}
 
@@ -179,6 +189,9 @@ func Run(ctx context.Context, o Options) error {
 	}
 	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
+	if !o.DryRun {
+		liveOps.lacp = lacpRT
+	}
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.
 	if !o.DryRun {

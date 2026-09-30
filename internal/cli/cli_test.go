@@ -15,6 +15,7 @@ import (
 	"mclag/internal/access"
 	"mclag/internal/commit"
 	"mclag/internal/config"
+	"mclag/internal/lacp"
 )
 
 type nopApplier struct{}
@@ -517,9 +518,21 @@ func (f *fakeOps) SetVCPort(local string, add bool, user string) error {
 }
 
 func (f *fakeOps) AddVCMember(id int, user string) (string, error) { return "AAAA-BBBB", nil }
-func (f *fakeOps) SwitchMaster(to int, user string) error          { return nil }
-func (f *fakeOps) RemoveVCMember(id int, user string) error        { return nil }
-func (f *fakeOps) JoinVC(token, user string) (int, error)          { return 2, nil }
+func (f *fakeOps) LACP() ([]lacp.BundleStatus, error) {
+	up := lacp.Activity | lacp.Timeout | lacp.Aggregation | lacp.Sync | lacp.Collecting | lacp.Distributing
+	sys := lacp.SystemID{Priority: 32768, MAC: [6]byte{2, 0x11, 0x22, 0x33, 0x44, 0x55}}
+	psys := lacp.SystemID{Priority: 65535, MAC: [6]byte{2, 0, 0, 0, 0, 0x22}}
+	return []lacp.BundleStatus{{Name: "ae1", PortNames: map[string]string{"ens21": "1/2/0", "ens22": "1/3/0"}, Ports: []lacp.PortStatus{
+		{Name: "ens21", Actor: lacp.Info{System: sys, Key: 2, Port: 1152, State: up}, Partner: lacp.Info{System: psys, Key: 9, Port: 1, State: up},
+			Rx: lacp.RxCurrent, Mux: lacp.MuxCollectingDistributing, Selected: true, Stats: lacp.Stats{RxPDUs: 30, TxPDUs: 31}},
+		{Name: "ens22", Actor: lacp.Info{System: sys, Key: 2, Port: 1216, State: lacp.Activity | lacp.Timeout | lacp.Aggregation | lacp.Defaulted},
+			Rx: lacp.RxDefaulted, Mux: lacp.MuxDetached, Stats: lacp.Stats{TxPDUs: 5, RxErrors: 1}},
+	}}}, nil
+}
+
+func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
+func (f *fakeOps) RemoveVCMember(id int, user string) error { return nil }
+func (f *fakeOps) JoinVC(token, user string) (int, error)   { return 2, nil }
 
 func (f *fakeOps) CancelPower(user string) error {
 	f.power = append(f.power, "cancel "+user)
@@ -819,4 +832,21 @@ func TestMemberTargets(t *testing.T) {
 	if got := names(ts.sh.Complete("show interfaces 1/1/0 ")); !slices.Contains(got, "local") {
 		t.Errorf("interface completions lack targets: %v", got)
 	}
+}
+
+func TestShowLACP(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	out := ts.ok("show lacp interfaces")
+	contains(t, out, "Aggregated interface: ae1", "Actor system: 32768,02:11:22:33:44:55, key 2",
+		"      1/2/0           Actor    No    No   Yes  Yes  Yes   Yes     Fast    Active",
+		"      1/3/0           Actor    No   Yes    No   No   No   Yes     Fast    Active",
+		"Current   Fast periodic Collecting distributing  65535,02:00:00:00:00:22, key 9, port 1",
+		"Defaulted", "Detached")
+	contains(t, ts.ok("show lacp interfaces ae1"), "Aggregated interface: ae1")
+	contains(t, ts.run("show lacp interfaces ae7"), "no LACP on this member")
+	contains(t, ts.run("show lacp interfaces 1/2/0"), "expecting an aggregated interface")
+	contains(t, ts.ok("show lacp statistics interfaces"), "      1/2/0                30         31            0            0",
+		"      1/3/0                 0          5            0            1")
 }

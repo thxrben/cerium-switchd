@@ -88,6 +88,11 @@ func (k *Netlink) Read() (*State, error) {
 				MIIMon:     v.Miimon,
 			}
 		default:
+			if l.Type() == "team" {
+				ln.Kind = Bond
+				ln.Bond = &BondOpts{Mode: "lacp", HashPolicy: teamHashPolicy(a.Index)}
+				break
+			}
 			if l.Type() == "device" && k.physical(a.Name) {
 				ln.Kind = Physical
 			} else {
@@ -159,6 +164,9 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		return netlink.LinkModify(br)
 	case OpCreateBond:
+		if op.Bond.Team() {
+			return createTeam(op.Link, op.Bond.HashPolicy)
+		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link})
 		bondAttrs(b, op.Bond)
 		return netlink.LinkAdd(b)
@@ -169,6 +177,9 @@ func (k *Netlink) Apply(op Op) error {
 	}
 	switch op.Kind {
 	case OpSetBond:
+		if l.Type() == "team" {
+			return setTeamHash(l.Attrs().Index, op.Bond.HashPolicy)
+		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link, Index: l.Attrs().Index})
 		bondAttrs(b, op.Bond)
 		return netlink.LinkModify(b)
@@ -186,7 +197,14 @@ func (k *Netlink) Apply(op Op) error {
 		if err != nil {
 			return err
 		}
-		return netlink.LinkSetMaster(l, m)
+		if err := netlink.LinkSetMaster(l, m); err != nil {
+			return err
+		}
+		if m.Type() == "team" {
+			// Carries nothing until LACP says so (the port is still down).
+			return teamPortInit(m.Attrs().Index, l.Attrs().Index)
+		}
+		return nil
 	case OpSetMTU:
 		return netlink.LinkSetMTU(l, op.MTU)
 	case OpSetAlias:

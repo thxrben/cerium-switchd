@@ -114,6 +114,28 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		structure = append(structure, Op{Kind: OpSetBridge, Link: BridgeName, Bridge: desired.Bridge})
 	}
 
+	// A bundle that changes between static (bond) and LACP (team) is another
+	// kind of device: it is deleted (which releases its ports) and created
+	// anew below.
+	actual = actual.Clone()
+	for _, n := range desired.names() {
+		d, a := desired.Links[n], actual.Links[n]
+		if d.Kind != Bond || a == nil || a.Kind != Bond || d.Bond.Team() == a.Bond.Team() {
+			continue
+		}
+		for _, pn := range actual.names() {
+			if p := actual.Links[pn]; p.Master == n {
+				if p.Up {
+					tighten = append(tighten, Op{Kind: OpSetDown, Link: pn})
+					p.Up = false
+				}
+				p.Master = ""
+			}
+		}
+		tighten = append(tighten, Op{Kind: OpDeleteLink, Link: n})
+		delete(actual.Links, n)
+	}
+
 	// Release links that are owned but no longer desired: down first,
 	// then out of the bridge/bundle.
 	for _, n := range actual.names() {
@@ -159,6 +181,11 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 		}
 
 		// Restrictions.
+		if cur.Master != d.Master && d.Master != "" && d.Master != BridgeName && cur.Master == "" && cur.Up {
+			// The kernel adds only ports that are down to a bundle.
+			*restrict = append(*restrict, Op{Kind: OpSetDown, Link: n})
+			cur.Up = false
+		}
 		if cur.Master != d.Master && cur.Master != "" {
 			// Role change: leave the old bridge/bundle while down.
 			if cur.Up {

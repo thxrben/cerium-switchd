@@ -40,14 +40,18 @@ type VlanFlags struct {
 	Untagged bool // egress without tag
 }
 
-// BondOpts are the bond parameters switchd uses (static bundles; LACP is
-// run in userspace in a later phase).
+// BondOpts are the parameters of a bundle: a static bundle is a bond
+// ("balance-xor"), an LACP bundle a team device ("lacp"), whose ports
+// switchd's LACP enables one by one.
 type BondOpts struct {
-	Mode       string // always "balance-xor"
+	Mode       string // "balance-xor" or "lacp"
 	HashPolicy string // layer2, layer2+3, layer3+4
-	MinLinks   int
-	MIIMon     int // ms
+	MinLinks   int    // static bundles (LACP: enforced by the LACP runtime)
+	MIIMon     int    // ms (static bundles)
 }
+
+// Team reports whether the bundle is an LACP bundle (a team device).
+func (o *BondOpts) Team() bool { return o != nil && o.Mode == "lacp" }
 
 // Link is the state of one network device that switchd manages.
 type Link struct {

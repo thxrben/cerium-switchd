@@ -12,6 +12,7 @@ import (
 
 	"mclag/internal/commit"
 	"mclag/internal/config"
+	"mclag/internal/lacp"
 	"mclag/internal/model"
 	"mclag/internal/schema"
 )
@@ -39,6 +40,8 @@ type Operational interface {
 	Routes(instance string) ([]Route, error)
 	// VirtualChassis reports the stack and the VC ports of this member.
 	VirtualChassis() (VCStatus, error)
+	// LACP reports the LACP bundles of this member.
+	LACP() ([]lacp.BundleStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
 	SwitchMaster(to int, user string) error
 	// RemoveVCMember removes a member from the stack.
@@ -951,6 +954,12 @@ func registerOperational() {
 					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
 				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
+				&command{name: "lacp", help: "Show LACP information", class: commit.ReadOnly, sub: []*command{
+					{name: "interfaces", help: "Show LACP state per bundle and port", class: commit.ReadOnly, run: (*Shell).showLACP, complete: completeAE},
+					{name: "statistics", help: "Show LACP statistics", class: commit.ReadOnly, sub: []*command{
+						{name: "interfaces", help: "Show LACPDU counters per port", class: commit.ReadOnly, run: (*Shell).showLACPStats, complete: completeAE},
+					}},
+				}},
 			)
 			for _, sc := range cmd.sub {
 				if sc.name == "system" {
