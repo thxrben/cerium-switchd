@@ -97,6 +97,9 @@ func startControl(stateDir string, store *commit.FileStore, vc *stack.Manager, l
 }
 
 func mastershipPriority(t *config.Tree, id int) int {
+	if t.Active().Root.Leaf("virtual-chassis", "member", strconv.Itoa(id), "role") == "witness" {
+		return 0 // never master
+	}
 	v := t.Active().Root.Leaf("virtual-chassis", "member", strconv.Itoa(id), "mastership-priority")
 	if p, err := strconv.Atoi(v); err == nil {
 		return p

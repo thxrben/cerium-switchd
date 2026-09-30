@@ -338,3 +338,34 @@ func TestComputeNotes(t *testing.T) {
 		t.Errorf("notes: %v", notes)
 	}
 }
+
+// A witness has no data plane; a switch that becomes one releases its
+// ports and the bridge (reference 5.2, role witness).
+func TestComputeWitness(t *testing.T) {
+	sw := &model.Config{Interfaces: map[string]*model.Interface{
+		"1/0/0": {Name: "1/0/0", Member: 1, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: 10, VLANs: []int{10}},
+	}}
+	a, _ := Compute(sw, 1, testNames)
+	k := NewFake(&State{Links: map[string]*Link{"eth0": {Name: "eth0", Kind: Physical, MTU: 1500, Present: true}}})
+	Execute(k, Plan(mustRead(t, k), a, nil))
+	w := &model.Config{Members: map[int]*model.Member{1: {ID: 1, Witness: true}}}
+	s, _ := Compute(w, 1, testNames)
+	if s.Bridge != nil || len(s.Links) != 0 {
+		t.Fatalf("witness desired state: %+v", s)
+	}
+	Execute(k, Plan(mustRead(t, k), s, names(a)))
+	after := mustRead(t, k)
+	// The ports are released (the empty bridge device may stay).
+	if after.Links["eth0"] == nil || after.Links["eth0"].Master != "" || after.Links["eth0"].Up {
+		t.Errorf("after becoming a witness: eth0 %v", after.Links["eth0"])
+	}
+}
+
+func mustRead(t *testing.T, k Kernel) *State {
+	t.Helper()
+	s, err := k.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

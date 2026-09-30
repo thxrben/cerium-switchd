@@ -18,6 +18,10 @@ type PortNames func(name string) (linux string, ok bool)
 // Ports that do not exist are left out; they are configured when they
 // appear (the caller recomputes on link events).
 func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
+	if mem := cfg.Members[m]; mem != nil && mem.Witness {
+		// A witness has no data plane (reference 5.2, role witness).
+		return &State{Links: map[string]*Link{}, L3: &L3{}}, nil
+	}
 	s := &State{
 		Bridge: &BridgeOpts{AgeingSeconds: cfg.Switch.MACAging},
 		Links:  map[string]*Link{},

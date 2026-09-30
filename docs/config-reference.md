@@ -717,6 +717,10 @@ members are rejected (E).
   commits). In an MC-LAG domain the higher priority member is *primary* (ties: lower member id).
 * `role switch|witness`: a `witness` member only takes part in stack quorum, over its own stacking cables. It keeps
   a two-switch stack able to commit when one switch is down. E: interfaces configured on a witness.
+  * switchd does not manage a witness's data plane: no bridge, no switch ports; its NICs stay with the OS (a switch
+    that becomes a witness releases its ports and routed interfaces; the empty bridge device stays until reboot). Accounts, SSH, host name and syslog are managed as usual.
+  * A witness never stays master (its `mastership-priority` counts as 0) and is always among the voters in stacks
+    of up to 7 members.
 * `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
   it is added to a loopback interface and must be routable in the underlay.
 
