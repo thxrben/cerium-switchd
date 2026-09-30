@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"fmt"
+	"mclag/internal/schema"
 	"net"
 	"path/filepath"
 	"slices"
@@ -240,4 +241,11 @@ func TestPriorityZeroHandsOn(t *testing.T) {
 	waitFor(t, "2 votes", func() bool { return len(m1.node.Servers()) == 2 })
 	// As soon as member 2 votes, member 1 hands mastership on.
 	waitFor(t, "2 master", func() bool { return m2.node.IsMaster() })
+}
+
+// `show system limits` reads the voter limit from the schema package.
+func TestMaxVotersMatchesSchema(t *testing.T) {
+	if MaxVoters != schema.MaxVoters {
+		t.Fatalf("control.MaxVoters %d, schema.MaxVoters %d", MaxVoters, schema.MaxVoters)
+	}
 }

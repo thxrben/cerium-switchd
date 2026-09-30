@@ -151,7 +151,7 @@ const (
 	StackOverhead   = 58
 	MaxStackPortMTU = 16044
 	// MgmtVLAN is the reserved internal management VLAN of the stack.
-	MgmtVLAN = 4094
+	MgmtVLAN = schema.MgmtVLAN
 )
 
 // SwitchMembers returns the stack members that switch traffic (not

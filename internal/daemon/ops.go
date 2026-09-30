@@ -481,6 +481,41 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 	return st, nil
 }
 
+// Limits gathers the hardware facts of "show system limits".
+func (o *ops) Limits() (cli.LimitsStatus, error) {
+	st := cli.LimitsStatus{Member: o.member}
+	ks, err := o.kernel.Read()
+	if err != nil {
+		return st, err
+	}
+	for _, p := range o.names.Ports() {
+		st.Ports++
+		if o.vc != nil && o.vc.IsPort(p.Linux) {
+			st.StackPorts++
+		}
+		if l := ks.Links[p.Linux]; l != nil && l.MaxMTU > 0 {
+			f := l.MaxMTU + model.EthHeader
+			if st.LowestMaxMTU == 0 || f < st.LowestMaxMTU {
+				st.LowestMaxMTU, st.LowestMaxPort = f, p.Name
+			}
+			if f > st.HighestMaxMTU {
+				st.HighestMaxMTU, st.HighestMaxPort = f, p.Name
+			}
+		}
+		if c := inventory.ReadCaps("/sys", p.Linux); c.MaxSpeedMbps > st.FastestMbps {
+			st.FastestMbps, st.FastestPort = c.MaxSpeedMbps, p.Name
+		}
+	}
+	if fdb, err := o.kernel.FDB(); err == nil {
+		for _, e := range fdb {
+			if !e.Static {
+				st.MACEntries++
+			}
+		}
+	}
+	return st, nil
+}
+
 // StackMTU is "show virtual-chassis mtu" of this member.
 func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
 	cfg := o.model()

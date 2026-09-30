@@ -236,9 +236,9 @@ var (
 		return hw.String(), nil
 	}}
 
-	VlanID = Uint("<vlan-id>", 1, 4094)
-	VNI    = Uint("<vni>", 1, 16777214)
-	MTU    = Uint("<mtu>", 256, 16000)
+	VlanID = Uint("<vlan-id>", MinVLANID, MaxVLANID)
+	VNI    = Uint("<vni>", 1, MaxVNI)
+	MTU    = Uint("<mtu>", MinMTU, MaxMTU)
 
 	// Interface is a switch interface name: "<member>/<card>/<port>" for
 	// physical ports or "ae<N>" for aggregated interfaces.
@@ -255,8 +255,8 @@ var (
 
 	// AEInterface only accepts "ae<N>".
 	AEInterface = &Type{Name: "<ae-interface>", Ref: "ae-interface", Check: func(s string) (string, error) {
-		if !aeRe.MatchString(s) {
-			return "", fmt.Errorf("invalid aggregated interface name %q (expecting ae0..ae4095)", s)
+		if !IsAE(s) {
+			return "", fmt.Errorf("invalid aggregated interface name %q (expecting ae0..ae%d)", s, MaxAE)
 		}
 		return s, nil
 	}}
@@ -299,7 +299,7 @@ var (
 	TTY = String("<tty>", 32, `^tty[A-Za-z0-9]+$`)
 
 	// MemberID is a stack member number.
-	MemberID = Uint("<member-id>", 1, 16)
+	MemberID = Uint("<member-id>", MinMember, MaxMember)
 )
 
 var aeRe = regexp.MustCompile(`^ae(0|[1-9][0-9]{0,3})$`)
@@ -387,7 +387,13 @@ func (pp PortPattern) Match(p Port) bool {
 }
 
 // IsAE reports whether s names an aggregated interface.
-func IsAE(s string) bool { return aeRe.MatchString(s) }
+func IsAE(s string) bool {
+	if !aeRe.MatchString(s) {
+		return false
+	}
+	n, _ := strconv.Atoi(s[2:])
+	return n <= MaxAE
+}
 
 // CheckInterfaceName validates a physical, aggregated or irb interface
 // name.

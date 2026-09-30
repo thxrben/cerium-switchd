@@ -373,6 +373,7 @@ vlans {
 | `show interfaces [terse\|extensive] [<interface>]` | Status, role, VLANs and counters of the ports and bundles. |
 | `show chassis hardware` | Every physical port with Linux name, bus address, driver and MAC address (1.6). |
 | `show system offload` | Hardware capabilities and acceleration per port (1.7). |
+| `show system limits` | What this switch can carry and how much of it is used (3.5.1). |
 | `show vlans` | VLANs with their ports (`*` = tagged). |
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
 | `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, `mgmt_junos` and data instances), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
@@ -382,6 +383,25 @@ vlans {
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first moves its traffic to the peers (LACP out of sync, stacking links drained); until then it simply shuts down. |
 | `start shell` | A Linux shell (4.3); `exit` returns to the CLI. |
+
+#### 3.5.1 `show system limits`
+
+One page with the limits of the switch and the current use of each, so nobody has to read the reference to know
+whether a configuration fits. Every range comes from the same definitions as the configuration parser (they cannot
+differ from what `commit` accepts); hardware facts are those of the member the command runs on (with a member
+target, 3.5, those of that member). Sections and lines (a `-` means no limit applies):
+
+| Section | Lines |
+|---|---|
+| **Frame sizes** (frame size incl. the Ethernet header, without VLAN tags, 1.3) | configurable `mtu` range and default; the largest configured `mtu` and where it is set (and the host MTU that fits it); the extra bytes the stack tunnels need (58); the largest `mtu` the stack carries (`show virtual-chassis mtu` has the details per stacking port); the hardware maximum of this member's ports (lowest and highest, with the port) |
+| **Switching** | VLAN ids (1–4093, 4094 reserved) and how many are configured; VXLAN VNIs; learned MAC addresses now, the aging range and default, the `mac-limit` range per port |
+| **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
+| **MC-LAG** | domain numbers (1–255), members per domain (2), domains per member (1); configured domains and bundles |
+| **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
+| **Ports** | physical ports of this member, the fastest port speed, stacking ports |
+
+Use of a limit is shown as `n of max`. A line whose limit is reached is marked `(full)`; a configured value above a
+hardware limit cannot exist (commit refuses it), so the page never shows one.
 
 ## 4. Commit model
 

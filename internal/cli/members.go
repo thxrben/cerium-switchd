@@ -163,7 +163,7 @@ func markPerMember() {
 		confirm string
 	}{
 		{"show interfaces", ""}, {"show ethernet-switching table", ""}, {"show vlans", ""},
-		{"show chassis hardware", ""}, {"show system uptime", ""}, {"show system offload", ""},
+		{"show chassis hardware", ""}, {"show system uptime", ""}, {"show system offload", ""}, {"show system limits", ""},
 		{"show system syslog", ""}, {"show version", ""}, {"show log", ""}, {"show arp", ""},
 		{"show ipv6 neighbors", ""}, {"show route", ""}, {"show virtual-chassis vc-port", ""}, {"show virtual-chassis mtu", ""},
 		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""},

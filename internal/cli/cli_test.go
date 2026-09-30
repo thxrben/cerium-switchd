@@ -538,6 +538,11 @@ func (f *fakeOps) MCLAG() (MCLAGStatus, error) {
 		}}, nil
 }
 
+func (f *fakeOps) Limits() (LimitsStatus, error) {
+	return LimitsStatus{Member: 1, Ports: 9, StackPorts: 2, LowestMaxMTU: 9014, LowestMaxPort: "1/1/0", HighestMaxMTU: 16014, HighestMaxPort: "1/3/0",
+		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12}, nil
+}
+
 func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 	return StackMTUStatus{Member: 1, DataMTU: 9014, Where: "vlans storage mtu", Stack: true, Ports: []StackMTUPort{
 		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216, PathMTU: 9202}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058},
@@ -863,6 +868,23 @@ func TestShowLACP(t *testing.T) {
 	contains(t, ts.run("show lacp interfaces 1/2/0"), "expecting an aggregated interface")
 	contains(t, ts.ok("show lacp statistics interfaces"), "      1/2/0                30         31            0            0",
 		"      1/3/0                 0          5            0            1")
+}
+
+func TestShowLimits(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	out := ts.ok("show system limits")
+	contains(t, out, "Limits of member 1",
+		"  Configurable mtu:                256..16000 (default 1514)",
+		"  Largest mtu configured:          1514 (default; hosts up to MTU 1500)",
+		"  Hardware maximum of the ports:   9014 (1/1/0) .. 16014 (1/3/0)",
+		"  VLAN ids:                        1..4093 (4094 is reserved for the stack); 0 of 4093",
+		"  MAC addresses learned now:       12",
+		"  Bundles (ae0..ae4095):           0 of 4096",
+		"  Members:                         1 of 16",
+		"  Stacking ports:                  2",
+		"  Fastest port:                    10G (1/3/0)")
 }
 
 func TestShowStackMTU(t *testing.T) {

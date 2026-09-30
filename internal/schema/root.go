@@ -190,7 +190,7 @@ func build() *Node {
 				V("broadcast", "Broadcast packets per second", stormLevel),
 				V("multicast", "Multicast packets per second", stormLevel),
 			),
-			V("mac-limit", "Maximum learned MAC addresses", Uint("<count>", 1, 131072)),
+			V("mac-limit", "Maximum learned MAC addresses", Uint("<count>", MinMACLimit, MaxMACLimit)),
 			C("offload", "Per-interface hardware acceleration",
 				F("disable", "Never offload this interface"),
 			),
@@ -273,7 +273,7 @@ func build() *Node {
 	)
 
 	mclag := C("mclag", "Multi-chassis link aggregation",
-		L("domain", "MC-LAG domain (a pair of stack members)", Uint("<domain-id>", 1, 255),
+		L("domain", "MC-LAG domain (a pair of stack members)", Uint("<domain-id>", 1, MaxDomain),
 			LL("members", "The two stack members forming this domain", MemberID),
 			V("system-mac", "Shared LACP system MAC (derived if unset)", MAC),
 			VD("system-priority", "Shared LACP system priority", Uint("<priority>", 1, 65535), "32768"),
@@ -283,7 +283,7 @@ func build() *Node {
 	)
 
 	switchOpts := C("switch-options", "Global switching options",
-		VD("mac-table-aging-time", "MAC table aging time in seconds", Uint("<seconds>", 10, 1000000), "300"),
+		VD("mac-table-aging-time", "MAC table aging time in seconds", Uint("<seconds>", MinMACAging, MaxMACAging), "300"),
 		C("vxlan", "VXLAN transport",
 			VD("mode", "How remote MACs are learned", Enum(
 				E("control-plane", "Distribute MACs between stack members (no flooding to learn)"),

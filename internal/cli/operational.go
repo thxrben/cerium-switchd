@@ -45,6 +45,7 @@ type Operational interface {
 	// MCLAG reports this member's MC-LAG domain (Domain 0: none).
 	MCLAG() (MCLAGStatus, error)
 	StackMTU() (StackMTUStatus, error)
+	Limits() (LimitsStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
 	SwitchMaster(to int, user string) error
 	// RemoveVCMember removes a member from the stack.
@@ -77,6 +78,19 @@ type VCStatus struct {
 type VCPort struct {
 	Port, Linux, State, Neighbor, PeerPort, LastError string
 	UpSince                                           time.Time
+}
+
+// LimitsStatus is what "show system limits" needs from this member's
+// hardware and kernel (frame sizes are frame sizes: the MTU plus the
+// Ethernet header).
+type LimitsStatus struct {
+	Member                        int
+	Ports, StackPorts             int
+	LowestMaxMTU, HighestMaxMTU   int // hardware maximum per port (0: none reports one)
+	LowestMaxPort, HighestMaxPort string
+	FastestMbps                   int
+	FastestPort                   string
+	MACEntries                    int
 }
 
 // StackMTUStatus is "show virtual-chassis mtu" of one member (frame sizes,
@@ -1074,7 +1088,8 @@ func registerOperational() {
 				if sc.name == "system" {
 					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog},
 						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime},
-						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload})
+						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload},
+						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })
@@ -1164,4 +1179,136 @@ func completeMACArgs(sh *Shell, args []config.Token, partial string) []Completio
 	}
 	return append([]Completion{enter}, filter([]Completion{
 		{Text: "vlan", Help: "Only this VLAN"}, {Text: "interface", Help: "Only this interface"}}, partial)...)
+}
+
+// showLimits is "show system limits" (reference 3.5.1).
+func (sh *Shell) showLimits(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("limits are not available")
+	}
+	cfg, _ := model.Build(sh.env.Engine.Active(), nil)
+	if cfg == nil {
+		return errors.New("no valid configuration")
+	}
+	hw, err := sh.env.Ops.Limits()
+	if err != nil {
+		return err
+	}
+	vc, _ := sh.env.Ops.VirtualChassis()
+	stack, _ := sh.env.Ops.StackMTU()
+
+	use := func(n, max int) string {
+		s := fmt.Sprintf("%d of %d", n, max)
+		if n >= max {
+			s += " (full)"
+		}
+		return s
+	}
+	line := func(name, value string) { fmt.Fprintf(c.out, "  %-32s %s\n", name+":", value) }
+	head := func(title string) { fmt.Fprintf(c.out, "\n%s\n", title) }
+
+	fmt.Fprintf(c.out, "Limits of member %d (frame sizes include the Ethernet header, no VLAN tags)\n", hw.Member)
+
+	head("Frame sizes")
+	line("Configurable mtu", fmt.Sprintf("%d..%d (default %d)", schema.MinMTU, schema.MaxMTU, schema.DefaultMTU))
+	mtu, where := cfg.MaxDataMTU()
+	if where == "virtual-chassis" { // nothing sets one
+		where = "default"
+	}
+	line("Largest mtu configured", fmt.Sprintf("%d (%s; hosts up to MTU %d)", mtu, orDash(where), mtu-model.EthHeader))
+	if len(cfg.SwitchMembers()) > 1 {
+		line("Added by the stack tunnels", fmt.Sprintf("%d bytes (tunnel 50, VLAN tags 8)", model.StackOverhead))
+		limit := 0
+		for _, p := range stack.Ports {
+			if p.MaxMTU > 0 && (limit == 0 || p.MaxMTU < limit) {
+				limit = p.MaxMTU
+			}
+		}
+		if limit > 0 {
+			carry := min(limit-model.StackOverhead, schema.MaxMTU)
+			line("Largest mtu the stack carries", fmt.Sprintf("%d (hosts up to MTU %d; 'show virtual-chassis mtu')", carry, carry-model.EthHeader))
+		}
+	} else {
+		line("Stack tunnels", "none (a single switch)")
+	}
+	if hw.LowestMaxMTU > 0 {
+		line("Hardware maximum of the ports", fmt.Sprintf("%d (%s) .. %d (%s)", hw.LowestMaxMTU, hw.LowestMaxPort, hw.HighestMaxMTU, hw.HighestMaxPort))
+	} else {
+		line("Hardware maximum of the ports", "not reported by the drivers")
+	}
+
+	head("Switching")
+	vnis := 0
+	for _, v := range cfg.VLANs {
+		if v.VNI != 0 {
+			vnis++
+		}
+	}
+	line("VLAN ids", fmt.Sprintf("%d..%d (%d is reserved for the stack); %s", schema.MinVLANID, schema.MgmtVLAN-1, schema.MgmtVLAN,
+		use(len(cfg.VLANs), schema.MgmtVLAN-schema.MinVLANID)))
+	line("VXLAN VNIs", fmt.Sprintf("1..%d; %d in use", schema.MaxVNI, vnis))
+	line("MAC addresses learned now", strconv.Itoa(hw.MACEntries))
+	line("MAC aging time", fmt.Sprintf("%d..%d seconds (default %d)", schema.MinMACAging, schema.MaxMACAging, schema.DefaultMACAging))
+	line("mac-limit per interface", fmt.Sprintf("%d..%d", schema.MinMACLimit, schema.MaxMACLimit))
+
+	head("Aggregation")
+	bundles, largest := 0, 0
+	for _, i := range cfg.Interfaces {
+		if i.AE {
+			bundles++
+			largest = max(largest, len(i.MemberPorts))
+		}
+	}
+	line("Bundles (ae0..ae"+strconv.Itoa(schema.MaxAE)+")", use(bundles, schema.MaxAE+1))
+	line("Largest bundle", fmt.Sprintf("%d ports", largest))
+
+	head("MC-LAG")
+	mc := 0
+	for _, i := range cfg.Interfaces {
+		if i.AE && i.MCLAG {
+			mc++
+		}
+	}
+	line("Domains", use(len(cfg.Domains), schema.MaxDomain))
+	line("Members per domain", strconv.Itoa(schema.MembersPerDomain))
+	line("Domains per member", strconv.Itoa(schema.DomainsPerMember))
+	line("MC-LAG bundles", strconv.Itoa(mc))
+
+	head("Stack")
+	line("Members", use(len(cfg.Members), schema.MaxMember))
+	if vc.Control {
+		line("Voters", fmt.Sprintf("%d (at most %d)", len(vc.Voters), schema.MaxVoters))
+	}
+	up := 0
+	for _, p := range vc.Ports {
+		if p.State == "up" {
+			up++
+		}
+	}
+	line("Stacking links of this member", fmt.Sprintf("%d, %d up", len(vc.Ports), up))
+
+	head("Ports")
+	line("Physical ports", strconv.Itoa(hw.Ports))
+	line("Stacking ports", strconv.Itoa(hw.StackPorts))
+	if hw.FastestMbps > 0 {
+		line("Fastest port", fmt.Sprintf("%s (%s)", fmtSpeed(hw.FastestMbps), hw.FastestPort))
+	}
+	return nil
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func fmtSpeed(mbps int) string {
+	if mbps >= 1000 && mbps%1000 == 0 {
+		return fmt.Sprintf("%dG", mbps/1000)
+	}
+	return fmt.Sprintf("%dM", mbps)
 }
