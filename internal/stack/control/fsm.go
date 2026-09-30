@@ -94,8 +94,15 @@ type fsm struct {
 	metaFile string
 	onChange func() // after every change; must not block
 
-	mu   sync.Mutex
-	meta meta
+	mu      sync.Mutex
+	meta    meta
+	changes time.Time // last change (for Node.Current)
+}
+
+func (f *fsm) lastChange() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.changes
 }
 
 func openFSM(store *commit.FileStore, metaFile string, onChange func()) (*fsm, error) {
@@ -135,6 +142,9 @@ func (f *fsm) snapshotMeta() meta {
 }
 
 func (f *fsm) changed() {
+	f.mu.Lock()
+	f.changes = time.Now()
+	f.mu.Unlock()
 	if f.onChange != nil {
 		f.onChange()
 	}

@@ -151,6 +151,7 @@ func TestStackControl(t *testing.T) {
 		return v == 3
 	})
 	waitFor(t, "replicated to 2 and 3", func() bool { return lastSeq(m2.store) == 3 && lastSeq(m3.store) == 3 })
+	waitFor(t, "3 current", m3.node.Current)
 	if len(m3.store.Revisions()) != 3 {
 		t.Errorf("member 3 has %d revisions, want the whole history", len(m3.store.Revisions()))
 	}

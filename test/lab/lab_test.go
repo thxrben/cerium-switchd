@@ -962,3 +962,134 @@ func TestRouting(t *testing.T) {
 		t.Errorf("L3 leftovers (irb devices, routes, port addresses): %q", f)
 	}
 }
+
+const (
+	sw2Addr = "10.5.176.96"
+	sw3Addr = "10.5.176.97"
+)
+
+func vcShow(t *testing.T, addr string) string {
+	t.Helper()
+	return mustSSH(t, addr, "swcli -c 'show virtual-chassis'")
+}
+
+// vcRow matches a member line of "show virtual-chassis".
+func vcRow(id int, rest string) *regexp.Regexp {
+	return regexp.MustCompile(fmt.Sprintf(`(?m)^%d +\S* +%s`, id, rest))
+}
+
+func waitVC(t *testing.T, addr, what string, cond func(string) bool) string {
+	t.Helper()
+	var out string
+	for i := 0; i < 120; i++ {
+		if o, err := ssh(addr, "swcli -c 'show virtual-chassis'"); err == nil {
+			out = o
+			if cond(out) {
+				return out
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("%s: %s: timed out:\n%s", addr, what, out)
+	return ""
+}
+
+var stackIDRe = regexp.MustCompile(`Virtual chassis (\S+),`)
+
+// The virtual chassis (sw1-sw3, reference 5.2): configuration mode from
+// any member runs on the master and reaches every member; the master is
+// removed from the stack and joins again while traffic flows through it,
+// without losing a frame or any configuration (PLAN.md 5b).
+func TestVirtualChassis(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("the lab stack (sw1-sw3, three voters) is not formed:\n%s", out)
+		}
+	}
+	stackID := stackIDRe.FindStringSubmatch(out)[1]
+	setupHost(t, hSrv1)
+	setupHost(t, hSw3)
+	configure(t, vlans+access(hSrv1.sw1Port, "v10")+access(hSw3.sw1Port, "v10"))
+	if !reach(t, hSrv1, hSw3, 1) {
+		t.Fatal("no traffic before the test")
+	}
+
+	// Configuration mode on sw2 runs on the master (sw1) and is applied on
+	// every member.
+	out = mustSSH(t, sw2Addr, `swcli -c "configure
+set vlans v30 description from-sw2
+commit
+commit
+exit"`)
+	for id := 1; id <= 3; id++ {
+		if !strings.Contains(out, fmt.Sprintf("member%d: commit complete", id)) {
+			t.Fatalf("commit from sw2:\n%s", out)
+		}
+	}
+	for _, addr := range []string{sw1, sw3Addr} {
+		var o string
+		for i := 0; i < 30; i++ { // replication takes a moment on the other members
+			if o = mustSSH(t, addr, "swcli -c 'show configuration vlans v30'"); strings.Contains(o, "from-sw2") {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !strings.Contains(o, "from-sw2") {
+			t.Errorf("%s: commit from sw2 missing:\n%s", addr, o)
+		}
+	}
+
+	// Traffic through sw1 while it is removed from the stack and joins again.
+	pingDone := make(chan string, 1)
+	go func() {
+		o, _ := ssh(hSrv1.vm, "ip netns exec h ping -i 0.01 -w 180 -q 192.168.1.3")
+		pingDone <- o
+	}()
+	time.Sleep(time.Second)
+	out = mustSSH(t, sw2Addr, "printf 'request virtual-chassis member remove 1\\nyes\\n' | swcli")
+	if !strings.Contains(out, "Member 1 removed") {
+		t.Fatalf("remove the master:\n%s", out)
+	}
+	waitVC(t, sw1, "sw1 in a stack of its own", func(o string) bool {
+		m := stackIDRe.FindStringSubmatch(o)
+		return m != nil && m[1] != stackID && vcRow(1, `master`).MatchString(o)
+	})
+	waitVC(t, sw2Addr, "sw1 gone from the stack", func(o string) bool {
+		return vcRow(1, `\S+ +\d+ +- +not joined`).MatchString(o) &&
+			(vcRow(2, `master`).MatchString(o) || vcRow(3, `master`).MatchString(o))
+	})
+	if o := mustSSH(t, sw1, "swcli -c 'show configuration vlans v30'"); !strings.Contains(o, "from-sw2") {
+		t.Errorf("the removed switch lost its configuration:\n%s", o)
+	}
+	tok := regexp.MustCompile(`join token (\S+)`).FindStringSubmatch(mustSSH(t, sw3Addr, "swcli -c 'request virtual-chassis member add 1'"))
+	if tok == nil {
+		t.Fatal("no join token")
+	}
+	out = mustSSH(t, sw1, "printf 'request virtual-chassis join token "+tok[1]+"\\nyes\\n' | swcli")
+	if !strings.Contains(out, "Joined as member 1") {
+		t.Fatalf("join:\n%s", out)
+	}
+	waitVC(t, sw1, "sw1 back in the stack", func(o string) bool {
+		m := stackIDRe.FindStringSubmatch(o)
+		return m != nil && m[1] == stackID && vcRow(1, `\S+ +\d+ +voter +present`).MatchString(o) &&
+			vcRow(2, `\S+ +\d+ +voter +present`).MatchString(o) && vcRow(3, `\S+ +\d+ +voter +present`).MatchString(o)
+	})
+	time.Sleep(2 * time.Second)
+	ssh(hSrv1.vm, "pkill -INT -f 'ping -i 0.01'")
+	res := <-pingDone
+	m := regexp.MustCompile(`(\d+) packets transmitted, (\d+) received`).FindStringSubmatch(res)
+	if m == nil {
+		t.Fatalf("ping result:\n%s", res)
+	}
+	tx, _ := strconv.Atoi(m[1])
+	rx, _ := strconv.Atoi(m[2])
+	t.Logf("%d of %d pings answered during removal and re-join", rx, tx)
+	if tx < 500 || rx < tx {
+		t.Errorf("traffic through sw1 was interrupted: %d of %d answered", rx, tx)
+	}
+	if o := mustSSH(t, sw1, "swcli -c 'show configuration vlans v30'"); !strings.Contains(o, "from-sw2") {
+		t.Errorf("configuration lost across re-join:\n%s", o)
+	}
+	masterSw1(t)
+}

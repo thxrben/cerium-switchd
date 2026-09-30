@@ -219,6 +219,33 @@ func (n *Node) MasterReady() bool {
 	return n.leader && n.IsMaster()
 }
 
+// settleTime is how long the replicated state must be unchanged before
+// it counts as current (a member catching up applies many entries).
+const settleTime = 500 * time.Millisecond
+
+// Current reports whether this member's replicated state is up to date: a
+// master is known, everything committed has been applied here, and the
+// state has not changed for a moment. A member that replays the log after
+// joining or a restart passes through old states; they must not be acted
+// upon (applied to the data plane, or taken as a removal).
+func (n *Node) Current() bool {
+	return n.CaughtUp() && time.Since(n.fsm.lastChange()) >= settleTime
+}
+
+// CaughtUp reports whether a master is known and everything committed has
+// been applied here as far as this member knows: while it replays the log,
+// the master reports the commit index batch by batch, so only a state that
+// stays unchanged (Current) is reliable.
+func (n *Node) CaughtUp() bool {
+	if n.raft == nil || n.Master() == 0 {
+		return false
+	}
+	st := n.raft.Stats()
+	ci, _ := strconv.ParseUint(st["commit_index"], 10, 64)
+	ai, _ := strconv.ParseUint(st["applied_index"], 10, 64)
+	return ci > 0 && ai >= ci && st["fsm_pending"] == "0"
+}
+
 // Master returns the master's member id (0: none known).
 func (n *Node) Master() int {
 	if n.raft == nil {

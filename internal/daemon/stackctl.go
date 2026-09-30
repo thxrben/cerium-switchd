@@ -48,6 +48,7 @@ type stackCtl struct {
 	lastApply time.Time // last apply sent by the master
 	listed    bool      // this member was seen in the member list
 	left      bool
+	settle    *time.Timer
 }
 
 func (s *stackCtl) eng() *commit.Engine {
@@ -119,18 +120,45 @@ func (s *stackCtl) writable() error {
 	return control.ErrNoMaster
 }
 
-// changed runs after the replicated state changed.
+// changed runs after the replicated state changed. It is acted upon (shown,
+// applied, a removal) once it is current (see control.Node.Current): a
+// member replaying the log after a restart or join must not pass through
+// old revisions.
 func (s *stackCtl) changed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settle == nil {
+		s.settle = time.AfterFunc(settleDelay, s.settled)
+	} else {
+		s.settle.Reset(settleDelay)
+	}
+}
+
+const settleDelay = 600 * time.Millisecond
+
+func (s *stackCtl) settled() {
+	if !s.node.Current() {
+		d := settleDelay
+		if s.node.Master() == 0 {
+			d = 2 * time.Second
+		}
+		s.mu.Lock()
+		s.settle.Reset(d)
+		s.mu.Unlock()
+		return
+	}
+	s.reload()
 	s.checkRemoved()
-	e := s.eng()
-	if e == nil || s.node.IsMaster() {
-		return
-	}
-	if err := e.Reload(); err != nil {
-		s.log.Error("stack: replicated configuration unreadable", "err", err)
-		return
-	}
 	s.catchUp(false)
+}
+
+// reload shows the replicated configuration (members that are not master).
+func (s *stackCtl) reload() {
+	if e := s.eng(); e != nil && !s.node.IsMaster() {
+		if err := e.Reload(); err != nil {
+			s.log.Error("stack: replicated configuration unreadable", "err", err)
+		}
+	}
 }
 
 // checkRemoved makes this switch a stack of its own once it sees itself
@@ -195,8 +223,10 @@ func (s *stackCtl) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.checkRemoved()
-			s.catchUp(true)
+			if s.node.Current() {
+				s.checkRemoved()
+				s.catchUp(true)
+			}
 		}
 	}
 }
