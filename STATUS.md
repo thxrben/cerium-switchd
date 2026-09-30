@@ -177,6 +177,9 @@ Last updated: 2026-09-30 (evening).
 - Done 2026-09-30: family inet dhcp (internal/dhcp: RFC 2131 client on AF_PACKET, leases merged into the unit's
   addresses and the instance's default route unless a static default exists; show dhcp client binding).
   TestDHCPClient (busybox udhcpd on srv1): bind, renew, expiry, re-bind, replace by static.
+- Done 2026-09-30: port mirroring (dataplane/mirror*.go: tc clsact matchall/flower + mirred, before the storm
+  filters, classification continues; per-VLAN via vlan_id and num_of_vlans 0). TestPortMirroring (capture on sw1's
+  output port: the lab's OVS link learns the mirrored MACs).
   User order next:
   port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
   with the user: management interface design, internal VLAN 4094.

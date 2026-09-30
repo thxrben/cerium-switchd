@@ -26,6 +26,8 @@ type Kernel interface {
 	// SyncL3 converges the routed interfaces and static routes; warnings
 	// are routes that cannot be active yet.
 	SyncL3(l *L3) (changed bool, warnings []string, err error)
+	// SyncMirrors converges the port mirroring filters (by device).
+	SyncMirrors(want map[string]*MirrorPort) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -41,7 +43,8 @@ func Execute(k Kernel, ops []Op) error {
 // Fake is an in-memory kernel with Linux semantics, used by tests and by
 // the dry-run mode. It rejects operations the real kernel would reject.
 type Fake struct {
-	S *State
+	S       *State
+	Mirrors map[string]*MirrorPort
 }
 
 // NewFake returns a fake kernel holding a copy of s.
@@ -59,6 +62,13 @@ func (f *Fake) Read() (*State, error) { return f.S.Clone(), nil }
 func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 	changed := !slices.Equal(f.S.SelfVLANs, vids)
 	f.S.SelfVLANs = slices.Clone(vids)
+	return changed, nil
+}
+
+// SyncMirrors records the mirror filters.
+func (f *Fake) SyncMirrors(want map[string]*MirrorPort) (bool, error) {
+	changed := !reflect.DeepEqual(f.Mirrors, want)
+	f.Mirrors = want
 	return changed, nil
 }
 

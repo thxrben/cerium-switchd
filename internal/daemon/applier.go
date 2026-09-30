@@ -197,6 +197,12 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if _, err := a.kernel.SyncSelfVLANs(desired.SelfVLANs, true); err != nil {
 		return fmt.Errorf("bridge VLANs: %w", err)
 	}
+	// Port mirroring (forwarding-options analyzer): after the devices exist.
+	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, a.names.Linux)); err != nil {
+		a.log.Error("port mirroring", "err", err)
+	} else if changed {
+		a.log.Log(context.Background(), level, "port mirroring updated", "reason", reason)
+	}
 	if err := a.saveOwned(desired); err != nil {
 		return err
 	}

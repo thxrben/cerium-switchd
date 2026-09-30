@@ -108,6 +108,7 @@ type tcRule struct {
 	classid uint32
 	keys    func(o *nl.RtAttr)
 	actions []tcAction
+	egress  bool // clsact egress hook (default: ingress)
 }
 
 // install adds the rule, or atomically replaces an existing one.
@@ -117,7 +118,7 @@ func (r tcRule) install(l netlink.Link) error {
 		Family:  nl.FAMILY_ALL,
 		Ifindex: int32(l.Attrs().Index),
 		Handle:  1,
-		Parent:  netlink.HANDLE_MIN_INGRESS,
+		Parent:  hook(r.egress),
 		Info:    netlink.MakeHandle(r.prio, nl.Swap16(r.proto)),
 	})
 	req.AddData(nl.NewRtAttr(nl.TCA_KIND, nl.ZeroTerminated(r.kind)))
@@ -142,13 +143,25 @@ func (r tcRule) install(l netlink.Link) error {
 	return err
 }
 
-// removeRule deletes the filter at chain/prio (any protocol and kind).
+func hook(egress bool) uint32 {
+	if egress {
+		return netlink.HANDLE_MIN_EGRESS
+	}
+	return netlink.HANDLE_MIN_INGRESS
+}
+
+// removeRule deletes the ingress filter at chain/prio (any protocol and
+// kind).
 func removeRule(l netlink.Link, chain uint32, prio uint16) error {
+	return removeHookRule(l, false, chain, prio)
+}
+
+func removeHookRule(l netlink.Link, egress bool, chain uint32, prio uint16) error {
 	req := nl.NewNetlinkRequest(unix.RTM_DELTFILTER, unix.NLM_F_ACK)
 	req.AddData(&nl.TcMsg{
 		Family:  nl.FAMILY_ALL,
 		Ifindex: int32(l.Attrs().Index),
-		Parent:  netlink.HANDLE_MIN_INGRESS,
+		Parent:  hook(egress),
 		Info:    netlink.MakeHandle(prio, 0),
 	})
 	req.AddData(nl.NewRtAttr(nl.TCA_CHAIN, nl.Uint32Attr(chain)))

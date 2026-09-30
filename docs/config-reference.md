@@ -1345,7 +1345,9 @@ the original traffic. If the output port is congested, only mirrored copies are 
 * Mirroring happens on the output port's member. Mirroring an `ae` mirrors its member ports on that member. For an
   MC-LAG bundle, that is only the local leg; traffic on the other member's leg is not seen.
 * Several analyzers may share an output port, and one interface may be an input of several analyzers.
-* Implemented with tc (`matchall`/`flower` + `mirred`), offloaded to hardware where supported.
+* Implemented with tc (`matchall`/`flower` + `mirred`) on the clsact hooks, before storm control (copies are taken as
+  received); offloaded to hardware where supported. Per VLAN: tagged frames by VLAN id, untagged ones (access or
+  native VLAN) by "no VLAN tag".
 * Commit check:
   * E: no output.
   * E: no input.

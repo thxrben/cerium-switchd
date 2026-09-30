@@ -2564,3 +2564,55 @@ func TestDHCPClient(t *testing.T) {
 		t.Errorf("after replacing dhcp by a static address: %s", a)
 	}
 }
+
+// Port mirroring (forwarding-options analyzer): hSw3's port is the output,
+// pings between srv1 and sw2's host (both in v10) are mirrored by port
+// (ingress, egress) and by VLAN; the pings themselves are not affected.
+func TestPortMirroring(t *testing.T) {
+	for _, h := range []host{hSrv1, hSw2, hSw3} {
+		setupHost(t, h)
+	}
+	base := vlans + access(hSrv1.sw1Port, "v10") + access(hSw2.sw1Port, "v10") +
+		"set interfaces " + hSw3.sw1Port + " description mirror-out\n"
+	// The copies are captured leaving sw1's output port: the lab's link
+	// behind it is a learning bridge that drops frames for addresses it saw
+	// on sw1's side.
+	outDev := strings.TrimSpace(mustSSH(t, sw1, fmt.Sprintf("swcli -c 'show chassis hardware local' | awk '$1==\"%s\"{print $2}'", portNames(t, hSw3.sw1Port))))
+	capture := func(analyzer, filter string) (int, bool) {
+		t.Helper()
+		configure(t, base+analyzer)
+		mustSSH(t, sw1, "setsid sh -c 'timeout 8 tcpdump -Q out -i "+outDev+" -nn -e -c 200 \""+filter+"\" > /tmp/mirror.txt 2>/dev/null' </dev/null >/dev/null 2>&1 &")
+		time.Sleep(1500 * time.Millisecond)
+		_, err := ssh(hSrv1.vm, "ip netns exec h ping -c 10 -i 0.1 -W1 192.168.1.2")
+		time.Sleep(7 * time.Second)
+		out := mustSSH(t, sw1, "cat /tmp/mirror.txt")
+		n := 0
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, "ICMP echo") {
+				n++
+			}
+		}
+		return n, err == nil
+	}
+	ingress := "set forwarding-options analyzer a input ingress interface " + hSrv1.sw1Port + "\nset forwarding-options analyzer a output interface " + hSw3.sw1Port + "\n"
+	if n, ok := capture(ingress, "icmp"); !ok || n != 10 {
+		t.Errorf("ingress mirror: %d frames (want the 10 requests), pings ok %v", n, ok)
+	}
+	egress := "set forwarding-options analyzer a input egress interface " + hSrv1.sw1Port + "\nset forwarding-options analyzer a output interface " + hSw3.sw1Port + "\n"
+	if n, ok := capture(egress, "icmp[icmptype] == icmp-echoreply"); !ok || n != 10 {
+		t.Errorf("egress mirror: %d replies, pings ok %v", n, ok)
+	}
+	both := ingress + "set forwarding-options analyzer a input egress interface " + hSrv1.sw1Port + "\n"
+	if n, ok := capture(both, "icmp"); !ok || n != 20 {
+		t.Errorf("ingress+egress mirror: %d frames (want 20), pings ok %v", n, ok)
+	}
+	byVLAN := "set forwarding-options analyzer v input ingress vlan v10\nset forwarding-options analyzer v output interface " + hSw3.sw1Port + "\n"
+	if n, ok := capture(byVLAN, "icmp"); !ok || n != 20 {
+		t.Errorf("VLAN mirror: %d frames (want requests and replies, 20), pings ok %v", n, ok)
+	}
+	// Removed: the filters go.
+	configure(t, base)
+	if o := mustSSH(t, sw1, "for d in $(ls /sys/class/net); do tc filter show dev $d ingress 2>/dev/null; tc filter show dev $d egress 2>/dev/null; done | grep -c mirred || true"); strings.TrimSpace(o) != "0" {
+		t.Errorf("mirror filters left after removal: %s", o)
+	}
+}
