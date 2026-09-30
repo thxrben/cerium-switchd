@@ -1738,19 +1738,22 @@ func TestStackJumbo(t *testing.T) {
 	}
 	srv1b := memberPort(t, sw2Addr, "ens23")
 	mtu := fmt.Sprintf(" mtu %d\n", limit)
-	configure(t, vlans+"set vlans v10 mtu "+strconv.Itoa(limit)+"\n"+
-		"set interfaces 1/ens23"+mtu+"set interfaces "+srv1b+mtu+
-		"set interfaces 1/ens23 unit 0 family ethernet-switching interface-mode trunk\n"+
-		"set interfaces 1/ens23 native-vlan-id v10\nset interfaces 1/ens23 unit 0 family ethernet-switching vlan members v10\n"+
-		"set interfaces "+srv1b+" unit 0 family ethernet-switching interface-mode trunk\n"+
-		"set interfaces "+srv1b+" native-vlan-id v10\nset interfaces "+srv1b+" unit 0 family ethernet-switching vlan members v10\n")
+	// VLAN 20 is native (the plain, untagged host traffic); VLAN 10 is
+	// tagged, the outer tag of the QinQ case (a native VLAN would strip it).
+	trunk := func(port string) string {
+		return "set interfaces " + port + " unit 0 family ethernet-switching interface-mode trunk\n" +
+			"set interfaces " + port + " native-vlan-id v20\n" +
+			"set interfaces " + port + " unit 0 family ethernet-switching vlan members [ v10 v20 ]\n" +
+			"set interfaces " + port + mtu
+	}
+	configure(t, vlans+"set vlans v10 mtu "+strconv.Itoa(limit)+"\nset vlans v20 mtu "+strconv.Itoa(limit)+"\n"+trunk("1/ens23")+trunk(srv1b))
 	if o := mustSSH(t, sw1, "swcli -c 'show virtual-chassis mtu'"); !strings.Contains(o, fmt.Sprintf("Largest data mtu in the stack:  %d", limit)) ||
 		strings.Contains(o, "too small") {
 		t.Errorf("show virtual-chassis mtu:\n%s", o)
 	}
 	// srv1: ens19 in namespace h (on sw1), ens20 in namespace j (on sw2);
-	// untagged (VLAN 10), a customer tag 100 inside VLAN 10 (QinQ), and a
-	// VXLAN between the two.
+	// untagged (VLAN 20), a customer tag 100 inside tagged VLAN 10 (QinQ),
+	// and a VXLAN between the two.
 	setup := func(ns, nic string, n int) string {
 		return fmt.Sprintf(`ip netns add %[1]s 2>/dev/null; ip link set %[2]s netns %[1]s 2>/dev/null; ip -n %[1]s link set lo up
 for l in $(ip -n %[1]s -o link show | grep -o '%[2]s\.[0-9.]*\|vx0' | sort -u -r); do ip -n %[1]s link del $l 2>/dev/null; done

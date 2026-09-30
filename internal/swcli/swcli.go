@@ -592,7 +592,7 @@ func (u *ui) edit(keys *keyReader) (string, []string, bool) {
 			} else {
 				u.write(u.offlineHelp() + "\n")
 			}
-			ed.redraw()
+			u.repaint(ed)
 		default:
 			ed.key(k)
 		}
@@ -652,6 +652,16 @@ func (u *ui) complete(ed *editor) {
 	}
 	ed.end()
 	u.write("\n" + help)
+	u.repaint(ed)
+}
+
+// repaint draws the banner (the role line and the edit level above the
+// prompt) again, then the prompt and the line being edited: after a help
+// or completion listing the prompt is no longer at the top of the screen
+// section it was drawn with. Caller holds u.mu.
+func (u *ui) repaint(ed *editor) {
+	_, banner := u.cl().State()
+	u.write(banner)
 	ed.redraw()
 }
 
