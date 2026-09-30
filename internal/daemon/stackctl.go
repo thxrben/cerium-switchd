@@ -250,7 +250,10 @@ type applyRequest struct {
 
 // applyFromMaster applies a configuration sent by the master.
 func (s *stackCtl) applyFromMaster(from int, req json.RawMessage) (any, error) {
-	if m := s.node.Master(); from != m {
+	// A member that lost track of the master for a moment (a stacking
+	// cable failed) still accepts it; a stale master without majority
+	// cannot store its commit anyway and reverts it.
+	if m := s.node.Master(); m != 0 && from != m {
 		return nil, fmt.Errorf("apply from member %d, but the master is member %d", from, m)
 	}
 	var r applyRequest

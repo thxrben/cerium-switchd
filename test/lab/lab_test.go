@@ -1093,3 +1093,60 @@ exit"`)
 	}
 	masterSw1(t)
 }
+
+// A ring survives one cut stacking cable (reference 5.2): members reach
+// each other the other way round, the master stays, and commits from the
+// member behind the cut work.
+func TestVirtualChassisRingCut(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("the lab stack (sw1-sw3, three voters) is not formed:\n%s", out)
+		}
+	}
+	masterSw1(t)
+	// sw1 port 1/0 (ens19) is cabled to sw2 (stk-12).
+	cut := "tc qdisc replace dev ens19 root netem loss 100% && (tc qdisc add dev ens19 clsact 2>/dev/null; true) && " +
+		"tc filter add dev ens19 ingress pref 1 matchall action drop"
+	heal := "tc qdisc del dev ens19 root 2>/dev/null; tc filter del dev ens19 ingress pref 1 2>/dev/null; true"
+	t.Cleanup(func() { ssh(sw1, heal) })
+	mustSSH(t, sw1, cut)
+	portDown := regexp.MustCompile(`(?m)^1/0 +ens19 +down`)
+	for i := 0; ; i++ {
+		if portDown.MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis vc-port'")) {
+			break
+		}
+		if i == 50 {
+			t.Fatal("VC port 1/0 not down after the cut")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	out = vcShow(t, sw1)
+	if !vcRow(1, `master`).MatchString(out) || !vcRow(2, `\S+ +\d+ +voter +present`).MatchString(out) {
+		t.Errorf("after the cut:\n%s", out)
+	}
+	out = mustSSH(t, sw2Addr, fmt.Sprintf(`swcli -c "configure
+set vlans v30 description across-the-ring-%d
+commit
+commit
+exit"`, time.Now().Unix()))
+	for id := 1; id <= 3; id++ {
+		if !strings.Contains(out, fmt.Sprintf("member%d: commit complete", id)) {
+			t.Fatalf("commit from sw2 with the cable to the master cut:\n%s", out)
+		}
+	}
+	mustSSH(t, sw1, heal)
+	portUp := regexp.MustCompile(`(?m)^1/0 +ens19 +up +member 2`)
+	for i := 0; ; i++ {
+		if portUp.MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis vc-port'")) {
+			break
+		}
+		if i == 100 {
+			t.Fatal("VC port 1/0 not up after healing")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !vcRow(1, `master`).MatchString(vcShow(t, sw1)) {
+		t.Error("mastership moved because of the cut")
+	}
+}

@@ -282,12 +282,22 @@ func (m *Mesh) recomputeLocked() {
 		}
 	}
 	if !mapsEqual(routes, m.routes) {
+		old := m.routes
 		m.routes = routes
 		close(m.changed)
 		m.changed = make(chan struct{})
 		for k, s := range m.streams {
-			if _, ok := routes[k.member]; !ok {
+			next, ok := routes[k.member]
+			switch {
+			case !ok:
 				s.fail(fmt.Errorf("member %d is no longer reachable", k.member))
+				delete(m.streams, k)
+			case old[k.member] != next && old[k.member] != 0:
+				// Messages may have been lost on the old path, and a stream
+				// waiting for an answer would never notice: reset it, its
+				// user reconnects over the new path.
+				m.sendLocked(&msg{typ: tReset, hops: maxHops, src: byte(m.Self), dst: byte(k.member), stream: k.id})
+				s.fail(fmt.Errorf("path to member %d changed", k.member))
 				delete(m.streams, k)
 			}
 		}

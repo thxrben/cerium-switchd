@@ -122,7 +122,7 @@ func (n *Node) Start() error {
 		return fmt.Errorf("raft snapshots: %w", err)
 	}
 	n.trans = raft.NewNetworkTransportWithConfig(&raft.NetworkTransportConfig{
-		Stream: &streamLayer{m: n.Mesh, l: n.Mesh.Listen("raft")}, MaxPool: 3, Timeout: 10 * time.Second, Logger: hl})
+		Stream: &streamLayer{m: n.Mesh, l: n.Mesh.Listen("raft")}, MaxPool: 3, Timeout: 3 * time.Second, Logger: hl})
 	conf := raft.DefaultConfig()
 	conf.LocalID = serverID(n.Self)
 	conf.Logger = hl

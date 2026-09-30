@@ -100,6 +100,8 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
   CLOSE ends the sending direction; RESET ends the stream at once.
 * Messages for a destination without a path are dropped (streams to it are reset); nothing is buffered for members
   that are gone.
+* When the path to a member changes, streams to it are reset as well: messages may have been lost on the old path,
+  and a stream that waits for an answer would not notice. Their users (Raft, RPC) reconnect over the new path.
 
 ## Stack control (Raft)
 

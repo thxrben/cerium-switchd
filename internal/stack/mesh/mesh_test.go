@@ -183,16 +183,27 @@ func TestRingCut(t *testing.T) {
 	}
 	waitFor(t, "1 -> 2 via 4", func() bool { return m[1].NextHop(2) == 4 })
 	waitFor(t, "2 -> 1 via 3", func() bool { return m[2].NextHop(1) == 3 })
+	// The path changed: the stream is reset (data may have been lost), a
+	// new one works over the new path.
+	buf := make([]byte, 5)
+	s.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := s.Read(buf); err == nil || !strings.Contains(err.Error(), "path to member 2 changed") {
+		t.Fatalf("stream after reroute: %v", err)
+	}
+	s, err = m[1].Dial(2, "echo", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := s.Write([]byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	buf := make([]byte, 5)
 	if _, err := io.ReadFull(s, buf); err != nil || string(buf) != "hello" {
 		t.Fatalf("after reroute: %q %v", buf, err)
 	}
 
 	// Cut the other side too: 1 is alone, the stream fails.
+	defer s.Close()
 	cut41()
 	waitFor(t, "1 isolated", reaches(m[1]))
 	waitFor(t, "3 lost 1", reaches(m[3], 2, 4))
