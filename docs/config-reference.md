@@ -475,7 +475,7 @@ serves a stack of mixed hardware. A SHA-256 of the whole package is verified whe
 a `<package>.sha256` file next to it on the server); the files inside are always verified against the manifest.
 (A signature by a stack signing key follows later.)
 
-**`request system software add <source> [sha256 <hex>] [member <id>] [no-validate]`** (super-user):
+**`request system software add <source> [sha256 <hex>] [member <id>] [no-validate] [force]`** (super-user):
 * `<source>`: `http://…`, `https://…`, `ftp://…`, `sftp://user@host/path` (asks for the password unless a key of
   the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), or a local file of the master (`/var/tmp/…`). Downloads leave through the management instance (1.8).
 * Steps, each reported on the terminal as it happens:
@@ -489,6 +489,9 @@ a `<package>.sha256` file next to it on the server); the files inside are always
      and leaves maintenance mode once it is current again. The next member starts only then. Before its own
      turn, the master hands mastership to an updated member, which finishes the update.
 * `member <id>`: only that member (e.g. a member that joined with an older version).
+* A member that is the **only stacking path** to other members (e.g. a switch cabled to it alone) is not updated:
+  the update stops before draining it and names the members that would be cut off, because they (and possibly the
+  stack's majority) would be lost while it restarts. `force` updates it anyway.
 * Members that already run the version are skipped. The command can be repeated: it continues where an update
   stopped.
 * **Failure**: a member that is not back and current within 5 minutes stops the update; it is reported, and the

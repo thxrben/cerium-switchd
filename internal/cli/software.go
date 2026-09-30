@@ -16,6 +16,8 @@ type SoftwareRequest struct {
 	Source, SHA256, Password string
 	Member                   int // 0: every member
 	NoValidate, Rollback     bool
+	// Force updates a member even if it is the only stacking path to others.
+	Force bool
 }
 
 // SoftwareRun is an update started on the master.
@@ -74,6 +76,7 @@ func completeSoftwareAdd(_ *Shell, args []config.Token, partial string) []Comple
 		{Text: "sha256", Help: "Expected SHA-256 of the package"},
 		{Text: "member", Help: "Only this member"},
 		{Text: "no-validate", Help: "Update even if the new version rejects the configuration"},
+		{Text: "force", Help: "Update a member even if it is the only stacking path to others"},
 	}, partial)...)
 }
 
@@ -84,6 +87,8 @@ func softwareOptions(c *call, args []config.Token, req *SoftwareRequest) error {
 		switch {
 		case prefixOf(a.Text, "no-validate") && !req.Rollback:
 			req.NoValidate = true
+		case a.Text == "force":
+			req.Force = true
 		case (prefixOf(a.Text, "sha256") && !req.Rollback || prefixOf(a.Text, "member")) && i+1 < len(args):
 			v := args[i+1].Text
 			if prefixOf(a.Text, "member") {

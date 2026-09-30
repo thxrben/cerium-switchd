@@ -62,6 +62,9 @@ type swStatus struct {
 type swInstall struct {
 	Version  string `json:"version"`
 	Rollback bool   `json:"rollback,omitempty"`
+	// Force: update even if the member is the only path to others (they
+	// are cut off while it restarts).
+	Force bool `json:"force,omitempty"`
 }
 
 // start registers the stacking protocol handlers.
@@ -186,6 +189,12 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 	}
 	var out strings.Builder
 	exitMaint := false
+	if m := u.maint(); m != nil && !r.Force {
+		if t := m.transit(); len(t) > 0 {
+			return "", fmt.Errorf("member %d is the only stacking path between %s: they would be cut off while it restarts "+
+				"(cable them to another member, or update with 'force')", u.member, strings.Join(t, ", "))
+		}
+	}
 	if m := u.maint(); m != nil && !m.active() {
 		text, err := m.enter(false, true, "software update")
 		if err != nil {
@@ -344,7 +353,7 @@ func (u *updater) do(req cli.SoftwareRequest) {
 		var text string
 		if id == u.member {
 			u.say("this member (the master) is last: it drains, hands mastership on, installs and restarts")
-			text, err = u.installHere(swInstall{Version: target, Rollback: req.Rollback}, "the update")
+			text, err = u.installHere(swInstall{Version: target, Rollback: req.Rollback, Force: req.Force}, "the update")
 			if err != nil {
 				u.finish(fmt.Errorf("member %d: %v", id, err))
 				return
@@ -353,7 +362,7 @@ func (u *updater) do(req cli.SoftwareRequest) {
 			u.finish(nil)
 			return
 		}
-		raw, err := u.ctl.node.Call(id, "sw-install", swInstall{Version: target, Rollback: req.Rollback}, 2*time.Minute)
+		raw, err := u.ctl.node.Call(id, "sw-install", swInstall{Version: target, Rollback: req.Rollback, Force: req.Force}, 2*time.Minute)
 		if err == nil {
 			err = json.Unmarshal(raw, &text)
 		}
