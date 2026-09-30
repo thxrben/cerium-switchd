@@ -19,8 +19,8 @@ import (
 	"mclag/internal/config"
 	"mclag/internal/model"
 	"mclag/internal/stack"
-	"mclag/internal/version"
 	"mclag/internal/stack/control"
+	"mclag/internal/version"
 )
 
 // Stack apply timeouts (docs/stack-protocol.md, "Commits in a stack").
