@@ -179,7 +179,7 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 		if !u.OnMember(m) {
 			continue // an irb whose addresses all belong to other members
 		}
-		i := L3If{Up: !u.Disabled, Addrs: u.AddrsOn(m), VRF: u.Instance}
+		i := L3If{Up: !u.Disabled, Addrs: u.AddrsOn(m), VRF: u.Instance, DHCP: u.DHCP, Unit: n}
 		switch {
 		case u.IRB():
 			if u.VLAN == 0 {

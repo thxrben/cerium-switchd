@@ -214,7 +214,7 @@ func build() *Node {
 						L("address", "Interface address", IPPrefix,
 							V("member", "Only on this member (irb units)", MemberID),
 						),
-						F("dhcp", "Obtain the IPv4 address via DHCP (planned)"),
+						F("dhcp", "Obtain the IPv4 address via DHCP"),
 					),
 					P("inet6", "IPv6 (routed interface)",
 						L("address", "Interface address", IPPrefix,

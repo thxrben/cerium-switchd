@@ -177,6 +177,21 @@ type L3If struct {
 	// the stack-wide gateway MAC and no DAD. Other irb units (only
 	// per-member addresses, e.g. management) use this member's own MAC.
 	Anycast bool
+	// DHCP: the IPv4 address comes from a lease (reference 5.3.2); Unit is
+	// the configuration name.
+	DHCP bool
+	Unit string
+}
+
+// DHCPIf is an interface whose address comes from DHCP.
+type DHCPIf struct {
+	Name, Unit, VRF string
+}
+
+// DHCPLease is what the data plane takes from a lease.
+type DHCPLease struct {
+	Addr   netip.Prefix
+	Router netip.Addr // invalid: none
 }
 
 // Route is a static route of the default instance.

@@ -556,8 +556,13 @@ func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 		{Port: "1/5/2", MTU: 9000, MaxMTU: 9050}, {Port: "1/5/3", MTU: 9216, MaxMTU: 9216, PathMTU: 1500}}}, nil
 }
 
-func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
-func (f *fakeOps) ForceMaster(user string) error            { return nil }
+func (f *fakeOps) SwitchMaster(to int, user string) error { return nil }
+func (f *fakeOps) ForceMaster(user string) error          { return nil }
+func (f *fakeOps) DHCPBindings() ([]DHCPBinding, error) {
+	return []DHCPBinding{{Unit: "1/0/6.0", State: "bound", Address: "10.1.2.50/24", Server: "10.1.2.1", Router: "10.1.2.1",
+		DNS: []string{"10.1.2.53"}, Lease: time.Hour, Renew: time.Now().Add(30 * time.Minute), Expires: time.Now().Add(time.Hour)}}, nil
+}
+
 func (f *fakeOps) SpanningTree() (STPStatus, error) {
 	return STPStatus{Running: true, Owner: 1, BridgeID: "32768.02:aa:bb:cc:dd:ee", RootID: "4096.02:00:00:00:00:01", RootCost: 2000,
 		RootPort: "ae1", HelloTime: 2, MaxAge: 20, ForwardDelay: 15, Changes: 3, Ports: []STPPort{

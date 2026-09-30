@@ -22,6 +22,7 @@ import (
 	"mclag/internal/cli"
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
+	"mclag/internal/dhcp"
 	"mclag/internal/model"
 	"mclag/internal/ntp"
 )
@@ -45,6 +46,7 @@ type ops struct {
 	ntp     *ntp.Client
 	maint   *maintCtl
 	stp     *rstpCtl
+	dhcp    *dhcp.Manager
 	// restart ends switchd so that systemd starts it again.
 	restart func()
 }
@@ -359,6 +361,28 @@ func (o *ops) Power(action string, minutes int, user string) error {
 	// --no-wall: switchd notifies the CLI sessions itself; wall messages
 	// would garble their terminals.
 	return command("shutdown", "--no-wall", p.flag, fmt.Sprintf("+%d", minutes))
+}
+
+func (o *ops) DHCPBindings() ([]cli.DHCPBinding, error) {
+	if o.dhcp == nil {
+		return nil, errors.New("not available (dry-run mode?)")
+	}
+	var out []cli.DHCPBinding
+	for _, b := range o.dhcp.Bindings() {
+		cb := cli.DHCPBinding{Unit: b.Unit, State: b.State.String(), Instance: b.VRF}
+		if l := b.Lease; l != nil {
+			cb.Address, cb.Server, cb.Domain, cb.Lease = l.Addr.String(), l.Server.String(), l.Domain, l.Time
+			if l.Router.IsValid() {
+				cb.Router = l.Router.String()
+			}
+			for _, d := range l.DNS {
+				cb.DNS = append(cb.DNS, d.String())
+			}
+			cb.Renew, cb.Expires = l.Acquired.Add(l.T1), l.Expires()
+		}
+		out = append(out, cb)
+	}
+	return out, nil
 }
 
 func (o *ops) SpanningTree() (cli.STPStatus, error) {

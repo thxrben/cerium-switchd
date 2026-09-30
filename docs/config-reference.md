@@ -1015,7 +1015,18 @@ are routed subinterfaces (below).
 * **Routed subinterfaces**: `vlan-tagging` on the port, then `unit <n> { vlan-id <id>; family inet { address …; } }`
   for n = 1–16385. Each unit takes the frames with its tag. Untagged frames are dropped (unless unit 0 is also routed).
 * `family inet` and `family inet6` each take several `address <address/prefix>` entries. `family inet6` also gets a
-  link-local address. `family inet dhcp` takes the IPv4 address from DHCP instead (planned; W until implemented).
+  link-local address. `family inet dhcp` takes the IPv4 address from DHCP instead:
+  * switchd runs the DHCP client itself (RFC 2131: discover, request, renewal at T1 to the server, rebinding at T2
+    by broadcast, release when the statement is removed). The client identifier is the interface's MAC. On an irb
+    unit every member runs its own client with its own MAC and gets its own address (no anycast address).
+  * The leased address is added to the unit; switchd's removal of unconfigured addresses leaves it alone.
+  * The router option becomes the default route of the unit's routing instance, unless that instance has a static
+    `0.0.0.0/0` (static routes win). The route goes away with the lease.
+  * The DNS servers and domain from the lease are only shown; the switch's own resolver uses `system name-server`.
+  * When the lease expires without renewal, the address and route are removed and the client starts over.
+  * `show dhcp client binding [<interface>]`: per unit and member the state (`selecting`, `requesting`, `bound`,
+    `renewing`, `rebinding`), address, server, router, DNS servers, lease time and time until renewal and expiry.
+  * E: `dhcp` together with an IPv4 `address` on the same unit.
 * E: `family ethernet-switching` together with `family inet|inet6` on the same unit, or `family ethernet-switching`
   on a unit other than 0, or on a port with `vlan-tagging`.
 * E: a unit other than 0 without `vlan-tagging`, or without `vlan-id`. E: the same `vlan-id` on two units of a port.
@@ -1535,7 +1546,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_ceros), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` not yet |
+| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_ceros), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` implemented |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
 | `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
@@ -1666,7 +1677,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interface-range <name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
 | `interface-range <name> unit <unit> family inet address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
 | `interface-range <name> unit <unit> family inet address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
-| `interface-range <name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP (planned) |
+| `interface-range <name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
 | `interface-range <name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
 | `interface-range <name> unit <unit> family inet6 address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
 | `interface-range <name> unit <unit> family inet6 address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
@@ -1707,7 +1718,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interfaces <interface-name> unit <unit> family inet` | presence |  |  | IPv4 (routed interface) |
 | `interfaces <interface-name> unit <unit> family inet address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
 | `interfaces <interface-name> unit <unit> family inet address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
-| `interfaces <interface-name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP (planned) |
+| `interfaces <interface-name> unit <unit> family inet dhcp` | flag |  |  | Obtain the IPv4 address via DHCP |
 | `interfaces <interface-name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
 | `interfaces <interface-name> unit <unit> family inet6 address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
 | `interfaces <interface-name> unit <unit> family inet6 address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |

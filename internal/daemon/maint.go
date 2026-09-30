@@ -153,7 +153,7 @@ func (x *maintCtl) drainForShutdown(why string) {
 		x.log.Warn("drain before "+why, "err", err)
 		return
 	}
-	x.log.Info("drain before "+why+": "+strings.TrimSpace(strings.ReplaceAll(text, "\n", "; ")))
+	x.log.Info("drain before " + why + ": " + strings.TrimSpace(strings.ReplaceAll(text, "\n", "; ")))
 }
 
 func (x *maintCtl) draining() []int {

@@ -53,6 +53,8 @@ type Operational interface {
 	// ForceMaster lets this member continue alone after the stack lost
 	// its majority (restarts switchd).
 	ForceMaster(user string) error
+	// DHCPBindings reports this member's DHCP clients.
+	DHCPBindings() ([]DHCPBinding, error)
 	// SpanningTree reports the stack's RSTP bridge (from the RSTP owner).
 	SpanningTree() (STPStatus, error)
 	// Maintenance enters (drains this member; force: despite the checks)
@@ -1230,6 +1232,11 @@ func registerOperational() {
 					}},
 				}},
 				stpCommand(),
+				&command{name: "dhcp", help: "Show DHCP information", class: commit.ReadOnly, sub: []*command{
+					{name: "client", help: "DHCP client", class: commit.ReadOnly, sub: []*command{
+						{name: "binding", help: "Leases of the interfaces with 'family inet dhcp'", class: commit.ReadOnly, run: (*Shell).showDHCPBinding},
+					}},
+				}},
 			)
 			for _, sc := range cmd.sub {
 				if sc.name == "system" {

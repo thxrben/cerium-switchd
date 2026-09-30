@@ -25,6 +25,7 @@ type L3Unit struct {
 	// every member).
 	AddrMember map[netip.Prefix]int
 	Instance   string // routing instance ("" = default)
+	DHCP       bool   // family inet dhcp: the IPv4 address comes from a lease
 }
 
 // AddrsOn returns the addresses of u that exist on member m.
@@ -170,7 +171,13 @@ func (b *builder) buildUnits(name string, e *config.Node, i *Interface) {
 			}
 		}
 		if fam.Has("inet", "dhcp") {
-			b.warnf(upath+" family inet dhcp", "DHCP on routed interfaces is not implemented yet; configure a static address")
+			l3.DHCP = true
+			for _, p := range l3.Addrs {
+				if p.Addr().Is4() {
+					b.errorf(upath+" family inet dhcp", "use either 'dhcp' or a static IPv4 address, not both")
+					break
+				}
+			}
 		}
 		b.cfg.L3[l3.Name] = l3
 	}

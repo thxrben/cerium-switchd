@@ -183,6 +183,34 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 	}
 
+	// DHCP leases become addresses of their units and default routes of
+	// their instances (unless the instance has a static default route).
+	var dhcpIfs []DHCPIf
+	for _, i := range l.Ifs {
+		if i.DHCP {
+			dhcpIfs = append(dhcpIfs, DHCPIf{Name: i.Name, Unit: i.Unit, VRF: i.VRF})
+		}
+	}
+	if k.DHCP != nil {
+		leases := k.DHCP(dhcpIfs)
+		ifs := slices.Clone(l.Ifs)
+		routes := slices.Clone(l.Routes)
+		defaulted := map[string]bool{}
+		for n, i := range ifs {
+			le, ok := leases[i.Name]
+			if !i.DHCP || !ok {
+				continue
+			}
+			ifs[n].Addrs = append(slices.Clone(i.Addrs), le.Addr)
+			static := slices.ContainsFunc(l.Routes, func(r Route) bool { return r.VRF == i.VRF && r.Prefix.Bits() == 0 && r.Prefix.Addr().Is4() })
+			if le.Router.IsValid() && !static && !defaulted[i.VRF] {
+				defaulted[i.VRF] = true
+				routes = append(routes, Route{VRF: i.VRF, Prefix: netip.MustParsePrefix("0.0.0.0/0"), NextHops: []netip.Addr{le.Router}})
+			}
+		}
+		l = &L3{VRFs: l.VRFs, Ifs: ifs, Routes: routes}
+	}
+
 	want := map[string]bool{}
 	var protect []string // data L3 interfaces: only ping/ND/replies reach the switch
 	for _, i := range l.Ifs {

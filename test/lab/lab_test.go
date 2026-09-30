@@ -2482,3 +2482,85 @@ func TestRSTP(t *testing.T) {
 		}
 	}
 }
+
+// family inet dhcp (reference 5.3.2): sw1's routed port towards srv1 takes
+// its address from busybox udhcpd on srv1; the router becomes the default
+// route of the unit's instance; the lease is renewed, released when the
+// statement goes, and removed when it expires.
+func TestDHCPClient(t *testing.T) {
+	setupHost(t, hSrv1) // 192.168.1.1/24 on srv1's NIC to sw1
+	conf := "interface " + hSrv1.nic + "\nstart 192.168.1.100\nend 192.168.1.110\nmin_lease 20\n" +
+		"option lease 20\noption router 192.168.1.1\noption dns 192.168.1.53\noption domain lab.test\n" +
+		"lease_file /tmp/udhcpd.leases\npidfile /tmp/udhcpd.pid\n"
+	server := func() {
+		mustSSH(t, hSrv1.vm, "cat > /tmp/udhcpd.conf <<'EOF'\n"+conf+"EOF\ntouch /tmp/udhcpd.leases; ip netns exec h setsid busybox udhcpd -f /tmp/udhcpd.conf >/tmp/udhcpd.log 2>&1 < /dev/null &")
+	}
+	stop := func() { ssh(hSrv1.vm, "pkill -f 'busybox udhcpd'; true") }
+	stop()
+	server()
+	t.Cleanup(stop)
+	configure(t, "set interfaces "+hSrv1.sw1Port+" unit 0 family inet dhcp\nset routing-instances red interface "+hSrv1.sw1Port+".0\n")
+	t.Cleanup(func() { configure(t, vlans) })
+
+	unit := portNames(t, hSrv1.sw1Port) + ".0"
+	var out string
+	for i := 0; ; i++ {
+		out = mustSSH(t, sw1, "swcli -c 'show dhcp client binding'")
+		if strings.Contains(out, unit+" (instance red): bound") {
+			break
+		}
+		if i == 40 {
+			t.Fatalf("no lease:\n%s\n%s", out, mustSSH(t, hSrv1.vm, "cat /tmp/udhcpd.log"))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	m := regexp.MustCompile(`address (192\.168\.1\.1\d\d)/24 from server 192\.168\.1\.1, router 192\.168\.1\.1`).FindStringSubmatch(out)
+	if m == nil || !strings.Contains(out, "DNS servers 192.168.1.53, domain lab.test") {
+		t.Fatalf("binding:\n%s", out)
+	}
+	addr := m[1]
+	dev := strings.TrimSpace(mustSSH(t, sw1, fmt.Sprintf("swcli -c 'show chassis hardware local' | awk '$1==\"%s\"{print $2}'", portNames(t, hSrv1.sw1Port))))
+	check := func(what string, wantAddr bool) {
+		t.Helper()
+		var a, r string
+		for i := 0; i < 30; i++ {
+			a = mustSSH(t, sw1, "ip -4 -br addr show dev "+dev)
+			r = mustSSH(t, sw1, "ip route show vrf red default")
+			if strings.Contains(a, addr+"/24") == wantAddr && strings.Contains(r, "via 192.168.1.1") == wantAddr {
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Errorf("%s: address %v wanted:\n%s\nroute:\n%s", what, wantAddr, a, r)
+	}
+	check("bound", true)
+	if _, err := ssh(sw1, "ip vrf exec red ping -c2 -i0.2 -W1 192.168.1.1"); err != nil {
+		t.Error("no ping through the leased address")
+	}
+	// Renewal (T1 = 10 s): still bound with the same address.
+	time.Sleep(14 * time.Second)
+	if o := mustSSH(t, sw1, "swcli -c 'show dhcp client binding'"); !strings.Contains(o, addr+"/24") || !strings.Contains(o, ": bound") {
+		t.Errorf("after the renewal:\n%s", o)
+	}
+	check("renewed", true)
+	// The server goes away: the lease expires and is removed.
+	stop()
+	time.Sleep(22 * time.Second)
+	check("expired", false)
+	if o := mustSSH(t, sw1, "swcli -c 'show dhcp client binding'"); !strings.Contains(o, ": selecting") {
+		t.Errorf("after the expiry:\n%s", o)
+	}
+	// Back: a new lease; then the statement goes and the lease is released.
+	server()
+	for i := 0; !strings.Contains(mustSSH(t, sw1, "swcli -c 'show dhcp client binding'"), ": bound"); i++ {
+		if i == 60 {
+			t.Fatal("no lease after the server returned")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	configure(t, "set interfaces "+hSrv1.sw1Port+" unit 0 family inet address 192.168.1.2/24\nset routing-instances red interface "+hSrv1.sw1Port+".0\n")
+	a := mustSSH(t, sw1, "ip -4 -br addr show dev "+dev)
+	if strings.Contains(a, "192.168.1.1") && !strings.Contains(a, "192.168.1.2/24") || regexp.MustCompile(`192\.168\.1\.1\d\d`).MatchString(a) {
+		t.Errorf("after replacing dhcp by a static address: %s", a)
+	}
+}

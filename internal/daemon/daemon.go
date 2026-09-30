@@ -27,6 +27,7 @@ import (
 	"mclag/internal/cli"
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
+	"mclag/internal/dhcp"
 	"mclag/internal/inventory"
 	"mclag/internal/lacp"
 	"mclag/internal/model"
@@ -118,6 +119,28 @@ func Run(ctx context.Context, o Options) error {
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.member = member
 	applier.inv, applier.names = inv, names
+	// family inet dhcp (reference 5.3.2): the clients follow the data
+	// plane's interfaces, a lease change reconciles it.
+	dhcpMgr := &dhcp.Manager{Log: log, HostName: func() string {
+		if hostName != nil {
+			return hostName()
+		}
+		return ""
+	}, OnChange: func() { applier.reconcile("dhcp lease") }}
+	if !o.DryRun {
+		kernel.DHCP = func(ifs []dataplane.DHCPIf) map[string]dataplane.DHCPLease {
+			var want []dhcp.Iface
+			for _, i := range ifs {
+				want = append(want, dhcp.Iface{Name: i.Name, Unit: i.Unit, VRF: i.VRF})
+			}
+			dhcpMgr.Sync(want)
+			out := map[string]dataplane.DHCPLease{}
+			for n, l := range dhcpMgr.Leases() {
+				out[n] = dataplane.DHCPLease{Addr: l.Addr, Router: l.Router}
+			}
+			return out
+		}
+	}
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
 	systemctl := func(args ...string) error { return command("systemctl", args...) }
 	consoles := &access.Consoles{SysRoot: "/sys", UnitDir: "/etc/systemd/system", ProfileDir: "/etc/profile.d",
@@ -270,6 +293,7 @@ func Run(ctx context.Context, o Options) error {
 		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
 		maint.Store(liveOps.maint)
 		liveOps.stp = stp
+		liveOps.dhcp = dhcpMgr
 	}
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.

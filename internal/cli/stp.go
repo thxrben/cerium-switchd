@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"mclag/internal/commit"
 	"mclag/internal/config"
@@ -135,7 +136,6 @@ func (sh *Shell) showSTPInterface(c *call) error {
 	return nil
 }
 
-
 // showSTPStatistics is "show spanning-tree statistics".
 func (sh *Shell) showSTPStatistics(c *call) error {
 	if err := noArgs(c); err != nil {
@@ -175,4 +175,60 @@ func stpCommand() *command {
 		{name: "interface", help: "Port roles and states", class: commit.ReadOnly, run: (*Shell).showSTPInterface, complete: completeSTPInterface},
 		{name: "statistics", help: "BPDU counters", class: commit.ReadOnly, run: (*Shell).showSTPStatistics},
 	}}
+}
+
+// DHCPBinding is one DHCP client of this member.
+type DHCPBinding struct {
+	Unit, State, Address, Server, Router, Instance string
+	DNS                                            []string
+	Domain                                         string
+	Lease                                          time.Duration
+	Renew, Expires                                 time.Time
+}
+
+// showDHCPBinding is "show dhcp client binding [<interface>]".
+func (sh *Shell) showDHCPBinding(c *call) error {
+	name := ""
+	switch len(c.args) {
+	case 0:
+	case 1:
+		name = c.args[0].Text
+	default:
+		return &posError{pos: c.argPos(1), msg: "syntax error, expecting one interface"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	bs, err := sh.env.Ops.DHCPBindings()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	n := 0
+	for _, b := range bs {
+		if name != "" && b.Unit != name {
+			continue
+		}
+		n++
+		inst := ""
+		if b.Instance != "" {
+			inst = " (instance " + b.Instance + ")"
+		}
+		fmt.Fprintf(c.out, "%s%s: %s\n", b.Unit, inst, b.State)
+		if b.Address == "" {
+			continue
+		}
+		fmt.Fprintf(c.out, "  address %s from server %s, router %s\n", b.Address, orDash(b.Server), orDash(b.Router))
+		if len(b.DNS) > 0 || b.Domain != "" {
+			fmt.Fprintf(c.out, "  DNS servers %s, domain %s\n", orDash(strings.Join(b.DNS, " ")), orDash(b.Domain))
+		}
+		fmt.Fprintf(c.out, "  lease %s, renewal in %s, expires in %s\n", b.Lease, b.Renew.Sub(now).Round(time.Second), b.Expires.Sub(now).Round(time.Second))
+	}
+	if n == 0 {
+		if name != "" {
+			return fmt.Errorf("%s does not use DHCP on this member", name)
+		}
+		c.out.WriteString("no interface uses DHCP on this member\n")
+	}
+	return nil
 }

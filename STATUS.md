@@ -174,7 +174,10 @@ Last updated: 2026-09-30 (evening).
   member, snapshot copy every second, user-space STP via /sbin/bridge-stp). TestRSTP: loop-23 becomes
   designated/backup, owner stop/start keeps every port state. Open RSTP items: bpdu-block (model only), clear
   spanning-tree commands, a lab test with an external RSTP bridge (mstpd on srv1) and an MC-LAG port with BPDUs.
-  User order next: family inet dhcp,
+- Done 2026-09-30: family inet dhcp (internal/dhcp: RFC 2131 client on AF_PACKET, leases merged into the unit's
+  addresses and the instance's default route unless a static default exists; show dhcp client binding).
+  TestDHCPClient (busybox udhcpd on srv1): bind, renew, expiry, re-bind, replace by static.
+  User order next:
   port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
   with the user: management interface design, internal VLAN 4094.
 - Done 2026-09-30 (later, user requests): full names + speed in `show virtual-chassis vc-port`; `show chassis hardware`

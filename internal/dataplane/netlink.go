@@ -27,6 +27,9 @@ type Netlink struct {
 	// MemberMAC is this member's own MAC for irb units without shared
 	// addresses (per-member management addresses).
 	MemberMAC net.HardwareAddr
+	// DHCP takes the interfaces that use DHCP and returns the current
+	// leases by device (nil: no DHCP client).
+	DHCP func(ifs []DHCPIf) map[string]DHCPLease
 
 	mlOnce sync.Once
 	macl   *macLimits
