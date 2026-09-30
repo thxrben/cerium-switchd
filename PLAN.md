@@ -499,6 +499,15 @@ considered and rejected as less predictable to drive). `protocols bgp …` confi
 installed via netlink in the right VRF. Use: EVPN control plane for VXLAN towards non-stack VTEPs, and simple BGP
 routing for irbs.
 
+**`show route` in full (requested 2026-09-30)**, Junos layout, built on the basic `show route` of Phase 4b:
+* IPv4 and IPv6 (`inet.0` / `inet6.0`, per routing instance `<name>.inet.0`), every source with its protocol and
+  preference: Direct, Local, Static, BGP (and later others), active route marked, next hops and interfaces, age.
+* Filters: `show route <prefix>` (longest match / `exact`), `protocol <p>`, `table <t>`, `instance <name>`,
+  `terse`, `detail`/`extensive` (BGP attributes: AS path, local preference, MED, communities, originator),
+  `summary` (counts per table and protocol), `advertising-protocol bgp <peer>` / `receive-protocol bgp <peer>`.
+* BGP routes come from GoBGP's RIB (also those not installed, e.g. inactive or rejected by policy), installed ones are
+  cross-checked with the kernel. Member targets (`member <id>` / `all-members`) as for the other show commands.
+
 ### Phase 10: Data-plane encryption (opt-in per link)
 1. **MACsec** on the peer link. Keys (SAKs) are generated and rotated by switchd and exchanged over the mTLS channel,
    so no wpa_supplicant/MKA is needed. Hardware offload is used where the NIC supports it.
