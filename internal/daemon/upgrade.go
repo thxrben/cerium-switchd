@@ -7,9 +7,11 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"slices"
 	"strings"
 
 	"mclag/internal/schema"
+	"mclag/internal/version"
 )
 
 // legacyName is the interface name form before reference 1.6:
@@ -67,6 +69,15 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	u.removePeerLink(m)
 	u.dropManagementFlag(m)
 	u.walk(schema.Root(), m, "")
+	// A newer member (e.g. the master during a software update) may know
+	// statements this version does not: they are left out here and applied
+	// by the members that know them (reference 3.6, mixed versions).
+	var ignored []string
+	dropUnknown(schema.Root(), m, "", &ignored)
+	if len(ignored) > 0 {
+		u.log.Warn("configuration: statements not supported by this version are ignored", "version", version.Version,
+			"statements", strings.Join(ignored, "; "))
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		return raw
@@ -125,6 +136,80 @@ func (u *upgrader) replaced(what string) {
 
 func (u *upgrader) dropped(what string) {
 	u.log.Warn("stored configuration: statement for a port that no longer exists removed", "statement", what)
+}
+
+// dropUnknown removes the statements and values this version's schema does
+// not know from a stored configuration (JSON form) and lists them.
+func dropUnknown(sn *schema.Node, m map[string]any, path string, out *[]string) {
+	for name, v := range m {
+		if strings.HasPrefix(name, "@") {
+			continue
+		}
+		p := strings.TrimSpace(path + " " + name)
+		c := sn.Child(name)
+		if c == nil {
+			delete(m, name)
+			*out = append(*out, p)
+			continue
+		}
+		check := func(s string) bool {
+			if c.Type == nil {
+				return true
+			}
+			_, err := c.Type.Check(s)
+			return err == nil
+		}
+		switch c.Kind {
+		case schema.Container:
+			if sub, ok := v.(map[string]any); ok {
+				dropUnknown(c, sub, p, out)
+			}
+		case schema.List:
+			entries, _ := v.(map[string]any)
+			for key, e := range entries {
+				if !check(key) {
+					delete(entries, key)
+					*out = append(*out, p+" "+key)
+					continue
+				}
+				if sub, ok := e.(map[string]any); ok {
+					dropUnknown(c, sub, p+" "+key, out)
+				}
+			}
+		case schema.Leaf:
+			if s, ok := v.(string); ok && !check(s) {
+				delete(m, name)
+				*out = append(*out, p+" "+s)
+			}
+		case schema.LeafList:
+			arr, ok := v.([]any)
+			if !ok {
+				continue
+			}
+			keep := arr[:0]
+			for _, x := range arr {
+				if s, ok := x.(string); ok && !check(s) {
+					*out = append(*out, p+" "+s)
+					continue
+				}
+				keep = append(keep, x)
+			}
+			m[name] = keep
+		}
+	}
+}
+
+// UnknownStatements lists what this version does not know in a
+// configuration (JSON form).
+func UnknownStatements(raw []byte) []string {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	var out []string
+	dropUnknown(schema.Root(), m, "", &out)
+	slices.Sort(out)
+	return out
 }
 
 func isIf(t *schema.Type) bool {

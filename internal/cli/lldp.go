@@ -60,7 +60,9 @@ func (sh *Shell) showLLDPNeighbors(c *call) error {
 		return nil
 	}
 	now := time.Now()
-	ttl := func(n lldp.Neighbor) string { return fmt.Sprintf("%ds", max(0, int(n.Expires.Sub(now).Round(time.Second)/time.Second))) }
+	ttl := func(n lldp.Neighbor) string {
+		return fmt.Sprintf("%ds", max(0, int(n.Expires.Sub(now).Round(time.Second)/time.Second)))
+	}
 	if port == "" {
 		fmt.Fprintf(c.out, "%-10s %-19s %-22s %-20s %-20s %s\n", "Interface", "Chassis ID", "Port ID", "Port description", "System name", "TTL")
 		for _, n := range st.Neighbors {

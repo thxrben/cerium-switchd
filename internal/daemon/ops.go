@@ -44,6 +44,7 @@ type ops struct {
 	dryRun  bool
 	lacp    *lacp.Runtime
 	lldp    *lldp.Agent
+	updater *updater
 	mclag   *mclagCtl
 	ntp     *ntp.Client
 	maint   *maintCtl
@@ -695,6 +696,20 @@ func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
 		st.Ports = append(st.Ports, sp)
 	}
 	return st, nil
+}
+
+func (o *ops) SoftwareStart(r cli.SoftwareRequest) error {
+	if o.updater == nil {
+		return errors.New("software updates are not available")
+	}
+	return o.updater.Start(r)
+}
+
+func (o *ops) Software() (cli.SoftwareStatus, error) {
+	if o.updater == nil {
+		return cli.SoftwareStatus{}, errors.New("software updates are not available")
+	}
+	return o.updater.Status()
 }
 
 func (o *ops) LLDP() (cli.LLDPStatus, error) {

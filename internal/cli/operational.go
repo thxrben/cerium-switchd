@@ -1383,11 +1383,14 @@ func registerOperational() {
 			run:      func(sh *Shell, c *call) error { return sh.setVCPort(c, add) },
 			complete: completeVCPort}
 	}
+	swRequest, swShow := softwareCommands()
+	findCmd(operational, []string{"show", "system"}).sub = append(findCmd(operational, []string{"show", "system"}).sub, swShow)
 	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.SuperUser, sub: []*command{
 		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
 			power("reboot", "Reboot this member"),
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
+			swRequest,
 			{name: "maintenance-mode", help: "Take this member out of service without losing traffic", class: commit.SuperUser, sub: []*command{
 				{name: "enter", help: "Drain this member (mastership, stack transit, MC-LAG legs)", class: commit.SuperUser,
 					run:      func(sh *Shell, c *call) error { return sh.maintenance(c, true) },

@@ -509,8 +509,8 @@ and the state of a running update (`fetching`, `checking`, `distributing`, `upda
 * **Configuration**: a version reads every configuration of the previous release line; statements that changed are
   converted when they are read (as they have been so far). A member with an **older** version applies the stack's
   configuration **without the statements it does not know** (they are left out, and logged as not supported by that
-  member's version); the members that know them apply them. `commit check` warns while versions differ and names
-  the statements that some members ignore.
+  member's version); the members that know them apply them. `commit check` names the statements
+  that some members ignore, with their member and version.
 * A new version never stops forwarding because of the configuration: if the active configuration fails its check
   (a stricter rule), the data plane keeps its current state, the member reports the errors (`show system
   software`, syslog), and a commit that fixes them applies normally.

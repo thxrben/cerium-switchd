@@ -19,6 +19,7 @@ import (
 	"mclag/internal/config"
 	"mclag/internal/model"
 	"mclag/internal/stack"
+	"mclag/internal/version"
 	"mclag/internal/stack/control"
 )
 
@@ -291,7 +292,7 @@ func (s *stackCtl) applyFromMaster(from int, req json.RawMessage) (any, error) {
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, err
 	}
-	t, err := config.FromJSON(r.Config)
+	t, err := config.FromJSON(newUpgrader(s.local.names, s.member, s.log).Upgrade(r.Config))
 	if err != nil {
 		return nil, fmt.Errorf("configuration from the master: %w", err)
 	}
@@ -365,11 +366,16 @@ func (s *stackCtl) checkForMaster(from int, req json.RawMessage) (any, error) {
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, err
 	}
-	t, err := config.FromJSON(r.Config)
+	unknown := UnknownStatements(r.Config)
+	t, err := config.FromJSON(newUpgrader(s.local.names, s.member, nil).Upgrade(r.Config))
 	if err != nil {
 		return nil, err
 	}
 	cfg, issues := model.Build(t, s.inv)
+	for _, u := range unknown {
+		issues = append(issues, model.Issue{Severity: model.Warning, Path: u,
+			Msg: fmt.Sprintf("not supported by the version of member %d (%s); ignored there until it is updated", s.member, version.Version)})
+	}
 	for _, chk := range s.checks {
 		issues = append(issues, chk(cfg)...)
 	}

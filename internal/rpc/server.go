@@ -160,6 +160,11 @@ func (t *term) Ask(prompt string, echo bool) (string, error) {
 	return m.Text, err
 }
 
+// Print shows output of a command that is still running.
+func (t *term) Print(text string) error {
+	return t.c.send(Msg{T: "print", Text: text})
+}
+
 func (t *term) ReadText(prompt string) (string, error) {
 	if err := t.c.send(Msg{T: "readtext", Prompt: prompt}); err != nil {
 		return "", err

@@ -322,4 +322,3 @@ func (s *stackOps) StackMTU() (cli.StackMTUStatus, error) {
 	}
 	return st, err
 }
-

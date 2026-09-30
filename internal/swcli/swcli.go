@@ -376,6 +376,13 @@ func readLine(f *os.File) (string, error) {
 	}
 }
 
+// Print shows output of a command that is still running.
+func (u *ui) Print(text string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.write(text)
+}
+
 func (u *ui) Notify(text string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()

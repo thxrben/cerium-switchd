@@ -165,3 +165,24 @@ func TestUpgradeRenamesManagementInstance(t *testing.T) {
 		t.Errorf("management instance not renamed:\n%s", out)
 	}
 }
+
+// A configuration from a newer version: what this version does not know
+// is left out, the rest applies (reference 3.6, mixed versions).
+func TestUpgradeIgnoresUnknownStatements(t *testing.T) {
+	raw := `{"system":{"host-name":"core","future-thing":{"x":"1"}},
+	  "protocols":{"lldp":{"advertisement-interval":"30","new-knob":true}},
+	  "vlans":{"v10":{"vlan-id":"10","shiny":"yes"}},
+	  "interfaces":{"1/0/0":{"mtu":"99999999"}}}`
+	got := UnknownStatements([]byte(raw))
+	want := []string{"interfaces 1/0/0 mtu 99999999", "protocols lldp new-knob", "system future-thing", "vlans v10 shiny"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("unknown: %q", got)
+	}
+	tr := upgrade(t, raw)
+	out := config.FormatSet(tr)
+	for _, want := range []string{"set system host-name core", "set protocols lldp advertisement-interval 30", "set vlans v10 vlan-id 10"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -15,6 +15,7 @@
 //
 //	{"t":"hello",…}            after connecting: prompt, banner, class (name)
 //	{"t":"ask","prompt":…,"echo":…}
+//	{"t":"print","text":…}         output of a command that is still running
 //	{"t":"readtext","prompt":…}
 //	{"t":"readfile","name":…} / {"t":"writefile","name":…,"data":…}
 //	{"t":"done","text":…,…}   result of exec, with the next prompt

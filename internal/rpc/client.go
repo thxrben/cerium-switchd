@@ -208,6 +208,11 @@ func (c *Client) Exec(line string) (Msg, error) {
 			if err != nil {
 				return m, err
 			}
+		case "print":
+			// Output of a running command (e.g. a software update).
+			if p, ok := c.h.(interface{ Print(string) }); ok {
+				p.Print(m.Text)
+			}
 		case "readtext":
 			a, err := c.h.ReadText(m.Prompt)
 			if err := c.reply("answer", a, nil, err); err != nil {
