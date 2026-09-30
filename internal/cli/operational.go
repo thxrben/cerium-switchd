@@ -53,6 +53,14 @@ type Operational interface {
 	// ForceMaster lets this member continue alone after the stack lost
 	// its majority (restarts switchd).
 	ForceMaster(user string) error
+	// Cards lists this member's known cards (present and absent).
+	Cards() ([]CardStatus, error)
+	// CardInterfaces lists the configured interfaces on these cards.
+	CardInterfaces(cards ...int) []string
+	// CardRenumber gives present card from the number to; CardForget
+	// releases an absent card's number.
+	CardRenumber(from, to int, user string) error
+	CardForget(card int, user string) error
 	// VLANMTUDrops counts frames dropped per VLAN for exceeding its mtu.
 	VLANMTUDrops() (map[int]uint64, error)
 	// DHCPBindings reports this member's DHCP clients.
@@ -510,8 +518,15 @@ func (sh *Shell) showHardware(c *call) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", "Interface", "Linux name", "Bus address", "Driver", "MAC address")
+	member := 0
 	for _, p := range ports {
 		fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", p.Name, p.Linux, p.Bus, p.Driver, p.MAC)
+		if pp, ok := schema.ParsePhysical(p.Name); ok {
+			member = pp.Member
+		}
+	}
+	if member > 0 {
+		sh.showCards(c, member)
 	}
 	return nil
 }
@@ -1300,6 +1315,8 @@ func registerOperational() {
 			}},
 		}},
 		{name: "chassis", help: "Chassis requests", class: commit.SuperUser, sub: []*command{
+			{name: "card", help: "Card numbering: '<card> renumber <card>' or '<card> forget'", class: commit.SuperUser, run: (*Shell).chassisCard,
+				complete: words(Completion{Text: "<card>", Help: "Card number", Placeholder: true})},
 			{name: "routing-engine", help: "Routing engine (stack master) requests", class: commit.SuperUser, sub: []*command{
 				{name: "master", help: "Stack mastership", class: commit.SuperUser, sub: []*command{
 					{name: "switch", help: "Hand mastership to another member", class: commit.SuperUser, run: (*Shell).switchMaster,

@@ -182,7 +182,11 @@ Last updated: 2026-09-30 (evening).
   output port: the lab's OVS link learns the mirrored MACs).
 - Done 2026-09-30: VLAN mtu filter (nft bridge table switchd_vlanmtu, forward+input, tagged by vlan id, untagged by
   ibrpvid; counters in show vlans extensive). TestVLANMTU (access ports; the tagged path is not lab-tested yet).
-  User order next:
+- Done 2026-09-30: card number lifecycle (inventory: card info with driver/ports/MACs/last seen; absent cards listed
+  in show chassis hardware; model change noted; moved card recognised by its MACs; request chassis card <n>
+  renumber <m> | forget, with confirmation naming affected interfaces). Unit-tested (a VM cannot move PCI slots).
+  The user's order (1,3,2,4,5) is done; kernel messages to syslog stay delayed.
+  Earlier plan:
   port mirroring, cleanup (card numbers, VLAN MTU filter; kernel messages to syslog delayed). Parked for discussion
   with the user: management interface design, internal VLAN 4094.
 - Done 2026-09-30 (later, user requests): full names + speed in `show virtual-chassis vc-port`; `show chassis hardware`

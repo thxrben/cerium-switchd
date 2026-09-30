@@ -153,7 +153,18 @@ Physical ports are named `<member>/<card>/<port>`, like Junos (`ge-0/1/2` become
   even in a lower PCI slot, so existing port names never change. A card that is replaced in the same PCI slot keeps
   its number. SR-IOV virtual functions are not switch ports.
 * In a VM every virtual NIC is its own PCI device, so every port is `…/<card>/0`.
-* `show chassis hardware` lists every port with its Linux name, PCI address, driver and MAC address.
+* `show chassis hardware` lists every port with its Linux name, PCI address, driver and MAC address, and below it
+  the known cards that are **absent** (number, bus address, driver, port count, when last seen): their numbers stay
+  reserved, and the configuration of their ports stays until you delete it.
+* A card that **changed model** in its slot (other driver or port count) keeps its number; the change is logged
+  (warning) and shown under the ports. Configured ports that no longer exist are reported by the commit check.
+* A card that **moved to another slot** gets a new number; switchd recognises it by the MAC addresses of its ports,
+  logs it and shows the hint `request chassis card <new> renumber <old>`.
+* `request chassis card <n> renumber <m>` (super-user, after a `[yes,no] (no)` question that names the configured
+  interfaces whose ports change) gives present card n the number m, which must be free or belong to an absent card
+  (that card is forgotten). The ports are renamed at once, so the configuration of `…/<m>/…` applies to them.
+* `request chassis card <n> forget` releases the number of an absent card (after a question). Both commands accept
+  `member <id>`.
 * Linux interface names are not used in the configuration. A configuration that still uses the older form
   `<member>/<linux-name>` (e.g. `1/ens19`) is converted automatically when it is loaded from the member's storage
   (active configuration, rollback revisions and the shared candidate), as long as the port exists.

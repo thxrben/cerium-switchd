@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"mclag/internal/config"
 	"mclag/internal/schema"
@@ -39,7 +41,11 @@ type Naming struct {
 	Member    int
 
 	mu      sync.Mutex
-	cards   map[string]int // card identity -> number (pinned)
+	cards   map[string]int       // card identity -> number (pinned)
+	info    map[string]*CardInfo // card identity -> what it was when last seen
+	notes   map[int]string       // card number -> change noticed in this run
+	moved   map[int]int          // new card number -> number of the absent card it matches
+	present map[string]bool
 	loaded  bool
 	ports   []Port
 	byName  map[string]Port
@@ -47,7 +53,28 @@ type Naming struct {
 }
 
 type namingState struct {
-	Cards map[string]int `json:"cards"`
+	Cards map[string]int       `json:"cards"`
+	Info  map[string]*CardInfo `json:"info,omitempty"`
+}
+
+// CardInfo describes a card as it was last seen.
+type CardInfo struct {
+	Driver   string    `json:"driver"`
+	Ports    int       `json:"ports"`
+	MACs     []string  `json:"macs"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+// CardStatus is a known card for "show chassis hardware".
+type CardStatus struct {
+	Number  int
+	Key     string // "pci:0000:01:00"
+	Present bool
+	CardInfo
+	// Note: the card changed model in its slot this run; MovedFrom: a new
+	// card whose ports carry the MAC addresses of this absent card.
+	Note      string
+	MovedFrom int // -1: none
 }
 
 var (
@@ -129,11 +156,14 @@ func (n *Naming) load() {
 		return
 	}
 	n.loaded = true
-	n.cards = map[string]int{}
+	n.cards, n.info, n.notes, n.moved = map[string]int{}, map[string]*CardInfo{}, map[int]string{}, map[int]int{}
 	if raw, err := os.ReadFile(n.StateFile); err == nil {
 		var st namingState
 		if json.Unmarshal(raw, &st) == nil && st.Cards != nil {
 			n.cards = st.Cards
+			if st.Info != nil {
+				n.info = st.Info
+			}
 		}
 	}
 }
@@ -181,7 +211,55 @@ func (n *Naming) Refresh() (changed bool, err error) {
 		n.cards[c.key] = next
 		used[next] = true
 	}
-	if len(fresh) > 0 {
+	// What each present card is now.
+	now := time.Now().UTC().Truncate(time.Second)
+	cur := map[string]*CardInfo{}
+	for _, f := range fs {
+		ci := cur[f.Card]
+		if ci == nil {
+			ci = &CardInfo{Driver: f.Driver, LastSeen: now}
+			cur[f.Card] = ci
+		}
+		ci.Ports++
+		if f.MAC != "" {
+			ci.MACs = append(ci.MACs, f.MAC)
+		}
+	}
+	dirty := len(fresh) > 0
+	for key, ci := range cur {
+		slices.Sort(ci.MACs)
+		old := n.info[key]
+		num := n.cards[key]
+		switch {
+		case old == nil:
+			// New (or first seen by this version): does it carry the MAC
+			// addresses of an absent card, i.e. did a card move slots?
+			if slices.ContainsFunc(fresh, func(c card) bool { return c.key == key }) {
+				for k2, o2 := range n.info {
+					if _, here := cur[k2]; !here && slices.ContainsFunc(ci.MACs, func(m string) bool { return slices.Contains(o2.MACs, m) }) {
+						n.moved[num] = n.cards[k2]
+					}
+				}
+			}
+		case old.Driver != ci.Driver || old.Ports != ci.Ports:
+			n.notes[num] = fmt.Sprintf("changed model in its slot: was %s with %d ports, now %s with %d", old.Driver, old.Ports, ci.Driver, ci.Ports)
+		}
+		if old == nil || old.Driver != ci.Driver || old.Ports != ci.Ports || !slices.Equal(old.MACs, ci.MACs) {
+			dirty = true
+		}
+		n.info[key] = ci
+	}
+	// Cards that went away: their last-seen time is the last save.
+	for key := range n.present {
+		if _, ok := cur[key]; !ok {
+			dirty = true
+		}
+	}
+	n.present = map[string]bool{}
+	for key := range cur {
+		n.present[key] = true
+	}
+	if dirty {
 		err = errors.Join(err, n.save())
 	}
 
@@ -237,7 +315,7 @@ func (n *Naming) save() error {
 	if n.StateFile == "" {
 		return nil
 	}
-	raw, err := json.Marshal(namingState{Cards: n.cards})
+	raw, err := json.Marshal(namingState{Cards: n.cards, Info: n.info})
 	if err != nil {
 		return err
 	}
@@ -280,4 +358,85 @@ func (n *Naming) LinuxNames() []string {
 		out = append(out, p.Linux)
 	}
 	return out
+}
+
+// Cards lists the known cards in number order.
+func (n *Naming) Cards() []CardStatus {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.load()
+	var out []CardStatus
+	for key, num := range n.cards {
+		cs := CardStatus{Number: num, Key: key, Present: n.present[key], Note: n.notes[num], MovedFrom: -1}
+		if ci := n.info[key]; ci != nil {
+			cs.CardInfo = *ci
+		}
+		if m, ok := n.moved[num]; ok {
+			cs.MovedFrom = m
+		}
+		out = append(out, cs)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+	return out
+}
+
+func (n *Naming) keyOf(num int) string {
+	for k, v := range n.cards {
+		if v == num {
+			return k
+		}
+	}
+	return ""
+}
+
+// Renumber gives present card from the number to, which must be free or
+// belong to an absent card (that card is forgotten): e.g. a card moved to
+// another slot takes back its old number, so its ports keep their names.
+func (n *Naming) Renumber(from, to int) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.load()
+	if to < 0 || to > schema.MaxCard {
+		return fmt.Errorf("card number %d is out of range (0-%d)", to, schema.MaxCard)
+	}
+	kf := n.keyOf(from)
+	if kf == "" || !n.present[kf] {
+		return fmt.Errorf("card %d is not present", from)
+	}
+	if from == to {
+		return nil
+	}
+	if kt := n.keyOf(to); kt != "" {
+		if n.present[kt] {
+			return fmt.Errorf("card %d is present; only the number of an absent card can be taken", to)
+		}
+		delete(n.cards, kt)
+		delete(n.info, kt)
+	}
+	n.cards[kf] = to
+	delete(n.moved, from)
+	delete(n.notes, from)
+	return n.save()
+}
+
+// Forget releases the number of an absent card.
+func (n *Naming) Forget(num int) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.load()
+	k := n.keyOf(num)
+	switch {
+	case k == "":
+		return fmt.Errorf("there is no card %d", num)
+	case n.present[k]:
+		return fmt.Errorf("card %d is present; only absent cards can be forgotten", num)
+	}
+	delete(n.cards, k)
+	delete(n.info, k)
+	for nw, old := range n.moved {
+		if old == num {
+			delete(n.moved, nw)
+		}
+	}
+	return n.save()
 }

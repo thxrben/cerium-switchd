@@ -166,7 +166,7 @@ func markPerMember() {
 		{"show chassis hardware", ""}, {"show system uptime", ""}, {"show system ntp", ""}, {"show system offload", ""}, {"show system limits", ""},
 		{"show system syslog", ""}, {"show version", ""}, {"show log", ""}, {"show arp", ""},
 		{"show ipv6 neighbors", ""}, {"show route", ""}, {"show virtual-chassis vc-port", ""}, {"show virtual-chassis mtu", ""},
-		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""}, {"show dhcp client binding", ""},
+		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""}, {"show dhcp client binding", ""}, {"request chassis card", ""},
 		{"clear ethernet-switching table", ""}, {"clear system reboot", ""},
 		{"request system reboot", "Reboot"}, {"request system halt", "Halt"}, {"request system power-off", "Power off"},
 		{"request system maintenance-mode enter", "Put into maintenance mode:"}, {"request system maintenance-mode exit", ""},

@@ -3,11 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"mclag/internal/commit"
 	"mclag/internal/config"
+	"mclag/internal/schema"
 )
 
 // STPStatus is the stack's spanning tree as the RSTP owner sees it.
@@ -230,5 +232,107 @@ func (sh *Shell) showDHCPBinding(c *call) error {
 		}
 		c.out.WriteString("no interface uses DHCP on this member\n")
 	}
+	return nil
+}
+
+// CardStatus is a known card of this member.
+type CardStatus struct {
+	Number    int
+	Key       string
+	Present   bool
+	Driver    string
+	Ports     int
+	LastSeen  time.Time
+	Note      string
+	MovedFrom int // -1: none
+}
+
+// showCards is the card part of "show chassis hardware".
+func (sh *Shell) showCards(c *call, member int) {
+	cards, err := sh.env.Ops.Cards()
+	if err != nil {
+		return
+	}
+	var absent, notes []string
+	for _, cd := range cards {
+		name := fmt.Sprintf("%d/%d", member, cd.Number)
+		if !cd.Present {
+			seen := "never"
+			if !cd.LastSeen.IsZero() {
+				seen = cd.LastSeen.Local().Format("2006-01-02 15:04")
+			}
+			absent = append(absent, fmt.Sprintf("  %-7s %-16s %-12s %d ports, last seen %s", name, cd.Key, orDash(cd.Driver), cd.Ports, seen))
+		}
+		if cd.Note != "" {
+			notes = append(notes, fmt.Sprintf("  card %s (%s) %s", name, cd.Key, cd.Note))
+		}
+		if cd.MovedFrom >= 0 {
+			notes = append(notes, fmt.Sprintf("  card %s (%s) has the MAC addresses of absent card %d/%d: it moved slots; "+
+				"'request chassis card %d renumber %d' gives it its old number", name, cd.Key, member, cd.MovedFrom, cd.Number, cd.MovedFrom))
+		}
+	}
+	if len(absent) > 0 {
+		c.out.WriteString("\nCards not present (numbers reserved):\n" + strings.Join(absent, "\n") + "\n")
+	}
+	if len(notes) > 0 {
+		c.out.WriteString("\nCard changes:\n" + strings.Join(notes, "\n") + "\n")
+	}
+}
+
+// chassisCard is "request chassis card <n> renumber <m>" and "... forget".
+func (sh *Shell) chassisCard(c *call) error {
+	num := func(i int) (int, error) {
+		v, err := strconv.Atoi(c.args[i].Text)
+		if err != nil || v < 0 || v > schema.MaxCard {
+			return 0, &posError{pos: c.argPos(i), msg: fmt.Sprintf("expecting a card number (0-%d)", schema.MaxCard)}
+		}
+		return v, nil
+	}
+	var from, to int
+	var err error
+	switch {
+	case len(c.args) == 3 && prefixOf(c.args[1].Text, "renumber"):
+		if from, err = num(0); err != nil {
+			return err
+		}
+		if to, err = num(2); err != nil {
+			return err
+		}
+	case len(c.args) == 2 && prefixOf(c.args[1].Text, "forget"):
+		if from, err = num(0); err != nil {
+			return err
+		}
+		to = -1
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting '<card> renumber <card>' or '<card> forget'"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	nums := []int{from}
+	if to >= 0 {
+		nums = append(nums, to)
+	}
+	affected := sh.env.Ops.CardInterfaces(nums...)
+	q := fmt.Sprintf("Release the number of absent card %d", from)
+	if to >= 0 {
+		q = fmt.Sprintf("Renumber card %d to %d (its ports are renamed)", from, to)
+	}
+	if len(affected) > 0 {
+		q += "; configured interfaces affected: " + strings.Join(affected, ", ")
+	}
+	a, err := c.term.Ask(q+" ? [yes,no] (no) ", true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	if to >= 0 {
+		err = sh.env.Ops.CardRenumber(from, to, sh.env.User)
+	} else {
+		err = sh.env.Ops.CardForget(from, sh.env.User)
+	}
+	if err != nil {
+		return err
+	}
+	c.out.WriteString("done\n")
 	return nil
 }

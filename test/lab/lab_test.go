@@ -475,6 +475,7 @@ func TestForeignChangesReverted(t *testing.T) {
 }
 
 func TestHotplug(t *testing.T) {
+	portNames(t, "") // (reads the names while ens21 is still there)
 	// Park ens21 in another namespace: switchd sees it as absent.
 	mustSSH(t, sw1, "ip netns add parked 2>/dev/null; ip link set ens21 netns parked 2>/dev/null; true")
 	defer ssh(sw1, "ip -n parked link set ens21 netns 1 2>/dev/null; true")

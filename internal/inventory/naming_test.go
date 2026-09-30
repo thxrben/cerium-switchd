@@ -3,6 +3,7 @@ package inventory
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +120,85 @@ func TestNamingDevPort(t *testing.T) {
 	n.Refresh()
 	if got := names(n); got["p0"] != "2/0/0" || got["p1"] != "2/0/1" {
 		t.Errorf("%v", got)
+	}
+}
+
+func setMAC(t *testing.T, sys, linux, mac string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(sys, "class", "net", linux, "address"), []byte(mac+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Card lifecycle: an absent card keeps its number and is listed; a card
+// that moved slots is recognised by its MACs and can take its old number
+// back; a card that changed model is noted; forget releases a number.
+func TestCardLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	sys := filepath.Join(dir, "sys")
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.0/0000:01:00.0", "enp1s0f0", "tg3", 0)
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.0/0000:01:00.1", "enp1s0f1", "tg3", 0)
+	setMAC(t, sys, "enp1s0f0", "02:00:00:00:01:00")
+	setMAC(t, sys, "enp1s0f1", "02:00:00:00:01:01")
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.4/0000:07:00.0", "eno1", "r8169", 0)
+	setMAC(t, sys, "eno1", "02:00:00:00:07:00")
+	state := filepath.Join(dir, "names.json")
+	n := &Naming{SysRoot: sys, StateFile: state, Member: 1}
+	n.Refresh()
+
+	// The tg3 card moves from 01:00 to 03:00.
+	os.Remove(filepath.Join(sys, "class", "net", "enp1s0f0"))
+	os.Remove(filepath.Join(sys, "class", "net", "enp1s0f1"))
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.1/0000:03:00.0", "enp3s0f0", "tg3", 0)
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.1/0000:03:00.1", "enp3s0f1", "tg3", 0)
+	setMAC(t, sys, "enp3s0f0", "02:00:00:00:01:00")
+	setMAC(t, sys, "enp3s0f1", "02:00:00:00:01:01")
+	n2 := &Naming{SysRoot: sys, StateFile: state, Member: 1}
+	n2.Refresh()
+	cards := n2.Cards()
+	if len(cards) != 3 || cards[0].Present || cards[0].Driver != "tg3" || cards[0].Ports != 2 || cards[2].MovedFrom != 0 {
+		t.Fatalf("cards after the move: %+v", cards)
+	}
+	if got := names(n2); got["enp3s0f0"] != "1/2/0" {
+		t.Fatalf("moved card named %v", got)
+	}
+	if err := n2.Renumber(2, 1); err == nil {
+		t.Error("renumbered onto a present card")
+	}
+	if err := n2.Renumber(2, 0); err != nil {
+		t.Fatal(err)
+	}
+	n2.Refresh()
+	if got := names(n2); got["enp3s0f0"] != "1/0/0" || got["enp3s0f1"] != "1/0/1" || got["eno1"] != "1/1/0" {
+		t.Errorf("after renumber: %v", got)
+	}
+	if cs := n2.Cards(); len(cs) != 2 || !cs[0].Present || cs[0].MovedFrom != -1 {
+		t.Errorf("cards after renumber: %+v", cs)
+	}
+
+	// The onboard NIC is replaced by another model in the same slot.
+	os.Remove(filepath.Join(sys, "class", "net", "eno1"))
+	os.RemoveAll(filepath.Join(sys, "devices", "pci0000:00/0000:00:1c.4/0000:07:00.0"))
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.4/0000:07:00.0", "eno1", "igb", 0)
+	fakeNIC(t, sys, "pci0000:00/0000:00:1c.4/0000:07:00.1", "eno2", "igb", 0)
+	n3 := &Naming{SysRoot: sys, StateFile: state, Member: 1}
+	n3.Refresh()
+	for _, c := range n3.Cards() {
+		if c.Number == 1 && !strings.Contains(c.Note, "was r8169 with 1 ports, now igb with 2") {
+			t.Errorf("model change not noted: %+v", c)
+		}
+	}
+	// Forget: only absent cards.
+	if err := n3.Forget(1); err == nil {
+		t.Error("forgot a present card")
+	}
+	os.Remove(filepath.Join(sys, "class", "net", "eno1"))
+	os.Remove(filepath.Join(sys, "class", "net", "eno2"))
+	n3.Refresh()
+	if err := n3.Forget(1); err != nil {
+		t.Fatal(err)
+	}
+	if cs := n3.Cards(); len(cs) != 1 {
+		t.Errorf("after forget: %+v", cs)
 	}
 }

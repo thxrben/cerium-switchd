@@ -363,6 +363,48 @@ func (o *ops) Power(action string, minutes int, user string) error {
 	return command("shutdown", "--no-wall", p.flag, fmt.Sprintf("+%d", minutes))
 }
 
+func (o *ops) Cards() ([]cli.CardStatus, error) {
+	o.names.Refresh()
+	var out []cli.CardStatus
+	for _, c := range o.names.Cards() {
+		out = append(out, cli.CardStatus{Number: c.Number, Key: c.Key, Present: c.Present, Driver: c.Driver, Ports: c.Ports,
+			LastSeen: c.LastSeen, Note: c.Note, MovedFrom: c.MovedFrom})
+	}
+	return out, nil
+}
+
+func (o *ops) CardInterfaces(cards ...int) []string {
+	var out []string
+	for n := range o.model().Interfaces {
+		if p, ok := schema.ParsePhysical(n); ok && p.Member == o.member && slices.Contains(cards, p.Card) {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (o *ops) CardRenumber(from, to int, user string) error {
+	if err := o.names.Renumber(from, to); err != nil {
+		return err
+	}
+	o.log.Warn("card renumbered", "facility", "change-log", "card", from, "to", to, "user", user)
+	o.names.Refresh()
+	if o.restart != nil {
+		// Every part of switchd picks the new names up at once.
+		go func() { time.Sleep(500 * time.Millisecond); o.restart() }()
+	}
+	return nil
+}
+
+func (o *ops) CardForget(card int, user string) error {
+	if err := o.names.Forget(card); err != nil {
+		return err
+	}
+	o.log.Warn("card number released", "facility", "change-log", "card", card, "user", user)
+	return nil
+}
+
 func (o *ops) VLANMTUDrops() (map[int]uint64, error) { return dataplane.VLANMTUDrops() }
 
 func (o *ops) DHCPBindings() ([]cli.DHCPBinding, error) {

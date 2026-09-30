@@ -558,7 +558,14 @@ func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 
 func (f *fakeOps) SwitchMaster(to int, user string) error { return nil }
 func (f *fakeOps) ForceMaster(user string) error          { return nil }
-func (f *fakeOps) VLANMTUDrops() (map[int]uint64, error)  { return map[int]uint64{10: 7}, nil }
+func (f *fakeOps) Cards() ([]CardStatus, error) {
+	return []CardStatus{{Number: 0, Key: "pci:0000:01:00", Present: true, Driver: "tg3", Ports: 4, MovedFrom: -1}}, nil
+}
+func (f *fakeOps) CardInterfaces(cards ...int) []string         { return nil }
+func (f *fakeOps) CardRenumber(from, to int, user string) error { return nil }
+func (f *fakeOps) CardForget(card int, user string) error       { return nil }
+
+func (f *fakeOps) VLANMTUDrops() (map[int]uint64, error) { return map[int]uint64{10: 7}, nil }
 
 func (f *fakeOps) DHCPBindings() ([]DHCPBinding, error) {
 	return []DHCPBinding{{Unit: "1/0/6.0", State: "bound", Address: "10.1.2.50/24", Server: "10.1.2.1", Router: "10.1.2.1",

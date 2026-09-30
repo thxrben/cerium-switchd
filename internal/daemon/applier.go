@@ -25,6 +25,8 @@ type kernelApplier struct {
 	mu     sync.Mutex
 	kernel dataplane.Kernel
 	member int
+	// cardNoted: card changes already logged.
+	cardNoted map[string]bool
 	// dryRun plans against a simulated copy of the kernel and only logs.
 	dryRun    bool
 	stateFile string // links managed by the last apply
@@ -151,6 +153,23 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		a.log.Warn("port numbering", "err", err)
 	} else if changed {
 		a.log.Info("ports changed", "ports", len(a.names.Ports()))
+		for _, c := range a.names.Cards() {
+			key := fmt.Sprintf("%s %s %d", c.Key, c.Note, c.MovedFrom)
+			if (c.Note == "" && c.MovedFrom < 0) || a.cardNoted[key] {
+				continue
+			}
+			if a.cardNoted == nil {
+				a.cardNoted = map[string]bool{}
+			}
+			a.cardNoted[key] = true
+			if c.Note != "" {
+				a.log.Warn("card "+c.Note, "card", c.Number, "slot", c.Key)
+			}
+			if c.MovedFrom >= 0 {
+				a.log.Warn("card moved slots: it has the MAC addresses of an absent card", "card", c.Number, "slot", c.Key,
+					"old_card", c.MovedFrom, "hint", fmt.Sprintf("request chassis card %d renumber %d", c.Number, c.MovedFrom))
+			}
+		}
 	}
 	cfg, issues := model.Build(to.Active(), a.inv)
 	if issues.HasErrors() {
