@@ -1802,3 +1802,67 @@ ip -n %[1]s neigh flush all`, ns, nic, host, n, 3-n, host-50)
 		}
 	}
 }
+
+// Configuration from different members (reference 3.1, 5.2): every session
+// runs on the master, so users on sw2 and sw3 edit one shared candidate,
+// are told about each other, cannot start a private session over
+// uncommitted shared changes, and cannot commit while someone holds the
+// exclusive lock.
+func TestConfigAcrossMembers(t *testing.T) {
+	out := vcShow(t, sw1)
+	for id := 1; id <= 3; id++ {
+		if !vcRow(id, `\S+ +\d+ +voter +present`).MatchString(out) {
+			t.Skipf("sw1-sw3 are not in one stack:\n%s", out)
+		}
+	}
+	masterSw1(t)
+	// A session that stays open for a while: cmds, then a pause, then exit.
+	hold := func(addr string, secs int, cmds ...string) <-chan string {
+		done := make(chan string, 1)
+		go func() {
+			script := "(" + strings.Join(cmds, "; ") + "; sleep " + strconv.Itoa(secs) + "; echo rollback; echo yes; echo exit; echo exit) | swcli"
+			o, _ := ssh(addr, script)
+			done <- o
+		}()
+		time.Sleep(3 * time.Second) // the session is in configuration mode by now
+		return done
+	}
+	run := func(addr string, cmds ...string) string {
+		o, _ := ssh(addr, "(echo "+strings.Join(cmds, "; echo ")+") | swcli")
+		return o
+	}
+	q := func(cmd string) string { return "'" + cmd + "'" }
+
+	// 1. A edits on sw2 (uncommitted); B on sw3 sees it in the shared candidate.
+	a := hold(sw2Addr, 12, "echo configure", "echo "+q("set system domain-name lab-a.example"))
+	b := run("10.5.176.97", "configure", q("show | compare"), q("set system time-zone Europe/Berlin"), q("show | compare"), q("delete system time-zone"), "exit", "exit")
+	for _, want := range []string{"users currently editing the configuration", "the configuration has been changed but not committed",
+		"+   domain-name lab-a.example;", "+   time-zone Europe/Berlin;"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("session on sw3 lacks %q:\n%s", want, b)
+		}
+	}
+	// 2. Private and exclusive sessions are refused while the shared
+	// candidate has changes.
+	c := run("10.5.176.97", q("configure private"), q("configure exclusive"))
+	if !strings.Contains(c, "'configure private' is not possible until those changes are committed or discarded") ||
+		!strings.Contains(c, "'configure exclusive' would discard those changes") {
+		t.Errorf("private/exclusive over shared changes:\n%s", c)
+	}
+	<-a
+	if o := mustSSH(t, sw1, "swcli -c 'show system commit' | head -3"); o == "" {
+		t.Error("no commit history")
+	}
+
+	// 3. A holds the exclusive lock on sw2: B on sw3 cannot open a session
+	// or commit; the lock ends with A's session.
+	a = hold(sw2Addr, 10, "echo "+q("configure exclusive"))
+	c = run("10.5.176.97", q("configure"), q("commit"))
+	if !strings.Contains(c, "configuration database locked by root (configure exclusive)") {
+		t.Errorf("session on sw3 during the exclusive lock:\n%s", c)
+	}
+	<-a
+	if c := run("10.5.176.97", "configure", "exit"); strings.Contains(c, "locked") {
+		t.Errorf("the lock outlived the session:\n%s", c)
+	}
+}
