@@ -54,6 +54,8 @@ func ensureStackVRF() (int, bool, error) {
 		if ln, err = netlink.LinkByName(StackVRF); err != nil {
 			return 0, false, err
 		}
+		_ = netlink.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
+			Priority: stackUnreachableMetric, Dst: &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}})
 		changed = true
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
@@ -64,6 +66,35 @@ func ensureStackVRF() (int, bool, error) {
 	}
 	return ln.Attrs().Index, changed, nil
 }
+
+// EnsureStackPort puts a stacking port into the stack tunnels' instance.
+func EnsureStackPort(linux string) error {
+	vrf, _, err := ensureStackVRF()
+	if err != nil {
+		return err
+	}
+	ln, err := netlink.LinkByName(linux)
+	if err != nil {
+		return err
+	}
+	if ln.Attrs().MasterIndex == vrf {
+		return nil
+	}
+	if ln.Attrs().MasterIndex != 0 {
+		if err := netlink.LinkSetNoMaster(ln); err != nil {
+			return err
+		}
+	}
+	m, err := netlink.LinkByIndex(vrf)
+	if err != nil {
+		return err
+	}
+	return netlink.LinkSetMaster(ln, m)
+}
+
+// stackUnreachableMetric is the metric of the stack table's unreachable
+// default route (the highest, as usual for VRFs).
+const stackUnreachableMetric = 4278198272
 
 // IFLA_VXLAN_DF and its value "set" (not in the netlink library).
 const (
@@ -214,8 +245,21 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 		}
 	}
 	cur, _ := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: StackTable}, netlink.RT_FILTER_TABLE)
+	// Without a route to a member, a lookup must fail rather than fall
+	// through to the main table (the tunnel would send out of the
+	// management port and keep that route cached).
+	unreachable := false
 	for _, r := range cur {
-		if r.Protocol != RouteProto || r.Dst == nil {
+		if r.Type == unix.RTN_UNREACHABLE && (r.Dst == nil || r.Dst.IP.IsUnspecified()) {
+			unreachable = true
+		}
+	}
+	if !unreachable {
+		note(true, netlink.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
+			Priority: stackUnreachableMetric, Dst: &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}}))
+	}
+	for _, r := range cur {
+		if r.Protocol != RouteProto || r.Dst == nil || r.Type == unix.RTN_UNREACHABLE {
 			continue
 		}
 		dst, _ := netip.AddrFromSlice(r.Dst.IP.To4())

@@ -111,17 +111,31 @@ Last updated: 2026-09-30.
 - Phase 7 MC-LAG core done: shared LACP system, peer-link (all VLANs, no learning), split horizon, leg state exchange,
   holds (peer-link down on the secondary, delay-restore), MAC synchronisation, micro-BFD on peer-link ports (peer-link
   state only; single-port removal and authentication open), show mclag. Lab TestMCLAG: srv1 dual-homed.
-- Known: TestMCLAG "without ens19" failed intermittently inside the full suite (state before the ping was correct);
-  the test now traces every hop when it happens.
+- MC-LAG consistency checks (bundle facts with the leg states, secondary holds after 10 s; show mclag consistency).
+- Phase 7c stack tunnels (decided 2026-09-30): client traffic between members in VXLAN over a hidden routed underlay
+  on the stacking ring (VRF swstack), replacing the MC-LAG peer-link (peer-link, micro-BFD, heartbeat removed;
+  stored configs converted); split horizon on the peer's tunnel, DF rule for third members, forget messages,
+  two-member split forwards at all costs, minority rule for 3+; stack MTU check, show virtual-chassis mtu, VLAN 4094
+  reserved. Lab: TestMCLAG passes on the ring (ring cable cut under traffic: 18 of 500 pings lost, ~180 ms);
+  TestStackJumbo: plain and host-VXLAN jumbo frames pass across members.
+  Fixed on the way: the stacking socket died on ENETDOWN (port restart when it joins the VRF); SyncL3 deleted the
+  stack table's routes; without an unreachable default, tunnel lookups fell through to the main table (mgmt port).
 
 ## Next (in order)
-1. Phase 7 rest: heartbeat BFD over mgmt (split-brain), consistency checks, micro-BFD port removal + auth, drain
-   (maintenance mode) for reboot/member removal, then Phase 7b (rolling upgrades / version window).
+0. Wireshark dissectors for switchd's protocols (requested 2026-09-30), then:
+   - QinQ across the stack fails in TestStackJumbo (plain and host VXLAN pass): investigate.
+   - CLI: after `?` the prompt is reprinted as `root@host` only, without the `{master:1}` role line and `[edit]`
+     (requested 2026-09-30).
+   - Lab: the stacking NICs (Proxmox stk-* bridges) have max MTU 9000, so hosts reach only MTU 8942 across the
+     stack; for the MTU 9000 test the stk-* NICs and bridges need MTU >= 9058 (ask the user).
+   - Full lab suite on the new stack tunnels.
+1. Phase 7 rest: drain (maintenance mode) for reboot/member removal, then Phase 7b (rolling upgrades / version
+   window). Internal management VLAN 4094 (Phase 7c step 6).
 2. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
    (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
 
 ## Questions for the user (collected while they are away)
-1. Should the management network be an opt-in *backup* path for stack sync (TLS-protected) when all stacking
+1. (superseded 2026-09-30: management is administration only.) Should the management network be an opt-in *backup* path for stack sync (TLS-protected) when all stacking
    cables between two members are cut? Current design: no (stack traffic only on stacking ports, like Junos VC).
 2. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
    configurable filter (firewall filter on lo0) later, e.g. to allow SSH on a data irb deliberately?
@@ -138,9 +152,7 @@ Last updated: 2026-09-30.
 6. Operational commands default to the local member; Junos VC defaults many of them (show chassis hardware, show
    system uptime, request system reboot) to all members. Keep the local default (safer for reboots), or follow Junos?
 
-7. MC-LAG without the management heartbeat: if both the stacking path and the peer-link fail, each member assumes
-   the other is dead and keeps its legs (split brain towards the server until the heartbeat is implemented). OK as an
-   interim state?
+7. (answered 2026-09-30: two-member split forwards at all costs; the stack tunnels replace the peer-link.)
 
 ## Notes
 - The dev machine is only for development: no network changes here; lab = Proxmox VMs (PLAN.md §11).

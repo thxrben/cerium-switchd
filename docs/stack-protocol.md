@@ -117,7 +117,9 @@ on the stacking ports (config reference 5.2). All of it is fixed; nothing is con
 * **Routes** (protocol 250, table 999): for every reachable member `m`, `169.254.64.<m>/32` with one next hop per up
   link to each neighbour that lies on a shortest path to `m` (hops of the mesh topology, all equal-cost first hops,
   so two parallel cables are both used), each `via 169.254.64.<neighbour> dev <port> onlink`. Recomputed with the
-  mesh topology; a route whose member becomes unreachable is removed.
+  mesh topology; a route whose member becomes unreachable is removed. An `unreachable` default route (highest
+  metric) makes lookups for an unreachable member fail inside the instance instead of falling through to the main
+  table (which would send tunnel packets out of the management port).
 * **Tunnels**: per other switch member `m`, the VXLAN device `swvc<m>`: VNI `32 × min(self, m) + max(self, m)`,
   local `169.254.64.<self>`, remote `169.254.64.<m>`, UDP 4789, lower device `swstack`, TTL 16, outer DF set,
   no VXLAN learning, MTU = the stack MTU minus 58 (config reference 5.2). The device is a port of `swbr0`: `isolated`

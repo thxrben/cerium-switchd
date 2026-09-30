@@ -111,6 +111,11 @@ func (u *upgrader) expand(v string) ([]string, bool) {
 	return out, len(out) > 0
 }
 
+// replaced logs a statement removed because the stack tunnels replace it.
+func (u *upgrader) replaced(what string) {
+	u.log.Warn("stored configuration: statement removed, the stack tunnels replace the MC-LAG peer-link", "statement", what)
+}
+
 func (u *upgrader) dropped(what string) {
 	u.log.Warn("stored configuration: statement for a port that no longer exists removed", "statement", what)
 }
@@ -431,7 +436,7 @@ func (u *upgrader) removePeerLink(m map[string]any) {
 		for _, k := range []string{"peer-link", "peer-link-bfd", "heartbeat"} {
 			if _, ok := d[k]; ok {
 				delete(d, k)
-				u.dropped("mclag domain " + id + " " + k)
+				u.replaced("mclag domain " + id + " " + k)
 			}
 		}
 		if pl == "" {
@@ -440,7 +445,7 @@ func (u *upgrader) removePeerLink(m map[string]any) {
 		ifs, _ := m["interfaces"].(map[string]any)
 		if _, ok := ifs[pl]; ok {
 			delete(ifs, pl)
-			u.dropped("interfaces " + pl + " (the former peer-link)")
+			u.replaced("interfaces " + pl + " (the former peer-link)")
 		}
 		for _, top := range []string{"interfaces", "interface-range"} {
 			entries, _ := m[top].(map[string]any)
@@ -457,7 +462,7 @@ func (u *upgrader) removePeerLink(m map[string]any) {
 				if len(e) == 0 {
 					delete(entries, name)
 				}
-				u.dropped(top + " " + name + " ether-options 802.3ad " + pl)
+				u.replaced(top + " " + name + " ether-options 802.3ad " + pl)
 			}
 		}
 	}

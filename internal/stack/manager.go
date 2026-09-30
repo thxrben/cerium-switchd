@@ -657,14 +657,11 @@ func preparePort(linux string) error {
 	if err != nil {
 		return err
 	}
-	// The only master a stacking port may have is the hidden instance of
-	// the stack tunnels (reference 5.2), which the data plane adds.
-	if mi := ln.Attrs().MasterIndex; mi != 0 {
-		if m, err := netlink.LinkByIndex(mi); err != nil || m.Attrs().Name != dataplane.StackVRF {
-			if err := netlink.LinkSetNoMaster(ln); err != nil {
-				return err
-			}
-		}
+	// The only master a stacking port has is the hidden instance of the
+	// stack tunnels (reference 5.2). Joining it restarts the port once, so
+	// it happens before the stacking session starts.
+	if err := dataplane.EnsureStackPort(linux); err != nil {
+		return err
 	}
 	p := "/proc/sys/net/ipv6/conf/" + linux + "/disable_ipv6"
 	if raw, err := os.ReadFile(p); err == nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("1")) {

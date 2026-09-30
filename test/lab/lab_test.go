@@ -1764,6 +1764,9 @@ ip -n %[1]s neigh flush all`, ns, nic, host, n, 3-n, host-50)
 	}
 	mustSSH(t, hSrv1.vm, setup("h", "ens19", 1)+"\n"+setup("j", "ens20", 2))
 	t.Cleanup(func() {
+		if t.Failed() && os.Getenv("LAB_KEEP") != "" {
+			return // leave the setup for inspection
+		}
 		ssh(hSrv1.vm, "ip -n j link set ens20 netns 1; ip netns del j; ip -n h link del vx0; ip -n h link del ens19.10")
 		setupHost(t, hSrv1)
 	})
@@ -1776,6 +1779,9 @@ ip -n %[1]s neigh flush all`, ns, nic, host, n, 3-n, host-50)
 		{"host VXLAN", "192.168.42.2", host - 50},
 	}
 	for _, c := range cases {
+		// Resolve the neighbour first (large packets queued behind ARP are
+		// dropped by the host).
+		ssh(hSrv1.vm, "ip netns exec h ping -c 3 -i 0.2 -W 1 "+c.dst)
 		max := c.mtu - 28 // ICMP payload of a full-size IPv4 packet
 		o, err := ssh(hSrv1.vm, fmt.Sprintf("ip netns exec h ping -M do -s %d -c 20 -i 0.05 -W 1 %s", max, c.dst))
 		if err != nil || !strings.Contains(o, " 0% packet loss") {

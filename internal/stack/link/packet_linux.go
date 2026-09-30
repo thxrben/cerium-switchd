@@ -68,10 +68,17 @@ func (p *PacketIO) recv() {
 			return
 		}
 		if err != nil {
-			if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
-				continue
+			switch {
+			case errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN):
+			case errors.Is(err, unix.ENETDOWN):
+				// The port went down (or was restarted, e.g. when it joins
+				// the stack tunnels' instance): the socket stays bound and
+				// receives again once it is up.
+				time.Sleep(50 * time.Millisecond)
+			default:
+				return
 			}
-			return
+			continue
 		}
 		ll, ok := from.(*unix.SockaddrLinklayer)
 		if !ok || ll.Pkttype == unix.PACKET_OUTGOING || n < HeaderLen || binary.BigEndian.Uint16(buf) != magic {

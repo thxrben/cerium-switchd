@@ -518,8 +518,8 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 		changed = true
 	}
 	for _, c := range cur {
-		if c.Dst == nil {
-			continue
+		if c.Dst == nil || c.Table == StackTable {
+			continue // (the stack tunnels' routes are SyncStackUnderlay's)
 		}
 		p, ok := netip.AddrFromSlice(c.Dst.IP)
 		ones, _ := c.Dst.Mask.Size()
