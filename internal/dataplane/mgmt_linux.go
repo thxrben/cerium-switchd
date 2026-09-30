@@ -144,8 +144,8 @@ func syncExactAddrs(ln netlink.Link, want []netip.Prefix) (bool, error) {
 
 // syncBare removes every address from ports that must not have any
 // (management ports, unconfigured ports; reference 1.4) and disables IPv6
-// on them.
-func syncBare(ports []string) (bool, error) {
+// on them. unconfigured ports also lose their description.
+func syncBare(ports []string, unconfigured map[string]bool) (bool, error) {
 	changed := false
 	var errs []error
 	for _, n := range ports {
@@ -162,6 +162,12 @@ func syncBare(ports []string) (bool, error) {
 		changed = changed || c
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", n, err))
+		}
+		if unconfigured[n] && ln.Attrs().Alias != "" {
+			changed = true
+			if err := netlink.LinkSetAlias(ln, ""); err != nil {
+				errs = append(errs, fmt.Errorf("%s: description: %w", n, err))
+			}
 		}
 	}
 	return changed, errors.Join(errs...)

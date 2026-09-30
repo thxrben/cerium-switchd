@@ -91,13 +91,16 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 		i := cfg.Interfaces[name]
 		s := cli.IfStatus{
 			Name: name, Linux: p.Name, Configured: i != nil, AdminUp: p.AdminUp, OperUp: p.OperUp,
-			MTU: p.MTU + model.EthHeader, SpeedMbps: p.SpeedMbps, Description: p.Alias, MAC: p.MAC,
+			MTU: p.MTU + model.EthHeader, SpeedMbps: p.SpeedMbps, MAC: p.MAC,
 			TaggedDrops: p.TaggedDrops,
 			Counters: cli.IfCounters{
 				RxPackets: p.Counters.RxPackets, TxPackets: p.Counters.TxPackets, RxBytes: p.Counters.RxBytes,
 				TxBytes: p.Counters.TxBytes, RxErrors: p.Counters.RxErrors, TxErrors: p.Counters.TxErrors,
 				RxDropped: p.Counters.RxDropped, TxDropped: p.Counters.TxDropped, RxMulticast: p.Counters.RxMulticast,
 			},
+		}
+		if i != nil {
+			s.Description = i.Description
 		}
 		switch {
 		case o.vc != nil && o.vc.IsPort(p.Name):

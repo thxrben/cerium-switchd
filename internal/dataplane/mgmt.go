@@ -52,6 +52,7 @@ func Management(s *State, cfg *model.Config, m int, names PortNames, master bool
 	}
 	l.Bare = append(ports, unconfigured...)
 	slices.Sort(l.Bare)
+	l.Unconfigured = slices.Sorted(slices.Values(unconfigured))
 }
 
 // CMEMAC derives the stack-wide MAC address of cme from the stack id.

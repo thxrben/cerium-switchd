@@ -159,8 +159,9 @@ type L3 struct {
 	// master, reference 1.8; nil: none).
 	CME *CMEIf
 	// Bare are ports that carry no addresses and no IPv6 at all: management
-	// ports and ports that are not configured (reference 1.4).
-	Bare []string
+	// ports and ports that are not configured (reference 1.4);
+	// Unconfigured are the latter (they carry no description either).
+	Bare, Unconfigured []string
 }
 
 // VRF is a routing instance in the kernel.
@@ -262,6 +263,7 @@ func (s *State) Clone() *State {
 			l.CME = &cme
 		}
 		l.Bare = slices.Clone(s.L3.Bare)
+		l.Unconfigured = slices.Clone(s.L3.Unconfigured)
 		c.L3 = l
 	}
 	c.SelfVLANs = slices.Clone(s.SelfVLANs)
