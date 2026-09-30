@@ -207,12 +207,17 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return "switch"
 	}
-	ports := func() []string {
+	localPorts := func() []string {
 		var out []string
 		for _, p := range names.Ports() {
 			out = append(out, p.Name)
 		}
 		return out
+	}
+	ports := localPorts
+	if ctl != nil {
+		ctl.servePorts(localPorts)
+		ports = func() []string { return append(localPorts(), ctl.remotePorts()...) }
 	}
 	liveOps := &ops{restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}

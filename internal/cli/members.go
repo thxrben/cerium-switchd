@@ -176,6 +176,7 @@ func markPerMember() {
 		}
 		cmd.perMember, cmd.confirm = true, p.confirm
 	}
+	findCmd(operational, []string{"show", "chassis", "hardware"}).allMembers = true
 }
 
 func findCmd(cmds []*command, path []string) *command {

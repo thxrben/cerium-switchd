@@ -83,6 +83,7 @@ type VCStatus struct {
 type VCPort struct {
 	Port, Linux, State, Neighbor, PeerPort, LastError string
 	UpSince                                           time.Time
+	SpeedMbps                                         int // 0: unknown
 }
 
 // LimitsStatus is what "show system limits" needs from this member's
@@ -763,19 +764,23 @@ func (sh *Shell) showVCPorts(c *call) error {
 		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set pic-slot <card> port <port>').\n")
 		return nil
 	}
-	fmt.Fprintf(c.out, "%-8s %-12s %-7s %-24s %-10s %s\n", "Port", "Linux name", "State", "Neighbor", "Peer port", "Up")
+	fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", "Port", "Linux name", "State", "Speed", "Neighbor", "Peer port", "Up")
 	now := time.Now()
 	for _, p := range st.Ports {
 		up := "-"
 		if !p.UpSince.IsZero() {
 			up = fmtDuration(now.Sub(p.UpSince))
 		}
-		fmt.Fprintf(c.out, "%-8s %-12s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, p.Neighbor, dash(p.PeerPort), up)
+		speed := "-"
+		if p.SpeedMbps > 0 {
+			speed = fmtSpeed(p.SpeedMbps)
+		}
+		fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, speed, p.Neighbor, dash(p.PeerPort), up)
 		switch {
 		case p.LastError != "" && p.State != "up":
-			fmt.Fprintf(c.out, "         last error: %s\n", p.LastError)
+			fmt.Fprintf(c.out, "           last error: %s\n", p.LastError)
 		case p.LastError != "" && p.Neighbor == "other stack":
-			fmt.Fprintf(c.out, "         detail: %s\n", p.LastError)
+			fmt.Fprintf(c.out, "           detail: %s\n", p.LastError)
 		}
 	}
 	return nil

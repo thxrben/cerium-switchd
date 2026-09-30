@@ -54,6 +54,7 @@ type stackCtl struct {
 	listed    bool      // this member was seen in the member list
 	left      bool
 	settle    *time.Timer
+	ports     portCache
 }
 
 func (s *stackCtl) eng() *commit.Engine {
@@ -585,4 +586,77 @@ func (s *stackCtl) synced(rev uint64) {
 			return
 		}
 	}
+}
+
+// Port names of the other members, for completion and help in the CLI
+// (every member's ports are offered, reference 3.3). Fetched in the
+// background and cached, so that ? and Tab never wait for the stack.
+const portsRefresh = 30 * time.Second
+
+type portCache struct {
+	mu      sync.Mutex
+	names   map[int][]string
+	fetched time.Time
+	running bool
+}
+
+// servePorts answers other members' "ports" requests with this member's
+// port names.
+func (s *stackCtl) servePorts(local func() []string) {
+	s.node.Handle("ports", func(int, json.RawMessage) (any, error) { return local(), nil })
+}
+
+// remotePorts returns the cached port names of the other members and
+// starts a refresh when the cache is old.
+func (s *stackCtl) remotePorts() []string {
+	c := &s.ports
+	c.mu.Lock()
+	var out []string
+	for id, names := range c.names {
+		if id != s.member {
+			out = append(out, names...)
+		}
+	}
+	stale := time.Since(c.fetched) > portsRefresh && !c.running
+	if stale {
+		c.running = true
+	}
+	c.mu.Unlock()
+	if stale {
+		go s.refreshPorts()
+	}
+	return out
+}
+
+func (s *stackCtl) refreshPorts() {
+	got := map[int][]string{}
+	for id := range s.node.Members() {
+		if id == s.member {
+			continue
+		}
+		raw, err := s.node.Call(id, "ports", nil, 3*time.Second)
+		if err != nil {
+			continue
+		}
+		var names []string
+		if json.Unmarshal(raw, &names) == nil {
+			got[id] = names
+		}
+	}
+	c := &s.ports
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Keep what an unreachable member reported last.
+	if c.names == nil {
+		c.names = map[int][]string{}
+	}
+	for id := range c.names {
+		if _, member := s.node.Members()[id]; !member {
+			delete(c.names, id)
+		}
+	}
+	for id, n := range got {
+		c.names[id] = n
+	}
+	c.fetched, c.running = time.Now(), false
 }

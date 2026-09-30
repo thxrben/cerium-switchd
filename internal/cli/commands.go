@@ -31,6 +31,8 @@ type command struct {
 	// perMember: the command reports or changes one member's state and
 	// accepts a target (member <id> | all-members | local) in a stack.
 	perMember bool
+	// allMembers: without a target the command runs on every member.
+	allMembers bool
 	// confirm is the question asked before running it on other members
 	// ("Reboot"); the command itself then does not ask again.
 	confirm string

@@ -749,7 +749,7 @@ func TestSystemOperationalCommands(t *testing.T) {
 		"3                            linecard  128       voter      not present")
 	ts.ok("request chassis routing-engine master switch member 2")
 	contains(t, ts.run("request chassis routing-engine master switch member x"), "expecting a member id")
-	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1      ens19        up      member 2 (sw2)           0/1        00:01:00", "other stack")
+	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1        ens19        up      -       member 2 (sw2)           0/1        00:01:00", "other stack")
 	ts.ok("request virtual-chassis vc-port set pic-slot 0 port 3")
 	if len(ops.power) != 1 || ops.power[0] != "vc 0/3 true" {
 		t.Errorf("vc-port set: %v", ops.power)
@@ -812,6 +812,12 @@ func TestMemberTargets(t *testing.T) {
 	contains(t, out, "member2:\n-----", "remote 2: show version\n")
 	if strings.Contains(out, "member1:") {
 		t.Errorf("local section for member 2:\n%s", out)
+	}
+	// show chassis hardware covers every member unless narrowed.
+	out = ts.run("show chassis hardware")
+	contains(t, out, "member1:", "remote 2: show chassis hardware\n", "member3:")
+	if out := ts.ok("show chassis hardware local"); strings.Contains(out, "remote") || strings.Contains(out, "member2:") {
+		t.Errorf("show chassis hardware local:\n%s", out)
 	}
 	out = ts.run(`show system uptime all-members | match "remote|member|error"`)
 	contains(t, out, "member1:", "member2:", "remote 2: show system uptime", "member3:", "error: member 3 is not reachable")

@@ -477,8 +477,19 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		return st, fmt.Errorf("the stack is not running (dry-run mode?)")
 	}
 	for _, p := range o.vc.Ports() {
-		st.Ports = append(st.Ports, cli.VCPort{Port: p.Port, Linux: p.Linux, State: p.State, Neighbor: p.Neighbor,
-			PeerPort: p.PeerPort, UpSince: p.UpSince, LastError: p.LastError})
+		// Full interface names: this member's port, and the neighbour's
+		// port with its member id.
+		vp := cli.VCPort{Port: strconv.Itoa(st.Member) + "/" + p.Port, Linux: p.Linux, State: p.State, Neighbor: p.Neighbor,
+			PeerPort: p.PeerPort, UpSince: p.UpSince, LastError: p.LastError}
+		if p.PeerPort != "" && p.NeighborID > 0 {
+			vp.PeerPort = strconv.Itoa(p.NeighborID) + "/" + p.PeerPort
+		}
+		if raw, err := os.ReadFile("/sys/class/net/" + p.Linux + "/speed"); err == nil && p.State == "up" {
+			if v, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && v > 0 {
+				vp.SpeedMbps = v
+			}
+		}
+		st.Ports = append(st.Ports, vp)
 	}
 	if n := o.vc.Control; n != nil {
 		st.Control, st.Master = true, n.Master()

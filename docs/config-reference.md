@@ -681,8 +681,9 @@ working path, so a ring survives one broken cable.
 * **Every switch is a stack.** A switch that has never joined another stack is member 1 of its own stack (it creates
   its stack key at first start). Two switches of different stacks connected by a stacking cable see each other as
   "other stack" and exchange nothing else until one of them joins the other's stack.
-* `show virtual-chassis vc-port`: per stacking port its state (`up`, `down`, `absent` when the port does not exist),
-  the neighbour (member id and host name, `other stack`, or `-`), the neighbour's port and how long the link is up.
+* `show virtual-chassis vc-port`: per stacking port its full name (`2/1/0`), state (`up`, `down`, `absent` when the port
+  does not exist), link speed, the neighbour (member id and host name, `other stack`, or `-`), the neighbour's port
+  (full name, e.g. `3/2/0`) and how long the link is up.
 * `show virtual-chassis`: the stack id, this member, and per member its id, host name, role (`master`, `backup`,
   `linecard`), `mastership-priority` and status (`present`, `not present`).
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a
@@ -734,6 +735,7 @@ working path, so a ring survives one broken cable.
     `show system uptime|ntp|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
     `show virtual-chassis vc-port`, `clear ethernet-switching table`, `request system reboot|halt|power-off`,
     `clear system reboot`.
+  * `show chassis hardware` covers every member by default (as in Junos VC); `local` or `member <id>` narrows it.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
     one. (Junos reboots all members by default; here the default is the local member.)
   * A member that cannot be reached is reported in its section (`error: member 3 is not reachable`); the others

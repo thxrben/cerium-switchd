@@ -296,9 +296,16 @@ func (sh *Shell) dispatch(c *call, cmds []*command, toks []config.Token) error {
 			return errors.New("'| display' and '| compare' are only valid for show commands")
 		}
 		if cmd.perMember && sh.env.Stack != nil {
+			explicit := len(toks) > 0 && (isTargetWord(toks[len(toks)-1], "local") || isTargetWord(toks[len(toks)-1], "all-members") ||
+				(len(toks) > 1 && isTargetWord(toks[len(toks)-2], "member")))
 			targets, pos, rest, err := sh.parseTarget(toks)
 			if err != nil {
 				return err
+			}
+			if !explicit && cmd.allMembers && len(sh.env.Stack.Members()) > 1 {
+				// Commands about the whole chassis cover every member by
+				// default (as in a Junos virtual chassis).
+				targets, pos = sh.env.Stack.Members(), len(c.line)
 			}
 			if targets != nil {
 				return sh.runOnMembers(c, cmd, rest, targets, pos)

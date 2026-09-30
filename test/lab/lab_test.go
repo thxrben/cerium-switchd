@@ -40,7 +40,7 @@ func portNames(t *testing.T, s string) string {
 	t.Helper()
 	sw1NamesOnce.Do(func() {
 		sw1Names = map[string]string{}
-		out := mustSSH(t, sw1, "swcli -c 'show chassis hardware'")
+		out := mustSSH(t, sw1, "swcli -c 'show chassis hardware local'")
 		for _, l := range strings.Split(out, "\n") {
 			if f := strings.Fields(l); len(f) >= 2 && strings.Count(f[0], "/") == 2 {
 				sw1Names[f[1]] = f[0]
@@ -1368,7 +1368,7 @@ func TestVirtualChassisRemoveRenumber(t *testing.T) {
 	}
 	masterSw1(t)
 	stackID := stackIDRe.FindStringSubmatch(out)[1]
-	hw := mustSSH(t, sw3Addr, "swcli -c 'show chassis hardware'")
+	hw := mustSSH(t, sw3Addr, "swcli -c 'show chassis hardware local'")
 	var port3 string
 	for _, l := range strings.Split(hw, "\n") {
 		if f := strings.Fields(l); len(f) >= 2 && f[1] == "ens21" && strings.HasPrefix(f[0], "3/") {
@@ -1379,7 +1379,7 @@ func TestVirtualChassisRemoveRenumber(t *testing.T) {
 		t.Skipf("sw3 has no ens21:\n%s", hw)
 	}
 	one := "1" + strings.TrimPrefix(port3, "3")
-	vcPorts := regexp.MustCompile(`(?m)^(\d+)/(\d+) +\S+ +(up|down)`).FindAllStringSubmatch(mustSSH(t, sw3Addr, "swcli -c 'show virtual-chassis vc-port'"), -1)
+	vcPorts := regexp.MustCompile(`(?m)^\d+/(\d+)/(\d+) +\S+ +(up|down)`).FindAllStringSubmatch(mustSSH(t, sw3Addr, "swcli -c 'show virtual-chassis vc-port'"), -1)
 	if len(vcPorts) == 0 {
 		t.Fatal("sw3 has no VC ports")
 	}
@@ -1533,7 +1533,7 @@ func TestVirtualChassisRingCut(t *testing.T) {
 	heal := "tc qdisc del dev ens19 root 2>/dev/null; tc filter del dev ens19 ingress pref 1 2>/dev/null; true"
 	t.Cleanup(func() { ssh(sw1, heal) })
 	mustSSH(t, sw1, cut)
-	portDown := regexp.MustCompile(`(?m)^1/0 +ens19 +down`)
+	portDown := regexp.MustCompile(`(?m)^1/1/0 +ens19 +down`)
 	for i := 0; ; i++ {
 		if portDown.MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis vc-port'")) {
 			break
@@ -1558,7 +1558,7 @@ exit"`, time.Now().Unix()))
 		}
 	}
 	mustSSH(t, sw1, heal)
-	portUp := regexp.MustCompile(`(?m)^1/0 +ens19 +up +member 2`)
+	portUp := regexp.MustCompile(`(?m)^1/1/0 +ens19 +up +\S+ +member 2`)
 	for i := 0; ; i++ {
 		if portUp.MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis vc-port'")) {
 			break
@@ -1831,7 +1831,7 @@ func TestLACP(t *testing.T) {
 // memberPort returns member addr's switch name of a Linux port.
 func memberPort(t *testing.T, addr, linux string) string {
 	t.Helper()
-	for _, l := range strings.Split(mustSSH(t, addr, "swcli -c 'show chassis hardware'"), "\n") {
+	for _, l := range strings.Split(mustSSH(t, addr, "swcli -c 'show chassis hardware local'"), "\n") {
 		if f := strings.Fields(l); len(f) >= 2 && f[1] == linux && strings.Count(f[0], "/") == 2 {
 			return f[0]
 		}
@@ -2074,11 +2074,11 @@ func stackPortsTo(t *testing.T, addr string, neighbors ...int) []string {
 	var out []string
 	for _, l := range strings.Split(mustSSH(t, addr, "swcli -c 'show virtual-chassis vc-port'"), "\n") {
 		f := strings.Fields(l)
-		if len(f) < 5 || f[2] != "up" || f[3] != "member" {
+		if len(f) < 6 || f[2] != "up" || f[4] != "member" {
 			continue
 		}
 		for _, n := range neighbors {
-			if f[4] == strconv.Itoa(n) {
+			if f[5] == strconv.Itoa(n) {
 				out = append(out, f[1])
 			}
 		}
