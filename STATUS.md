@@ -195,15 +195,19 @@ Last updated: 2026-09-30 (night).
 - Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
   (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
   TestConfigAcrossMembers. Full lab suite: 30 tests pass.
-0. Chassis management (decided with the user 2026-09-30, spec 1.4, 1.8, 5.1, 5.3.4, 5.9 updated): `system management-instance
-   <any instance>`, `interfaces <port> management` + `interfaces cme unit 0` (one address, stack-derived MAC, only on the
-   Raft master, present on exactly one member like VRRP, moves only with mastership; management ports of members never
-   bridged), all management services (CLI SSH, web, NTP, DNS, syslog forwarding, downloads) on the master only, other members get time/logs/updates through the stacking protocol (no IP over
-   the stack), CLI on any member forwards every command to the master (prompt `host:2 {master:1}`), banner + local shell
-   when the master is unreachable, `start shell` = master, `start shell local`. No OS defaults on any port (blank
-   switch: console only). VLAN 4094 no longer reserved. Breaking change: no conversion of `mgmt_ceros` configs (the
-   lab VMs' configs get rewritten by hand). Implementation next.
-1. Phase 7 rest: Phase 7b (rolling upgrades / version window).
+- Done 2026-09-30/10-01: chassis management (cme on the master, CLI forwarded to the master, start shell on the
+  master), stack-wide interface listings, vc-port set <interface>, LLDP (one system to the outside), host names from
+  one place (member name vs. chassis name), software updates through the stack (spec 3.6: package, check-config,
+  distribution, member by member drained, master last, automatic return after 3 failed starts, transit check with
+  force, older members ignore unknown statements). Lab: sw1-sw3 + physw4 updated 4c3e25e -> b131b9e -> 2f76bbb by
+  the stack itself.
+0. Bugs reported by the user 2026-10-01 (next):
+   - show ethernet-switching table is empty although addresses are learned; show arp shows too few entries.
+   - show lacp interfaces: check the table (4/0/3 appears as Actor and Partner rows: that is the Junos layout, but
+     verify the merge of MC-LAG bundles and kernel/config port names).
+   - sw1 still has the old switchd.service (no ExecStopPost for cme); the unit is not part of the package: switchd
+     should install/refresh its own unit (or the package carries it).
+1. Phase 7b rest: protocol version window (versioned stack messages), signed packages.
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
 3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge
    (mstpd on srv1) and an MC-LAG port with BPDUs. VLAN MTU filter: lab-test the tagged path.
