@@ -665,7 +665,8 @@ working path, so a ring survives one broken cable.
   * `request virtual-chassis member remove <id>` decommissions a member: if it is master, mastership moves first; then
     its traffic is drained (LACP partners are told the links go away, stacking paths are rerouted), it leaves the
     quorum and the member list, and another member takes its vote if needed. Its configuration stays until you delete
-    it. The removed switch keeps running standalone with the last configuration, without its stack keys.
+    it. The removed switch keeps running standalone with the last configuration and its member id, as the only member
+    of a new stack of its own (new stack keys; the old stack no longer accepts it).
   * `mastership-priority 0` means "never master" (useful for a switch that is about to be replaced). The member with
     the highest priority becomes master when it is available, but a working master is only replaced by an explicit
     switch (no flapping when a higher-priority member reboots).
@@ -678,6 +679,8 @@ working path, so a ring survives one broken cable.
 * `commit` prints the result per member (`member1: commit complete`, `member3: not reachable, applies the
   configuration when it returns`). A member that fails to apply makes every member return to the previous configuration.
 * When mastership moves, open configuration sessions end with a notice; the shared candidate is kept.
+* Configuration-mode commands and commits are logged by the master (as in Junos VC), with the user; operational
+  commands by the member they run on.
 * `show virtual-chassis` roles: `master` (Raft leader), `backup` (the voter with the highest priority after the
   master), `linecard` (all others); per member also `voter` or `non-voter`.
 

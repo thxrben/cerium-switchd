@@ -1,8 +1,10 @@
 package access
 
 import (
+	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +16,8 @@ type fakeSys struct {
 	accounts map[string]Entry
 	keys     map[string][]string
 	calls    []string
+	onAdd    func(Entry) // before the account exists
+	failAdd  bool
 }
 
 func newFakeSys() *fakeSys {
@@ -34,6 +38,12 @@ func (f *fakeSys) UIDTaken(uid int) bool {
 }
 func (f *fakeSys) Add(e Entry) error {
 	f.calls = append(f.calls, "add "+e.Name)
+	if f.onAdd != nil {
+		f.onAdd(e)
+	}
+	if f.failAdd {
+		return errors.New("useradd failed")
+	}
 	f.accounts[e.Name] = e
 	return nil
 }
@@ -125,5 +135,30 @@ func TestCheck(t *testing.T) {
 	}
 	if strings.Contains(s, "user ok") {
 		t.Errorf("false positive:\n%s", s)
+	}
+}
+
+// switchd may stop right after creating an account: the account must
+// already be recorded as its own, or it would be refused afterwards.
+func TestAccountRecordedBeforeCreation(t *testing.T) {
+	sys := newFakeSys()
+	state := filepath.Join(t.TempDir(), "accounts.json")
+	m := &Manager{Sys: sys, StateFile: state, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	sys.onAdd = func(e Entry) {
+		raw, _ := os.ReadFile(state)
+		if !strings.Contains(string(raw), `"`+e.Name+`"`) {
+			t.Errorf("%s created before it was recorded: %s", e.Name, raw)
+		}
+	}
+	if err := m.Sync(cfgWith(&model.User{Name: "dave"})); err != nil {
+		t.Fatal(err)
+	}
+	// A failed creation is not left recorded.
+	sys.onAdd, sys.failAdd = nil, true
+	if err := m.Sync(cfgWith(&model.User{Name: "dave"}, &model.User{Name: "erin"})); err == nil {
+		t.Fatal("failed creation not reported")
+	}
+	if raw, _ := os.ReadFile(state); strings.Contains(string(raw), "erin") {
+		t.Errorf("failed account recorded: %s", raw)
 	}
 }

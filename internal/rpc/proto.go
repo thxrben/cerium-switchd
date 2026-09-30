@@ -38,7 +38,10 @@ type Msg struct {
 	NoMore bool   `json:"nomore,omitempty"`
 	Exit   bool   `json:"exit,omitempty"`
 	Shell  bool   `json:"shell,omitempty"`
-	Items  []Item `json:"items,omitempty"`
+	// Cfg: the session is in configuration mode (done and notify; used
+	// to end a session relayed to the master).
+	Cfg   bool   `json:"cfg,omitempty"`
+	Items []Item `json:"items,omitempty"`
 }
 
 // Item is one completion.

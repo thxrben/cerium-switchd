@@ -65,6 +65,12 @@ var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func startServer(t *testing.T, auth Authorizer) (string, *Server) {
 	t.Helper()
+	path, srv, _ := startServerHost(t, auth, "sw1")
+	return path, srv
+}
+
+func startServerHost(t *testing.T, auth Authorizer, host string) (string, *Server, *commit.Engine) {
+	t.Helper()
 	dir := t.TempDir()
 	st, _ := commit.OpenFileStore(filepath.Join(dir, "state"), 50)
 	var srv *Server
@@ -76,7 +82,7 @@ func startServer(t *testing.T, auth Authorizer) (string, *Server) {
 	e.Start(context.Background())
 	srv = &Server{
 		Env: func(name string, class commit.Class) cli.Env {
-			return cli.Env{Engine: e, User: name, Class: class, Version: "t", Log: quiet, HostName: func() string { return "sw1" }}
+			return cli.Env{Engine: e, User: name, Class: class, Version: "t", Log: quiet, HostName: func() string { return host }}
 		},
 		Authorize: auth, Log: quiet,
 	}
@@ -87,7 +93,7 @@ func startServer(t *testing.T, auth Authorizer) (string, *Server) {
 	}
 	go srv.Serve(l)
 	t.Cleanup(func() { l.Close(); e.Close() })
-	return path, srv
+	return path, srv, e
 }
 
 func allow(uid int, name string) (commit.Class, error) {
@@ -299,5 +305,110 @@ func TestDisconnected(t *testing.T) {
 	}
 	if _, err := Offline("x> ").Exec("show"); !errors.Is(err, ErrOffline) {
 		t.Errorf("offline: %v", err)
+	}
+}
+
+type chanListener struct {
+	c    chan net.Conn
+	done chan struct{}
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.c:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+func (l *chanListener) Close() error   { close(l.done); return nil }
+func (l *chanListener) Addr() net.Addr { return &net.UnixAddr{} }
+
+// Configuration mode on a member that is not master runs on the master;
+// operational mode stays on the member.
+func TestRelayToMaster(t *testing.T) {
+	_, master, me := startServerHost(t, allow, "sw1")
+	l := &chanListener{c: make(chan net.Conn), done: make(chan struct{})}
+	go master.ServeRemote(l)
+	t.Cleanup(func() { l.Close() })
+	path, member, _ := startServerHost(t, allow, "sw2")
+	var masterSide net.Conn
+	var noMaster bool
+	member.Relay = func() (net.Conn, error) {
+		if noMaster {
+			return nil, errors.New("no master (the stack has no majority)")
+		}
+		a, b := net.Pipe()
+		masterSide = b
+		l.c <- b
+		return a, nil
+	}
+	h := &handler{files: map[string][]byte{}}
+	c, err := Dial(path, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	exec := func(line string) Msg {
+		t.Helper()
+		m, err := c.Exec(line)
+		if err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		return m
+	}
+	if m := exec("configure"); !strings.Contains(m.Text, "Entering configuration mode") {
+		t.Fatalf("configure: %q", m.Text)
+	}
+	if p, b := c.State(); !strings.HasSuffix(p, "@sw1# ") || b != "[edit]\n" {
+		t.Fatalf("relayed prompt %q banner %q", p, b)
+	}
+	items, err := c.Complete("set sys")
+	if err != nil || len(items) == 0 || items[0].Text != "system" {
+		t.Fatalf("relayed completion: %v %v", items, err)
+	}
+	exec("set system host-name relayed")
+	if m := exec("commit"); !strings.Contains(m.Text, "commit complete") {
+		t.Fatalf("commit: %q", m.Text)
+	}
+	if me.Active().Root.Leaf("system", "host-name") != "relayed" {
+		t.Fatal("commit did not reach the master's engine")
+	}
+	exec("exit")
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw2> ") {
+		t.Fatalf("back on the member: prompt %q", p)
+	}
+	if m := exec("show system uptime"); strings.Contains(m.Text, "error") && !strings.Contains(m.Text, "not available") {
+		t.Logf("local op command: %q", m.Text)
+	}
+
+	// The master goes away during configuration mode.
+	exec("configure")
+	masterSide.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p, _ := c.State()
+		if strings.HasSuffix(p, "@sw2> ") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still relayed after the master was lost: %q", p)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.mu.Lock()
+	notes := strings.Join(h.notes, "\n")
+	h.mu.Unlock()
+	if !strings.Contains(notes, "connection to the master lost") {
+		t.Errorf("notices: %q", notes)
+	}
+
+	// Without a master, configure fails; operational mode keeps working.
+	noMaster = true
+	if m := exec("configure"); !strings.Contains(m.Text, "configuration unavailable: no master") {
+		t.Fatalf("configure without master: %q", m.Text)
+	}
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw2> ") {
+		t.Fatalf("prompt %q", p)
 	}
 }

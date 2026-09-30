@@ -137,6 +137,7 @@ func (r *rig) open() {
 		r.t.Fatal(err)
 	}
 	r.e = e
+	r.t.Cleanup(e.Close)
 	e.Start(context.Background())
 }
 

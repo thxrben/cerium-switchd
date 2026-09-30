@@ -27,6 +27,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"mclag/internal/config"
+	"mclag/internal/stack/control"
 	"mclag/internal/stack/link"
 	"mclag/internal/stack/mesh"
 	"mclag/internal/stack/pki"
@@ -46,6 +47,10 @@ type Manager struct {
 	// OnJoined is called after this switch joined another stack: member id
 	// and the stack's configuration. switchd then restarts.
 	OnJoined func(member int, config json.RawMessage) error
+	// Control is the replicated stack state (member list, join tokens); set
+	// before Start. nil: tokens are kept locally and every member
+	// certificate of the stack is accepted.
+	Control *control.Node
 
 	mu         sync.Mutex
 	stack      *pki.Stack
@@ -147,7 +152,46 @@ func (m *Manager) Load() error {
 	if err := os.MkdirAll(m.Dir, 0o700); err != nil {
 		return err
 	}
-	return m.loadKeys()
+	if err := m.loadKeys(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.mesh = mesh.New(m.member, m.Log)
+	m.mu.Unlock()
+	return nil
+}
+
+// joinedFile marks a switch that joined a stack (it never starts a new
+// stack control cluster by itself).
+const joinedFile = "joined"
+
+// Founder reports whether this switch created its stack (at first start,
+// or after it was removed from another stack) and never joined one since
+// (docs/stack-protocol.md, bootstrap).
+func (m *Manager) Founder() bool {
+	_, err := os.Stat(m.path(joinedFile))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// PublicKey is this member's public key.
+func (m *Manager) PublicKey() ed25519.PublicKey {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.memberKey.Public().(ed25519.PublicKey)
+}
+
+// allowed checks a member against the replicated member list. A member
+// that has not received the list yet accepts every member of the stack.
+func (m *Manager) allowed(id int, pub ed25519.PublicKey) bool {
+	if m.Control == nil {
+		return true
+	}
+	members := m.Control.Members()
+	if len(members) == 0 {
+		return true
+	}
+	mi, ok := members[id]
+	return ok && pub.Equal(ed25519.PublicKey(mi.Key))
 }
 
 // Start starts the VC ports (after Load).
@@ -157,7 +201,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.kick = make(chan struct{})
 	m.ctx = ctx
 	m.ports = map[string]*vcPort{}
-	m.mesh = mesh.New(m.member, m.Log)
 	m.mu.Unlock()
 	go m.mesh.Run(ctx.Done())
 	var st vcState
@@ -179,28 +222,10 @@ func (m *Manager) loadKeys() error {
 	}
 	sk, sc, mk, mc := read("stack.key"), read("stack.crt"), read("member.key"), read("member.crt")
 	if sk == nil || sc == nil || mk == nil || mc == nil {
-		s, err := pki.NewStack()
-		if err != nil {
+		if err := m.newStack(1); err != nil {
 			return err
 		}
-		_, key, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return err
-		}
-		cert, err := s.SignMember(1, key.Public().(ed25519.PublicKey))
-		if err != nil {
-			return err
-		}
-		skb, _ := pki.EncodeKey(s.Key)
-		mkb, _ := pki.EncodeKey(key)
-		for n, b := range map[string][]byte{"stack.key": skb, "stack.crt": pki.EncodeCert(s.Cert),
-			"member.key": mkb, "member.crt": pki.EncodeCert(cert)} {
-			if err := os.WriteFile(m.path(n), b, 0o600); err != nil {
-				return err
-			}
-		}
-		m.Log.Info("stack: new one-member stack created", "stack", s.Cert.Subject.CommonName)
-		sk, sc, mk, mc = skb, pki.EncodeCert(s.Cert), mkb, pki.EncodeCert(cert)
+		sk, sc, mk, mc = read("stack.key"), read("stack.crt"), read("member.key"), read("member.crt")
 	}
 	skey, err := pki.DecodeKey(sk)
 	if err != nil {
@@ -226,6 +251,54 @@ func (m *Manager) loadKeys() error {
 	m.stack = &pki.Stack{Key: skey, Cert: scert}
 	m.member, m.memberKey, m.memberCert = id, mkey, mcert
 	m.mu.Unlock()
+	return nil
+}
+
+// newStack creates the keys of a new stack with this switch as member id
+// (new member key too).
+func (m *Manager) newStack(id int) error {
+	s, err := pki.NewStack()
+	if err != nil {
+		return err
+	}
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	cert, err := s.SignMember(id, key.Public().(ed25519.PublicKey))
+	if err != nil {
+		return err
+	}
+	skb, _ := pki.EncodeKey(s.Key)
+	mkb, _ := pki.EncodeKey(key)
+	files := map[string][]byte{"stack.key": skb, "stack.crt": pki.EncodeCert(s.Cert), "member.key": mkb, "member.crt": pki.EncodeCert(cert)}
+	for n, b := range files {
+		if err := os.WriteFile(m.path(n+".new"), b, 0o600); err != nil {
+			return err
+		}
+	}
+	for n := range files {
+		if err := os.Rename(m.path(n+".new"), m.path(n)); err != nil {
+			return err
+		}
+	}
+	m.Log.Info("stack: new one-member stack created", "stack", s.Cert.Subject.CommonName, "member", id)
+	return nil
+}
+
+// Leave makes this switch the only member of a new stack after it was
+// removed from its stack: new keys, the same member id, no replicated
+// state. switchd has to restart afterwards.
+func (m *Manager) Leave() error {
+	if err := m.newStack(m.Member()); err != nil {
+		return err
+	}
+	for _, name := range []string{"raft", "control.json", joinedFile} {
+		if err := os.RemoveAll(m.path(name)); err != nil {
+			return err
+		}
+	}
+	m.Log.Warn("stack: removed from the virtual chassis; this switch is now a stack of its own", "facility", "change-log", "member", m.Member())
 	return nil
 }
 
@@ -410,11 +483,7 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 // the session until it ends.
 func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *link.PacketIO, linux string) error {
 	m.mu.Lock()
-	cfg := pki.TLSConfig(m.stack.Cert, pki.TLSCert(m.memberCert, m.memberKey), func(int, ed25519.PublicKey) bool {
-		// Until the replicated member list exists, every member certificate
-		// signed by this stack is accepted.
-		return true
-	})
+	cfg := pki.TLSConfig(m.stack.Cert, pki.TLSCert(m.memberCert, m.memberKey), m.allowed)
 	me := m.member
 	join := m.join
 	m.mu.Unlock()
@@ -473,6 +542,13 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	r := bufio.NewReader(conn)
 	line, err := r.ReadBytes('\n')
 	if err != nil {
+		// With TLS 1.3 a rejected certificate shows up here (the peer's
+		// alert), not in the handshake.
+		var oe *net.OpError
+		if errors.As(err, &oe) && oe.Op == "remote error" {
+			p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
+			return fmt.Errorf("%w: %v", errOtherStack, err)
+		}
 		return err
 	}
 	var h hello
@@ -491,24 +567,42 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 		}
 	})
 	m.Log.Info("stack: neighbour on VC port", "port", p.local, "member", h.Member, "host", h.Host, "peer_port", h.Port)
+	var peerPub ed25519.PublicKey
+	if pc := conn.ConnectionState().PeerCertificates; len(pc) > 0 {
+		peerPub, _ = pc[0].PublicKey.(ed25519.PublicKey)
+		if id, _ := pki.ParseMemberName(pc[0].Subject.CommonName); id != h.Member {
+			return fmt.Errorf("neighbour says member %d, its certificate is %s", h.Member, pc[0].Subject.CommonName)
+		}
+	}
 	// The session carries the mesh (topology, relay, streams) from now on.
 	ended := make(chan struct{})
 	go func() {
 		m.mesh.AddPeer(h.Member, sessionConn{r, conn})
 		close(ended)
 	}()
-	select {
-	case <-ctx.Done():
-		conn.Close()
-		<-ended
-		return nil
-	case <-l.Done():
-		conn.Close()
-		<-ended
-		return l.Err()
-	case <-ended:
-		conn.Close()
-		return errors.New("stack session closed")
+	// A member removed from the member list loses its sessions.
+	check := time.NewTicker(2 * time.Second)
+	defer check.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			<-ended
+			return nil
+		case <-l.Done():
+			conn.Close()
+			<-ended
+			return l.Err()
+		case <-ended:
+			conn.Close()
+			return errors.New("stack session closed")
+		case <-check.C:
+			if !m.allowed(h.Member, peerPub) {
+				conn.Close()
+				<-ended
+				return fmt.Errorf("%w: member %d was removed from the stack", errOtherStack, h.Member)
+			}
+		}
 	}
 }
 

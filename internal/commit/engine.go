@@ -102,6 +102,10 @@ type Options struct {
 	// context.Background().
 	Notify func(ctx context.Context, msg string)
 	Log    *slog.Logger
+	// StackCheck checks a candidate on the other stack members (their
+	// hardware and OS); its issues are added to the local ones, without
+	// duplicates. nil: standalone.
+	StackCheck func(cand *config.Tree) model.Issues
 	// Writable reports whether this engine may change the configuration
 	// (in a stack: this member is the master). nil: always. It is checked
 	// by Configure, Commit and Confirm; an expiring confirmation timer
@@ -643,6 +647,18 @@ func (s *Session) check(cand, active *config.Tree) (*model.Config, model.Issues)
 	cfg, issues := model.Build(cand, s.e.o.Inventory)
 	for _, chk := range s.e.o.Checks {
 		issues = append(issues, chk(cfg)...)
+	}
+	if s.e.o.StackCheck != nil {
+		seen := map[model.Issue]bool{}
+		for _, i := range issues {
+			seen[i] = true
+		}
+		for _, i := range s.e.o.StackCheck(cand) {
+			if !seen[i] {
+				seen[i] = true
+				issues = append(issues, i)
+			}
+		}
 	}
 	if s.Class == Operator {
 		for _, p := range forbidden {

@@ -126,15 +126,31 @@ func Run(ctx context.Context, o Options) error {
 			}
 		}
 	}
-	engine, err = commit.New(commit.Options{
+	// The stack control replicates the configuration store; without it
+	// (dry run, or it cannot start) the store is local.
+	var ctl *stackCtl
+	engOpts := commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
 		Upgrade: newUpgrader(names, 1, log).Upgrade,
 		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
-	})
+	}
+	if !o.DryRun && vc.Mesh() != nil {
+		if ctl = startControl(o.StateDir, store, vc, applier, member, log, restart); ctl != nil {
+			defer ctl.node.Close()
+			ctl.inv, ctl.checks = inv, engOpts.Checks
+			engOpts.Store, engOpts.Applier, engOpts.Writable = ctl.node.EngineStore(), ctl, ctl.writable
+			engOpts.StackCheck = ctl.stackCheck
+		}
+	}
+	engine, err = commit.New(engOpts)
 	if err != nil {
 		return err
 	}
 	defer engine.Close()
+	if ctl != nil {
+		ctl.setEngine(engine)
+		go ctl.run(ctx)
+	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
@@ -173,6 +189,30 @@ func Run(ctx context.Context, o Options) error {
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		return cli.Env{Engine: engine, User: name, Class: class, Version: version.Version,
 			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
+	}
+	if ctl != nil {
+		// Configuration mode runs on the master (docs/stack-protocol.md).
+		srv.Relay = func() (net.Conn, error) {
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				if ctl.node.MasterReady() {
+					return nil, nil
+				}
+				if m := ctl.node.Master(); m != 0 && m != member {
+					return vc.Mesh().Dial(m, "cli", 5*time.Second)
+				}
+				if time.Now().After(deadline) {
+					return nil, fmt.Errorf("%w", ctl.writable())
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		cliL := vc.Mesh().Listen("cli")
+		go func() {
+			<-ctx.Done()
+			cliL.Close()
+		}()
+		go srv.ServeRemote(cliL)
 	}
 	srv.Authorize = func(uid int, name string) (commit.Class, error) {
 		if uid == 0 {

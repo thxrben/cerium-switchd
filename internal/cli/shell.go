@@ -308,3 +308,17 @@ func (sh *Shell) resolve(c *call, toks []config.Token, mode config.ResolveMode) 
 	}
 	return steps, nil
 }
+
+// NeedsMaster reports whether line, in operational mode, has to run on
+// the configuration master (configure, confirm).
+func (sh *Shell) NeedsMaster(line string) bool {
+	if sh.InConfig() {
+		return false
+	}
+	toks, err := config.Lex(line, config.LexCommand)
+	if err != nil || len(toks) == 0 || toks[0].Punct || toks[0].Quoted {
+		return false
+	}
+	m := lookupCmd(operational, toks[0].Text)
+	return len(m) == 1 && (m[0].name == "configure" || m[0].name == "confirm")
+}

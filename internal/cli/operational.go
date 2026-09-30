@@ -39,6 +39,10 @@ type Operational interface {
 	Routes(instance string) ([]Route, error)
 	// VirtualChassis reports the stack and the VC ports of this member.
 	VirtualChassis() (VCStatus, error)
+	// SwitchMaster hands mastership to member to (0: the best other member).
+	SwitchMaster(to int, user string) error
+	// RemoveVCMember removes a member from the stack.
+	RemoveVCMember(id int, user string) error
 	// SetVCPort designates (add) or releases a VC port "<card>/<port>".
 	SetVCPort(local string, add bool, user string) error
 	// AddVCMember returns a one-time join token for member id.
@@ -54,6 +58,13 @@ type VCStatus struct {
 	Member   int
 	HostName string
 	Ports    []VCPort
+	// Control: the replicated stack state is running (else every switch
+	// shows itself as master).
+	Control bool
+	Master  int // 0: no master (no majority)
+	// Members in the member list; Voters: members that vote; Reachable:
+	// members this member can reach over the stacking links.
+	Members, Voters, Reachable []int
 }
 
 // VCPort is one VC port.
@@ -507,10 +518,20 @@ func (sh *Shell) showVC(c *call) error {
 		return err
 	}
 	cfg := sh.activeModel()
-	fmt.Fprintf(c.out, "Virtual chassis %s, this switch is member %d\n\n", st.StackID, st.Member)
-	fmt.Fprintf(c.out, "%-7s %-20s %-9s %-9s %s\n", "Member", "Host name", "Role", "Priority", "Status")
+	fmt.Fprintf(c.out, "Virtual chassis %s, this switch is member %d\n", st.StackID, st.Member)
+	switch {
+	case !st.Control:
+		c.out.WriteString("Stack control is not running: this switch works as its own master.\n")
+	case st.Master == 0:
+		c.out.WriteString("No master: the stack has no majority (configuration changes are not possible).\n")
+	}
+	c.out.WriteString("\n")
+	fmt.Fprintf(c.out, "%-7s %-20s %-9s %-9s %-10s %s\n", "Member", "Host name", "Role", "Priority", "Vote", "Status")
 	present := map[int]bool{st.Member: true}
 	host := map[int]string{st.Member: st.HostName}
+	for _, id := range st.Reachable {
+		present[id] = true
+	}
 	for _, p := range st.Ports {
 		var id int
 		if n, _ := fmt.Sscanf(p.Neighbor, "member %d", &id); n == 1 && p.State == "up" {
@@ -518,28 +539,105 @@ func (sh *Shell) showVC(c *call) error {
 		}
 	}
 	ids := map[int]bool{st.Member: true}
+	inList, voter := map[int]bool{}, map[int]bool{}
+	for _, id := range st.Members {
+		ids[id], inList[id] = true, true
+	}
+	for _, id := range st.Voters {
+		voter[id] = true
+	}
 	if cfg != nil {
 		for id := range cfg.Members {
 			ids[id] = true
 		}
 	}
-	for _, id := range slices.Sorted(maps.Keys(ids)) {
-		prio, name := 128, host[id]
+	prioOf := func(id int) int {
 		if cfg != nil && cfg.Members[id] != nil {
-			prio = cfg.Members[id].Priority
-			if cfg.Members[id].HostName != "" {
-				name = cfg.Members[id].HostName
-			}
+			return cfg.Members[id].Priority
 		}
-		role, status := "linecard", "not present"
+		return 128
+	}
+	// backup: the voter with the highest priority after the master.
+	backup, bp := 0, -1
+	for _, id := range st.Voters {
+		if id != st.Master && (prioOf(id) > bp || (prioOf(id) == bp && id < backup)) {
+			backup, bp = id, prioOf(id)
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		name := host[id]
+		if cfg != nil && cfg.Members[id] != nil && cfg.Members[id].HostName != "" {
+			name = cfg.Members[id].HostName
+		}
+		role, status, vote := "linecard", "not present", "-"
 		if present[id] {
 			status = "present"
 		}
-		if id == st.Member {
-			role = "master" // until Raft elects one (Phase 5), every switch leads its own stack
+		switch {
+		case !st.Control && id == st.Member:
+			role = "master"
+		case id == st.Master:
+			role = "master"
+		case st.Master != 0 && id == backup:
+			role = "backup"
 		}
-		fmt.Fprintf(c.out, "%-7d %-20s %-9s %-9d %s\n", id, name, role, prio, status)
+		switch {
+		case voter[id]:
+			vote = "voter"
+		case inList[id]:
+			vote = "non-voter"
+		}
+		if st.Control && len(st.Members) > 0 && !inList[id] {
+			status = "not joined"
+		}
+		fmt.Fprintf(c.out, "%-7d %-20s %-9s %-9d %-10s %s\n", id, name, role, prioOf(id), vote, status)
 	}
+	return nil
+}
+
+func (sh *Shell) switchMaster(c *call) error {
+	to := 0
+	switch {
+	case len(c.args) == 0:
+	case len(c.args) == 2 && prefixOf(c.args[0].Text, "member"):
+		id, err := strconv.Atoi(c.args[1].Text)
+		if err != nil || id < 1 || id > 16 {
+			return &posError{pos: c.argPos(1), msg: "expecting a member id (1-16)"}
+		}
+		to = id
+	default:
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'member <id>' or nothing"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	if err := sh.env.Ops.SwitchMaster(to, sh.env.User); err != nil {
+		return err
+	}
+	c.out.WriteString("Mastership handed over; configuration sessions on the old master end (the shared candidate is kept).\n")
+	return nil
+}
+
+func (sh *Shell) removeVCMember(c *call) error {
+	if len(c.args) != 1 {
+		return &posError{pos: c.argPos(0), msg: "expecting the member id"}
+	}
+	id, err := strconv.Atoi(c.args[0].Text)
+	if err != nil || id < 1 || id > 16 {
+		return &posError{pos: c.argPos(0), msg: "expecting a member id (1-16)"}
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	a, err := c.term.Ask(fmt.Sprintf("Member %d leaves the stack: it loses its stack keys and keeps running standalone.\n"+
+		"Its configuration in the stack stays until you delete it. Continue? [yes,no] (no) ", id), true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	if err := sh.env.Ops.RemoveVCMember(id, sh.env.User); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "Member %d removed from the virtual chassis.\n", id)
 	return nil
 }
 
@@ -891,11 +989,21 @@ func registerOperational() {
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
 		}},
+		{name: "chassis", help: "Chassis requests", class: commit.SuperUser, sub: []*command{
+			{name: "routing-engine", help: "Routing engine (stack master) requests", class: commit.SuperUser, sub: []*command{
+				{name: "master", help: "Stack mastership", class: commit.SuperUser, sub: []*command{
+					{name: "switch", help: "Hand mastership to another member", class: commit.SuperUser, run: (*Shell).switchMaster,
+						complete: words(Completion{Text: "member", Help: "Member to become master (default: the next by priority)"})},
+				}},
+			}},
+		}},
 		{name: "virtual-chassis", help: "Virtual chassis (stack) requests", class: commit.SuperUser, sub: []*command{
 			{name: "vc-port", help: "Stacking ports of this switch", class: commit.SuperUser, sub: []*command{vcPort(true), vcPort(false)}},
 			{name: "member", help: "Stack members", class: commit.SuperUser, sub: []*command{
 				{name: "add", help: "Allow a switch to join as this member (prints a one-time token)", class: commit.SuperUser,
 					run: (*Shell).addVCMember, complete: words(Completion{Text: "<member-id>", Help: "Member id 1-16", Placeholder: true})},
+				{name: "remove", help: "Remove a member from the stack (decommission)", class: commit.SuperUser,
+					run: (*Shell).removeVCMember, complete: words(Completion{Text: "<member-id>", Help: "Member id 1-16", Placeholder: true})},
 			}},
 			{name: "join", help: "Join a virtual chassis over the VC ports", class: commit.SuperUser, run: (*Shell).joinVC,
 				complete: words(Completion{Text: "token", Help: "Token from 'request virtual-chassis member add' on the stack"})},

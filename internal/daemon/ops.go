@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -451,7 +453,46 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		st.Ports = append(st.Ports, cli.VCPort{Port: p.Port, Linux: p.Linux, State: p.State, Neighbor: p.Neighbor,
 			PeerPort: p.PeerPort, UpSince: p.UpSince, LastError: p.LastError})
 	}
+	if n := o.vc.Control; n != nil {
+		st.Control, st.Master = true, n.Master()
+		for id := range n.Members() {
+			st.Members = append(st.Members, id)
+		}
+		sort.Ints(st.Members)
+		for _, s := range n.Servers() {
+			if s.Voter {
+				st.Voters = append(st.Voters, s.Member)
+			}
+		}
+		if m := o.vc.Mesh(); m != nil {
+			st.Reachable = m.Reachable()
+		}
+	}
 	return st, nil
+}
+
+func (o *ops) SwitchMaster(to int, user string) error {
+	n := o.vc.Control
+	if n == nil {
+		return errors.New("stack control is not running")
+	}
+	if to != 0 && to == n.Master() {
+		return fmt.Errorf("member %d is already master", to)
+	}
+	o.log.Warn("mastership switch requested", "facility", "change-log", "to", to, "user", user)
+	return n.Transfer(to)
+}
+
+func (o *ops) RemoveVCMember(id int, user string) error {
+	n := o.vc.Control
+	if n == nil {
+		return errors.New("stack control is not running")
+	}
+	if len(n.Members()) <= 1 {
+		return errors.New("the last member cannot be removed")
+	}
+	o.log.Warn("virtual chassis member removal", "facility", "change-log", "member", id, "user", user)
+	return n.RemoveMember(id)
 }
 
 func (o *ops) SetVCPort(local string, add bool, user string) error {

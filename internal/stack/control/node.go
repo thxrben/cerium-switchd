@@ -211,6 +211,14 @@ func (n *Node) IsMaster() bool {
 	return n.raft != nil && n.raft.State() == raft.Leader
 }
 
+// MasterReady reports whether this member is master and has taken over
+// (the initial state is loaded and OnLeader(true) ran).
+func (n *Node) MasterReady() bool {
+	n.leaderMu.Lock()
+	defer n.leaderMu.Unlock()
+	return n.leader && n.IsMaster()
+}
+
 // Master returns the master's member id (0: none known).
 func (n *Node) Master() int {
 	if n.raft == nil {

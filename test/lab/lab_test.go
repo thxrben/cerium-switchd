@@ -165,12 +165,38 @@ func keptServices(t *testing.T) string {
 	return keptSSH
 }
 
+// masterSw1 makes member 1 (sw1) the stack master, so that commits are
+// made and logged there (tests that restart switchd move mastership).
+func masterSw1(t *testing.T) {
+	t.Helper()
+	out := mustSSH(t, sw1, "swcli -c 'show virtual-chassis'")
+	if regexp.MustCompile(`(?m)^1 +\S+ +master `).MatchString(out) {
+		return
+	}
+	mustSSH(t, sw1, "swcli -c 'request chassis routing-engine master switch member 1'")
+	for i := 0; i < 50; i++ {
+		if regexp.MustCompile(`(?m)^1 +\S+ +master `).MatchString(mustSSH(t, sw1, "swcli -c 'show virtual-chassis'")) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("sw1 did not become master")
+}
+
+// stackBase keeps the per-member settings of the virtual chassis: sw2 and
+// sw3 are members of sw1's stack, so a "load override" without them would
+// rename them.
+const stackBase = "set virtual-chassis member 1 host-name sw1\n" +
+	"set virtual-chassis member 2 host-name sw2\n" +
+	"set virtual-chassis member 3 host-name sw3\n"
+
 // configure replaces sw1's configuration with setLines and commits it
 // (commit + confirm). Configured login users other than the test users,
 // and the CLI SSH server, are kept.
 func configure(t *testing.T, setLines string) {
 	t.Helper()
-	base := "set system host-name sw1\n" + keptUsers(t)
+	masterSw1(t)
+	base := "set system host-name sw1\n" + stackBase + keptUsers(t)
 	if !strings.Contains(setLines, "system services ssh") {
 		base += keptServices(t)
 	}

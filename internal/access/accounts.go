@@ -157,7 +157,18 @@ func (m *Manager) Sync(cfg *model.Config) error {
 		}
 		switch {
 		case !exists:
+			// Recorded before the account is created: if switchd stops in
+			// between, the account is still known as its own afterwards.
+			st.Users[name] = uid
+			if err := m.save(st); err != nil {
+				delete(st.Users, name)
+				errs = append(errs, fmt.Errorf("%s: %w", name, err))
+				continue
+			}
 			if err := m.Sys.Add(e); err != nil {
+				if _, created := m.Sys.Lookup(name); !created {
+					delete(st.Users, name)
+				}
 				errs = append(errs, fmt.Errorf("%s: %w", name, err))
 				continue
 			}

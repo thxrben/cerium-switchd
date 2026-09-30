@@ -115,7 +115,7 @@ are `member-<id>`. The Raft leader is the **master**.
     older snapshots are ignored, so the local store never goes back.
   * Writes (commits, the pending state, the shared candidate, members, tokens) are Raft entries. A member that is not
     the master forwards them to the master (mesh service `ctl`).
-* **Bootstrap**: a switch that created its stack (member 1, never joined another stack) and has no Raft state forms a
+* **Bootstrap**: a switch that created its stack (it never joined another stack) and has no Raft state forms a
   one-voter Raft cluster. Its first entry (`load`) carries its existing configuration history, the member list and
   the cluster id into Raft. A member that joined waits until the master adds it.
 * **Voters**: up to 7 members are voters, chosen by `mastership-priority` (higher first, ties: lower id); the others
@@ -126,6 +126,9 @@ are `member-<id>`. The Raft leader is the **master**.
   master stays until it fails or is switched explicitly (no preemption when a higher-priority member returns).
 * **Member list**: stacking sessions and mesh streams are accepted only from members in the list (with their key).
   A switch that has not yet received the state accepts any member certificate of the stack.
+* **Removal**: the master moves mastership away first if needed, removes the member from the list, then from the Raft
+  configuration. A member that sees itself removed from the list creates a new stack of its own (new keys, same member
+  id, its last configuration) and restarts switchd.
 
 ## Commits in a stack
 

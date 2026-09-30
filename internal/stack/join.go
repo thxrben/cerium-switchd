@@ -28,6 +28,16 @@ func (m *Manager) AddMember(id int) (string, error) {
 	}
 	tok := pki.NewToken()
 	n, _ := pki.NormalizeToken(tok)
+	if m.Control != nil {
+		if _, taken := m.Control.Members()[id]; taken {
+			return "", fmt.Errorf("member %d is already in the stack (request virtual-chassis member remove %d first)", id, id)
+		}
+		if err := m.Control.AddToken(id, n, time.Hour); err != nil {
+			return "", fmt.Errorf("storing the token in the stack: %w", err)
+		}
+		m.Log.Info("stack: join token issued", "facility", "authorization", "member", id)
+		return tok, nil
+	}
 	m.mu.Lock()
 	for k, p := range m.pending {
 		if p.id == id || time.Now().After(p.expires) {
@@ -92,6 +102,14 @@ func (m *Manager) Join(token string) (int, error) {
 		if err := os.Rename(m.path(name+".new"), m.path(name)); err != nil {
 			return 0, err
 		}
+	}
+	// The replicated state of the previous (own) stack is gone; the new
+	// stack's master adds this member.
+	for _, name := range []string{"raft", "control.json"} {
+		os.RemoveAll(m.path(name))
+	}
+	if err := os.WriteFile(m.path(joinedFile), nil, 0o600); err != nil {
+		return 0, err
 	}
 	m.Log.Warn("stack: joined virtual chassis", "facility", "change-log", "member", a.Member)
 	if m.OnJoined != nil {
@@ -206,16 +224,32 @@ func (m *Manager) joinServer(l net.Conn, port string) {
 		b, _ := json.Marshal(a)
 		conn.Write(append(b, '\n'))
 	}
-	m.mu.Lock()
 	var token string
 	var pm pendingMember
-	for t, p := range m.pending {
-		if time.Now().Before(p.expires) && pki.CheckProof(req["proof"], pki.Proof(t, "join", memberPub, stackPub)) {
-			token, pm = t, p
-			delete(m.pending, t) // one-time
+	if m.Control != nil {
+		for _, t := range m.Control.Tokens() {
+			if time.Now().Before(t.Expires) && pki.CheckProof(req["proof"], pki.Proof(t.Token, "join", memberPub, stackPub)) {
+				token, pm = t.Token, pendingMember{id: t.Member, expires: t.Expires}
+			}
 		}
+		// Used up through the master, so a token admits one switch only.
+		if token != "" {
+			if err := m.Control.Admit(token, memberPub); err != nil {
+				m.Log.Warn("stack: join refused", "facility", "authorization", "port", port, "err", err)
+				answer(joinAnswer{Error: "the stack could not admit the member: " + err.Error()})
+				return
+			}
+		}
+	} else {
+		m.mu.Lock()
+		for t, p := range m.pending {
+			if time.Now().Before(p.expires) && pki.CheckProof(req["proof"], pki.Proof(t, "join", memberPub, stackPub)) {
+				token, pm = t, p
+				delete(m.pending, t) // one-time
+			}
+		}
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 	if token == "" {
 		m.Log.Warn("stack: join refused: no valid token", "facility", "authorization", "port", port)
 		answer(joinAnswer{Error: "invalid or expired token"})

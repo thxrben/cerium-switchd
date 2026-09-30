@@ -99,6 +99,9 @@ type ui struct {
 	wasConfig  bool // the lost session was in configuration mode
 	class      string
 	report     *os.File // tells the supervisor the session's class
+	// nextLine is set in batch mode: questions are answered by the next
+	// input line (stdin is read ahead, so it cannot be read directly).
+	nextLine func() (string, bool)
 }
 
 // cl returns the current connection (possibly offline).
@@ -244,6 +247,13 @@ func (u *ui) batch(r io.Reader) int {
 	code := 0
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	u.nextLine = func() (string, bool) {
+		if !sc.Scan() {
+			return "", false
+		}
+		return sc.Text(), true
+	}
+	defer func() { u.nextLine = nil }()
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -303,6 +313,20 @@ func (u *ui) cooked(f func()) {
 }
 
 func (u *ui) Ask(prompt string, echo bool) (string, error) {
+	if u.nextLine != nil {
+		fmt.Fprint(u.out, prompt)
+		line, ok := u.nextLine()
+		if !ok {
+			fmt.Fprintln(u.out)
+			return "", io.EOF
+		}
+		if echo {
+			fmt.Fprintln(u.out, line)
+		} else {
+			fmt.Fprintln(u.out)
+		}
+		return line, nil
+	}
 	var line string
 	var err error
 	u.cooked(func() {

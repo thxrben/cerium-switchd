@@ -506,7 +506,7 @@ func (f *fakeOps) VirtualChassis() (VCStatus, error) {
 	return VCStatus{StackID: "abc", Member: 1, HostName: "sw1", Ports: []VCPort{
 		{Port: "0/1", Linux: "ens19", State: "up", Neighbor: "member 2 (sw2)", PeerPort: "0/1", UpSince: time.Now().Add(-time.Minute)},
 		{Port: "0/2", Linux: "ens20", State: "up", Neighbor: "other stack", LastError: "x"},
-	}}, nil
+	}, Control: true, Master: 2, Members: []int{1, 2, 3}, Voters: []int{1, 2, 3}, Reachable: []int{2}}, nil
 }
 
 func (f *fakeOps) SetVCPort(local string, add bool, user string) error {
@@ -515,6 +515,8 @@ func (f *fakeOps) SetVCPort(local string, add bool, user string) error {
 }
 
 func (f *fakeOps) AddVCMember(id int, user string) (string, error) { return "AAAA-BBBB", nil }
+func (f *fakeOps) SwitchMaster(to int, user string) error          { return nil }
+func (f *fakeOps) RemoveVCMember(id int, user string) error        { return nil }
 func (f *fakeOps) JoinVC(token, user string) (int, error)          { return 2, nil }
 
 func (f *fakeOps) CancelPower(user string) error {
@@ -699,7 +701,12 @@ func TestSystemOperationalCommands(t *testing.T) {
 		t.Errorf("IPv4 first:\n%s", out)
 	}
 	contains(t, ts.ok("show route instance mgmt_junos"), "Routing instance mgmt_junos")
-	contains(t, ts.ok("show virtual-chassis"), "Virtual chassis abc, this switch is member 1", "1       sw1                  master    128       present")
+	contains(t, ts.ok("show virtual-chassis"), "Virtual chassis abc, this switch is member 1",
+		"1       sw1                  backup    128       voter      present",
+		"2                            master    128       voter      present",
+		"3                            linecard  128       voter      not present")
+	ts.ok("request chassis routing-engine master switch member 2")
+	contains(t, ts.run("request chassis routing-engine master switch member x"), "expecting a member id")
 	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1      ens19        up      member 2 (sw2)           0/1        00:01:00", "other stack")
 	ts.ok("request virtual-chassis vc-port set pic-slot 0 port 3")
 	if len(ops.power) != 1 || ops.power[0] != "vc 0/3 true" {
