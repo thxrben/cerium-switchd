@@ -1017,15 +1017,21 @@ func TestVirtualChassis(t *testing.T) {
 
 	// Configuration mode on sw2 runs on the master (sw1) and is applied on
 	// every member.
+	desc := fmt.Sprintf("from-sw2-%d", time.Now().Unix())
 	out = mustSSH(t, sw2Addr, `swcli -c "configure
-set vlans v30 description from-sw2
+set vlans v30 description `+desc+`
 commit
 commit
-exit"`)
+exit
+show configuration vlans v30"`)
 	for id := 1; id <= 3; id++ {
 		if !strings.Contains(out, fmt.Sprintf("member%d: commit complete", id)) {
 			t.Fatalf("commit from sw2:\n%s", out)
 		}
+	}
+	// sw2 shows its own commit at once when configuration mode ends.
+	if !strings.Contains(out[strings.Index(out, "Exiting configuration mode"):], "description "+desc) {
+		t.Errorf("sw2 does not show its own commit:\n%s", out)
 	}
 	for _, addr := range []string{sw1, sw3Addr} {
 		var o string

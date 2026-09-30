@@ -343,6 +343,8 @@ func TestRelayToMaster(t *testing.T) {
 		l.c <- b
 		return a, nil
 	}
+	var synced uint64
+	member.Synced = func(rev uint64) { synced = rev }
 	h := &handler{files: map[string][]byte{}}
 	c, err := Dial(path, h)
 	if err != nil {
@@ -377,6 +379,9 @@ func TestRelayToMaster(t *testing.T) {
 	exec("exit")
 	if p, _ := c.State(); !strings.HasSuffix(p, "@sw2> ") {
 		t.Fatalf("back on the member: prompt %q", p)
+	}
+	if synced != me.ActiveSeq() || synced < 2 {
+		t.Errorf("member waited for revision %d, the master has %d", synced, me.ActiveSeq())
 	}
 	if m := exec("show system uptime"); strings.Contains(m.Text, "error") && !strings.Contains(m.Text, "not available") {
 		t.Logf("local op command: %q", m.Text)

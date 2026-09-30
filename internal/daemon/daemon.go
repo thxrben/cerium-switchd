@@ -197,6 +197,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if ctl != nil {
 		ctl.serveExec(srv.Env)
+		srv.Synced = ctl.synced
 		// Configuration mode runs on the master (docs/stack-protocol.md).
 		srv.Relay = func() (net.Conn, error) {
 			deadline := time.Now().Add(3 * time.Second)

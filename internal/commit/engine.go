@@ -338,6 +338,13 @@ func (e *Engine) Demote(msg string) {
 	}
 }
 
+// ActiveSeq returns the revision number of the active configuration.
+func (e *Engine) ActiveSeq() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeSeq
+}
+
 // Active returns a copy of the active configuration.
 func (e *Engine) Active() *config.Tree {
 	e.mu.Lock()

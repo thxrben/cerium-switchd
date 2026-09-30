@@ -35,6 +35,9 @@ type Server struct {
 	// (ServeRemote) when this member is not the master. nil, nil: handle
 	// the command here. An error is reported to the user.
 	Relay func() (net.Conn, error)
+	// Synced waits (briefly) until this member has the master's revision
+	// rev, when a relayed session returns to operational mode.
+	Synced func(rev uint64)
 
 	mu    sync.Mutex
 	conns map[*conn]struct{}
@@ -437,6 +440,9 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
 			rep := sh.Execute(ctx, m.Line, &term{c: c, ctx: ctx})
 			cf()
 			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()}
+			if !local {
+				reply.Rev = sh.ActiveSeq()
+			}
 		case "complete":
 			reply = Msg{T: "completions", Items: items(sh.Complete(m.Line))}
 		case "help":
@@ -492,6 +498,10 @@ func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **r
 			rlMu.Lock()
 			*rl = nil
 			rlMu.Unlock()
+			if m.Rev != 0 && s.Synced != nil {
+				s.Synced(m.Rev)
+			}
+			m.Rev = 0
 			if !m.Exit {
 				// Back to this member's operational mode.
 				c.shMu.Lock()

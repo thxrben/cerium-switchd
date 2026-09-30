@@ -548,3 +548,21 @@ func (ss sessionStack) Exec(ctx context.Context, member int, line string, confir
 		return "", ctx.Err()
 	}
 }
+
+// synced waits up to 2 s until this member stored revision rev (a commit
+// made through the master) and shows it.
+func (s *stackCtl) synced(rev uint64) {
+	e := s.eng()
+	if e == nil || s.node.IsMaster() {
+		return
+	}
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if s.node.Store.Has(rev) {
+			s.reload()
+			return
+		}
+		if e.ActiveSeq() >= rev {
+			return
+		}
+	}
+}

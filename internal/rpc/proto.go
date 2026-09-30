@@ -40,7 +40,10 @@ type Msg struct {
 	Shell  bool   `json:"shell,omitempty"`
 	// Cfg: the session is in configuration mode (done and notify; used
 	// to end a session relayed to the master).
-	Cfg   bool   `json:"cfg,omitempty"`
+	Cfg bool `json:"cfg,omitempty"`
+	// Rev is the active revision on the master (done; used to show the
+	// member's own commit when a relayed session ends).
+	Rev   uint64 `json:"rev,omitempty"`
 	Items []Item `json:"items,omitempty"`
 }
 

@@ -99,6 +99,9 @@ func New(env Env) *Shell {
 	return &Shell{env: env}
 }
 
+// ActiveSeq is the revision number of the active configuration.
+func (sh *Shell) ActiveSeq() uint64 { return sh.env.Engine.ActiveSeq() }
+
 // InConfig reports whether the shell is in configuration mode.
 func (sh *Shell) InConfig() bool { sh.checkSession(); return sh.sess != nil }
 
