@@ -100,7 +100,7 @@ func (sh *Shell) completeCmd(cmds []*command, toks []config.Token, partial strin
 			cmds = cmd.sub
 			continue
 		}
-		if cmd.perMember && sh.env.Stack != nil {
+		if (cmd.perMember || cmd.stackWide) && sh.env.Stack != nil {
 			return sh.completeTarget(cmd, toks, partial)
 		}
 		if cmd.complete == nil {

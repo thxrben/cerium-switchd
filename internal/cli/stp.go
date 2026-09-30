@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -202,9 +204,10 @@ func (sh *Shell) showDHCPBinding(c *call) error {
 		return errors.New("not available")
 	}
 	bs, err := sh.env.Ops.DHCPBindings()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	bs = slices.DeleteFunc(bs, func(b DHCPBinding) bool { return !c.shows(b.Unit) })
 	now := time.Now()
 	n := 0
 	for _, b := range bs {
@@ -228,15 +231,16 @@ func (sh *Shell) showDHCPBinding(c *call) error {
 	}
 	if n == 0 {
 		if name != "" {
-			return fmt.Errorf("%s does not use DHCP on this member", name)
+			return fmt.Errorf("%s does not use DHCP", name)
 		}
-		c.out.WriteString("no interface uses DHCP on this member\n")
+		c.out.WriteString("no interface uses DHCP\n")
 	}
 	return nil
 }
 
 // CardStatus is a known card of this member.
 type CardStatus struct {
+	Member    int
 	Number    int
 	Key       string
 	Present   bool
@@ -248,13 +252,23 @@ type CardStatus struct {
 }
 
 // showCards is the card part of "show chassis hardware".
-func (sh *Shell) showCards(c *call, member int) {
+func (sh *Shell) showCards(c *call) {
 	cards, err := sh.env.Ops.Cards()
-	if err != nil {
+	if err != nil && !errors.As(err, new(*PartialError)) {
 		return
 	}
+	sort.SliceStable(cards, func(i, j int) bool {
+		if cards[i].Member != cards[j].Member {
+			return cards[i].Member < cards[j].Member
+		}
+		return cards[i].Number < cards[j].Number
+	})
 	var absent, notes []string
 	for _, cd := range cards {
+		member := cd.Member
+		if c.only != nil && !slices.Contains(c.only, member) {
+			continue
+		}
 		name := fmt.Sprintf("%d/%d", member, cd.Number)
 		if !cd.Present {
 			seen := "never"

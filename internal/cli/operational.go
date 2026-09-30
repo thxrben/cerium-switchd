@@ -315,6 +315,29 @@ func (sh *Shell) showSyslog(c *call) error {
 
 var errNoOps = errors.New("operational data is not available (switchd data plane not running)")
 
+// PartialError is returned by the stack-wide listings of Operational when
+// some members did not answer: the rows of the others are complete.
+type PartialError struct{ Members []int }
+
+func (e *PartialError) Error() string {
+	ids := make([]string, len(e.Members))
+	for i, m := range e.Members {
+		ids[i] = strconv.Itoa(m)
+	}
+	return "no answer from member " + strings.Join(ids, ", ")
+}
+
+// partial turns a PartialError into a warning line (the listing goes on)
+// and returns every other error.
+func partial(c *call, err error) error {
+	var pe *PartialError
+	if errors.As(err, &pe) {
+		fmt.Fprintf(c.out, "warning: %v; its interfaces are missing below\n", pe)
+		return nil
+	}
+	return err
+}
+
 func (sh *Shell) ops() (Operational, error) {
 	if sh.env.Ops == nil {
 		return nil, errNoOps
@@ -359,9 +382,10 @@ func (sh *Shell) showInterfaces(c *call) error {
 		}
 	}
 	ifs, err := o.Interfaces()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	ifs = slices.DeleteFunc(ifs, func(i IfStatus) bool { return !c.shows(i.Name) })
 	sort.Slice(ifs, func(i, j int) bool { return config.NaturalLess(ifs[i].Name, ifs[j].Name) })
 	if name != "" {
 		var sel []IfStatus
@@ -461,7 +485,7 @@ func (sh *Shell) showMACTable(c *call) error {
 		return err
 	}
 	es, err := o.MACTable()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
 	sort.Slice(es, func(i, j int) bool {
@@ -473,7 +497,7 @@ func (sh *Shell) showMACTable(c *call) error {
 	fmt.Fprintf(c.out, "%-12s %-5s %-18s %-8s %-6s %s\n", "VLAN name", "Tag", "MAC address", "Type", "Age", "Interface")
 	n := 0
 	for _, e := range es {
-		if (vlan != 0 && e.VLAN != vlan) || (iface != "" && e.Interface != iface) {
+		if (vlan != 0 && e.VLAN != vlan) || (iface != "" && e.Interface != iface) || !c.shows(e.Interface) {
 			continue
 		}
 		typ, age := "learned", strconv.Itoa(e.Age)
@@ -498,7 +522,7 @@ func (sh *Shell) clearMACTable(c *call) error {
 		return err
 	}
 	n, err := o.ClearMACTable(vlan, iface)
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
 	fmt.Fprintf(c.out, "%d entries cleared\n", n)
@@ -514,20 +538,17 @@ func (sh *Shell) showHardware(c *call) error {
 		return errors.New("hardware information is not available")
 	}
 	ports, err := sh.env.Ops.Hardware()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	sort.SliceStable(ports, func(i, j int) bool { return config.NaturalLess(ports[i].Name, ports[j].Name) })
 	fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", "Interface", "Linux name", "Bus address", "Driver", "MAC address")
-	member := 0
 	for _, p := range ports {
-		fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", p.Name, p.Linux, p.Bus, p.Driver, p.MAC)
-		if pp, ok := schema.ParsePhysical(p.Name); ok {
-			member = pp.Member
+		if c.shows(p.Name) {
+			fmt.Fprintf(c.out, "%-10s %-16s %-14s %-12s %s\n", p.Name, p.Linux, p.Bus, p.Driver, p.MAC)
 		}
 	}
-	if member > 0 {
-		sh.showCards(c, member)
-	}
+	sh.showCards(c)
 	return nil
 }
 
@@ -812,11 +833,13 @@ func (sh *Shell) showVCPorts(c *call) error {
 		return err
 	}
 	st, err := sh.vcStatus()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	st.Ports = slices.DeleteFunc(st.Ports, func(p VCPort) bool { return !c.shows(p.Port) })
+	sort.SliceStable(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i].Port, st.Ports[j].Port) })
 	if len(st.Ports) == 0 {
-		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set pic-slot <card> port <port>').\n")
+		c.out.WriteString("No VC ports ('request virtual-chassis vc-port set pic-slot <card> port <port>' on the switch).\n")
 		return nil
 	}
 	fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", "Port", "Linux name", "State", "Speed", "Neighbor", "Peer port", "Up")
@@ -850,9 +873,11 @@ func (sh *Shell) showStackMTU(c *call) error {
 		return errors.New("stack information is not available")
 	}
 	st, err := sh.env.Ops.StackMTU()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	st.Ports = slices.DeleteFunc(st.Ports, func(p StackMTUPort) bool { return !c.shows(p.Port) })
+	sort.SliceStable(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i].Port, st.Ports[j].Port) })
 	need := st.DataMTU + model.StackOverhead
 	fmt.Fprintf(c.out, "Frame sizes including the Ethernet header, without VLAN tags (reference 1.3)\n")
 	fmt.Fprintf(c.out, "  Largest data mtu in the stack:  %d (%s; hosts up to MTU %d)\n", st.DataMTU, st.Where, st.DataMTU-model.EthHeader)
@@ -862,7 +887,7 @@ func (sh *Shell) showStackMTU(c *call) error {
 		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: tunnel 50, VLAN tags 8)\n", need, model.StackOverhead)
 	}
 	if len(st.Ports) == 0 {
-		fmt.Fprintf(c.out, "\nMember %d has no stacking ports.\n", st.Member)
+		c.out.WriteString("\nNo stacking ports.\n")
 		return nil
 	}
 	limit := 0
@@ -873,7 +898,7 @@ func (sh *Shell) showStackMTU(c *call) error {
 	}
 	if limit > 0 {
 		carry := min(limit-model.StackOverhead, 16000) // the largest configurable mtu
-		fmt.Fprintf(c.out, "  Member %d's stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", st.Member, carry, carry-model.EthHeader)
+		fmt.Fprintf(c.out, "  The stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", carry, carry-model.EthHeader)
 	}
 	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %-9s %s\n", "Port", "MTU", "Maximum", "Verified", "Status")
 	for _, p := range st.Ports {
@@ -978,9 +1003,10 @@ func (sh *Shell) showNeighbors(c *call, ipv6 bool) error {
 		return errors.New("neighbour information is not available")
 	}
 	ns, err := sh.env.Ops.Neighbors(ipv6)
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	ns = slices.DeleteFunc(ns, func(n Neighbor) bool { return !c.shows(n.Interface) })
 	sort.Slice(ns, func(i, j int) bool {
 		if ns[i].Instance != ns[j].Instance {
 			return ns[i].Instance < ns[j].Instance
@@ -1010,9 +1036,11 @@ func (sh *Shell) showOffload(c *call) error {
 		return errors.New("hardware information is not available")
 	}
 	ps, err := sh.env.Ops.Offload()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return err
 	}
+	ps = slices.DeleteFunc(ps, func(p OffloadPort) bool { return !c.shows(p.Name) })
+	sort.SliceStable(ps, func(i, j int) bool { return config.NaturalLess(ps[i].Name, ps[j].Name) })
 	fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %s\n",
 		"Interface", "Linux name", "Driver", "Speed", "Pause", "Switchdev", "TC", "VLAN", "Csum", "TSO", "GRO")
 	for _, p := range ps {
@@ -1202,6 +1230,9 @@ func (sh *Shell) showVLANs(c *call) error {
 					continue
 				}
 				p := i.Name
+				if !c.shows(p) {
+					continue
+				}
 				if i.Mode == "trunk" && i.NativeVLAN != id {
 					p += "*" // tagged
 				}

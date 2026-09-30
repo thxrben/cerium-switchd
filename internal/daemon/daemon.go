@@ -323,11 +323,19 @@ func Run(ctx context.Context, o Options) error {
 		if ctl != nil {
 			env.Role = ctl.role
 			env.Stack = sessionStack{s: ctl, user: name, class: class}
+			// The members work as one switch: listings cover them all.
+			env.Ops = &stackOps{ops: liveOps, ctl: ctl}
 		}
 		return env
 	}
 	if ctl != nil {
-		ctl.serveExec(srv.Env)
+		ctl.serveOps(liveOps)
+		ctl.serveExec(func(name string, class commit.Class) cli.Env {
+			// A command run for another member reports this member only.
+			e := srv.Env(name, class)
+			e.Ops = liveOps
+			return e
+		})
 		srv.Synced = ctl.synced
 		// Every CLI session runs on the master (reference 1.8).
 		srv.Member = member

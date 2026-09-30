@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -198,6 +199,20 @@ type call struct {
 	term  Terminal
 	pipes *pipeline
 	reply *Reply
+	// only restricts a stack-wide listing to these members' interfaces
+	// (nil: all).
+	only []int
+}
+
+// shows reports whether a stack-wide listing includes the row of
+// interface name: interfaces of other members than the target are left
+// out; bundles, irb and cme belong to the whole stack.
+func (c *call) shows(name string) bool {
+	if c.only == nil {
+		return true
+	}
+	p, ok := schema.ParsePhysical(strings.SplitN(name, ".", 2)[0])
+	return !ok || slices.Contains(c.only, p.Member)
 }
 
 // argPos returns the byte position of argument i (or the end of the line).
@@ -314,7 +329,23 @@ func (sh *Shell) dispatch(c *call, cmds []*command, toks []config.Token) error {
 		if (c.pipes.display != "" || c.pipes.compare) && !cmd.display {
 			return errors.New("'| display' and '| compare' are only valid for show commands")
 		}
-		if cmd.perMember && sh.env.Stack != nil {
+		if cmd.stackWide && sh.env.Stack != nil {
+			targets, _, rest, err := sh.parseTarget(toks)
+			if err != nil {
+				return err
+			}
+			n := len(toks)
+			if n > 0 && isTargetWord(toks[n-1], "local") && targets == nil {
+				targets = []int{sh.env.Stack.Self()}
+			}
+			if n > 1 && isTargetWord(toks[n-2], "member") && targets == nil {
+				targets = []int{sh.env.Stack.Self()}
+			}
+			if !(n > 0 && isTargetWord(toks[n-1], "all-members")) {
+				c.only = targets
+			}
+			toks = rest
+		} else if cmd.perMember && sh.env.Stack != nil {
 			explicit := len(toks) > 0 && (isTargetWord(toks[len(toks)-1], "local") || isTargetWord(toks[len(toks)-1], "all-members") ||
 				(len(toks) > 1 && isTargetWord(toks[len(toks)-2], "member")))
 			targets, pos, rest, err := sh.parseTarget(toks)

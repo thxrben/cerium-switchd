@@ -181,6 +181,12 @@ func markPerMember() {
 		cmd.perMember, cmd.confirm = true, p.confirm
 	}
 	findCmd(operational, []string{"show", "chassis", "hardware"}).allMembers = true
+	// The members work as one switch: interface listings cover them all.
+	for _, path := range []string{"show interfaces", "show ethernet-switching table", "show vlans", "show chassis hardware",
+		"show system offload", "show arp", "show ipv6 neighbors", "show virtual-chassis vc-port", "show virtual-chassis mtu",
+		"show lacp interfaces", "show lacp statistics interfaces", "show dhcp client binding", "clear ethernet-switching table"} {
+		findCmd(operational, strings.Fields(path)).stackWide = true
+	}
 }
 
 func findCmd(cmds []*command, path []string) *command {

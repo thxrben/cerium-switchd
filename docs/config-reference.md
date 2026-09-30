@@ -813,15 +813,19 @@ working path, so a ring survives one broken cable.
   or `{no-master:2}` without a master. Every command runs on the master (1.8). Without a master (no majority),
   `configure` fails with `error: configuration unavailable: no master (the stack has no majority)`; operational
   commands keep working on the member you are logged in to.
-* **Operational commands on other members**: commands that report or change one member's state accept a target at
-  the end: `member <id>`, `all-members`, or `local` (the member you are logged in to; without a target, the master). With more than one
-  target the output has a section per member (`member2:` and a line), pipes apply to the whole output, e.g.
-  `show interfaces terse all-members | match down`. The command runs on the member as the same user and class.
-  * Commands with targets: `show interfaces`, `show ethernet-switching table`, `show vlans`, `show chassis hardware`,
-    `show system uptime|ntp|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
-    `show virtual-chassis vc-port`, `clear ethernet-switching table`, `request system reboot|halt|power-off`,
-    `request system maintenance-mode enter|exit`, `clear system reboot`.
-  * `show chassis hardware` covers every member by default (as in Junos VC); `local` or `member <id>` narrows it.
+* **The stack is one switch.** Everything that lists or selects interfaces covers **every member** and prints **one
+  table** (full interface names carry the member): `show interfaces`, `show chassis hardware`, `show virtual-chassis
+  vc-port|mtu`, `show system offload`, `show vlans`, `show ethernet-switching table`, `show arp`, `show ipv6 neighbors`,
+  `show lacp interfaces|statistics`, `show dhcp client binding`, `clear ethernet-switching table`, and the completion of
+  interface names. A target at the end only narrows the rows: `member <id>`, or `local` (the member you are logged in
+  to). The MAC table lists an address where it was learned (not the copies on the stack tunnels); an MC-LAG bundle's
+  ports on both members are one bundle. A member that does not answer is named in a warning above the table.
+* **Operational commands about one member's state** accept a target at the end: `member <id>`, `all-members`, or
+  `local` (the member you are logged in to; without a target, the master). With more than one target the output has
+  a section per member (`member2:` and a line). The command runs on the member as the same user and class.
+  * Commands with targets: `show system uptime|ntp|syslog|limits`, `show version`, `show log`, `show route`,
+    `show mclag`, `request system reboot|halt|power-off`, `request system maintenance-mode enter|exit`,
+    `clear system reboot`, `request chassis card`.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
     one. (Junos reboots all members by default; here the default is the local member.)
   * A member that cannot be reached is reported in its section (`error: member 3 is not reachable`); the others

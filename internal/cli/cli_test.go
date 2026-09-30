@@ -839,12 +839,19 @@ func TestMemberTargets(t *testing.T) {
 	if strings.Contains(out, "member1:") {
 		t.Errorf("local section for member 2:\n%s", out)
 	}
-	// show chassis hardware covers every member unless narrowed.
-	out = ts.run("show chassis hardware")
-	contains(t, out, "member1:", "remote 2: show chassis hardware\n", "member3:")
-	if out := ts.ok("show chassis hardware local"); strings.Contains(out, "remote") || strings.Contains(out, "member2:") {
-		t.Errorf("show chassis hardware local:\n%s", out)
+	// Interface listings are one table of the whole stack (Ops returns
+	// every member's rows); a target narrows the rows, nothing runs on
+	// the other members.
+	st.calls = nil
+	out = ts.ok("show chassis hardware")
+	contains(t, out, "1/1/0")
+	if strings.Contains(out, "member1:") || strings.Contains(out, "remote") || len(st.calls) != 0 {
+		t.Errorf("show chassis hardware in sections or run remotely (%v):\n%s", st.calls, out)
 	}
+	if out := ts.ok("show chassis hardware member 2"); strings.Contains(out, "1/1/0") || strings.Contains(out, "member2:") {
+		t.Errorf("show chassis hardware member 2:\n%s", out)
+	}
+	contains(t, ts.ok("show interfaces terse local"), "Interface")
 	out = ts.run(`show system uptime all-members | match "remote|member|error"`)
 	contains(t, out, "member1:", "member2:", "remote 2: show system uptime", "member3:", "error: member 3 is not reachable")
 	if strings.Index(out, "member1:") > strings.Index(out, "member2:") {
@@ -906,7 +913,7 @@ func TestShowLACP(t *testing.T) {
 		"Current   Fast periodic Collecting distributing  65535,02:00:00:00:00:22, key 9, port 1",
 		"Defaulted", "Detached")
 	contains(t, ts.ok("show lacp interfaces ae1"), "Aggregated interface: ae1")
-	contains(t, ts.run("show lacp interfaces ae7"), "no LACP on this member")
+	contains(t, ts.run("show lacp interfaces ae7"), "ae7: no LACP")
 	contains(t, ts.run("show lacp interfaces 1/2/0"), "expecting an aggregated interface")
 	contains(t, ts.ok("show lacp statistics interfaces"), "      1/2/0                30         31            0            0",
 		"      1/3/0                 0          5            0            1")
@@ -936,7 +943,7 @@ func TestShowStackMTU(t *testing.T) {
 	contains(t, ts.ok("show virtual-chassis mtu"),
 		"Largest data mtu in the stack:  9014 (vlans storage mtu; hosts up to MTU 9000)",
 		"Needed on the stacking links:   9072 (+58: tunnel 50, VLAN tags 8)",
-		"Member 1's stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
+		"The stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
 		"  1/5/0    9216    9216     9216      ok",
 		"  1/5/1    1514    16058    -         too small (set to the maximum when switchd starts)",
 		"  1/5/2    9000    9050     -         too small: the NIC carries at most 9050",

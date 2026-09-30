@@ -375,7 +375,7 @@ func (o *ops) Cards() ([]cli.CardStatus, error) {
 	o.names.Refresh()
 	var out []cli.CardStatus
 	for _, c := range o.names.Cards() {
-		out = append(out, cli.CardStatus{Number: c.Number, Key: c.Key, Present: c.Present, Driver: c.Driver, Ports: c.Ports,
+		out = append(out, cli.CardStatus{Member: o.member, Number: c.Number, Key: c.Key, Present: c.Present, Driver: c.Driver, Ports: c.Ports,
 			LastSeen: c.LastSeen, Note: c.Note, MovedFrom: c.MovedFrom})
 	}
 	return out, nil

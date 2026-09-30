@@ -33,6 +33,10 @@ type command struct {
 	perMember bool
 	// allMembers: without a target the command runs on every member.
 	allMembers bool
+	// stackWide: the command lists the whole stack's interfaces (or what is
+	// learned on them) as one table; Ops returns every member's rows, and
+	// a target only narrows them (reference 3.5).
+	stackWide bool
 	// confirm is the question asked before running it on other members
 	// ("Reboot"); the command itself then does not ask again.
 	confirm string

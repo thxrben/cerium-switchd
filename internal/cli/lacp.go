@@ -49,13 +49,16 @@ func (sh *Shell) lacpBundles(c *call) ([]lacp.BundleStatus, error) {
 		return nil, errors.New("LACP information is not available")
 	}
 	bs, err := sh.env.Ops.LACP()
-	if err != nil {
+	if err := partial(c, err); err != nil {
 		return nil, err
+	}
+	for i := range bs {
+		bs[i].Ports = slices.DeleteFunc(bs[i].Ports, func(p lacp.PortStatus) bool { return !c.shows(bs[i].PortNames[p.Name]) })
 	}
 	if only != "" {
 		bs = slices.DeleteFunc(bs, func(b lacp.BundleStatus) bool { return b.Name != only })
 		if len(bs) == 0 {
-			return nil, fmt.Errorf("%s: no LACP on this member (not configured, no member port here, or no LACP)", only)
+			return nil, fmt.Errorf("%s: no LACP (not configured, no member port, or no LACP)", only)
 		}
 	}
 	return bs, nil
@@ -87,7 +90,7 @@ func (sh *Shell) showLACP(c *call) error {
 		return err
 	}
 	if len(bs) == 0 {
-		c.out.WriteString("No LACP bundles on this member.\n")
+		c.out.WriteString("No LACP bundles.\n")
 		return nil
 	}
 	for i, b := range bs {
@@ -135,7 +138,7 @@ func (sh *Shell) showLACPStats(c *call) error {
 		return err
 	}
 	if len(bs) == 0 {
-		c.out.WriteString("No LACP bundles on this member.\n")
+		c.out.WriteString("No LACP bundles.\n")
 		return nil
 	}
 	for i, b := range bs {
