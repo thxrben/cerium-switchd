@@ -4,7 +4,7 @@ BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X mclag/internal/version.Version=$(VERSION) -X mclag/internal/version.Date=$(BUILD_DATE)
 ARCHES  := amd64 arm64 arm
 
-.PHONY: all build test fuzz vet cross clean
+.PHONY: all build test fuzz vet cross package clean
 
 all: vet test build
 
@@ -35,6 +35,12 @@ cross:
 	for a in $(ARCHES); do \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=$$a GOARM=7 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/switchd-linux-$$a ./cmd/switchd || exit 1; \
 	done
+
+# The software package for "request system software add" (reference 3.6).
+package: cross
+	$(GO) run ./cmd/switchd package -o dist/ceros-$(VERSION).tar.gz -version $(VERSION) -built $(BUILD_DATE) \
+	  $(foreach a,$(ARCHES),$(a)=dist/switchd-linux-$(a))
+	cd dist && sha256sum ceros-$(VERSION).tar.gz > ceros-$(VERSION).tar.gz.sha256
 
 clean:
 	rm -rf bin dist
