@@ -1442,8 +1442,8 @@ func (sh *Shell) showLimits(c *call) error {
 			vnis++
 		}
 	}
-	line("VLAN ids", fmt.Sprintf("%d..%d (%d is reserved for the stack); %s", schema.MinVLANID, schema.MgmtVLAN-1, schema.MgmtVLAN,
-		use(len(cfg.VLANs), schema.MgmtVLAN-schema.MinVLANID)))
+	line("VLAN ids", fmt.Sprintf("%d..%d; %s", schema.MinVLANID, schema.MaxVLANID,
+		use(len(cfg.VLANs), schema.MaxVLANID-schema.MinVLANID+1)))
 	line("VXLAN VNIs", fmt.Sprintf("1..%d; %d in use", schema.MaxVNI, vnis))
 	line("MAC addresses learned now", strconv.Itoa(hw.MACEntries))
 	line("MAC aging time", fmt.Sprintf("%d..%d seconds (default %d)", schema.MinMACAging, schema.MaxMACAging, schema.DefaultMACAging))

@@ -193,6 +193,9 @@ var (
 	// at most 15 characters).
 	InstanceName = String("<instance-name>", 15, `^[A-Za-z][A-Za-z0-9_-]*$`)
 
+	// InstanceRef references a routing instance.
+	InstanceRef = &Type{Name: "<instance-name>", Ref: "instance", Check: InstanceName.Check}
+
 	// UnitName references a logical unit: "irb.<n>", "1/0/5.0", "ae1.0".
 	UnitName = &Type{Name: "<unit-name>", Ref: "unit", Check: func(s string) (string, error) {
 		i := strings.LastIndexByte(s, '.')
@@ -386,6 +389,9 @@ func (pp PortPattern) Match(p Port) bool {
 	return true
 }
 
+// CME is the chassis management interface (reference 5.3.4).
+const CME = "cme"
+
 // IsAE reports whether s names an aggregated interface.
 func IsAE(s string) bool {
 	if !aeRe.MatchString(s) {
@@ -398,13 +404,13 @@ func IsAE(s string) bool {
 // CheckInterfaceName validates a physical, aggregated or irb interface
 // name.
 func CheckInterfaceName(s string) (string, error) {
-	if IsAE(s) || s == "irb" {
+	if IsAE(s) || s == "irb" || s == CME {
 		return s, nil
 	}
 	if p, ok := ParsePhysical(s); ok {
 		return p.String(), nil
 	}
-	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, ae<N> or irb)", s)
+	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, ae<N>, irb or cme)", s)
 }
 
 // ParseVlanRange parses "10" or "10-20".

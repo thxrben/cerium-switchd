@@ -208,8 +208,12 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 				routes = append(routes, Route{VRF: i.VRF, Prefix: netip.MustParsePrefix("0.0.0.0/0"), NextHops: []netip.Addr{le.Router}})
 			}
 		}
-		l = &L3{VRFs: l.VRFs, Ifs: ifs, Routes: routes}
+		l = &L3{VRFs: l.VRFs, Ifs: ifs, Routes: routes, CME: l.CME, Bare: l.Bare}
 	}
+
+	// The chassis management interface, after its routing instance exists.
+	note(k.syncCME(l.CME))
+	note(syncBare(l.Bare))
 
 	want := map[string]bool{}
 	var protect []string // data L3 interfaces: only ping/ND/replies reach the switch
@@ -290,6 +294,11 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 	}
 	var mgmtAddrs []netip.Addr
+	if l.CME != nil {
+		for _, a := range l.CME.Addrs {
+			mgmtAddrs = append(mgmtAddrs, a.Addr())
+		}
+	}
 	for _, i := range l.Ifs {
 		if vrfs[i.VRF].Mgmt {
 			for _, a := range i.Addrs {

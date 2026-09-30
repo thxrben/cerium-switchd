@@ -155,6 +155,12 @@ type L3 struct {
 	VRFs   []VRF // routing instances
 	Ifs    []L3If
 	Routes []Route
+	// CME is the chassis management interface on this member (only on the
+	// master, reference 1.8; nil: none).
+	CME *CMEIf
+	// Bare are ports that carry no addresses and no IPv6 at all: management
+	// ports and ports that are not configured (reference 1.4).
+	Bare []string
 }
 
 // VRF is a routing instance in the kernel.
@@ -249,6 +255,13 @@ func (s *State) Clone() *State {
 		for n := range l.Routes {
 			l.Routes[n].NextHops = slices.Clone(l.Routes[n].NextHops)
 		}
+		if s.L3.CME != nil {
+			cme := *s.L3.CME
+			cme.Addrs = slices.Clone(cme.Addrs)
+			cme.MAC = slices.Clone(cme.MAC)
+			l.CME = &cme
+		}
+		l.Bare = slices.Clone(s.L3.Bare)
 		c.L3 = l
 	}
 	c.SelfVLANs = slices.Clone(s.SelfVLANs)

@@ -16,7 +16,7 @@ import (
 var targetWords = []Completion{
 	{Text: "member", Help: "Run on this stack member"},
 	{Text: "all-members", Help: "Run on every stack member"},
-	{Text: "local", Help: "Run on this member (default)"},
+	{Text: "local", Help: "Run on the member you are connected to"},
 }
 
 // isTargetWord matches a target keyword (unique prefixes of at least 3
@@ -31,6 +31,9 @@ func (sh *Shell) parseTarget(toks []config.Token) (targets []int, pos int, rest 
 	n := len(toks)
 	switch {
 	case n >= 1 && isTargetWord(toks[n-1], "local"):
+		if o := sh.origin(); o != 0 {
+			return []int{o}, toks[n-1].Pos, toks[:n-1], nil
+		}
 		return nil, 0, toks[:n-1], nil
 	case n >= 1 && isTargetWord(toks[n-1], "all-members"):
 		return sh.env.Stack.Members(), toks[n-1].Pos, toks[:n-1], nil

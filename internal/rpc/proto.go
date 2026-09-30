@@ -38,11 +38,14 @@ type Msg struct {
 	NoMore bool   `json:"nomore,omitempty"`
 	Exit   bool   `json:"exit,omitempty"`
 	Shell  bool   `json:"shell,omitempty"`
-	// Cfg: the session is in configuration mode (done and notify; used
-	// to end a session relayed to the master).
+	// Member: with Shell, the member the shell runs on (0: where the
+	// client is; otherwise over the shell socket, see package rshell).
+	Member int `json:"member,omitempty"`
+	// Cfg: the session is in configuration mode (done and notify).
 	Cfg bool `json:"cfg,omitempty"`
 	// Rev is the active revision on the master (done; used to show the
-	// member's own commit when a relayed session ends).
+	// member's own commit when a relayed session leaves configuration
+	// mode).
 	Rev   uint64 `json:"rev,omitempty"`
 	Items []Item `json:"items,omitempty"`
 }

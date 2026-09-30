@@ -34,8 +34,9 @@ type Config struct {
 
 type System struct {
 	HostName string
-	// MgmtInstance: routing instance mgmt_ceros is the management instance.
-	MgmtInstance bool
+	// MgmtInstance names the management routing instance (reference 1.8;
+	// "": none).
+	MgmtInstance string
 	DomainName   string
 	TimeZone     string
 	NameServers  []string
@@ -150,8 +151,6 @@ const EthHeader = 14
 const (
 	StackOverhead   = 58
 	MaxStackPortMTU = 16044
-	// MgmtVLAN is the reserved internal management VLAN of the stack.
-	MgmtVLAN = schema.MgmtVLAN
 )
 
 // SwitchMembers returns the stack members that switch traffic (not
@@ -219,6 +218,8 @@ type Interface struct {
 	MACLimit     int
 	NoOffload    bool
 	VlanTagging  bool // routed subinterfaces
+	// Management: a management port (reference 5.3.4), carries only cme.
+	Management bool
 	// Switching.
 	Switching  bool
 	Mode       string // access or trunk
@@ -363,7 +364,7 @@ func (b *builder) build() {
 	sys := r.Child("system")
 	s := &c.System
 	s.HostName = sys.Leaf("host-name")
-	s.MgmtInstance = sys.Has("management-instance")
+	s.MgmtInstance = sys.Leaf("management-instance")
 	s.DomainName = sys.Leaf("domain-name")
 	s.TimeZone = sys.Leaf("time-zone")
 	s.NameServers = sys.List("name-server")
@@ -427,10 +428,6 @@ func (b *builder) build() {
 			b.errorf(path, "vlan-id is required")
 			continue
 		}
-		if v.ID == MgmtVLAN {
-			b.errorf(path+" vlan-id", "vlan-id %d is reserved for the stack's internal management VLAN", MgmtVLAN)
-			continue
-		}
 		if o, dup := c.VLANByID[v.ID]; dup {
 			b.errorf(path, "vlan-id %d is already used by vlan %s", v.ID, o.Name)
 			continue
@@ -458,7 +455,7 @@ func (b *builder) build() {
 
 	// Interfaces: explicit entries merged with interface-range templates.
 	for _, e := range b.effectiveInterfaces() {
-		if e.Key == "irb" {
+		if e.Key == "irb" || e.Key == schema.CME {
 			b.buildIRB(e)
 			continue
 		}
@@ -493,6 +490,16 @@ func (b *builder) build() {
 		i.StormControl = StormControl{Broadcast: atoi(sc.Leaf("broadcast"), 0), Multicast: atoi(sc.Leaf("multicast"), 0)}
 		i.MACLimit = atoi(e.Leaf("mac-limit"), 0)
 		i.NoOffload = e.Has("offload", "disable")
+		i.Management = e.Has("management")
+		if i.Management {
+			for _, k := range e.Kids {
+				switch k.Schema.Name {
+				case "management", "description", "disable", "mtu":
+				default:
+					b.errorf("interfaces "+i.Name+" "+k.Schema.Name, "a management port carries only cme; only description, disable and mtu are allowed")
+				}
+			}
+		}
 		c.Interfaces[i.Name] = i
 		b.buildSwitching(i, e)
 		b.buildUnits(i.Name, e, i)

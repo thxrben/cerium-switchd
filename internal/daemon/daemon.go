@@ -170,34 +170,28 @@ func Run(ctx context.Context, o Options) error {
 			stp.setConfig(cfg)
 		}
 	}
-	applier.onApplied = func(cfg *model.Config) {
-		// switchd's own traffic uses the management instance (reference 1.5).
-		if cfg.System.MgmtInstance {
-			hub.SetVRF(model.MgmtInstance)
-		} else {
-			hub.SetVRF("")
+	// The management services run on the master (reference 1.8).
+	mgmt := &mgmtCtl{member: member, log: log, hub: hub, ntp: ntpClient, sshd: sshd, clock: ntp.SystemClock{}, dryRun: o.DryRun}
+	hub.Configure(nil, func() string {
+		if hostName != nil {
+			return hostName()
 		}
-		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
+		h, _ := os.Hostname()
+		return h
+	}, 0)
+	applier.isMaster = mgmt.master
+	applier.stackPort = vc.IsPort
+	if !o.DryRun {
+		applier.cmeMAC = dataplane.CMEMAC(vc.StackID())
+	}
+	applier.onApplied = func(cfg *model.Config) {
+		mgmt.sync(cfg)
 		if !o.DryRun {
-			// NTP queries leave through the management instance as well.
-			if cfg.System.MgmtInstance {
-				ntpClient.SetVRF(model.MgmtInstance)
-			} else {
-				ntpClient.SetVRF("")
-			}
-			var servers []ntp.Server
-			for _, s := range cfg.System.NTPServers {
-				servers = append(servers, ntp.Server{Host: s.Host, Prefer: s.Prefer})
-			}
-			ntpClient.Configure(servers)
 			if err := accounts.Sync(cfg); err != nil {
 				log.Error("accounts", "facility", "authorization", "err", err)
 			}
 			if err := consoles.Sync(cfg); err != nil {
 				log.Error("consoles", "err", err)
-			}
-			if err := sshd.Sync(cfg); err != nil {
-				log.Error("ssh", "err", err)
 			}
 			if err := osHost.Sync(cfg, member); err != nil {
 				log.Error("host name / resolver", "err", err)
@@ -227,8 +221,17 @@ func Run(ctx context.Context, o Options) error {
 	defer engine.Close()
 	if ctl != nil {
 		ctl.setEngine(engine)
+		mgmt.ctl = ctl
+		ctl.onLeader = func(bool) {
+			// The management address and services follow mastership.
+			go func() {
+				applier.reconcile("mastership")
+				mgmt.sync(nil)
+			}()
+		}
 		go ctl.run(ctx)
 	}
+	mgmt.start(ctx)
 	if !o.DryRun {
 		mclag = newMCLAG(member, lacpRT, ctl, log)
 		mclagRef.Store(mclag)
@@ -326,11 +329,12 @@ func Run(ctx context.Context, o Options) error {
 	if ctl != nil {
 		ctl.serveExec(srv.Env)
 		srv.Synced = ctl.synced
-		// Configuration mode runs on the master (docs/stack-protocol.md).
+		// Every CLI session runs on the master (reference 1.8).
+		srv.Member = member
 		srv.Relay = func() (net.Conn, error) {
 			// An election (e.g. after a stacking cable failed) takes a few
 			// seconds at most.
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(3 * time.Second)
 			for {
 				if ctl.node.MasterReady() {
 					return nil, nil
@@ -365,6 +369,14 @@ func Run(ctx context.Context, o Options) error {
 	l, err := listen(o.Socket)
 	if err != nil {
 		return err
+	}
+	if !o.DryRun {
+		sh := &shells{member: member, vc: vc, authorize: srv.Authorize, log: log}
+		go func() {
+			if err := sh.run(ctx, o.Socket); err != nil {
+				log.Error("shell socket", "err", err)
+			}
+		}()
 	}
 	go func() {
 		<-ctx.Done()

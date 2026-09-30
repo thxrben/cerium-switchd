@@ -69,7 +69,7 @@ func startServer(t *testing.T, auth Authorizer) (string, *Server) {
 	return path, srv
 }
 
-func startServerHost(t *testing.T, auth Authorizer, host string) (string, *Server, *commit.Engine) {
+func startServerHost(t *testing.T, auth Authorizer, host string, setup ...func(*Server)) (string, *Server, *commit.Engine) {
 	t.Helper()
 	dir := t.TempDir()
 	st, _ := commit.OpenFileStore(filepath.Join(dir, "state"), 50)
@@ -85,6 +85,9 @@ func startServerHost(t *testing.T, auth Authorizer, host string) (string, *Serve
 			return cli.Env{Engine: e, User: name, Class: class, Version: "t", Log: quiet, HostName: func() string { return host }}
 		},
 		Authorize: auth, Log: quiet,
+	}
+	for _, f := range setup {
+		f(srv)
 	}
 	path := filepath.Join(dir, "cli.sock")
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
@@ -324,33 +327,41 @@ func (l *chanListener) Accept() (net.Conn, error) {
 func (l *chanListener) Close() error   { close(l.done); return nil }
 func (l *chanListener) Addr() net.Addr { return &net.UnixAddr{} }
 
-// Configuration mode on a member that is not master runs on the master;
-// operational mode stays on the member.
+// A session on a member that is not master runs on the master (reference
+// 1.8); without the master, operational commands run on the member.
 func TestRelayToMaster(t *testing.T) {
 	_, master, me := startServerHost(t, allow, "sw1")
 	l := &chanListener{c: make(chan net.Conn), done: make(chan struct{})}
 	go master.ServeRemote(l)
 	t.Cleanup(func() { l.Close() })
-	path, member, _ := startServerHost(t, allow, "sw2")
+	var mu sync.Mutex
 	var masterSide net.Conn
 	var noMaster bool
-	member.Relay = func() (net.Conn, error) {
-		if noMaster {
-			return nil, errors.New("no master (the stack has no majority)")
-		}
-		a, b := net.Pipe()
-		masterSide = b
-		l.c <- b
-		return a, nil
-	}
 	var synced uint64
-	member.Synced = func(rev uint64) { synced = rev }
+	path, _, _ := startServerHost(t, allow, "sw2", func(member *Server) {
+		member.Member = 2
+		member.Relay = func() (net.Conn, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if noMaster {
+				return nil, errors.New("no master (the stack has no majority)")
+			}
+			a, b := net.Pipe()
+			masterSide = b
+			l.c <- b
+			return a, nil
+		}
+		member.Synced = func(rev uint64) { mu.Lock(); synced = rev; mu.Unlock() }
+	})
 	h := &handler{files: map[string][]byte{}}
 	c, err := Dial(path, h)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1> ") {
+		t.Fatalf("session not on the master from the start: prompt %q", p)
+	}
 	exec := func(line string) Msg {
 		t.Helper()
 		m, err := c.Exec(line)
@@ -377,19 +388,23 @@ func TestRelayToMaster(t *testing.T) {
 		t.Fatal("commit did not reach the master's engine")
 	}
 	exec("exit")
-	if p, _ := c.State(); !strings.HasSuffix(p, "@sw2> ") {
-		t.Fatalf("back on the member: prompt %q", p)
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1> ") {
+		t.Fatalf("operational mode left the master: prompt %q", p)
 	}
+	mu.Lock()
 	if synced != me.ActiveSeq() || synced < 2 {
 		t.Errorf("member waited for revision %d, the master has %d", synced, me.ActiveSeq())
 	}
-	if m := exec("show system uptime"); strings.Contains(m.Text, "error") && !strings.Contains(m.Text, "not available") {
-		t.Logf("local op command: %q", m.Text)
+	mu.Unlock()
+	if m := exec("show version"); !strings.Contains(m.Text, "Hostname: sw1") {
+		t.Errorf("operational command not on the master: %q", m.Text)
 	}
 
 	// The master goes away during configuration mode.
 	exec("configure")
+	mu.Lock()
 	masterSide.Close()
+	mu.Unlock()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		p, _ := c.State()
@@ -408,12 +423,26 @@ func TestRelayToMaster(t *testing.T) {
 		t.Errorf("notices: %q", notes)
 	}
 
-	// Without a master, configure fails; operational mode keeps working.
+	// Without a master, configure fails; operational commands run here.
+	mu.Lock()
 	noMaster = true
+	mu.Unlock()
 	if m := exec("configure"); !strings.Contains(m.Text, "configuration unavailable: no master") {
 		t.Fatalf("configure without master: %q", m.Text)
 	}
-	if p, _ := c.State(); !strings.HasSuffix(p, "@sw2> ") {
-		t.Fatalf("prompt %q", p)
+	if p, b := c.State(); !strings.HasSuffix(p, "@sw2> ") || !strings.Contains(b, "master not reachable") {
+		t.Fatalf("prompt %q banner %q", p, b)
+	}
+	if m := exec("show version"); !strings.Contains(m.Text, "Hostname: sw2") {
+		t.Errorf("operational command without the master: %q", m.Text)
+	}
+	// The master is back: the next command (after the retry interval, or
+	// configure at once) runs there again.
+	mu.Lock()
+	noMaster = false
+	mu.Unlock()
+	exec("configure")
+	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1# ") {
+		t.Fatalf("not on the master again: prompt %q", p)
 	}
 }

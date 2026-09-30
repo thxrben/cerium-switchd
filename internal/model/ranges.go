@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 
 	"mclag/internal/config"
 	"mclag/internal/schema"
@@ -111,7 +110,7 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 			continue
 		}
 		for _, name := range sortedPortNames(ports) {
-			if ports[name].StackPort || ports[name].HasIP || b.reservedPort(id, name) {
+			if ports[name].StackPort || b.reservedPort(id, name) {
 				continue // never swallowed by wildcards
 			}
 			port, ok := schema.ParsePhysical(name)
@@ -129,15 +128,11 @@ func (b *builder) rangeTargets(rg *config.Node, rpath string) []string {
 	return out
 }
 
-// reservedPort reports whether a port is a member's management port (a
-// unit in the management instance) or dedicated underlay port.
+// reservedPort reports whether a port is a management port or a member's
+// dedicated underlay port.
 func (b *builder) reservedPort(member int, name string) bool {
-	if e := b.root.Entry("routing-instances", MgmtInstance); e != nil {
-		for _, u := range e.List("interface") {
-			if strings.HasPrefix(u, name+".") {
-				return true
-			}
-		}
+	if e := b.root.Entry("interfaces", name); e != nil && e.Has("management") {
+		return true
 	}
 	for _, e := range b.root.Get("virtual-chassis").Entries("member") {
 		if e.Key == strconv.Itoa(member) && e.Leaf("underlay", "interface") == name {

@@ -30,7 +30,7 @@ func TestCLISSH(t *testing.T) {
 			return nil
 		}}
 	cfg := &model.Config{}
-	if err := s.Sync(cfg); err != nil || len(calls) != 0 {
+	if err := s.Sync(cfg, true); err != nil || len(calls) != 0 {
 		t.Fatalf("unconfigured: %v %v", err, calls)
 	}
 	cfg.System.SSH = model.SSHService{Configured: true, Port: 22, RootLogin: "deny"}
@@ -39,11 +39,16 @@ func TestCLISSH(t *testing.T) {
 	}
 	cfg.System.SSH.Port = 2222
 	cfg.System.Banner = "Authorized access only"
+	// Without a management instance no CLI SSH server runs.
+	if err := s.Sync(cfg, true); err != nil || fileExists(s.UnitPath) {
+		t.Fatalf("started without a management instance: %v", err)
+	}
+	cfg.System.MgmtInstance = "oob"
 	if is := s.Check(cfg); len(is) != 0 {
 		t.Errorf("free port reported: %v", is)
 	}
 	os.WriteFile(s.LegacyDropIn, []byte("Port 2222\n"), 0o644)
-	if err := s.Sync(cfg); err != nil {
+	if err := s.Sync(cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	conf, _ := os.ReadFile(s.confPath())
@@ -60,8 +65,8 @@ func TestCLISSH(t *testing.T) {
 			t.Errorf("missing call %q in %v", want, calls)
 		}
 	}
-	if u, _ := os.ReadFile(s.UnitPath); !strings.Contains(string(u), "ExecStart=/usr/sbin/sshd -D") {
-		t.Errorf("without a management instance sshd runs in the default VRF:\n%s", u)
+	if u, _ := os.ReadFile(s.UnitPath); !strings.Contains(string(u), "ExecStart=/usr/sbin/ip vrf exec oob /usr/sbin/sshd -D") {
+		t.Errorf("sshd does not run in the management instance:\n%s", u)
 	}
 	// Our own running port is not a conflict.
 	os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte("hdr\n   0: 00000000:08AE 00000000:0000 0A\n"), 0o644)
@@ -69,35 +74,42 @@ func TestCLISSH(t *testing.T) {
 		t.Errorf("own port reported as conflict: %v", is)
 	}
 	calls = nil
-	s.Sync(cfg)
+	s.Sync(cfg, true)
 	if len(calls) != 0 {
 		t.Errorf("unchanged config: %v", calls)
 	}
 	// A rejected configuration keeps the previous one.
 	failCheck = true
 	cfg.System.SSH.RootLogin = "allow"
-	if err := s.Sync(cfg); err == nil {
+	if err := s.Sync(cfg, true); err == nil {
 		t.Fatal("rejected config accepted")
 	}
 	if now, _ := os.ReadFile(s.confPath()); string(now) != string(conf) {
 		t.Error("previous config not kept")
 	}
 	failCheck = false
-	s.Sync(cfg)
+	s.Sync(cfg, true)
 	if now, _ := os.ReadFile(s.confPath()); !strings.Contains(string(now), "AllowGroups switchd-cli root\nPermitRootLogin yes") {
 		t.Errorf("root-login allow:\n%s", now)
 	}
+	// Not the master: stopped.
+	calls = nil
+	s.Sync(cfg, false)
+	if fileExists(s.UnitPath) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
+		t.Errorf("still running on a member that is not the master: %v", calls)
+	}
+	s.Sync(cfg, true)
 	// Removal.
 	cfg.System.SSH.Configured = false
 	calls = nil
-	s.Sync(cfg)
+	s.Sync(cfg, true)
 	if fileExists(s.UnitPath) || fileExists(s.confPath()) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
 		t.Errorf("not removed: %v", calls)
 	}
 }
 
 func TestCLISSHInManagementVRF(t *testing.T) {
-	u := unitText(model.MgmtInstance)
+	u := unitText("mgmt_ceros")
 	if !strings.Contains(u, "ExecStart=/usr/sbin/ip vrf exec mgmt_ceros /usr/sbin/sshd -D -f /etc/switchd/sshd_config") {
 		t.Errorf("unit does not run sshd in the management VRF:\n%s", u)
 	}

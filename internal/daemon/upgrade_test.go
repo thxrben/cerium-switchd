@@ -83,7 +83,6 @@ func TestUpgradeManagement(t *testing.T) {
 	  "address": ["10.5.176.95/16", "fd00::5/64"], "gateway": ["10.5.0.1", "fd00::1"]}}}}}`)
 	out := config.FormatSet(tr)
 	for _, want := range []string{
-		"set system management-instance",
 		"set interfaces 1/0/0 unit 0 family inet address 10.5.176.95/16",
 		"set interfaces 1/0/0 unit 0 family inet6 address fd00::5/64",
 		"set routing-instances mgmt_ceros interface 1/0/0.0",
@@ -93,6 +92,9 @@ func TestUpgradeManagement(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "management-instance") {
+		t.Errorf("the old management flag was kept:\n%s", out)
 	}
 	if strings.Contains(out, "management {") || tr.Root.Has("virtual-chassis", "member", "1", "management") {
 		t.Errorf("management block left:\n%s", out)
@@ -156,7 +158,7 @@ func TestUpgradePeerLink(t *testing.T) {
 func TestUpgradeRenamesManagementInstance(t *testing.T) {
 	tr := upgrade(t, `{"system":{"management-instance":true},"routing-instances":{"mgmt_junos":{"interface":["irb.99"]}},"vlans":{"m":{"vlan-id":"99","l3-interface":"irb.99"}},"interfaces":{"irb":{"unit":{"99":{"family":{"inet":{"address":{"10.0.0.2/24":{}}}}}}}}}`)
 	out := config.FormatSet(tr)
-	if !strings.Contains(out, "set routing-instances mgmt_ceros interface irb.99") || strings.Contains(out, "mgmt_junos") {
+	if !strings.Contains(out, "set routing-instances mgmt_ceros interface irb.99") || strings.Contains(out, "mgmt_junos") || strings.Contains(out, "management-instance") {
 		t.Errorf("management instance not renamed:\n%s", out)
 	}
 }

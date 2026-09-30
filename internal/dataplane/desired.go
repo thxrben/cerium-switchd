@@ -176,6 +176,9 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	units := slices.Sorted(maps.Keys(cfg.L3))
 	for _, n := range units {
 		u := cfg.L3[n]
+		if u.CME() {
+			continue // see Management
+		}
 		if !u.OnMember(m) {
 			continue // an irb whose addresses all belong to other members
 		}
@@ -220,7 +223,7 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Instances)) {
 		in := cfg.Instances[name]
-		l.VRFs = append(l.VRFs, VRF{Name: name, Mgmt: name == model.MgmtInstance})
+		l.VRFs = append(l.VRFs, VRF{Name: name, Mgmt: name == cfg.System.MgmtInstance})
 		for _, r := range in.Routes {
 			l.Routes = append(l.Routes, Route{VRF: name, Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
 		}

@@ -66,9 +66,6 @@ type PortInfo struct {
 	// PathMTU is the frame size (Ethernet header included) that probe frames
 	// verified on a stacking port's cable; 0: not known.
 	PathMTU int
-	// HasIP: the operating system has configured IP addresses on the port
-	// (typically the installer's management NIC).
-	HasIP bool
 	// Hardware capabilities (reference 1.7); zero values mean unknown.
 	MaxSpeedMbps   int
 	NoPause        bool // the driver has no pause-frame settings
@@ -235,6 +232,9 @@ func (b *builder) validateInterfaces() {
 	for _, name := range sortedKeys(c.Interfaces) {
 		i := c.Interfaces[name]
 		path := "interfaces " + name
+		if i.AE && i.Management {
+			b.errorf(path+" management", "a management port must be a physical port")
+		}
 		if i.AE {
 			if i.Parent != "" || i.FlowControl != nil {
 				b.errorf(path+" ether-options", "ether-options are only valid on physical ports")
@@ -256,8 +256,6 @@ func (b *builder) validateInterfaces() {
 			b.warnf(path, "port %s does not exist on member %d (configuration applies once it appears)", name, i.Member)
 		case present && info.StackPort:
 			b.errorf(path, "%s is a stacking port of member %d and cannot be configured as a data port", name, i.Member)
-		case present && info.HasIP && !b.reservedPort(i.Member, name):
-			b.warnf(path, "%s (%s) has IP addresses configured by the operating system (management port?); managing it may cut access to member %d", name, info.Linux, i.Member)
 		}
 		if present {
 			b.checkCapabilities(i, info, path)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"mclag/internal/inventory"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,35 @@ type kernelApplier struct {
 	// afterApply runs after every successful data plane apply, including
 	// reconciliations (LACP follows the bundles' ports).
 	afterApply func(*model.Config)
+	// isMaster reports whether this member is the master (nil: standalone,
+	// always master); the management address lives there (reference 1.8).
+	isMaster func() bool
+	// cmeMAC is the stack-wide MAC address of cme.
+	cmeMAC net.HardwareAddr
+	// stackPort reports whether a kernel port is a stacking port (the stack
+	// manager owns those).
+	stackPort func(linux string) bool
+}
+
+func (a *kernelApplier) master() bool { return a.isMaster == nil || a.isMaster() }
+
+// unconfigured returns this member's present ports that the desired state
+// does not use: switchd owns them too and keeps them down without
+// addresses (reference 1.4). Stacking ports and the underlay port are
+// someone else's.
+func (a *kernelApplier) unconfigured(cfg *model.Config, desired *dataplane.State) []string {
+	underlay := ""
+	if m := cfg.Members[a.member]; m != nil && m.Underlay.Interface != "" {
+		underlay, _ = a.names.Linux(m.Underlay.Interface)
+	}
+	var out []string
+	for _, p := range a.names.Ports() {
+		if desired.Links[p.Linux] != nil || p.Linux == underlay || (a.stackPort != nil && a.stackPort(p.Linux)) {
+			continue
+		}
+		out = append(out, p.Linux)
+	}
+	return out
 }
 
 func memberName(id int) string { return fmt.Sprintf("member%d", id) }
@@ -181,11 +211,20 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	for _, n := range notes {
 		a.log.Warn("data plane", "note", n)
 	}
+	owned := a.loadOwned()
+	var unconf []string
+	if !a.dryRun {
+		unconf = a.unconfigured(cfg, desired)
+		for _, n := range unconf {
+			owned[n] = true // released: down and out of any bridge or bundle
+		}
+	}
+	dataplane.Management(desired, cfg, a.member, a.names.Linux, a.master(), dataplane.Carrier, a.cmeMAC, unconf)
 	actual, err := a.kernel.Read()
 	if err != nil {
 		return fmt.Errorf("reading kernel state: %w", err)
 	}
-	ops := dataplane.Plan(actual, desired, a.loadOwned())
+	ops := dataplane.Plan(actual, desired, owned)
 	if err := a.execute(ops, reason, actual, desired); err != nil {
 		return err
 	}

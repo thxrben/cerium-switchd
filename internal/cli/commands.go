@@ -52,7 +52,8 @@ func init() {
 		{name: "exit", help: "Leave the CLI", class: commit.ReadOnly, run: (*Shell).leaveCLI},
 		{name: "quit", help: "Leave the CLI", class: commit.ReadOnly, run: (*Shell).leaveCLI, hidden: true},
 		{name: "start", help: "Start a program", class: commit.SuperUser, sub: []*command{
-			{name: "shell", help: "Start a Linux shell as your user (exit returns to the CLI)", class: commit.SuperUser, run: (*Shell).startShell},
+			{name: "shell", help: "Start a Linux shell as your user on the master (exit returns to the CLI)", class: commit.SuperUser, run: (*Shell).startShell,
+				complete: words(Completion{Text: "local", Help: "On the member you are connected to"})},
 		}},
 		{name: "show", help: "Show information about the switch", class: commit.ReadOnly, sub: []*command{
 			showConfig,
@@ -119,11 +120,22 @@ func (sh *Shell) leaveCLI(c *call) error {
 	return nil
 }
 
+// startShell asks the client for a Linux shell: on the master (this
+// member; for a forwarded session over the stacking protocol), or with
+// "local" on the member the client is connected to (reference 1.8).
 func (sh *Shell) startShell(c *call) error {
+	local := false
+	if len(c.args) == 1 && !c.args[0].Quoted && c.args[0].Text != "" && prefixOf(c.args[0].Text, "local") {
+		local = true
+		c.args = nil
+	}
 	if err := noArgs(c); err != nil {
 		return err
 	}
 	c.reply.Shell = true
+	if o := sh.origin(); o != 0 && !local {
+		c.reply.ShellMember = sh.env.Stack.Self()
+	}
 	return nil
 }
 

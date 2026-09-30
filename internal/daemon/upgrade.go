@@ -30,6 +30,10 @@ type portNames interface {
 //   - "virtual-chassis member <id> management" became routed interfaces in
 //     routing instance mgmt_ceros (reference 5.9),
 //   - routing instance "mgmt_junos" was renamed "mgmt_ceros",
+//   - the flag "system management-instance" (which meant mgmt_ceros) is
+//     dropped: the management instance is named now and uses cme
+//     (reference 1.8); mgmt_ceros stays as an ordinary routing instance,
+//     and the management has to be configured anew,
 //   - address leaf-lists became address entries (with an optional member),
 //   - the MC-LAG peer-link, peer-link-bfd and heartbeat were replaced by the
 //     stack tunnels (reference 5.6): the statements and the bundle that
@@ -61,6 +65,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	normalizeAddresses(m)
 	u.convertManagement(m)
 	u.removePeerLink(m)
+	u.dropManagementFlag(m)
 	u.walk(schema.Root(), m, "")
 	out, err := json.Marshal(m)
 	if err != nil {
@@ -434,6 +439,16 @@ func (u *upgrader) convertManagement(m map[string]any) {
 			}
 		}
 		obj(m, "system")["management-instance"] = true
+	}
+}
+
+// dropManagementFlag removes the old boolean "system management-instance".
+func (u *upgrader) dropManagementFlag(m map[string]any) {
+	sys, _ := m["system"].(map[string]any)
+	if _, old := sys["management-instance"].(bool); old {
+		delete(sys, "management-instance")
+		u.log.Warn("configuration upgrade: 'system management-instance' now names the management instance and uses cme (reference 1.8); "+
+			"the old management setup is an ordinary routing instance now, configure the management anew")
 	}
 }
 

@@ -297,6 +297,9 @@ func (sh *Shell) keyCompletions(sn *schema.Node, parent *config.Node, partial st
 		if strings.HasPrefix("irb", partial) && !seen["irb"] {
 			out = append(out, Completion{Text: "irb", Help: "VLAN IP interfaces (irb.<n>, attached with 'vlans <v> l3-interface')", Kind: '>'})
 		}
+		if strings.HasPrefix("cme", partial) && !seen["cme"] {
+			out = append(out, Completion{Text: "cme", Help: "Chassis management interface (the stack's management address, on the master)", Kind: '>'})
+		}
 		if strings.HasPrefix("ae", partial) || partial == "" {
 			out = append(out, Completion{Text: "ae<N>", Help: "Aggregated interface (ae0-ae4095)", Placeholder: true})
 		}
@@ -333,6 +336,12 @@ func (sh *Shell) valueCompletions(ty *schema.Type, t *config.Tree, partial strin
 			}
 		}
 		add(names, "VLAN IP interface")
+	case "instance":
+		var names []string
+		for _, e := range t.Root.Entries("routing-instances") {
+			names = append(names, e.Key)
+		}
+		add(names, "Routing instance")
 	case "vlan":
 		var names []string
 		for _, e := range t.Root.Entries("vlans") {

@@ -153,14 +153,15 @@ func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
 	return true, os.Rename(tmp, path)
 }
 
-// Sync converges the CLI SSH server.
-func (s *SSH) Sync(cfg *model.Config) error {
+// Sync converges the CLI SSH server. It runs only on the master, inside
+// the management instance (reference 1.8, 5.1 system services ssh).
+func (s *SSH) Sync(cfg *model.Config, master bool) error {
 	if s.LegacyDropIn != "" && fileExists(s.LegacyDropIn) {
 		if err := os.Remove(s.LegacyDropIn); err == nil {
 			_ = s.Run("systemctl", "reload", "ssh")
 		}
 	}
-	if !cfg.System.SSH.Configured {
+	if !cfg.System.SSH.Configured || cfg.System.MgmtInstance == "" || !master {
 		if !fileExists(s.UnitPath) {
 			return nil
 		}
@@ -168,7 +169,7 @@ func (s *SSH) Sync(cfg *model.Config) error {
 		for _, p := range []string{s.UnitPath, s.confPath(), s.bannerPath()} {
 			_ = os.Remove(p)
 		}
-		s.Log.Info("ssh: CLI SSH server removed")
+		s.Log.Info("ssh: CLI SSH server stopped (not configured, no management instance, or not the master)")
 		return s.Run("systemctl", "daemon-reload")
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
@@ -193,10 +194,7 @@ func (s *SSH) Sync(cfg *model.Config) error {
 			return err
 		}
 	}
-	vrf := ""
-	if cfg.System.MgmtInstance {
-		vrf = model.MgmtInstance
-	}
+	vrf := cfg.System.MgmtInstance
 	unitChanged, err := writeIfChanged(s.UnitPath, unitText(vrf), 0o644)
 	if err != nil {
 		return err

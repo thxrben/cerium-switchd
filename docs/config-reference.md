@@ -221,8 +221,9 @@ The stack is managed as one switch through one address, as a Junos Virtual Chass
   Nothing is routed through the stack: the master performs these operations itself and passes the results on.
 * **The CLI always works on the master.** A CLI session (SSH, serial console or display) runs on the member you are
   connected to, but every command is sent to the master over the stacking protocol and runs there; `member <id>`,
-  `all-members` and `local` (3.5) choose where operational commands take effect. The prompt shows the member you
-  are connected to and the master (`user@host:2 {master:1}>`).
+  `all-members` and `local` (the member you are connected to, 3.5) choose where operational commands take effect.
+  The prompt shows the master's host name, and the banner line names the member you are connected to
+  (`{master:1, connected to member 2}`).
   * This needs no management address and no `system services ssh` anywhere: it works through the local consoles
     even when every management port is down.
   * **When the master is unreachable** (the member is alone, or in a minority partition), the CLI shows
@@ -809,11 +810,11 @@ working path, so a ring survives one broken cable.
 * **Configuration mode runs on the master**, as in Junos VC: `configure` on any member opens the configuration
   session on the master (the prompt shows the master's host name). In a stack with more than one member, the line
   above the prompt shows the role of the member the session runs on: `{master:1}`, `{backup:2}`, `{linecard:3}`,
-  or `{no-master:2}` without a master. Operational commands
-  run on the member you are logged in to. Without a master (no majority), `configure` fails with
-  `error: configuration unavailable: no master (the stack has no majority)`; operational commands keep working.
+  or `{no-master:2}` without a master. Every command runs on the master (1.8). Without a master (no majority),
+  `configure` fails with `error: configuration unavailable: no master (the stack has no majority)`; operational
+  commands keep working on the member you are logged in to.
 * **Operational commands on other members**: commands that report or change one member's state accept a target at
-  the end: `member <id>`, `all-members`, or `local` (the default: the member you are logged in to). With more than one
+  the end: `member <id>`, `all-members`, or `local` (the member you are logged in to; without a target, the master). With more than one
   target the output has a section per member (`member2:` and a line), pipes apply to the whole output, e.g.
   `show interfaces terse all-members | match down`. The command runs on the member as the same user and class.
   * Commands with targets: `show interfaces`, `show ethernet-switching table`, `show vlans`, `show chassis hardware`,
@@ -1653,7 +1654,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 |---|---|---|---|---|
 | `system` | container |  |  | System parameters |
 | `system host-name` | leaf | &lt;hostname&gt; |  | Name of the stack/system |
-| `system management-instance` | flag |  |  | Use routing instance mgmt_ceros for management (services, management interfaces) |
+| `system management-instance` | leaf | &lt;instance-name&gt; |  | Routing instance for management (cme, services on the master) |
 | `system domain-name` | leaf | &lt;hostname&gt; |  | DNS domain name |
 | `system time-zone` | leaf | &lt;time-zone&gt; |  | Time zone (e.g. Europe/Berlin) |
 | `system name-server` | leaf-list | &lt;ip-address&gt; |  | DNS servers |
@@ -1801,6 +1802,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interfaces <interface-name> unit <unit> family inet6` | presence |  |  | IPv6 (routed interface) |
 | `interfaces <interface-name> unit <unit> family inet6 address <address/prefix>` | list | &lt;address/prefix&gt; |  | Interface address |
 | `interfaces <interface-name> unit <unit> family inet6 address <address/prefix> member` | leaf | &lt;member-id&gt; 1..16 |  | Only on this member (irb units) |
+| `interfaces <interface-name> management` | flag |  |  | Management port: carries only cme (the stack's management address, on the master) |
 | `vlans <name>` | list | &lt;name&gt; |  | VLAN configuration |
 | `vlans <name> vlan-id` | leaf | &lt;vlan-id&gt; 1..4094 |  | 802.1Q VLAN id |
 | `vlans <name> description` | leaf | &lt;text&gt; |  | VLAN description |
@@ -1846,7 +1848,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
 | `routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
 | `routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
-| `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); mgmt_ceros is the management instance |
+| `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); system management-instance names the management instance |
 | `routing-instances <instance-name> description` | leaf | &lt;text&gt; |  | Instance description |
 | `routing-instances <instance-name> instance-type` | leaf | virtual-router | virtual-router | Instance type |
 | `routing-instances <instance-name> interface` | leaf-list | &lt;unit-name&gt; |  | Routed units in this instance (irb.10, 1/0/5.0) |

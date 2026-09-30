@@ -10,8 +10,7 @@ const (
 	DefaultMTU = 1514
 
 	MinVLANID = 1
-	MaxVLANID = 4094 // 4094 is reserved for the stack (5.2): 1..4093 can be used
-	MgmtVLAN  = 4094
+	MaxVLANID = 4094
 	MaxVNI    = 16777214
 
 	MaxAE = 4095 // ae0..ae4095

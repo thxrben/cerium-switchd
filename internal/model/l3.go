@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"mclag/internal/config"
+	"mclag/internal/schema"
 )
 
 // L3Unit is a routed interface of the default instance: an irb unit, a
@@ -48,9 +49,6 @@ func (u *L3Unit) OnMember(m int) bool {
 	return len(u.Addrs) == 0 || len(u.AddrsOn(m)) > 0
 }
 
-// MgmtInstance is the name of the management routing instance.
-const MgmtInstance = "mgmt_ceros"
-
 // RoutingInstance is a separate routing table (reference 5.9).
 type RoutingInstance struct {
 	Name        string
@@ -59,21 +57,36 @@ type RoutingInstance struct {
 	Routes      []StaticRoute
 }
 
-// MgmtAddrs returns the management addresses of member m.
-func (c *Config) MgmtAddrs(m int) []netip.Prefix {
-	var out []netip.Prefix
-	if in := c.Instances[MgmtInstance]; in != nil && c.System.MgmtInstance {
+// MgmtUnits returns the units of the management instance (reference 1.8).
+func (c *Config) MgmtUnits() []*L3Unit {
+	var out []*L3Unit
+	if in := c.Instances[c.System.MgmtInstance]; in != nil {
 		for _, n := range in.Units {
-			if u := c.L3[n]; u != nil && u.OnMember(m) {
-				out = append(out, u.AddrsOn(m)...)
+			if u := c.L3[n]; u != nil {
+				out = append(out, u)
 			}
 		}
 	}
 	return out
 }
 
+// MgmtPorts returns the management ports of member m, sorted by name.
+func (c *Config) MgmtPorts(m int) []string {
+	var out []string
+	for _, i := range c.Interfaces {
+		if i.Management && i.Member == m {
+			out = append(out, i.Name)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return config.NaturalLess(out[i], out[j]) })
+	return out
+}
+
 // IRB reports whether u is a VLAN IP interface.
 func (u *L3Unit) IRB() bool { return u.Parent == "irb" }
+
+// CME reports whether u is the chassis management interface.
+func (u *L3Unit) CME() bool { return u.Parent == schema.CME }
 
 // StaticRoute is a route of the default instance.
 type StaticRoute struct {
@@ -105,6 +118,16 @@ func (b *builder) buildUnits(name string, e *config.Node, i *Interface) {
 			}
 			if tag != 0 {
 				b.errorf(upath+" vlan-id", "an irb unit is attached to a VLAN with 'vlans <v> l3-interface irb.%d'", n)
+			}
+		case name == schema.CME:
+			if n != 0 {
+				b.errorf(upath, "cme has only unit 0")
+			}
+			if sw || tag != 0 {
+				b.errorf(upath, "cme is an IP interface: only addresses (family inet|inet6 address) are valid")
+			}
+			if fam.Has("inet", "dhcp") {
+				b.errorf(upath+" family inet dhcp", "cme takes static addresses only")
 			}
 		case sw && routed:
 			b.errorf(upath+" family", "a unit is either switched (ethernet-switching) or routed (inet/inet6), not both")
@@ -183,14 +206,14 @@ func (b *builder) buildUnits(name string, e *config.Node, i *Interface) {
 	}
 }
 
-// buildIRB builds the irb units. Only units exist on irb.
+// buildIRB builds the units of irb or cme. Only units exist on them.
 func (b *builder) buildIRB(e *config.Node) {
 	for _, k := range e.Kids {
 		if k.Schema.Name != "unit" && k.Schema.Name != "description" {
-			b.errorf("interfaces irb "+k.Schema.Name, "only 'unit' (and 'description') is valid on irb")
+			b.errorf("interfaces "+e.Key+" "+k.Schema.Name, "only 'unit' (and 'description') is valid on %s", e.Key)
 		}
 	}
-	b.buildUnits("irb", e, nil)
+	b.buildUnits(e.Key, e, nil)
 }
 
 // hostAddressProblem rejects network and broadcast addresses as interface
@@ -268,15 +291,33 @@ func (b *builder) buildInstances() {
 		}
 		c.Instances[e.Key] = in
 	}
-	_, hasMgmt := c.Instances[MgmtInstance]
-	switch {
-	case c.System.MgmtInstance && !hasMgmt:
-		b.errorf("system management-instance", "routing instance %s is not configured", MgmtInstance)
-	case !c.System.MgmtInstance && hasMgmt:
-		b.errorf("routing-instances "+MgmtInstance, "%s is the management instance; it needs 'system management-instance'", MgmtInstance)
+	// The management instance (reference 1.8, 5.1).
+	mi := c.System.MgmtInstance
+	in := c.Instances[mi]
+	if mi != "" && in == nil {
+		b.errorf("system management-instance", "routing instance %s is not configured", mi)
 	}
-	if e := b.root.Entry("routing-instances", MgmtInstance); e != nil && e.Leaf("instance-type") != "" {
-		b.errorf("routing-instances "+MgmtInstance+" instance-type", "the management instance has no instance-type")
+	if u := c.L3[schema.CME+".0"]; u != nil && (mi == "" || u.Instance != mi) {
+		b.errorf("interfaces cme", "cme.0 must be in the management instance (routing-instances <instance> interface cme.0 and system management-instance <instance>)")
+	}
+	if in != nil {
+		if len(in.Units) == 0 {
+			b.warnf("routing-instances "+mi, "the management instance has no interface; the stack has no management address")
+		}
+		for _, u := range c.MgmtUnits() {
+			if len(u.AddrMember) > 0 {
+				b.errorf(unitPath(u)+" address", "%s is in the management instance: its addresses belong to the master, 'member' is not valid", u.Name)
+			}
+		}
+	}
+	if u := c.L3[schema.CME+".0"]; u != nil && len(u.Addrs) > 0 {
+		has := false
+		for _, i := range c.Interfaces {
+			has = has || i.Management
+		}
+		if !has {
+			b.warnf("interfaces cme", "cme has addresses but no member has a management port (interfaces <port> management)")
+		}
 	}
 }
 
@@ -358,45 +399,6 @@ func (b *builder) validateRouting() {
 	check("", "routing-options", c.Routes)
 	for _, in := range c.Instances {
 		check(in.Name, "routing-instances "+in.Name+" routing-options", in.Routes)
-	}
-	// Every member needs a management interface.
-	if in := c.Instances[MgmtInstance]; in != nil && c.System.MgmtInstance {
-		for _, id := range sortedMemberIDs(c) {
-			if !c.Members[id].Witness && len(c.MgmtAddrs(id)) == 0 {
-				b.warnf("routing-instances "+MgmtInstance, "member %d has no management interface with an address in %s", id, MgmtInstance)
-			}
-		}
-	}
-	// OS-managed NICs with addresses in the same instance as routed data
-	// interfaces.
-	defaultL3 := false
-	for _, u := range c.L3 {
-		if u.Instance == "" {
-			defaultL3 = true
-		}
-	}
-	if !defaultL3 || b.inv == nil {
-		return
-	}
-	for _, id := range sortedMemberIDs(c) {
-		ports, known := b.inv.Ports(id)
-		if !known {
-			continue
-		}
-		for _, name := range sortedPortNames(ports) {
-			if !ports[name].HasIP {
-				continue
-			}
-			if u := c.L3[name+".0"]; u != nil && u.Instance != "" {
-				continue // the OS NIC is a routed interface in another instance
-			}
-			if i := c.Interfaces[name]; i != nil && i.Switching {
-				continue
-			}
-			b.warnf("interfaces", "member %d routes between its VLANs while its operating-system management port %s (%s) is in the same routing instance; "+
-				"data VLANs can reach the management network. Put the management port into routing instance %s", id, name, ports[name].Linux, MgmtInstance)
-			break
-		}
 	}
 }
 

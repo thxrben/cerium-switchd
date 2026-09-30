@@ -921,7 +921,7 @@ func TestShowLimits(t *testing.T) {
 		"  Configurable mtu:                256..16000 (default 1514)",
 		"  Largest mtu configured:          1514 (default; hosts up to MTU 1500)",
 		"  Hardware maximum of the ports:   9014 (1/1/0) .. 16014 (1/3/0)",
-		"  VLAN ids:                        1..4093 (4094 is reserved for the stack); 0 of 4093",
+		"  VLAN ids:                        1..4094; 0 of 4094",
 		"  MAC addresses learned now:       12",
 		"  Bundles (ae0..ae4095):           0 of 4096",
 		"  Members:                         1 of 16",

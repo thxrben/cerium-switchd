@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,11 +20,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
 
 	"mclag/internal/rpc"
+	"mclag/internal/rshell"
 )
 
 // DefaultSocket is where switchd listens for CLI sessions.
@@ -466,7 +469,10 @@ func (u *ui) interactive() int {
 			continue
 		}
 		u.page(m.Text, m.NoMore, keys)
-		if m.Shell {
+		switch {
+		case m.Shell && m.Member != 0:
+			u.runRemoteShell(m.Member)
+		case m.Shell:
 			u.runShell()
 		}
 		if m.Exit {
@@ -707,6 +713,72 @@ func (u *ui) runShell() {
 	if u.cl().Closed() {
 		u.write("*** switchd is still not available. " + u.offlineHelp() + " ***\n")
 	}
+	u.mu.Unlock()
+	if c := u.cl(); !c.Closed() {
+		_, _ = c.Exec("") // notices were not shown during the shell: refresh
+	}
+}
+
+// runRemoteShell runs a shell on another member (the master of a session
+// forwarded to it, reference 1.8) through switchd's shell socket.
+func (u *ui) runRemoteShell(member int) {
+	nc, err := net.Dial("unix", filepath.Join(filepath.Dir(u.sock), rshell.SocketName))
+	if err != nil {
+		u.write(fmt.Sprintf("error: %v\n", err))
+		return
+	}
+	defer nc.Close()
+	req := rshell.Request{Member: member, Term: os.Getenv("TERM")}
+	if w, h, err := term.GetSize(int(u.out.Fd())); err == nil {
+		req.Rows, req.Cols = uint16(h), uint16(w)
+	}
+	r := bufio.NewReader(nc)
+	var st rshell.Status
+	if err := rshell.WriteLine(nc, req); err == nil {
+		err = rshell.ReadLine(r, &st)
+		if err != nil {
+			st.Err = err.Error()
+		}
+	} else {
+		st.Err = err.Error()
+	}
+	if st.Err != "" {
+		u.write("error: shell on member " + strconv.Itoa(member) + ": " + st.Err + "\n")
+		return
+	}
+	u.mu.Lock()
+	u.inShell = true
+	u.mu.Unlock()
+	resize := make(chan [2]uint16, 1)
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-winch:
+				if w, h, err := term.GetSize(int(u.out.Fd())); err == nil {
+					select {
+					case resize <- [2]uint16{uint16(h), uint16(w)}:
+					default:
+					}
+				}
+			}
+		}
+	}()
+	u.write("\x1b[?2004l")
+	// The terminal stays raw: the member's pty does the line editing.
+	_, err = rshell.Client(nc, r, u.in, u.out, resize)
+	signal.Stop(winch)
+	close(stop)
+	u.write("\x1b[?2004h")
+	if err != nil {
+		u.write(fmt.Sprintf("\n*** shell on member %d: %v ***\n", member, err))
+	}
+	u.mu.Lock()
+	u.inShell = false
 	u.mu.Unlock()
 	if c := u.cl(); !c.Closed() {
 		_, _ = c.Exec("") // notices were not shown during the shell: refresh

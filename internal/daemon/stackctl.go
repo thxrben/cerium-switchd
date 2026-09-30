@@ -44,6 +44,8 @@ type stackCtl struct {
 
 	// restart ends switchd so that systemd starts it again.
 	restart func()
+	// onLeader runs when this member becomes or stops being master.
+	onLeader func(isMaster bool)
 	// inv and checks are this member's commit checks (hardware, OS).
 	inv    model.Inventory
 	checks []func(*model.Config) model.Issues
@@ -259,6 +261,9 @@ func (s *stackCtl) run(ctx context.Context) {
 
 // leader runs when this member becomes or stops being master.
 func (s *stackCtl) leader(isMaster bool) {
+	if s.onLeader != nil {
+		s.onLeader(isMaster)
+	}
 	e := s.eng()
 	if e == nil {
 		return

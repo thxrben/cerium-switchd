@@ -1,0 +1,174 @@
+//go:build linux
+
+package dataplane
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"slices"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+)
+
+// syncCME converges the chassis management interface (reference 1.8): a
+// macvlan device named cme on the active management port. It is created
+// down, joins the management instance and gets its addresses before it
+// comes up, so coming up announces them (arp_notify, ndisc_notify) and
+// the management network learns the new place of the address at once.
+func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
+	ln, _ := netlink.LinkByName(CMEName)
+	if c == nil {
+		if ln == nil {
+			return false, nil
+		}
+		return true, netlink.LinkDel(ln)
+	}
+	parent, err := netlink.LinkByName(c.Parent)
+	if err != nil {
+		return false, fmt.Errorf("cme: management port %s: %w", c.Parent, err)
+	}
+	changed := false
+	if mv, ok := ln.(*netlink.Macvlan); ln != nil && (!ok || mv.ParentIndex != parent.Attrs().Index || mv.HardwareAddr.String() != c.MAC.String()) {
+		if err := netlink.LinkDel(ln); err != nil {
+			return false, err
+		}
+		ln, changed = nil, true
+	}
+	if ln == nil {
+		attrs := netlink.LinkAttrs{Name: CMEName, ParentIndex: parent.Attrs().Index, HardwareAddr: c.MAC}
+		if err := netlink.LinkAdd(&netlink.Macvlan{LinkAttrs: attrs, Mode: netlink.MACVLAN_MODE_PRIVATE}); err != nil {
+			return changed, fmt.Errorf("creating cme: %w", err)
+		}
+		changed = true
+		if ln, err = netlink.LinkByName(CMEName); err != nil {
+			return changed, err
+		}
+	}
+	for path, v := range map[string]string{
+		"/proc/sys/net/ipv4/conf/cme/arp_notify":   "1",
+		"/proc/sys/net/ipv4/conf/cme/forwarding":   "0",
+		"/proc/sys/net/ipv6/conf/cme/accept_dad":   "0",
+		"/proc/sys/net/ipv6/conf/cme/ndisc_notify": "1",
+		"/proc/sys/net/ipv6/conf/cme/accept_ra":    "0",
+		"/proc/sys/net/ipv6/conf/cme/disable_ipv6": "0",
+	} {
+		c, err := writeSysctl(path, v)
+		changed = changed || c
+		if err != nil {
+			return changed, err
+		}
+	}
+	master := 0
+	if c.VRF != "" {
+		v, err := netlink.LinkByName(c.VRF)
+		if err != nil {
+			return changed, fmt.Errorf("cme: routing instance %s: %w", c.VRF, err)
+		}
+		master = v.Attrs().Index
+	}
+	if ln.Attrs().MasterIndex != master {
+		if master == 0 {
+			err = netlink.LinkSetNoMaster(ln)
+		} else {
+			v, _ := netlink.LinkByIndex(master)
+			err = netlink.LinkSetMaster(ln, v)
+		}
+		if err != nil {
+			return changed, fmt.Errorf("cme: routing instance %s: %w", c.VRF, err)
+		}
+		changed = true
+	}
+	c2, err := syncExactAddrs(ln, c.Addrs)
+	changed = changed || c2
+	if err != nil {
+		return changed, fmt.Errorf("cme: %w", err)
+	}
+	up := ln.Attrs().Flags&net.FlagUp != 0
+	switch {
+	case c.Up && !up:
+		err = netlink.LinkSetUp(ln)
+	case !c.Up && up:
+		err = netlink.LinkSetDown(ln)
+	default:
+		return changed, nil
+	}
+	return true, err
+}
+
+// syncExactAddrs gives a link exactly the addresses want (link-local
+// addresses aside); IPv6 addresses skip duplicate address detection.
+func syncExactAddrs(ln netlink.Link, want []netip.Prefix) (bool, error) {
+	cur, err := netlink.AddrList(ln, netlink.FAMILY_ALL)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	have := map[netip.Prefix]bool{}
+	for _, a := range cur {
+		if a.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		ip, _ := netip.AddrFromSlice(a.IP)
+		ones, _ := a.Mask.Size()
+		p := netip.PrefixFrom(ip.Unmap(), ones)
+		if slices.Contains(want, p) {
+			have[p] = true
+			continue
+		}
+		if err := netlink.AddrDel(ln, &a); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	for _, p := range want {
+		if have[p] {
+			continue
+		}
+		ad, err := netlink.ParseAddr(p.String())
+		if err != nil {
+			return changed, err
+		}
+		if p.Addr().Is6() {
+			ad.Flags |= unix.IFA_F_NODAD
+		}
+		if err := netlink.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
+			return changed, fmt.Errorf("address %s: %w", p, err)
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// syncBare removes every address from ports that must not have any
+// (management ports, unconfigured ports; reference 1.4) and disables IPv6
+// on them.
+func syncBare(ports []string) (bool, error) {
+	changed := false
+	var errs []error
+	for _, n := range ports {
+		ln, err := netlink.LinkByName(n)
+		if err != nil {
+			continue
+		}
+		c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+n+"/disable_ipv6", "1")
+		changed = changed || c
+		if err != nil {
+			errs = append(errs, err)
+		}
+		c, err = syncExactAddrs(ln, nil)
+		changed = changed || c
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", n, err))
+		}
+	}
+	return changed, errors.Join(errs...)
+}
+
+// Carrier reports whether a kernel port has a link.
+func Carrier(name string) bool {
+	ln, err := netlink.LinkByName(name)
+	return err == nil && ln.Attrs().RawFlags&unix.IFF_LOWER_UP != 0
+}

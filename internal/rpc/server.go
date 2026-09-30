@@ -31,10 +31,14 @@ type Server struct {
 	Env       func(name string, class commit.Class) cli.Env
 	Authorize Authorizer
 	Log       *slog.Logger
-	// Relay returns a connection to the configuration master's CLI service
-	// (ServeRemote) when this member is not the master. nil, nil: handle
-	// the command here. An error is reported to the user.
+	// Relay returns a connection to the master's CLI service (ServeRemote)
+	// when this member is not the master: every session of this member
+	// runs there (reference 1.8). nil, nil: handle the command here. An
+	// error means the master cannot be reached.
 	Relay func() (net.Conn, error)
+	// Member is this member's id (sent to the master with a relayed
+	// session: "local" and "start shell local" mean it).
+	Member int
 	// Synced waits (briefly) until this member has the master's revision
 	// rev, when a relayed session returns to operational mode.
 	Synced func(rev uint64)
@@ -203,7 +207,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 		return
 	}
 	s.Log.Info("cli: login", "facility", "authorization", "user", name, "class", class)
-	s.serve(c, name, class, true)
+	s.serve(c, name, class, true, 0)
 }
 
 // RemoteHello is the first line of a relayed configuration session: the
@@ -211,7 +215,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 type RemoteHello struct {
 	User   string `json:"user"`
 	Class  string `json:"class"`
-	Member int    `json:"member"`
+	Member int    `json:"member"` // the member the user is connected to
 }
 
 // ServeRemote serves configuration sessions relayed by other members
@@ -242,9 +246,9 @@ func (s *Server) ServeRemote(l net.Listener) error {
 				return
 			}
 			class := commit.ParseClass(h.Class)
-			s.Log.Info("cli: configuration session relayed from another member", "facility", "authorization",
+			s.Log.Info("cli: session relayed from another member", "facility", "authorization",
 				"user", h.User, "member", h.Member, "class", class)
-			s.serve(newConn(bufferedConn{r, nc}), h.User, class, false)
+			s.serve(newConn(bufferedConn{r, nc}), h.User, class, false, h.Member)
 		}()
 	}
 }
@@ -256,16 +260,18 @@ type bufferedConn struct {
 
 func (b bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
-// relay is a configuration session relayed to the master.
+// relay is a session relayed to the master.
 type relay struct {
 	nc  net.Conn
+	rd  *bufio.Reader
 	enc *json.Encoder
 	wmu sync.Mutex
 	// prompt and banner of the master's session (for local notices);
-	// busy: a request waits for its reply.
+	// busy: a request waits for its reply; cfg: the master's session is
+	// in configuration mode.
 	mu             sync.Mutex
 	prompt, banner string
-	busy           bool
+	busy, cfg      bool
 	ended          bool
 }
 
@@ -291,9 +297,12 @@ func (r *relay) end() bool {
 }
 
 // serve runs a CLI session for an authenticated user. local: the session
-// is on this member (it may be relayed to the master).
-func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
-	sh := cli.New(s.Env(name, class))
+// is on this member (it is relayed to the master when this member is not
+// the master); otherwise origin is the member it was relayed from.
+func (s *Server) serve(c *conn, name string, class commit.Class, local bool, origin int) {
+	env := s.Env(name, class)
+	env.Origin = origin
+	sh := cli.New(env)
 	defer sh.Close()
 
 	s.mu.Lock()
@@ -309,15 +318,40 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
 		s.Log.Info("cli: logout", "facility", "authorization", "user", name)
 	}()
 
-	if err := c.send(Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}); err != nil {
-		return
-	}
 	var rlMu sync.Mutex
 	var rl *relay
 	current := func() *relay {
 		rlMu.Lock()
 		defer rlMu.Unlock()
 		return rl
+	}
+	// lost: the master could not be reached (commands run here), since
+	// when (retried at most every relayRetry).
+	var lost time.Time
+	connect := func() (*relay, error) {
+		nc, err := s.Relay()
+		if err != nil || nc == nil {
+			return nil, err
+		}
+		return s.startRelay(nc, name, class)
+	}
+	hello := Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}
+	if local && s.Relay != nil {
+		r, err := connect()
+		switch {
+		case err != nil:
+			lost = time.Now()
+			hello.Banner = s.lostBanner(err) + hello.Banner
+		case r != nil:
+			rl = r
+			hello.Prompt, hello.Banner = r.prompt, r.banner
+		}
+	}
+	if err := c.send(hello); err != nil {
+		return
+	}
+	if r := current(); r != nil {
+		go s.pump(c, sh, r, &rlMu, &rl)
 	}
 	defer func() {
 		if r := current(); r != nil {
@@ -394,28 +428,31 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
 			}
 			continue
 		}
-		if local && m.T == "exec" && s.Relay != nil && sh.NeedsMaster(m.Line) {
-			nc, err := s.Relay()
+		// Every command runs on the master (reference 1.8). Without it,
+		// commands run here; configuration mode needs it.
+		needs := m.T == "exec" && sh.NeedsMaster(m.Line)
+		if local && m.T == "exec" && s.Relay != nil && (needs || lost.IsZero() || time.Since(lost) > relayRetry) {
+			r, err := connect()
 			if err != nil {
-				c.shMu.Lock()
-				err = c.send(Msg{T: "done", Text: fmt.Sprintf("error: configuration unavailable: %v\n", err), Prompt: sh.Prompt(), Banner: sh.Banner()})
-				c.shMu.Unlock()
-				if err != nil {
-					return
-				}
-				continue
-			}
-			if nc != nil {
-				r, err := s.startRelay(nc, name, class)
-				if err != nil {
+				wasLost := !lost.IsZero()
+				lost = time.Now()
+				if needs {
 					c.shMu.Lock()
-					err = c.send(Msg{T: "done", Text: fmt.Sprintf("error: configuration unavailable: master: %v\n", err), Prompt: sh.Prompt(), Banner: sh.Banner()})
+					err = c.send(Msg{T: "done", Text: fmt.Sprintf("error: configuration unavailable: %v\n", err), Prompt: sh.Prompt(), Banner: s.lostBanner(err) + sh.Banner()})
 					c.shMu.Unlock()
 					if err != nil {
 						return
 					}
 					continue
 				}
+				if !wasLost {
+					c.shMu.Lock()
+					_ = c.send(Msg{T: "notify", Text: strings.TrimSuffix(strings.TrimPrefix(s.lostBanner(err), "*** "), " ***\n"), Prompt: sh.Prompt(), Banner: sh.Banner()})
+					c.shMu.Unlock()
+				}
+			}
+			if r != nil {
+				lost = time.Time{}
 				rlMu.Lock()
 				rl = r
 				rlMu.Unlock()
@@ -439,7 +476,8 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
 			mu.Unlock()
 			rep := sh.Execute(ctx, m.Line, &term{c: c, ctx: ctx})
 			cf()
-			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()}
+			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Member: rep.ShellMember,
+				Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()}
 			if !local {
 				reply.Rev = sh.ActiveSeq()
 			}
@@ -458,24 +496,42 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool) {
 	}
 }
 
-// startRelay opens the relayed session on the master.
+// relayRetry: while the master cannot be reached, commands run on this
+// member and reaching it is tried again at most this often.
+const relayRetry = 5 * time.Second
+
+// lostBanner is the banner line while the master cannot be reached.
+func (s *Server) lostBanner(err error) string {
+	return fmt.Sprintf("*** master not reachable (%v); commands run on member %d, 'start shell local' for a shell ***\n", err, s.Member)
+}
+
+// startRelay opens the relayed session on the master and reads its hello.
 func (s *Server) startRelay(nc net.Conn, name string, class commit.Class) (*relay, error) {
-	b, _ := json.Marshal(RemoteHello{User: name, Class: class.String()})
+	b, _ := json.Marshal(RemoteHello{User: name, Class: class.String(), Member: s.Member})
 	nc.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := nc.Write(append(b, '\n')); err != nil {
 		nc.Close()
 		return nil, err
 	}
-	r := &relay{nc: nc, enc: json.NewEncoder(nc)}
-	// The master's hello (its prompt) is read by pump.
+	r := &relay{nc: nc, rd: bufio.NewReaderSize(nc, 64<<10), enc: json.NewEncoder(nc)}
+	line, err := r.rd.ReadBytes('\n')
+	var m Msg
+	if err == nil && (json.Unmarshal(line, &m) != nil || m.T != "hello") {
+		err = errors.New("unexpected answer")
+	}
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("master: %w", err)
+	}
+	r.prompt, r.banner = m.Prompt, m.Banner
 	nc.SetDeadline(time.Time{})
 	return r, nil
 }
 
-// pump passes the master's messages to the client until the session
-// leaves configuration mode or the master is lost.
+// pump passes the master's messages to the client until the session ends
+// or the master is lost.
 func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **relay) {
-	sc := bufio.NewScanner(r.nc)
+	sc := bufio.NewScanner(r.rd)
 	sc.Buffer(make([]byte, 64<<10), MaxMsg)
 	for sc.Scan() {
 		var m Msg
@@ -483,31 +539,27 @@ func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **r
 			break
 		}
 		switch m.T {
-		case "hello":
-			r.mu.Lock()
-			r.prompt, r.banner = m.Prompt, m.Banner
-			r.mu.Unlock()
-			continue
 		case "done", "completions":
 			r.mu.Lock()
 			r.busy = false
 			r.mu.Unlock()
 		}
-		leaving := (m.T == "done" || m.T == "notify") && (!m.Cfg || m.Exit)
-		if leaving && r.end() {
-			rlMu.Lock()
-			*rl = nil
-			rlMu.Unlock()
-			if m.Rev != 0 && s.Synced != nil {
+		if m.T == "done" || m.T == "notify" {
+			// Leaving configuration mode: this member shows the commit
+			// at once.
+			r.mu.Lock()
+			left := r.cfg && !m.Cfg
+			r.cfg = m.Cfg
+			r.mu.Unlock()
+			if left && m.Rev != 0 && s.Synced != nil {
 				s.Synced(m.Rev)
 			}
 			m.Rev = 0
-			if !m.Exit {
-				// Back to this member's operational mode.
-				c.shMu.Lock()
-				m.Prompt, m.Banner = sh.Prompt(), sh.Banner()
-				c.shMu.Unlock()
-			}
+		}
+		if m.T == "done" && m.Exit && r.end() {
+			rlMu.Lock()
+			*rl = nil
+			rlMu.Unlock()
 			c.send(m)
 			return
 		}
@@ -532,9 +584,12 @@ func (s *Server) endRelay(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl
 	*rl = nil
 	rlMu.Unlock()
 	r.mu.Lock()
-	busy := r.busy
+	busy, cfg := r.busy, r.cfg
 	r.mu.Unlock()
-	text := "connection to the master lost; configuration mode ended (the shared candidate is kept)"
+	text := fmt.Sprintf("connection to the master lost; commands run on member %d now", s.Member)
+	if cfg {
+		text += "; configuration mode ended (the shared candidate is kept)"
+	}
 	c.shMu.Lock()
 	defer c.shMu.Unlock()
 	if busy {

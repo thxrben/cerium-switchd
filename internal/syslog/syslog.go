@@ -50,6 +50,9 @@ type Message struct {
 	Facility string
 	Severity int
 	Text     string // message and attributes
+	// Host is the host name of the member the message comes from when it
+	// was relayed by another member ("" = this one).
+	Host string
 }
 
 // Host is one remote server.
@@ -85,6 +88,17 @@ type Hub struct {
 	// vrf is the device outgoing connections are bound to if it exists
 	// (the management instance); see SetVRF.
 	vrf string
+	// relay, when set, receives every local message: a member that is not
+	// the master hands its messages to the master (reference 1.8).
+	relay func(Message)
+}
+
+// SetRelay sets (or clears, nil) the function that receives every local
+// message besides the ring buffer and the forwarders.
+func (h *Hub) SetRelay(f func(Message)) {
+	h.mu.Lock()
+	h.relay = f
+	h.mu.Unlock()
 }
 
 // NewHub returns a hub that also passes every record to next.
@@ -190,9 +204,13 @@ func (h *Hub) Log(m Message) {
 	for _, f := range h.fwds {
 		fs = append(fs, f)
 	}
+	relay := h.relay
 	h.mu.Unlock()
 	for _, f := range fs {
 		f.offer(m)
+	}
+	if relay != nil && m.Host == "" {
+		relay(m)
 	}
 }
 
@@ -417,7 +435,11 @@ func (f *forwarder) run() {
 			f.connected, f.lastErr = true, ""
 			f.mu.Unlock()
 		}
-		line := Format(m, f.hub.name())
+		host := m.Host
+		if host == "" {
+			host = f.hub.name()
+		}
+		line := Format(m, host)
 		if f.cfg.Transport != "udp" {
 			line = strconv.Itoa(len(line)) + " " + line
 		}

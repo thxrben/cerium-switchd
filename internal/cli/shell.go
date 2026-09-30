@@ -50,6 +50,10 @@ type Env struct {
 	Log  *slog.Logger
 	// Stack runs operational commands on other members (nil: standalone).
 	Stack Stack
+	// Origin is the member the session is connected to when it was
+	// forwarded to this member, the master (reference 1.8; 0: a session
+	// of this member). "local" means that member.
+	Origin int
 	// Role returns this member's role in a stack with more than one
 	// member, e.g. "master:1" or "backup:2", shown above the prompt as in
 	// Junos VC ("": standalone; nil: none).
@@ -76,6 +80,9 @@ type Reply struct {
 	// Shell asks the client to run a Linux shell as the logged-in user
 	// ("start shell") and to return to the CLI when it exits.
 	Shell bool
+	// ShellMember: the shell runs on this member, not where the client is
+	// (0: where the client is).
+	ShellMember int
 }
 
 // Shell is one user's CLI session.
@@ -123,12 +130,24 @@ func (sh *Shell) Prompt() string {
 	return sh.env.User + "@" + sh.env.HostName() + c + " "
 }
 
+// origin returns the member a forwarded session is connected to (0: this
+// member).
+func (sh *Shell) origin() int {
+	if sh.env.Stack == nil || sh.env.Origin == sh.env.Stack.Self() {
+		return 0
+	}
+	return sh.env.Origin
+}
+
 // Banner returns the lines shown above the prompt: the edit level in
 // configuration mode and a pending commit confirmation.
 func (sh *Shell) Banner() string {
 	var b strings.Builder
 	if sh.env.Role != nil {
 		if r := sh.env.Role(); r != "" {
+			if o := sh.origin(); o != 0 {
+				r += fmt.Sprintf(", connected to member %d", o)
+			}
 			b.WriteString("{" + r + "}\n")
 		}
 	}

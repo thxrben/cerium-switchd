@@ -110,8 +110,13 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 			}
 		case i.Switching:
 			s.Role = "access " + vlanName[i.AccessVLAN]
-		case cfg.L3[name+".0"] != nil && cfg.L3[name+".0"].Instance == model.MgmtInstance:
+		case i.Management:
 			s.Role = "management"
+			if ln, err := netlink.LinkByName(dataplane.CMEName); err == nil && ln.Attrs().ParentIndex > 0 {
+				if par, err := netlink.LinkByIndex(ln.Attrs().ParentIndex); err == nil && par.Attrs().Name == p.Name {
+					s.Role += ", active (cme)"
+				}
+			}
 		case cfg.L3[name+".0"] != nil || i.VlanTagging:
 			s.Role = "routed"
 		default:
@@ -142,6 +147,8 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 		}
 		var linux string
 		switch {
+		case u.CME():
+			linux = dataplane.CMEName
 		case u.IRB():
 			linux = name
 		case u.Tag != 0:
@@ -166,12 +173,13 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 			s.Addrs = append(s.Addrs, p.String())
 		}
 		s.Role = "routed"
-		if u.Instance == model.MgmtInstance {
-			s.Role = "management"
+		mgmt := u.Instance != "" && u.Instance == cfg.System.MgmtInstance
+		if mgmt {
+			s.Role = "management (" + u.Instance + ")"
 		} else if u.Instance != "" {
 			s.Role = "routed (" + u.Instance + ")"
 		}
-		if u.IRB() && u.Instance != model.MgmtInstance {
+		if u.IRB() && !mgmt {
 			s.Role = "irb vlan " + strconv.Itoa(u.VLAN)
 			if v := cfg.VLANByID[u.VLAN]; v != nil {
 				s.Role = "irb " + v.Name
