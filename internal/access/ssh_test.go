@@ -55,10 +55,13 @@ func TestCLISSH(t *testing.T) {
 	if fileExists(s.LegacyDropIn) {
 		t.Error("legacy OS drop-in not removed")
 	}
-	for _, want := range []string{"systemctl reload ssh", "sshd -t -f " + s.confPath() + ".new", "systemctl enable switchd-sshd.service", "systemctl reload-or-restart switchd-sshd.service"} {
+	for _, want := range []string{"systemctl reload ssh", "sshd -t -f " + s.confPath() + ".new", "systemctl enable switchd-sshd.service", "systemctl restart switchd-sshd.service"} {
 		if !strings.Contains(strings.Join(calls, "\n"), want) {
 			t.Errorf("missing call %q in %v", want, calls)
 		}
+	}
+	if u, _ := os.ReadFile(s.UnitPath); !strings.Contains(string(u), "ExecStart=/usr/sbin/sshd -D") {
+		t.Errorf("without a management instance sshd runs in the default VRF:\n%s", u)
 	}
 	// Our own running port is not a conflict.
 	os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte("hdr\n   0: 00000000:08AE 00000000:0000 0A\n"), 0o644)
@@ -90,5 +93,15 @@ func TestCLISSH(t *testing.T) {
 	s.Sync(cfg)
 	if fileExists(s.UnitPath) || fileExists(s.confPath()) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
 		t.Errorf("not removed: %v", calls)
+	}
+}
+
+func TestCLISSHInManagementVRF(t *testing.T) {
+	u := unitText(model.MgmtInstance)
+	if !strings.Contains(u, "ExecStart=/usr/sbin/ip vrf exec mgmt_ceros /usr/sbin/sshd -D -f /etc/switchd/sshd_config") {
+		t.Errorf("unit does not run sshd in the management VRF:\n%s", u)
+	}
+	if strings.Contains(unitText(""), "vrf exec") || strings.Contains(unitText(""), "@EXEC@") {
+		t.Errorf("unit without a management instance:\n%s", unitText(""))
 	}
 }

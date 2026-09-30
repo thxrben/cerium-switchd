@@ -1,4 +1,4 @@
-# mclag — Linux HA switch (plan)
+# cerOS (Cerium) — Linux HA switch (plan)
 
 Goal: turn ordinary Linux boxes (any arch, any NIC) into a stack of HA-capable L2
 switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
@@ -48,7 +48,7 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
 |---|---|---|
 | Data | switch ports (e.g. 10G), VXLAN | client traffic only, no IP on any port |
 | Stacking | dedicated stacking ports, direct 1:1 cables in a ring | Raft/config, state, MC-LAG sync, RSTP relay, BFD (EtherType 0x88b5, untagged), and client traffic between members in stack tunnels (VXLAN over a hidden internal instance; decided 2026-09-30) |
-| Management | IP on any VLAN (IRB-like) or a dedicated port, VRF `mgmt_junos` | administration only: SSH, web, ping, syslog, NTP, DNS, updates |
+| Management | IP on any VLAN (IRB-like) or a dedicated port, VRF `mgmt_ceros` | administration only: SSH, web, ping, syslog, NTP, DNS, updates |
 
 * Every switch is a **member** with an ID (1–16). Interfaces are named `<member>/<linux-ifname>`, plus
   stack-global `ae<N>`. `interface-range` (member-range, wildcards) handles large and hot-plugged port sets.

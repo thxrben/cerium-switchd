@@ -1,4 +1,4 @@
-# mclag Configuration Reference
+# cerOS Configuration Reference
 
 This document is the **specification** of the switch configuration: the syntax, what every statement does,
 how statements interact, and which combinations `commit check` rejects (**error**) or reports (**warning**).
@@ -114,7 +114,7 @@ Every port belongs to exactly one plane. Traffic never crosses from one plane to
 |---|---|---|---|
 | **Data plane** | Switch ports (`unit 0 family ethernet-switching`), bundles, VXLAN tunnels, and the routed interfaces of the default and data routing instances (irb, routed ports) | Client traffic, routed between VLANs where configured (5.3.2, 5.3.3) | only on routed interfaces |
 | **Stacking plane** | Dedicated **stacking ports** (VC ports), direct 1:1 cables between members, cabled as a ring | Stack configuration, member state, MC-LAG synchronisation, BFD (the stacking protocol, untagged), and client traffic between members inside the **stack tunnels** (5.2) | internal only: a hidden routing instance that carries the stack tunnels, never configurable or reachable from other planes |
-| **Management plane** | The interfaces of routing instance `mgmt_junos` (`system management-instance`): a dedicated port or an irb unit per member | Administration only: SSH and the CLI, web/API, ping, syslog, NTP, DNS, software updates | yes, in `mgmt_junos` only |
+| **Management plane** | The interfaces of routing instance `mgmt_ceros` (`system management-instance`): a dedicated port or an irb unit per member | Administration only: SSH and the CLI, web/API, ping, syslog, NTP, DNS, software updates | yes, in `mgmt_ceros` only |
 
 Rules that follow from this:
 
@@ -129,14 +129,14 @@ Rules that follow from this:
 * **Stack traffic never uses the management network.** Configuration sync, MC-LAG synchronisation and client traffic
   between members run only over stacking ports. The management network carries only administration of the switch.
   Management traffic crosses stacking ports only inside the reserved internal management VLAN (5.2).
-* Routing instances are separate routing tables: nothing is routed between `mgmt_junos` and the data plane, or between
+* Routing instances are separate routing tables: nothing is routed between `mgmt_ceros` and the data plane, or between
   two instances.
 * **Services live in the management instance.** With `system management-instance`, switchd's own traffic (syslog,
-  NTP, DNS lookups) goes out through `mgmt_junos`. The addresses of data routed interfaces are protected:
+  NTP, DNS lookups) goes out through `mgmt_ceros`. The addresses of data routed interfaces are protected:
   they answer ping, ARP and neighbour discovery (and routing protocols once they exist), replies to connections the
   switch opened, and nothing else. So the SSH servers (the OS's and the CLI's) are reachable only through the
   management interfaces, or through the OS's own interfaces that switchd does not manage.
-* An in-band management VLAN on the data trunks is possible (an irb unit in `mgmt_junos`). Management then shares the
+* An in-band management VLAN on the data trunks is possible (an irb unit in `mgmt_ceros`). Management then shares the
   fate of the data plane. Commit confirmation and the serial console are the safety nets. A dedicated port avoids that.
 
 ---
@@ -376,8 +376,9 @@ vlans {
 | `show system limits` | What this switch can carry and how much of it is used (3.5.1). |
 | `show vlans` | VLANs with their ports (`*` = tagged). |
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
-| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, `mgmt_junos` and data instances), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
+| `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, `mgmt_ceros` and data instances), including entries of interfaces the operating system manages (e.g. its own management NIC). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
+| `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
@@ -526,8 +527,21 @@ DNS resolvers.
 * W: more than 3 servers (only the first 3 are used).
 
 #### `system ntp server <host> [prefer]`
-NTP servers, queried through the management instance. `prefer` marks the preferred source. Without any server, the OS time
-configuration stays untouched. Correct time matters for logs, certificates and the stack's TLS.
+NTP servers. switchd has its own NTP client (SNTP, RFC 5905 packets, UDP port 123); no NTP daemon of the operating system
+is used or needed. Without any server, the OS time configuration stays untouched. Correct time matters for logs,
+certificates and the stack's TLS.
+* The queries leave through the management instance (`mgmt_ceros`) when there is one (1.5), like all traffic the
+  switch originates, so the servers must be reachable from there (a static route in `mgmt_ceros`).
+* Every server is queried at start (after 2 seconds) and then every 64 seconds while the clock is not synchronised and
+  every 512 seconds afterwards. The client uses the `prefer` server if it answers, otherwise the server with the
+  lowest round-trip delay. Replies are checked (server mode, stratum 1 to 15, not "unsynchronised", not a
+  kiss-o'-death, and they must carry the time of the request), so a forged or stray packet cannot set the clock.
+* An offset above 128 ms **steps** the clock (and is logged as a warning); a smaller one is **slewed** by the kernel
+  (`adjtime`), so time never jumps by a little. All members of a stack run their own client.
+* A member without a reachable server keeps its clock and shows `Synchronized: no`; nothing else depends on it.
+* W: another time service on the operating system (`systemd-timesyncd`, `chrony`, `ntpd`) is also setting the clock.
+  Disable it (OS takeover, plan 4.15).
+* `show system ntp` shows the servers and the state.
 
 #### `system syslog host <host> { … }`
 Sends log messages to a remote server, through the management instance (5.9) when there is one. The format is RFC 5424, with the member host name as HOSTNAME.
@@ -581,18 +595,21 @@ automation access on the OS port.
 * It uses the host's SSH host keys, so the fingerprint is the same as on the OS port.
 * Passwords are accepted for users with an `encrypted-password`; keys come from `authentication ssh-key`.
 * The pre-login banner is `system login message`.
-* It accepts connections through the management instance (and, before one is configured, from any
-  interface of the host).
+* With `system management-instance` the server runs **inside routing instance `mgmt_ceros`**: it accepts connections
+  through the management interfaces only, not through data interfaces and not through network interfaces the
+  operating system manages outside the instance. Sessions that are open during the change stay open. The server
+  waits for the instance to exist (it retries every 2 seconds), so a commit that creates the instance and enables
+  SSH together works. Without a management instance (the first installation) it listens on every interface of the host.
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
 HTTPS web interface and REST API, reachable through the management instance. Default: port 443 with a self-signed certificate generated
 at first start. `certificate` and `key` must be given together (E otherwise). `disable` turns it off.
 
 #### `system management-instance`
-Makes routing instance `mgmt_junos` the management instance (1.5), as in Junos. Its interfaces are the members'
+Makes routing instance `mgmt_ceros` the management instance (1.5), as in Junos. Its interfaces are the members'
 management interfaces, and switchd's services use it: syslog, NTP and DNS lookups go out through it. See 5.9 for the instance itself.
-* E: `system management-instance` without `routing-instances mgmt_junos`, or the reverse.
-* W: an instance `mgmt_junos` without an interface of some member (that member has no management address).
+* E: `system management-instance` without `routing-instances mgmt_ceros`, or the reverse.
+* W: an instance `mgmt_ceros` without an interface of some member (that member has no management address).
 * **Without `management-instance`, switchd does not touch the host's existing management network configuration**
   (e.g. the installer's NIC with DHCP). This is the safe default for the first installation. Once you configure it,
   switchd takes over, and commit confirmation protects you against locking yourself out.
@@ -683,14 +700,26 @@ working path, so a ring survives one broken cable.
     member (default: the next by `mastership-priority`). A running commit finishes first; forwarding is not affected.
   * `request virtual-chassis member remove <id>` decommissions a member: if it is master, mastership moves first; then
     its traffic is drained (LACP partners are told the links go away, stacking paths are rerouted), it leaves the
-    quorum and the member list, and another member takes its vote if needed. Its configuration stays until you delete
-    it. The removed switch keeps running standalone with the last configuration and its member id, as the only member
-    of a new stack of its own (new stack keys; the old stack no longer accepts it).
+    quorum and the member list, and another member takes its vote if needed. Its entry in the stack's configuration
+    stays until you delete it. The removed switch becomes **member 1 of a stack of its own** and keeps running with its
+    last configuration, rewritten for that: its ports are renamed from `<old id>/<card>/<port>` to `1/<card>/<port>`
+    (in `interfaces`, `interface-range`, routing instances, analyzers and the like), addresses and statements that
+    belonged to other members are removed, and `virtual-chassis` and `mclag` statements are deleted. The stacking port
+    designations stay (a local setting; `request virtual-chassis vc-port delete …` releases them), so it can join again. The stack keys are replaced by new ones (the old keys are gone from the switch) and the
+    old stack no longer accepts it. The previous configuration store stays on the switch as `config.pre-leave-<time>`.
   * `mastership-priority 0` means "never master" (useful for a switch that is about to be replaced). The member with
     the highest priority becomes master when it is available, but a working master is only replaced by an explicit
     switch (no flapping when a higher-priority member reboots).
 * Stack control needs a majority of members (Raft). Without a majority, the data plane keeps forwarding with the last
   committed configuration, and only commits are blocked.
+  * `request virtual-chassis force-master` (super-user, after a `[yes,no] (no)` question) is the explicit override for a
+    stack that has lost its majority for good, typically a two-member stack whose other member is dead: this member
+    forms the voting group alone and becomes master, so commits work again. switchd restarts once (forwarding
+    continues, as with any switchd restart). It is refused while the stack has a master. The other members stay in
+    the member list but do not vote while they cannot be reached; when one returns, it takes over this member's
+    configuration history (what it committed alone is dropped) and votes again. **Risk**: if the other members are
+    still running and only the cables are cut, both sides can commit different configurations, and one side's
+    changes are lost when they meet. The override is logged (`change-log`).
 * **Configuration mode runs on the master**, as in Junos VC: `configure` on any member opens the configuration
   session on the master (the prompt shows the master's host name). In a stack with more than one member, the line
   above the prompt shows the role of the member the session runs on: `{master:1}`, `{backup:2}`, `{linecard:3}`,
@@ -702,7 +731,7 @@ working path, so a ring survives one broken cable.
   target the output has a section per member (`member2:` and a line), pipes apply to the whole output, e.g.
   `show interfaces terse all-members | match down`. The command runs on the member as the same user and class.
   * Commands with targets: `show interfaces`, `show ethernet-switching table`, `show vlans`, `show chassis hardware`,
-    `show system uptime|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
+    `show system uptime|ntp|offload|syslog`, `show version`, `show log`, `show arp`, `show ipv6 neighbors`, `show route`,
     `show virtual-chassis vc-port`, `clear ethernet-switching table`, `request system reboot|halt|power-off`,
     `clear system reboot`.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
@@ -801,7 +830,7 @@ The IP interface that carries this member's VXLAN tunnels, in the default routin
 block with the Junos form, `switch-options vtep-source-interface`, and a routed interface; it is not implemented yet.)
 * `vlan <vlan>` (IRB-like) or `interface <interface-name>` (a dedicated port), `address [ … ]` static addresses.
 * `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
-* E: the underlay VLAN or port is in routing instance `mgmt_junos`.
+* E: the underlay VLAN or port is in routing instance `mgmt_ceros`.
 * E: the underlay VLAN is itself extended over VXLAN (tunnel traffic would loop into the tunnel).
 * W: underlay MTU (the dedicated port's `mtu`, or the VLAN's `mtu`) is smaller than the largest VXLAN VLAN MTU plus
   encapsulation overhead (5.7).
@@ -982,7 +1011,9 @@ address in that VLAN and **routes between VLANs** (and routed ports) in the defa
 * In a stack, the irb interface exists on **every member that has the VLAN**, with the same addresses and the same MAC
   address (derived from the stack), so every member routes locally (anycast gateway). With MC-LAG, both peers
   answer for the gateway address.
-* An irb unit can be the management interface: put it into `routing-instances mgmt_junos` (5.9) and give each member
+  The MAC is derived from the stack id (locally administered). Duplicate address detection is off on irb units,
+  because every member holds the same IPv6 addresses.
+* An irb unit can be the management interface: put it into `routing-instances mgmt_ceros` (5.9) and give each member
   its own address with `member`.
 * In the kernel, `irb.<n>` is a VLAN device on the bridge, and the bridge itself joins the VLAN (bridge self VLAN).
 
@@ -992,7 +1023,7 @@ do not forward. For IPv6, Linux can only enable forwarding for the whole system,
 OS-managed interfaces that use router advertisements first (they keep their SLAAC addresses and default routes).
 * W: routed interfaces exist in the default instance while the operating system's management NIC (addresses the OS
   configured) is also in it: data VLANs can then reach the management network through the OS routes. Configure the
-  management port in `mgmt_junos` to separate them.
+  management port in `mgmt_ceros` to separate them.
 * ICMP redirects are not sent. Reverse-path filtering is loose (`rp_filter 2`) on routed interfaces.
 
 ### 5.4 vlans
@@ -1204,7 +1235,7 @@ routed between instances or to and from the default instance.
 * `routing-options static route …`: as in 5.8, for this instance.
 * Addresses and subnets may overlap between instances, but not within one (E).
 * `instance-type virtual-router` (default and the only type for now; `vrf` with route distinguishers comes with BGP).
-* **`mgmt_junos`** is the management instance (with `system management-instance`, 5.1). It takes no `instance-type`.
+* **`mgmt_ceros`** is the management instance (named `mgmt_junos` in earlier versions; stored configurations are converted when they are read) (with `system management-instance`, 5.1). It takes no `instance-type`.
   Typical configurations:
 
   ```
@@ -1212,21 +1243,21 @@ routed between instances or to and from the default instance.
   set system management-instance
   set interfaces 1/2/0 unit 0 family inet address 10.5.20.76/16
   set interfaces 2/2/0 unit 0 family inet address 10.5.20.77/16
-  set routing-instances mgmt_junos interface 1/2/0.0
-  set routing-instances mgmt_junos interface 2/2/0.0
-  set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+  set routing-instances mgmt_ceros interface 1/2/0.0
+  set routing-instances mgmt_ceros interface 2/2/0.0
+  set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
 
   # or a management VLAN
   set vlans mgmt vlan-id 99
   set vlans mgmt l3-interface irb.99
   set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1
   set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2
-  set routing-instances mgmt_junos interface irb.99
+  set routing-instances mgmt_ceros interface irb.99
   ```
   A static route whose next hop is not in a subnet of a member's interfaces is inactive on that member.
 * Configurations of older versions (`virtual-chassis member <id> management { … }`) are converted into this form when
   they are read: the addresses go onto the port or an irb unit (unit number = VLAN id), the gateways become static
-  routes of `mgmt_junos`, and `system management-instance` is set.
+  routes of `mgmt_ceros`, and `system management-instance` is set.
 * In the kernel an instance is a VRF device named like the instance, with its own routing table.
 * `show route [instance <name>]` lists the routes; `show interfaces` marks management interfaces.
 
@@ -1358,7 +1389,7 @@ vlans {
     }
 }
 routing-instances {
-    mgmt_junos {
+    mgmt_ceros {
         interface 1/3/0.0;
         routing-options {
             static {
@@ -1418,8 +1449,8 @@ set vlans mgmt vlan-id 99
 set vlans mgmt l3-interface irb.99
 set interfaces irb unit 99 family inet address 192.168.1.11/24 member 1
 set interfaces irb unit 99 family inet address 192.168.1.12/24 member 2
-set routing-instances mgmt_junos interface irb.99
-set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
+set routing-instances mgmt_ceros interface irb.99
+set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
 set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
@@ -1444,7 +1475,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
 | CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
 | Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_junos), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` not yet |
+| `system management-instance`, `routing-instances` (VRFs, static routes, mgmt_ceros), protection of data L3 addresses, `show route` | implemented, unit and lab tested; old management blocks converted. `family inet dhcp` not yet |
 | `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
 | `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
 | Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
@@ -1472,7 +1503,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 |---|---|---|---|---|
 | `system` | container |  |  | System parameters |
 | `system host-name` | leaf | &lt;hostname&gt; |  | Name of the stack/system |
-| `system management-instance` | flag |  |  | Use routing instance mgmt_junos for management (services, management interfaces) |
+| `system management-instance` | flag |  |  | Use routing instance mgmt_ceros for management (services, management interfaces) |
 | `system domain-name` | leaf | &lt;hostname&gt; |  | DNS domain name |
 | `system time-zone` | leaf | &lt;time-zone&gt; |  | Time zone (e.g. Europe/Berlin) |
 | `system name-server` | leaf-list | &lt;ip-address&gt; |  | DNS servers |
@@ -1665,7 +1696,7 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
 | `routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
 | `routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
-| `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); mgmt_junos is the management instance |
+| `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); mgmt_ceros is the management instance |
 | `routing-instances <instance-name> description` | leaf | &lt;text&gt; |  | Instance description |
 | `routing-instances <instance-name> instance-type` | leaf | virtual-router | virtual-router | Instance type |
 | `routing-instances <instance-name> interface` | leaf-list | &lt;unit-name&gt; |  | Routed units in this instance (irb.10, 1/0/5.0) |

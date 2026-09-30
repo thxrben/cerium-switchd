@@ -34,7 +34,7 @@ type Config struct {
 
 type System struct {
 	HostName string
-	// MgmtInstance: routing instance mgmt_junos is the management instance.
+	// MgmtInstance: routing instance mgmt_ceros is the management instance.
 	MgmtInstance bool
 	DomainName   string
 	TimeZone     string

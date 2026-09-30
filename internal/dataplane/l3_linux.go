@@ -3,6 +3,7 @@
 package dataplane
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,6 +130,11 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	st := k.loadL3()
 	changed := false
 	var errs []error
+	if c, err := k.syncGatewayMAC(l); err != nil {
+		errs = append(errs, err)
+	} else {
+		changed = changed || c
+	}
 	note := func(c bool, err error) {
 		changed = changed || c
 		if err != nil {
@@ -248,6 +254,22 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		delete(st.Tables, name)
 	}
 	c, err = k.syncProtect(protect)
+	note(c, err)
+	mgmtTable := 0
+	for _, v := range l.VRFs {
+		if v.Mgmt {
+			mgmtTable = tables[v.Name]
+		}
+	}
+	var mgmtAddrs []netip.Addr
+	for _, i := range l.Ifs {
+		if vrfs[i.VRF].Mgmt {
+			for _, a := range i.Addrs {
+				mgmtAddrs = append(mgmtAddrs, a.Addr())
+			}
+		}
+	}
+	c, err = syncOriginRules(mgmtTable, mgmtAddrs)
 	note(c, err)
 
 	if !l.IPv6() && st.IPv6Fwd {
@@ -419,6 +441,19 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 		}
 	}
 
+	// irb units carry the same addresses and MAC on every member of a stack
+	// (anycast gateway): duplicate address detection would see the other
+	// members' copies and disable them, so it is off there, and addresses
+	// that failed it before are added again.
+	anycast := i.Own && i.Parent == BridgeName
+	if anycast {
+		c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+i.Name+"/accept_dad", "0")
+		changed = changed || c
+		if err != nil {
+			return changed, err
+		}
+	}
+
 	// Addresses: own devices get exactly the configured ones; on a port only
 	// addresses switchd added are ever removed.
 	cur, err := netlink.AddrList(ln, netlink.FAMILY_ALL)
@@ -427,6 +462,15 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	}
 	have := map[netip.Prefix]netlink.Addr{}
 	for _, a := range cur {
+		if anycast && a.Flags&unix.IFA_F_DADFAILED != 0 {
+			re := a
+			_ = netlink.AddrDel(ln, &a)
+			re.Flags = (re.Flags &^ (unix.IFA_F_DADFAILED | unix.IFA_F_TENTATIVE)) | unix.IFA_F_NODAD
+			if err := netlink.AddrAdd(ln, &re); err != nil && !errors.Is(err, unix.EEXIST) {
+				return changed, fmt.Errorf("%s: address %s after failed DAD: %w", i.Name, a.IPNet, err)
+			}
+			changed = true
+		}
 		if a.IP.IsLinkLocalUnicast() {
 			continue
 		}
@@ -443,6 +487,9 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 		ad, err := netlink.ParseAddr(p.String())
 		if err != nil {
 			return changed, err
+		}
+		if anycast && p.Addr().Is6() {
+			ad.Flags |= unix.IFA_F_NODAD
 		}
 		if err := netlink.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
 			return changed, fmt.Errorf("%s: address %s: %w", i.Name, p, err)
@@ -561,4 +608,47 @@ func routePresent(cur []netlink.Route, r *netlink.Route) bool {
 		}
 	}
 	return false
+}
+
+// GatewayMAC derives the stack-wide gateway MAC from the stack id: locally
+// administered, unicast.
+func GatewayMAC(stackID string) net.HardwareAddr {
+	if stackID == "" {
+		return nil
+	}
+	h := sha256.Sum256([]byte("ceros gateway mac\x00" + stackID))
+	mac := net.HardwareAddr(h[:6])
+	mac[0] = mac[0]&^1 | 2
+	return mac
+}
+
+// syncGatewayMAC gives the bridge and switchd's irb devices the stack-wide
+// MAC. Changing the MAC of an up device does not take it down.
+func (k *Netlink) syncGatewayMAC(l *L3) (bool, error) {
+	if len(k.GatewayMAC) != 6 {
+		return false, nil
+	}
+	names := []string{BridgeName}
+	for _, i := range l.Ifs {
+		if i.Own && i.Parent == BridgeName {
+			names = append(names, i.Name)
+		}
+	}
+	changed := false
+	var errs []error
+	for _, n := range names {
+		ln, err := netlink.LinkByName(n)
+		if err != nil {
+			continue // created later in this sync; the next one sets it
+		}
+		if ln.Attrs().HardwareAddr.String() == k.GatewayMAC.String() {
+			continue
+		}
+		if err := netlink.LinkSetHardwareAddr(ln, k.GatewayMAC); err != nil {
+			errs = append(errs, fmt.Errorf("%s: gateway MAC: %w", n, err))
+			continue
+		}
+		changed = true
+	}
+	return changed, errors.Join(errs...)
 }

@@ -23,6 +23,7 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
 	"mclag/internal/model"
+	"mclag/internal/ntp"
 )
 
 // ops implements cli.Operational from the kernel and the active
@@ -41,6 +42,9 @@ type ops struct {
 	dryRun  bool
 	lacp    *lacp.Runtime
 	mclag   *mclagCtl
+	ntp     *ntp.Client
+	// restart ends switchd so that systemd starts it again.
+	restart func()
 }
 
 func (o *ops) model() *model.Config {
@@ -284,6 +288,19 @@ func nudState(s int) string {
 		return "incomplete"
 	}
 	return "-"
+}
+
+func (o *ops) NTP() (cli.NTPStatus, error) {
+	if o.ntp == nil {
+		return cli.NTPStatus{}, nil
+	}
+	st := o.ntp.Status()
+	out := cli.NTPStatus{Synced: st.Synced, LastAdjust: st.LastAdjust, LastStep: st.LastStep, Via: st.Via}
+	for _, s := range st.Servers {
+		out.Servers = append(out.Servers, cli.NTPServerStatus{Host: s.Host, Prefer: s.Prefer, Addr: s.Addr, Stratum: s.Stratum,
+			Offset: s.Offset, Delay: s.Delay, LastPoll: s.LastPoll, Reach: s.Reach, Err: s.Err, Selected: s.Selected})
+	}
+	return out, nil
 }
 
 func (o *ops) Uptime() (cli.Uptime, error) {
@@ -566,6 +583,22 @@ func (o *ops) SwitchMaster(to int, user string) error {
 	}
 	o.log.Warn("mastership switch requested", "facility", "change-log", "to", to, "user", user)
 	return n.Transfer(to)
+}
+
+func (o *ops) ForceMaster(user string) error {
+	n := o.vc.Control
+	if n == nil {
+		return errors.New("stack control is not running")
+	}
+	if err := n.ForceMaster(); err != nil {
+		return err
+	}
+	o.log.Warn("force-master: this member continues without the others (split-brain risk)", "facility", "change-log", "user", user)
+	go func() {
+		time.Sleep(time.Second) // let the CLI answer first
+		o.restart()
+	}()
+	return nil
 }
 
 func (o *ops) RemoveVCMember(id int, user string) error {

@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -139,6 +140,18 @@ func (n *Node) Start() error {
 		n.closeStores()
 		return err
 	}
+	if existing && fileExists(n.forceFile()) {
+		// request virtual-chassis force-master: this member alone forms the
+		// Raft configuration; the others come back as non-voters.
+		n.Log.Warn("stack control: force-master, this member continues alone", "facility", "change-log")
+		rc := raft.Configuration{Servers: []raft.Server{
+			{ID: serverID(n.Self), Address: raft.ServerAddress(serverID(n.Self)), Suffrage: raft.Voter}}}
+		if err := raft.RecoverCluster(conf, n.fsm, n.bolt, n.bolt, snaps, n.trans, rc); err != nil {
+			n.closeStores()
+			return fmt.Errorf("force-master: %w", err)
+		}
+		os.Remove(n.forceFile())
+	}
 	n.raft, err = raft.NewRaft(conf, n.fsm, n.bolt, n.bolt, snaps, n.trans)
 	if err != nil {
 		n.closeStores()
@@ -167,6 +180,27 @@ func (n *Node) Start() error {
 	go func() { defer n.wg.Done(); n.notifyLoop(ctx) }()
 	go func() { defer n.wg.Done(); n.leaderLoop(ctx) }()
 	return nil
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// forceFile marks a forced recovery for the next start.
+func (n *Node) forceFile() string { return filepath.Join(n.Dir, "force-master") }
+
+// ForceMaster prepares the split-brain-prone override for a stack that has
+// lost its majority (a two-member stack with one member down): at the next
+// start (the caller restarts switchd) this member forms the Raft
+// configuration alone and becomes master; the other members rejoin as
+// non-voters and take over this member's state when they return. An error
+// if a master is known (nothing to override).
+func (n *Node) ForceMaster() error {
+	if n.raft == nil {
+		return errors.New("stack control is not running")
+	}
+	if n.Master() != 0 {
+		return fmt.Errorf("the stack has a master (member %d); nothing to override", n.Master())
+	}
+	return os.WriteFile(n.forceFile(), []byte("force\n"), 0o600)
 }
 
 func (n *Node) closeStores() {
@@ -560,6 +594,17 @@ func (n *Node) reconcileServers() {
 	for _, id := range ids {
 		voter, in := have[id]
 		addr := raft.ServerAddress(serverID(id))
+		// A member that cannot be reached must not vote: the majority
+		// would then need it (after force-master, or a member added while
+		// it is down).
+		if wantVoter[id] && id != n.Self && !slices.Contains(n.Mesh.Reachable(), id) {
+			if !in {
+				n.Log.Info("stack control: adding non-voting member (not reachable yet)", "member", id)
+				n.raft.AddNonvoter(serverID(id), addr, 0, 10*time.Second)
+				return
+			}
+			continue
+		}
 		switch {
 		case !in && wantVoter[id]:
 			n.Log.Info("stack control: adding voting member", "member", id)

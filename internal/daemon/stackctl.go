@@ -38,6 +38,9 @@ type stackCtl struct {
 	local  *kernelApplier
 	member int
 	log    *slog.Logger
+	// stateDir holds the configuration store (rewritten when this member
+	// leaves the stack).
+	stateDir string
 
 	// restart ends switchd so that systemd starts it again.
 	restart func()
@@ -62,7 +65,7 @@ func (s *stackCtl) eng() *commit.Engine {
 // startControl starts the stack control on the configuration store. It
 // returns nil (and logs) if it cannot run; switchd then works standalone.
 func startControl(stateDir string, store *commit.FileStore, vc *stack.Manager, local *kernelApplier, member int, log *slog.Logger, restart func()) *stackCtl {
-	s := &stackCtl{vc: vc, local: local, member: member, log: log, restart: restart}
+	s := &stackCtl{stateDir: stateDir, vc: vc, local: local, member: member, log: log, restart: restart}
 	n := &control.Node{Self: member, SelfKey: vc.PublicKey(), Dir: filepath.Join(stateDir, "stack", "raft"), Store: store,
 		MetaFile: filepath.Join(stateDir, "stack", "control.json"), Mesh: vc.Mesh(), Founder: vc.Founder(), Log: log,
 		Priority: func(id int) int {
@@ -181,6 +184,23 @@ func (s *stackCtl) checkRemoved() {
 		return
 	}
 	s.left = true
+	// This member becomes member 1 of a stack of its own: its configuration
+	// is rewritten first (ports renumbered, stacking and MC-LAG removed),
+	// then the stack keys are replaced, so a failure in between leaves a
+	// member that still finds itself removed on the next start.
+	if e := s.engine; e != nil { // s.mu is held
+		var m map[string]any
+		raw, _ := json.Marshal(config.ToJSON(e.Active().Root))
+		if json.Unmarshal(raw, &m) == nil {
+			(&standalone{from: strconv.Itoa(s.member), log: s.log}).Rewrite(m)
+			raw, _ = json.Marshal(m)
+			if err := replaceConfigAs(s.stateDir, "config.pre-leave-",
+				fmt.Sprintf("left the virtual chassis (was member %d, now member 1)", s.member), raw); err != nil {
+				s.log.Error("stack: rewriting the configuration after removal failed", "err", err)
+				return
+			}
+		}
+	}
 	if err := s.vc.Leave(); err != nil {
 		s.log.Error("stack: leaving after removal failed", "err", err)
 		return

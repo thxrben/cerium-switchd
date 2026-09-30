@@ -63,7 +63,7 @@ func NewStack() (*Stack, error) {
 	var idb [8]byte
 	rand.Read(idb[:])
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: fmt.Sprintf("mclag stack %x", idb)},
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: fmt.Sprintf("ceros stack %x", idb)},
 		NotBefore: NotBefore, NotAfter: NotAfter, IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		// The stack certificate also authenticates the admitting side of a

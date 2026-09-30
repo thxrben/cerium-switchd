@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-30.
+Last updated: 2026-09-30 (evening).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -69,7 +69,7 @@ Last updated: 2026-09-30.
   mix) and show system offload.
 
 - Junos restructuring (2026-09-30): stack -> virtual-chassis (mastership-priority), management moved to
-  routing instances (system management-instance + routing-instances mgmt_junos, per-member irb addresses),
+  routing instances (system management-instance + routing-instances mgmt_ceros, per-member irb addresses),
   data routing instances (virtual-router VRFs), protection filter (nftables) for data L3 addresses, show route.
   Old configs converted on read (internal/daemon/upgrade.go). physw4 is switched off (user), deploy to sw1 only.
 
@@ -121,6 +121,47 @@ Last updated: 2026-09-30.
   Fixed on the way: the stacking socket died on ENETDOWN (port restart when it joins the VRF); SyncL3 deleted the
   stack table's routes; without an unreachable default, tunnel lookups fell through to the main table (mgmt port).
 
+## Done 2026-09-30 evening (unit-tested; NOT yet deployed/verified in the lab, deploy was not permitted)
+- Lab test TestRoutedUnits (routed subinterfaces in several instances with the same subnet; passes on sw1).
+- CLI SSH server runs inside VRF mgmt_ceros when `system management-instance` is set (`ip vrf exec`); spec 5.1;
+  lab assertions added to TestManagementPlane (need the new build on sw1-sw3).
+- `request virtual-chassis force-master` (two-member commit override): Raft RecoverCluster at next start, peers
+  come back as non-voters until reachable; unit test TestForceMaster; spec 5.2. Needs a lab test.
+- Member removal: the removed switch becomes member 1 (config rewritten by internal/daemon/leave.go, stacking and
+  mclag statements and VC ports deleted, new keys). Needs a lab test (sw3 remove + re-join).
+- Decisions by the user: irbs keep routing within an instance (as in Junos); overlapping subnets in one instance are
+  an error; operational commands stay local by default, `member <id>` forwards (already implemented, check
+  `request system halt member 2` in the lab); Proxmox stack NIC MTU is now 9100 (update stackJumbo, re-test).
+
+- Branding (user, 2026-09-30): the product is **cerOS** (metal: Cerium). The management routing instance is
+  `mgmt_ceros` (was `mgmt_junos`; stored configs are converted on read, internal/daemon/upgrade.go). Renamed:
+  docs/PLAN titles, `show version`, systemd unit descriptions, new stack certificates ("ceros stack"). NOT renamed on
+  purpose: Go module `mclag`, binaries `switchd`/`swcli`, /etc/switchd, unit names, the `mclag` feature statement
+  (MC-LAG), the LACP system-id hash string (would change the bundles' system MAC).
+
+- Origin rules (internal/dataplane/origin_linux.go): with a management instance, what the switch originates itself
+  (unbound connects: DNS, NTP, apt, ssh clients) is routed by table of mgmt_ceros only, `unreachable` otherwise
+  (rules 1100/1101 after the l3mdev rule; unspecified source + every management address, v4 and v6). Servers keep
+  their reply paths. Lab TestOriginViaManagement passes. Found on the way: TCP re-routes each packet after the source
+  is chosen, so matching only the unspecified source is not enough.
+- NTP (internal/ntp): own SNTP client through the management VRF (step > 128 ms, slew below; prefer, lowest delay;
+  replies validated), `show system ntp`, commit warning when another time service runs. Lab TestNTPViaManagement.
+- CLI SSH unit change now needs `systemctl restart` (a reload kept the old process outside the VRF).
+- Lab tests added: TestRoutedUnits, TestOriginViaManagement, TestNTPViaManagement, TestVirtualChassisRemoveRenumber.
+  TestForceMaster (stops switchd on sw2/sw3) was written but NOT added: the user must allow taking sw2/sw3 down.
+- physw4 (10.5.20.76) received the build with the first deploy of the day; the dev box lost its route to it (wg11)
+  afterwards, the user's own session stayed up. Its config has no management instance, so the origin rules are inactive there.
+- Open: stack NICs still report max MTU 9014 (Proxmox mtu 9100 needs the VMs restarted / NICs re-attached; user
+  restarts them), then re-run TestStackJumbo.
+
+- Anycast gateway fixed: bridge + irb MAC derived from the stack id (was the OS MAC; sw1/sw2 only matched as
+  cloned VMs), DAD off on irb units (every member holds the same IPv6 addresses). Lab TestGatewayMAC.
+- A removed member keeps its VC port designations (deleting them broke re-joining).
+- Lab after the VM restart (stack NICs now 9114): TestStackJumbo passes (host MTU capped by srv1's NIC, still 9000:
+  srv1 needs a full Proxmox stop/start). TestForceMaster added and passes.
+- LAB PROBLEM (user): TestLACP, TestMCLAG, TestStormControl fail since the VM restart: the Proxmox bridges no longer
+  pass link-local frames (01:80:c2:00:00:0x, LACP/BPDU). Needs group_fwd_mask / OVS forward-bpdu again.
+
 ## Next (in order)
 - Done 2026-09-30: stack tunnels + MC-LAG on the ring, path MTU probes and warnings, Wireshark dissectors
   (tools/wireshark), swcli banner after `?`/Tab, lab tests TestStackJumbo (plain, QinQ, host VXLAN) and
@@ -132,7 +173,7 @@ Last updated: 2026-09-30.
    instead of 9000: for host MTU 9000 across the stack the stk-* NICs need a larger MTU in Proxmox (virtio `mtu=`
    up to 65520) and the stk-* bridges must carry it (stk-12 dropped >1500-byte frames earlier; it passes now).
 4. Open items from Phase 3/4: family inet dhcp, VLAN MTU filter (eBPF), kernel messages to syslog, OS takeover
-   (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_junos.
+   (4.15), card number lifecycle (PLAN Phase 4b), switchd's own DNS/NTP through mgmt_ceros.
 5. Later phases: RSTP, IGMP, VXLAN (control plane), GoBGP (full show route), encryption, polish, 802.1X,
    diagnostics.
 
@@ -142,7 +183,7 @@ Last updated: 2026-09-30.
 2. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
    configurable filter (firewall filter on lo0) later, e.g. to allow SSH on a data irb deliberately?
 3. The CLI SSH server (port 2222) still listens on all addresses; with management-instance the filter blocks
-   it on data L3 addresses. Should it additionally listen *only* inside mgmt_junos (then it is unreachable
+   it on data L3 addresses. Should it additionally listen *only* inside mgmt_ceros (then it is unreachable
    through OS-managed NICs outside the instance, e.g. before the management port is moved)?
 
 4. Two-member stacks cannot commit while one member is down (Raft majority); the spec recommends a witness. Is a

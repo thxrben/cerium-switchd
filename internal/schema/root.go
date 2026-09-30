@@ -51,7 +51,7 @@ func build() *Node {
 
 	system := C("system", "System parameters",
 		V("host-name", "Name of the stack/system", Hostname),
-		F("management-instance", "Use routing instance mgmt_junos for management (services, management interfaces)"),
+		F("management-instance", "Use routing instance mgmt_ceros for management (services, management interfaces)"),
 		V("domain-name", "DNS domain name", Hostname),
 		V("time-zone", "Time zone (e.g. Europe/Berlin)", String("<time-zone>", 64, `^[A-Za-z0-9_+/-]+$`)),
 		LL("name-server", "DNS servers", IP),
@@ -308,7 +308,7 @@ func build() *Node {
 		)
 	}
 	routing := routingOptions("Routing of the default instance")
-	instances := L("routing-instances", "Separate routing tables (VRFs); mgmt_junos is the management instance", InstanceName,
+	instances := L("routing-instances", "Separate routing tables (VRFs); mgmt_ceros is the management instance", InstanceName,
 		V("description", "Instance description", Text),
 		VD("instance-type", "Instance type", Enum(E("virtual-router", "Separate routing table")), "virtual-router"),
 		LL("interface", "Routed units in this instance (irb.10, 1/0/5.0)", UnitName),

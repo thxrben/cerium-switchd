@@ -129,7 +129,7 @@ func (sh *Shell) showVersion(c *call) error {
 	if err := noArgs(c); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "Hostname: %s\nmclag switchd %s\n", sh.env.HostName(), sh.env.Version)
+	fmt.Fprintf(c.out, "Hostname: %s\ncerOS (switchd) %s\n", sh.env.HostName(), sh.env.Version)
 	return nil
 }
 

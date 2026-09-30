@@ -76,7 +76,7 @@ func TestUpgradeStack(t *testing.T) {
 }
 
 // Management blocks become routed interfaces in routing instance
-// mgmt_junos (reference 5.9).
+// mgmt_ceros (reference 5.9).
 func TestUpgradeManagement(t *testing.T) {
 	// A dedicated port (bare Linux name, the oldest form).
 	tr := upgrade(t, `{"stack": {"member": {"1": {"management": {"interface": "ens18",
@@ -86,9 +86,9 @@ func TestUpgradeManagement(t *testing.T) {
 		"set system management-instance",
 		"set interfaces 1/0/0 unit 0 family inet address 10.5.176.95/16",
 		"set interfaces 1/0/0 unit 0 family inet6 address fd00::5/64",
-		"set routing-instances mgmt_junos interface 1/0/0.0",
-		"set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
-		"set routing-instances mgmt_junos routing-options static route ::/0 next-hop fd00::1",
+		"set routing-instances mgmt_ceros interface 1/0/0.0",
+		"set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
+		"set routing-instances mgmt_ceros routing-options static route ::/0 next-hop fd00::1",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -110,15 +110,15 @@ func TestUpgradeManagement(t *testing.T) {
 		"set vlans mgmt l3-interface irb.99",
 		"set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1",
 		"set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2",
-		"set routing-instances mgmt_junos interface irb.99",
-		"set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
+		"set routing-instances mgmt_ceros interface irb.99",
+		"set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 10.5.0.1",
 		"set interfaces 1/4/0 unit 0 family inet address 10.9.0.1/30",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if n := strings.Count(out, "mgmt_junos interface irb.99"); n != 1 {
+	if n := strings.Count(out, "mgmt_ceros interface irb.99"); n != 1 {
 		t.Errorf("irb.99 listed %d times:\n%s", n, out)
 	}
 }
@@ -150,5 +150,13 @@ func TestUpgradePeerLink(t *testing.T) {
 	}
 	if strings.Contains(out, "set interfaces 1/2/0") {
 		t.Errorf("empty former peer-link port left:\n%s", out)
+	}
+}
+
+func TestUpgradeRenamesManagementInstance(t *testing.T) {
+	tr := upgrade(t, `{"system":{"management-instance":true},"routing-instances":{"mgmt_junos":{"interface":["irb.99"]}},"vlans":{"m":{"vlan-id":"99","l3-interface":"irb.99"}},"interfaces":{"irb":{"unit":{"99":{"family":{"inet":{"address":{"10.0.0.2/24":{}}}}}}}}}`)
+	out := config.FormatSet(tr)
+	if !strings.Contains(out, "set routing-instances mgmt_ceros interface irb.99") || strings.Contains(out, "mgmt_junos") {
+		t.Errorf("management instance not renamed:\n%s", out)
 	}
 }

@@ -17,9 +17,9 @@ set virtual-chassis member 2 host-name sw-b
 set system management-instance
 set interfaces 1/9/0 unit 0 family inet address 192.168.1.11/24
 set interfaces 2/9/0 unit 0 family inet address 192.168.1.12/24
-set routing-instances mgmt_junos interface 1/9/0.0
-set routing-instances mgmt_junos interface 2/9/0.0
-set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
+set routing-instances mgmt_ceros interface 1/9/0.0
+set routing-instances mgmt_ceros interface 2/9/0.0
+set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
 set virtual-chassis member 2 vtep-address 10.255.0.2
 set interfaces 1/0/1 ether-options 802.3ad ae1
 set interfaces 1/0/2 ether-options 802.3ad ae1
@@ -128,12 +128,12 @@ func TestInvalidConfigs(t *testing.T) {
 		{"three members", "set virtual-chassis member 3 host-name sw-c\nset interfaces 3/0/2 ether-options 802.3ad ae1", "at most two"},
 		{"witness ports", "set virtual-chassis member 2 role witness", "is a witness"},
 		{"mgmt instance without flag", "delete system management-instance", "needs 'system management-instance'"},
-		{"flag without mgmt instance", "delete routing-instances", "routing instance mgmt_junos is not configured"},
+		{"flag without mgmt instance", "delete routing-instances", "routing instance mgmt_ceros is not configured"},
 		{"unit in two instances", "set routing-instances data interface 1/9/0.0", "is already in routing instance"},
 		{"non-routed unit in instance", "set routing-instances data interface 1/0/5.0", "is not a routed interface"},
 		{"member on port address", "set interfaces 1/0/5 unit 0 family inet address 10.8.0.1/24 member 1", "irb addresses only"},
 		{"member not configured", "set vlans v99 vlan-id 99\nset vlans v99 l3-interface irb.99\nset interfaces irb unit 99 family inet address 10.8.0.1/24 member 7", "member 7 is not configured"},
-		{"mgmt instance-type", "set routing-instances mgmt_junos instance-type virtual-router", "no instance-type"},
+		{"mgmt instance-type", "set routing-instances mgmt_ceros instance-type virtual-router", "no instance-type"},
 		{"underlay in vxlan vlan", "set virtual-chassis member 1 underlay vlan users", "cannot carry the VXLAN underlay"},
 		{"range overlap", "set interface-range a member-range 1/0/10 to 1/0/12\nset interface-range b member-range 1/0/12 to 1/0/13", "already part of interface-range a"},
 		{"range bad ends", "set interface-range a member-range 1/0/10 to 2/0/12", "same member"},
@@ -161,8 +161,8 @@ func TestWarnings(t *testing.T) {
 		{"set interfaces ae1 aggregated-ether-options lacp system-priority 100", "ignored on MC-LAG interfaces"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
 		{"set virtual-chassis member 1 underlay interface 1/0/5\nset virtual-chassis member 1 underlay address 10.9.0.1/24\nset interfaces 1/0/5 mtu 1514", "underlay MTU 1514 is below 1564"},
-		{"set routing-instances mgmt_junos routing-options static route ::/0 next-hop 2001:db8::1", "not in a subnet of any routed interface of this instance"},
-		{"delete routing-instances mgmt_junos interface 2/9/0.0", "member 2 has no management interface"},
+		{"set routing-instances mgmt_ceros routing-options static route ::/0 next-hop 2001:db8::1", "not in a subnet of any routed interface of this instance"},
+		{"delete routing-instances mgmt_ceros interface 2/9/0.0", "member 2 has no management interface"},
 		{"set protocols layer2-control bpdu-block interface ae1\nset protocols rstp interface ae1 cost 10\ndelete protocols rstp interface ae1 edge", "non-edge port"},
 		{"set interfaces 1/0/4 unit 0 family ethernet-switching vlan members storage", "carries switched traffic"},
 	}
@@ -524,8 +524,8 @@ set vlans mgmt vlan-id 99
 set vlans mgmt l3-interface irb.99
 set interfaces irb unit 99 family inet address 10.5.176.95/16 member 1
 set interfaces irb unit 99 family inet address 10.5.176.96/16 member 2
-set routing-instances mgmt_junos interface irb.99
-set routing-instances mgmt_junos routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
+set routing-instances mgmt_ceros interface irb.99
+set routing-instances mgmt_ceros routing-options static route 0.0.0.0/0 next-hop 10.5.0.1
 set vlans v10 vlan-id 10
 set vlans v10 l3-interface irb.10
 set interfaces irb unit 10 family inet address 10.5.0.2/24
@@ -542,7 +542,7 @@ set interfaces 2/0/1 unit 0 family ethernet-switching vlan members mgmt
 		t.Fatalf("unexpected errors:\n%s", issues)
 	}
 	irb := c.L3["irb.99"]
-	if irb.Instance != "mgmt_junos" || len(irb.AddrsOn(1)) != 1 || irb.AddrsOn(1)[0].String() != "10.5.176.95/16" || !irb.OnMember(2) {
+	if irb.Instance != "mgmt_ceros" || len(irb.AddrsOn(1)) != 1 || irb.AddrsOn(1)[0].String() != "10.5.176.95/16" || !irb.OnMember(2) {
 		t.Errorf("irb.99: %+v", irb)
 	}
 	if got := c.MgmtAddrs(2); len(got) != 1 || got[0].String() != "10.5.176.96/16" {

@@ -20,6 +20,10 @@ type Netlink struct {
 	SysRoot string
 	// StateDir keeps what switchd changed outside its own devices (L3).
 	StateDir string
+	// GatewayMAC is the MAC address of the bridge and its irb devices: the
+	// same on every member of a stack (anycast gateway, reference 5.3.3).
+	// nil keeps the kernel's.
+	GatewayMAC net.HardwareAddr
 
 	mlOnce sync.Once
 	macl   *macLimits

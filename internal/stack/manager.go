@@ -313,11 +313,12 @@ func (m *Manager) newStack(id int) error {
 	return nil
 }
 
-// Leave makes this switch the only member of a new stack after it was
-// removed from its stack: new keys, the same member id, no replicated
-// state. switchd has to restart afterwards.
+// Leave makes this switch the only member (member 1) of a new stack after
+// it was removed from its stack: new keys (the old ones are overwritten),
+// no replicated state; the stacking ports stay designated (a local
+// setting, so it can join a stack again). switchd has to restart afterwards.
 func (m *Manager) Leave() error {
-	if err := m.newStack(m.Member()); err != nil {
+	if err := m.newStack(1); err != nil {
 		return err
 	}
 	for _, name := range []string{"raft", "control.json", joinedFile} {
@@ -325,7 +326,7 @@ func (m *Manager) Leave() error {
 			return err
 		}
 	}
-	m.Log.Warn("stack: removed from the virtual chassis; this switch is now a stack of its own", "facility", "change-log", "member", m.Member())
+	m.Log.Warn("stack: removed from the virtual chassis; this switch is now member 1 of a stack of its own", "facility", "change-log", "was", m.Member())
 	return nil
 }
 
@@ -343,7 +344,8 @@ func (m *Manager) StackID() string {
 	if m.stack == nil {
 		return ""
 	}
-	return strings.TrimPrefix(m.stack.Cert.Subject.CommonName, "mclag stack ")
+	// Stacks created before the rename are called "mclag stack <id>".
+	return strings.TrimPrefix(strings.TrimPrefix(m.stack.Cert.Subject.CommonName, "mclag stack "), "ceros stack ")
 }
 
 func (m *Manager) save() error {

@@ -121,7 +121,7 @@ func TestOperationalMode(t *testing.T) {
 	if p := ts.sh.Prompt(); p != "alice@sw1> " {
 		t.Errorf("prompt %q", p)
 	}
-	contains(t, ts.ok("show version"), "mclag switchd test")
+	contains(t, ts.ok("show version"), "cerOS (switchd) test")
 	contains(t, ts.ok("sh ver"), "switchd") // abbreviations
 	out := ts.run("show bogus")
 	contains(t, out, strings.Repeat(" ", len("alice@sw1> show "))+"^\n", "syntax error")
@@ -487,6 +487,13 @@ func (f *fakeOps) Uptime() (Uptime, error) {
 	return Uptime{Booted: time.Now().Add(-26 * time.Hour), Started: time.Now().Add(-90 * time.Second), Load: [3]float64{0.5, 0.25, 0.125}}, nil
 }
 
+func (f *fakeOps) NTP() (NTPStatus, error) {
+	return NTPStatus{Synced: true, LastAdjust: time.Now().Add(-90 * time.Second), Via: "mgmt_ceros", Servers: []NTPServerStatus{
+		{Host: "10.0.0.1", Prefer: true, Addr: "10.0.0.1", Stratum: 2, Offset: 1500 * time.Microsecond, Delay: 800 * time.Microsecond, LastPoll: time.Now().Add(-30 * time.Second), Reach: true, Selected: true},
+		{Host: "ntp.example.net", LastPoll: time.Now().Add(-30 * time.Second), Err: "no answer"},
+		{Host: "10.0.0.9"}}}, nil
+}
+
 func (f *fakeOps) Power(action string, minutes int, user string) error {
 	f.power = append(f.power, fmt.Sprintf("%s %d %s", action, minutes, user))
 	return nil
@@ -550,6 +557,7 @@ func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 }
 
 func (f *fakeOps) SwitchMaster(to int, user string) error   { return nil }
+func (f *fakeOps) ForceMaster(user string) error            { return nil }
 func (f *fakeOps) RemoveVCMember(id int, user string) error { return nil }
 func (f *fakeOps) JoinVC(token, user string) (int, error)   { return 2, nil }
 
@@ -734,7 +742,7 @@ func TestSystemOperationalCommands(t *testing.T) {
 	if strings.Index(out, "::/0") < strings.Index(out, "10.5.0.0/16") {
 		t.Errorf("IPv4 first:\n%s", out)
 	}
-	contains(t, ts.ok("show route instance mgmt_junos"), "Routing instance mgmt_junos")
+	contains(t, ts.ok("show route instance mgmt_ceros"), "Routing instance mgmt_ceros")
 	contains(t, ts.ok("show virtual-chassis"), "Virtual chassis abc, this switch is member 1",
 		"1       sw1                  backup    128       voter      present",
 		"2                            master    128       voter      present",
@@ -755,6 +763,8 @@ func TestSystemOperationalCommands(t *testing.T) {
 	contains(t, ts.ok("request virtual-chassis join token AAAA-BBBB"), "Joined as member 2")
 	contains(t, ts.run("show route instance nope"), "does not exist")
 	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
+	contains(t, ts.ok("show system ntp"), "Synchronized: yes, clock slewed 00:01:30 ago", "Queries leave through: mgmt_ceros",
+		"* 10.0.0.1 (prefer)", "1.5ms", "ntp.example.net", "(no answer)", "not queried yet")
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")
 
 	ts.term.answers = []string{"no"}

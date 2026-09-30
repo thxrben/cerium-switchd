@@ -63,17 +63,31 @@ func (s *SSH) config(cfg *model.Config) string {
 	return b.String()
 }
 
-const unitText = `[Unit]
-Description=mclag CLI SSH server (managed by switchd)
+// unitText is the systemd unit. With a management instance the server runs
+// inside its VRF (ip vrf exec binds the sockets to it): it is then reachable
+// through the management interfaces only, never through data interfaces or
+// the operating system's own NICs. The VRF appears with the data plane, so
+// a start before that simply retries.
+func unitText(vrf string) string {
+	exec := ""
+	if vrf != "" {
+		exec = "/usr/sbin/ip vrf exec " + vrf + " "
+	}
+	return strings.NewReplacer("@EXEC@", exec).Replace(unitTemplate)
+}
+
+const unitTemplate = `[Unit]
+Description=cerOS CLI SSH server (managed by switchd)
 After=network.target
 
 [Service]
 ExecStartPre=/usr/sbin/sshd -t -f /etc/switchd/sshd_config
-ExecStart=/usr/sbin/sshd -D -f /etc/switchd/sshd_config
+ExecStart=@EXEC@/usr/sbin/sshd -D -f /etc/switchd/sshd_config
 ExecReload=/usr/sbin/sshd -t -f /etc/switchd/sshd_config
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure
+RestartSec=2
 RestartPreventExitStatus=255
 RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
@@ -179,7 +193,11 @@ func (s *SSH) Sync(cfg *model.Config) error {
 			return err
 		}
 	}
-	unitChanged, err := writeIfChanged(s.UnitPath, unitText, 0o644)
+	vrf := ""
+	if cfg.System.MgmtInstance {
+		vrf = model.MgmtInstance
+	}
+	unitChanged, err := writeIfChanged(s.UnitPath, unitText(vrf), 0o644)
 	if err != nil {
 		return err
 	}
@@ -192,7 +210,14 @@ func (s *SSH) Sync(cfg *model.Config) error {
 		}
 	}
 	if confChanged || unitChanged {
-		if err := s.Run("systemctl", "reload-or-restart", sshUnit); err != nil {
+		// A changed unit (e.g. now inside the management VRF) needs a real
+		// restart: a reload keeps the old process and its sockets. Open
+		// sessions survive (KillMode=process).
+		verb := "reload-or-restart"
+		if unitChanged {
+			verb = "restart"
+		}
+		if err := s.Run("systemctl", verb, sshUnit); err != nil {
 			return errors.Join(errors.New("ssh: CLI SSH server did not start"), err)
 		}
 		s.Log.Info("ssh: CLI SSH server configured", "port", cfg.System.SSH.Port, "root_login", cfg.System.SSH.RootLogin)

@@ -48,7 +48,7 @@ func (u *L3Unit) OnMember(m int) bool {
 }
 
 // MgmtInstance is the name of the management routing instance.
-const MgmtInstance = "mgmt_junos"
+const MgmtInstance = "mgmt_ceros"
 
 // RoutingInstance is a separate routing table (reference 5.9).
 type RoutingInstance struct {

@@ -29,6 +29,8 @@ type Operational interface {
 	Neighbors(ipv6 bool) ([]Neighbor, error)
 	// Uptime returns boot and start times and the load averages.
 	Uptime() (Uptime, error)
+	// NTP reports the NTP client of this member.
+	NTP() (NTPStatus, error)
 	// Power reboots ("reboot"), halts ("halt") or powers off ("power-off")
 	// the member after minutes (0 = now); user is who asked.
 	Power(action string, minutes int, user string) error
@@ -48,6 +50,9 @@ type Operational interface {
 	Limits() (LimitsStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
 	SwitchMaster(to int, user string) error
+	// ForceMaster lets this member continue alone after the stack lost
+	// its majority (restarts switchd).
+	ForceMaster(user string) error
 	// RemoveVCMember removes a member from the stack.
 	RemoveVCMember(id int, user string) error
 	// SetVCPort designates (add) or releases a VC port "<card>/<port>".
@@ -153,6 +158,29 @@ type OffloadPort struct {
 // Neighbor is one entry of "show arp" / "show ipv6 neighbors".
 type Neighbor struct {
 	MAC, IP, Interface, Instance, State string
+}
+
+// NTPStatus is what "show system ntp" needs.
+type NTPStatus struct {
+	Synced     bool
+	LastAdjust time.Time
+	LastStep   bool
+	Via        string // routing instance the queries leave through ("" = default)
+	Servers    []NTPServerStatus
+}
+
+// NTPServerStatus is one configured NTP server.
+type NTPServerStatus struct {
+	Host     string
+	Prefer   bool
+	Addr     string
+	Stratum  int
+	Offset   time.Duration
+	Delay    time.Duration
+	LastPoll time.Time
+	Reach    bool
+	Err      string
+	Selected bool
 }
 
 // Uptime is what "show system uptime" needs from the host.
@@ -679,6 +707,27 @@ func (sh *Shell) switchMaster(c *call) error {
 	return nil
 }
 
+func (sh *Shell) forceMaster(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("not available")
+	}
+	a, err := c.term.Ask("This member becomes master on its own, although the stack has lost its majority.\n"+
+		"If the other members are still running (only the cables between you and them are cut), both sides\n"+
+		"will commit different configurations and the changes of one side are lost when they meet again.\n"+
+		"Use it only when the others are really down. switchd restarts. Continue? [yes,no] (no) ", true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	if err := sh.env.Ops.ForceMaster(sh.env.User); err != nil {
+		return err
+	}
+	c.out.WriteString("switchd restarts; this member becomes master and configuration works again in a few seconds.\n")
+	return nil
+}
+
 func (sh *Shell) removeVCMember(c *call) error {
 	if len(c.args) != 1 {
 		return &posError{pos: c.argPos(0), msg: "expecting the member id"}
@@ -948,6 +997,62 @@ func (sh *Shell) showUptime(c *call) error {
 	return nil
 }
 
+func (sh *Shell) showNTP(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("system information is not available")
+	}
+	st, err := sh.env.Ops.NTP()
+	if err != nil {
+		return err
+	}
+	if len(st.Servers) == 0 {
+		c.out.WriteString("No NTP servers configured ('set system ntp server <host>').\n")
+		return nil
+	}
+	now := time.Now()
+	via := st.Via
+	if via == "" {
+		via = "the default routing instance"
+	}
+	if st.Synced {
+		how := "slewed"
+		if st.LastStep {
+			how = "stepped"
+		}
+		fmt.Fprintf(c.out, "Synchronized: yes, clock %s %s ago\n", how, fmtDuration(now.Sub(st.LastAdjust)))
+	} else {
+		c.out.WriteString("Synchronized: no\n")
+	}
+	fmt.Fprintf(c.out, "Queries leave through: %s\n\n", via)
+	fmt.Fprintf(c.out, "  %-28s %-16s %-3s %-12s %-10s %s\n", "Server", "Address", "St", "Offset", "Delay", "Last poll")
+	for _, sv := range st.Servers {
+		mark := " "
+		if sv.Selected {
+			mark = "*"
+		}
+		name := sv.Host
+		if sv.Prefer {
+			name += " (prefer)"
+		}
+		if sv.LastPoll.IsZero() {
+			fmt.Fprintf(c.out, "%s %-28s %-16s %-3s %-12s %-10s %s\n", mark, name, "-", "-", "-", "-", "not queried yet")
+			continue
+		}
+		ago := fmtDuration(now.Sub(sv.LastPoll)) + " ago"
+		if !sv.Reach {
+			fmt.Fprintf(c.out, "%s %-28s %-16s %-3s %-12s %-10s %s (%s)\n", mark, name, "-", "-", "-", "-", ago, sv.Err)
+			continue
+		}
+		fmt.Fprintf(c.out, "%s %-28s %-16s %-3d %-12s %-10s %s\n", mark, name, sv.Addr, sv.Stratum,
+			sv.Offset.Round(time.Microsecond), sv.Delay.Round(time.Microsecond), ago)
+	}
+	c.out.WriteString("\n* = the server the clock follows. Offset: server time minus this switch's time.\n")
+	return nil
+}
+
 // fmtDuration renders "3d 04:05" / "04:05:06".
 func fmtDuration(d time.Duration) string {
 	d = d.Round(time.Second)
@@ -1088,6 +1193,7 @@ func registerOperational() {
 				if sc.name == "system" {
 					sc.sub = append(sc.sub, &command{name: "syslog", help: "Show remote syslog servers", class: commit.ReadOnly, run: (*Shell).showSyslog},
 						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime},
+						&command{name: "ntp", help: "Show the NTP servers and the clock", class: commit.ReadOnly, run: (*Shell).showNTP},
 						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload},
 						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits})
 				}
@@ -1138,6 +1244,7 @@ func registerOperational() {
 				{name: "remove", help: "Remove a member from the stack (decommission)", class: commit.SuperUser,
 					run: (*Shell).removeVCMember, complete: words(Completion{Text: "<member-id>", Help: "Member id 1-16", Placeholder: true})},
 			}},
+			{name: "force-master", help: "Continue alone when the stack has no majority (split-brain risk)", class: commit.SuperUser, run: (*Shell).forceMaster},
 			{name: "join", help: "Join a virtual chassis over the VC ports", class: commit.SuperUser, run: (*Shell).joinVC,
 				complete: words(Completion{Text: "token", Help: "Token from 'request virtual-chassis member add' on the stack"})},
 		}},

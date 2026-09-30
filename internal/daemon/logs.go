@@ -5,6 +5,7 @@ import (
 
 	"mclag/internal/cli"
 	"mclag/internal/model"
+	"mclag/internal/ntp"
 	"mclag/internal/syslog"
 )
 
@@ -41,4 +42,16 @@ func syslogHosts(cfg *model.Config) []syslog.Host {
 			Facility: h.Facility, Severity: h.Severity, CAFile: h.CAFile})
 	}
 	return out
+}
+
+// checkNTP warns when another program on the switch also sets the clock.
+func checkNTP(cfg *model.Config) model.Issues {
+	if len(cfg.System.NTPServers) == 0 {
+		return nil
+	}
+	if svc := ntp.OtherService("/proc"); svc != "" {
+		return model.Issues{{Severity: model.Warning, Path: "system ntp",
+			Msg: "the operating system runs another time service (" + svc + "); both would set the clock. Disable it"}}
+	}
+	return nil
 }

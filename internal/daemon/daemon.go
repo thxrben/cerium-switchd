@@ -28,6 +28,7 @@ import (
 	"mclag/internal/inventory"
 	"mclag/internal/lacp"
 	"mclag/internal/model"
+	"mclag/internal/ntp"
 	"mclag/internal/rpc"
 	"mclag/internal/syslog"
 	"mclag/internal/version"
@@ -86,6 +87,7 @@ func Run(ctx context.Context, o Options) error {
 			log.Error("stack keys", "err", err)
 		} else {
 			member = vc.Member()
+			kernel.GatewayMAC = dataplane.GatewayMAC(vc.StackID())
 		}
 	}
 	names := &inventory.Naming{SysRoot: "/sys", StateFile: filepath.Join(o.StateDir, "port-numbers.json"), Member: member}
@@ -107,6 +109,7 @@ func Run(ctx context.Context, o Options) error {
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log}
 	sysMAC := lacpSystemMAC()
+	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.
@@ -124,6 +127,17 @@ func Run(ctx context.Context, o Options) error {
 		}
 		hub.Configure(syslogHosts(cfg), hostName, cfg.System.LogBuffer)
 		if !o.DryRun {
+			// NTP queries leave through the management instance as well.
+			if cfg.System.MgmtInstance {
+				ntpClient.SetVRF(model.MgmtInstance)
+			} else {
+				ntpClient.SetVRF("")
+			}
+			var servers []ntp.Server
+			for _, s := range cfg.System.NTPServers {
+				servers = append(servers, ntp.Server{Host: s.Host, Prefer: s.Prefer})
+			}
+			ntpClient.Configure(servers)
 			if err := accounts.Sync(cfg); err != nil {
 				log.Error("accounts", "facility", "authorization", "err", err)
 			}
@@ -144,7 +158,7 @@ func Run(ctx context.Context, o Options) error {
 	engOpts := commit.Options{
 		Store: store, Applier: applier, Inventory: inv, Notify: srv.Notify, Log: log,
 		Upgrade: newUpgrader(names, 1, log).Upgrade,
-		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check},
+		Checks:  []func(*model.Config) model.Issues{accounts.Check, sshd.Check, checkNTP},
 	}
 	if !o.DryRun && vc.Mesh() != nil {
 		if ctl = startControl(o.StateDir, store, vc, applier, member, log, restart); ctl != nil {
@@ -199,10 +213,11 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return out
 	}
-	liveOps := &ops{kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
+	liveOps := &ops{restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
 		liveOps.lacp, liveOps.mclag = lacpRT, mclag
+		liveOps.ntp = ntpClient
 	}
 	// Stacking sessions start once everything they use (host name, active
 	// configuration) is set up.
@@ -317,8 +332,14 @@ func command(name string, args ...string) error {
 // replaceConfig makes the stack's configuration this member's configuration
 // after joining: the previous one is kept in config.pre-join-<time>.
 func replaceConfig(stateDir string, member int, cfg json.RawMessage) error {
+	return replaceConfigAs(stateDir, "config.pre-join-", fmt.Sprintf("joined the virtual chassis as member %d", member), cfg)
+}
+
+// replaceConfigAs keeps the old configuration store as <stateDir>/<backup><time>
+// and starts a new one with cfg as its first revision.
+func replaceConfigAs(stateDir, backup, comment string, cfg json.RawMessage) error {
 	dir := filepath.Join(stateDir, "config")
-	keep := filepath.Join(stateDir, "config.pre-join-"+time.Now().UTC().Format("20060102T150405"))
+	keep := filepath.Join(stateDir, backup+time.Now().UTC().Format("20060102T150405"))
 	if err := os.Rename(dir, keep); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -334,5 +355,5 @@ func replaceConfig(stateDir string, member int, cfg json.RawMessage) error {
 	}
 	raw, _ := json.Marshal(config.ToJSON(tree.Root))
 	return st.Put(&commit.Revision{Seq: 1, Time: time.Now().UTC(), User: "system",
-		Comment: fmt.Sprintf("joined the virtual chassis as member %d", member), Config: raw}, 0)
+		Comment: comment, Config: raw}, 0)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mclag/internal/schema"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -248,4 +249,79 @@ func TestMaxVotersMatchesSchema(t *testing.T) {
 	if MaxVoters != schema.MaxVoters {
 		t.Fatalf("control.MaxVoters %d, schema.MaxVoters %d", MaxVoters, schema.MaxVoters)
 	}
+}
+
+// A two-member stack that lost a member has no majority; force-master lets
+// the remaining member continue alone, and the other one rejoins later.
+func TestForceMaster(t *testing.T) {
+	base := t.TempDir()
+	prio := map[int]int{}
+	m1 := newMember(t, 1, filepath.Join(base, "1"), true, prio)
+	waitFor(t, "1 master", func() bool { return m1.node.IsMaster() })
+	m2 := newMember(t, 2, filepath.Join(base, "2"), false, prio)
+	cut := connect(m1, m2)
+	if err := m1.node.AddToken(2, "T", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := m1.node.Admit("T", []byte("key-2")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "2 votes", func() bool { return len(m1.node.Servers()) == 2 })
+	if err := m1.node.EngineStore().Put(rev(1, `{"system":{"host-name":"a"}}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "replicated", func() bool { return lastSeq(m2.store) == 1 })
+	if err := m1.node.ForceMaster(); err == nil {
+		t.Fatal("force-master accepted while the stack has a master")
+	}
+
+	// Whoever is master, the other one fails: the survivor has no majority.
+	surv, dead := m1, m2
+	if m2.node.IsMaster() {
+		surv, dead = m2, m1
+	}
+	dead.node.Close()
+	cut() // as when the switch is off: its stacking link is down
+	waitFor(t, "no master", func() bool { return surv.node.Master() == 0 })
+	if err := surv.node.EngineStore().Put(rev(2, `{}`), 0); err == nil {
+		t.Fatal("commit without a majority succeeded")
+	}
+	if err := surv.node.ForceMaster(); err != nil {
+		t.Fatal(err)
+	}
+	surv.node.Close()
+	surv.start(t, false)
+	waitFor(t, "master alone", func() bool { return surv.node.IsMaster() })
+	if err := surv.node.EngineStore().Put(rev(2, `{"system":{"host-name":"b"}}`), 0); err != nil {
+		t.Fatalf("commit after force-master: %v", err)
+	}
+	if lastSeq(surv.store) != 2 {
+		t.Fatalf("survivor at %d", lastSeq(surv.store))
+	}
+	if _, err := os.Stat(surv.node.forceFile()); err == nil {
+		t.Error("force marker left behind")
+	}
+	// The other member is still in the member list, not voting while away.
+	if _, ok := surv.node.Members()[dead.id]; !ok {
+		t.Error("member list lost the failed member")
+	}
+
+	// It returns with its old state, takes over the survivor's history and
+	// votes again.
+	dead.start(t, false)
+	connect(surv, dead)
+	waitFor(t, "returned member caught up", func() bool { return lastSeq(dead.store) == 2 })
+	waitFor(t, "both vote", func() bool {
+		v := 0
+		for _, s := range surv.node.Servers() {
+			if s.Voter {
+				v++
+			}
+		}
+		return v == 2
+	})
+	if err := surv.node.EngineStore().Put(rev(3, `{}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "3 on both", func() bool { return lastSeq(dead.store) == 3 })
 }

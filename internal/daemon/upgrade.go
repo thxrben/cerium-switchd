@@ -28,7 +28,8 @@ type portNames interface {
 //   - "stack" became "virtual-chassis" (Junos VC names),
 //   - interface names "<member>/<linux-name>" became "<member>/<card>/<port>",
 //   - "virtual-chassis member <id> management" became routed interfaces in
-//     routing instance mgmt_junos (reference 5.9),
+//     routing instance mgmt_ceros (reference 5.9),
+//   - routing instance "mgmt_junos" was renamed "mgmt_ceros",
 //   - address leaf-lists became address entries (with an optional member),
 //   - the MC-LAG peer-link, peer-link-bfd and heartbeat were replaced by the
 //     stack tunnels (reference 5.6): the statements and the bundle that
@@ -56,6 +57,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	renameStack(m)
+	renameManagementInstance(m)
 	normalizeAddresses(m)
 	u.convertManagement(m)
 	u.removePeerLink(m)
@@ -226,6 +228,20 @@ func (u *upgrader) walk(sn *schema.Node, m map[string]any, stackMember string) {
 	}
 }
 
+// renameManagementInstance renames the management routing instance of
+// earlier versions, "mgmt_junos", to "mgmt_ceros".
+func renameManagementInstance(m map[string]any) {
+	ri, _ := m["routing-instances"].(map[string]any)
+	old, ok := ri["mgmt_junos"]
+	if !ok {
+		return
+	}
+	if _, taken := ri["mgmt_ceros"]; !taken {
+		ri["mgmt_ceros"] = old
+	}
+	delete(ri, "mgmt_junos")
+}
+
 // renameStack converts the stack hierarchy of older versions to the Junos
 // Virtual Chassis names: "stack" -> "virtual-chassis", member "priority"
 // -> "mastership-priority" (reference 5.2).
@@ -303,7 +319,7 @@ func normalizeAddresses(m map[string]any) {
 }
 
 // convertManagement turns "virtual-chassis member <id> management { … }"
-// into routed interfaces in routing instance mgmt_junos.
+// into routed interfaces in routing instance mgmt_ceros.
 func (u *upgrader) convertManagement(m map[string]any) {
 	vc, _ := m["virtual-chassis"].(map[string]any)
 	members, _ := vc["member"].(map[string]any)
@@ -389,7 +405,7 @@ func (u *upgrader) convertManagement(m map[string]any) {
 		default:
 			continue
 		}
-		inst := obj(m, "routing-instances", "mgmt_junos")
+		inst := obj(m, "routing-instances", "mgmt_ceros")
 		ifs, _ := inst["interface"].([]any)
 		found := false
 		for _, x := range ifs {

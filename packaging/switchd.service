@@ -1,5 +1,5 @@
 [Unit]
-Description=mclag switch daemon
+Description=cerOS switch daemon (switchd)
 Documentation=file:///usr/share/doc/switchd/config-reference.md
 Before=network-pre.target
 Wants=network-pre.target
