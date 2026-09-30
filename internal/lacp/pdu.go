@@ -29,10 +29,10 @@ type State uint8
 
 // State bits (802.1AX 6.4.2.3).
 const (
-	Activity State = 1 << iota // active LACP
-	Timeout                    // short timeout
-	Aggregation                // aggregatable
-	Sync                       // in sync
+	Activity    State = 1 << iota // active LACP
+	Timeout                       // short timeout
+	Aggregation                   // aggregatable
+	Sync                          // in sync
 	Collecting
 	Distributing
 	Defaulted

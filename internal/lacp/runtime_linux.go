@@ -74,7 +74,6 @@ type rxFrame struct {
 	frame []byte
 }
 
-
 func (r *Runtime) init() {
 	if r.bundles == nil {
 		r.bundles, r.socks, r.rx = map[string]*rtBundle{}, map[string]*rtSock{}, make(chan rxFrame, 1024)
