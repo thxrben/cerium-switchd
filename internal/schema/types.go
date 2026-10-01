@@ -289,6 +289,14 @@ var (
 		return Identifier.Check(s)
 	}}
 
+	// VlanRefAll references one VLAN (name or id) or "all".
+	VlanRefAll = &Type{Name: "<vlan>", Ref: "vlan", Check: func(s string) (string, error) {
+		if s == "all" {
+			return s, nil
+		}
+		return VlanSingle.Check(s)
+	}}
+
 	// VlanSingle references exactly one VLAN by name or id.
 	VlanSingle = &Type{Name: "<vlan>", Ref: "vlan", Check: func(s string) (string, error) {
 		if lo, hi, ok := ParseVlanRange(s); ok {

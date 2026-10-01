@@ -442,6 +442,9 @@ vlans {
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
 | `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, management and data instances, including `cme`). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
+| `show system bottlenecks` | What limits this member's forwarding, with recommendations (3.5.2). |
+| `show igmp snooping membership\|vlans`, `show mld snooping …` | Multicast groups and per-VLAN snooping state (5.5). |
+| `show vxlan [remote-vtep]` | VNIs, remote VTEPs and their reachability (5.7). |
 | `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
@@ -467,6 +470,25 @@ target, 3.5, those of that member). Sections and lines (a `-` means no limit app
 
 Use of a limit is shown as `n of max`. A line whose limit is reached is marked `(full)`; a configured value above a
 hardware limit cannot exist (commit refuses it), so the page never shows one.
+
+#### 3.5.2 `show system bottlenecks`
+
+A check of what limits this member's forwarding, with a recommendation per finding (`member <id>`, `all-members`,
+3.5). It only reads and changes nothing. Each finding has a severity (`limit`: the hardware or setting caps
+throughput or causes drops now; `hint`: worth changing) and names the port, NIC or CPU:
+* **PCIe**: per NIC the negotiated link (generation and width) against the card's maximum, and the bandwidth the
+  NIC's ports need at their link speed against what the link carries (e.g. a 4×10G card in a PCIe 2.0 x4 slot carries
+  16 Gbit/s of the 40 it needs).
+* **Queues and CPUs**: the NIC's receive queues against the CPU cores; interrupts of a NIC's queues that all land on
+  one CPU; receive packet steering off for a single-queue NIC on a multi-core system; the CPU frequency governor
+  (`powersave` on a switch adds latency).
+* **NIC settings**: receive/transmit rings below their maximum; offloads the NIC supports but has off (GRO, checksum,
+  TSO, VLAN filtering); pause frames.
+* **Drops**: per port the receive drops of the NIC (missed, FIFO, no buffer) and of the kernel, and per CPU the
+  backlog drops and `time squeeze` counts of the network softirq, as rates since the previous run of the command
+  (the first run shows the totals since boot).
+* **Memory**: little available memory.
+`request system diagnose` is the same command.
 
 ### 3.6 Software updates
 
@@ -503,6 +525,16 @@ a `<package>.sha256` file next to it on the server); the files inside are always
   returns to the previous version by itself.
 * The update runs on the master, not in the CLI session: leaving the CLI does not stop it. `show system software`
   shows its progress.
+* **The update daemon.** On every member the installation itself is done by `switchd-update` (systemd unit
+  `switchd-update.service`, the same program in another role), not by switchd: switchd hands it the verified program,
+  and the daemon installs it (the previous program is kept), restarts switchd, and watches it come back. switchd is
+  healthy when it answers on its CLI socket with the new version and has applied the stack's configuration; if it is
+  not within 3 minutes (or it fails to start 3 times), the daemon puts the previous program back and restarts
+  switchd again, by itself, also when switchd hangs or crashes. Since the daemon is not part of switchd, a failed
+  switchd cannot stop its own rollback. It reports to switchd (`show system software`: `installing`, `restarting`,
+  `waiting for switchd`, `rolled back: <reason>`). switchd installs and updates the daemon's unit, and the daemon
+  restarts itself onto the new program once switchd is healthy. Without the daemon (an older member), switchd
+  installs itself as before.
 
 **`request system software rollback [member <id>]`**: the members (or one) return to the version they ran before,
 the same way (one by one, drained).
@@ -803,7 +835,7 @@ working path, so a ring survives one broken cable.
   that fails is replaced within the BFD detection time. A ring (or more cables) survives any single cable failure,
   a chain does not.
 * A stacking port is never a data or management port. E: the port is configured under `interfaces` (including
-  `management`), or as an underlay interface. Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
+  `management`). Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
   administratively up, outside the bridge, without IP addresses and with IPv6 disabled, whatever the configuration says.
 * **Every switch is a stack.** A switch that has never joined another stack is member 1 of its own stack (it creates
   its stack key at first start). Two switches of different stacks connected by a stacking cable see each other as
@@ -882,6 +914,7 @@ working path, so a ring survives one broken cable.
   table** (full interface names carry the member): `show interfaces`, `show chassis hardware`, `show virtual-chassis
   vc-port|mtu`, `show system offload`, `show vlans`, `show ethernet-switching table`, `show arp`, `show ipv6 neighbors`,
   `show lacp interfaces|statistics`, `show lldp neighbors|statistics`, `show dhcp client binding`, `show mclag`,
+  `show igmp|mld snooping membership|vlans`, `show vxlan [remote-vtep]`,
   `clear ethernet-switching table`, and the completion of
   interface names. A target at the end only narrows the rows: `member <id>`, or `local` (the member you are logged in
   to). The MAC table lists an address where it was learned (not the copies on the stack tunnels); an MC-LAG bundle's
@@ -889,7 +922,7 @@ working path, so a ring survives one broken cable.
 * **Operational commands about one member's state** accept a target at the end: `member <id>`, `all-members`, or
   `local` (the member you are logged in to; without a target, the master). With more than one target the output has
   a section per member (`member2:` and a line). The command runs on the member as the same user and class.
-  * Commands with targets: `show system uptime|ntp|syslog|limits`, `show version`, `show log`, `show route`,
+  * Commands with targets: `show system uptime|ntp|syslog|limits|bottlenecks`, `show version`, `show log`, `show route`,
     `request system reboot|halt|power-off`, `request system maintenance-mode enter|exit`,
     `clear system reboot`, `request chassis card`.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
@@ -977,18 +1010,6 @@ members are rejected (E).
     that becomes a witness releases its ports and routed interfaces; the empty bridge device stays until reboot). Accounts, SSH, host name and syslog are managed as usual.
   * A witness never stays master (its `mastership-priority` counts as 0) and is always among the voters in stacks
     of up to 7 members.
-* `vtep-address <ip>`: source address of this member's VXLAN tunnels (5.7). If it differs from the underlay address,
-  it is added to a loopback interface and must be routable in the underlay.
-
-#### `virtual-chassis member <id> underlay { vlan <vlan> | interface <interface-name>; address [ … ]; gateway [ … ]; }`
-The IP interface that carries this member's VXLAN tunnels, in the default routing instance. (Phase 9 replaces this
-block with the Junos form, `switch-options vtep-source-interface`, and a routed interface; it is not implemented yet.)
-* `vlan <vlan>` (IRB-like) or `interface <interface-name>` (a dedicated port), `address [ … ]` static addresses.
-* `gateway` is used only for routes to remote VTEPs that are not directly connected. No default route is installed.
-* E: the underlay VLAN or port is in the management instance.
-* E: the underlay VLAN is itself extended over VXLAN (tunnel traffic would loop into the tunnel).
-* W: underlay MTU (the dedicated port's `mtu`, or the VLAN's `mtu`) is smaller than the largest VXLAN VLAN MTU plus
-  encapsulation overhead (5.7).
 
 ### 5.3 interfaces
 
@@ -1003,7 +1024,7 @@ Applies one block of interface statements to many ports. It takes every statemen
     plugged NIC matching a wildcard is configured immediately, without a commit, and this is logged.
   * If the new port cannot take the configuration (e.g. the MTU exceeds its hardware maximum), it stays unconfigured
     and an alarm is raised.
-  * Wildcards **never** select stacking ports, management ports (`management`) or underlay ports.
+  * Wildcards **never** select stacking ports or management ports (`management`).
 * **Precedence**: a port that is also listed under `interfaces` uses its explicit statements. The range fills in only
   what the explicit entry does not set:
   * Leaves: the explicit value wins.
@@ -1023,7 +1044,7 @@ What a port does depends on which statements are present:
 |---|---|
 | `unit 0 family ethernet-switching` | **Switch port**: member of the bridge, forwards according to its VLAN settings. |
 | `ether-options 802.3ad aeN` | **Bundle member**: carries traffic for `aeN`. Switching settings belong on `aeN`. |
-| neither | **Plain port**: up, MTU applied, not switched. Used as a mirror destination or underlay NIC. |
+| neither | **Plain port**: up, MTU applied, not switched. Used as a mirror destination. |
 
 #### `description <text>`
 Free text shown in `show interfaces`.
@@ -1233,13 +1254,8 @@ Attaches the VLAN IP interface `irb.<n>` (5.3.3) to this VLAN. E: the irb unit i
 on two VLANs.
 
 #### `vxlan vni <vni>`
-*VXLAN (this statement, `virtual-chassis member vtep-address|underlay` and `switch-options vxlan`) is not implemented
-yet* (W at commit: the VLAN is not extended; Phase 9).
-Extends the VLAN over VXLAN to every other member that has the same VLAN, and to static remote VTEPs listing the VNI.
-The VLAN id is the same on all members (the configuration is shared), and frames are carried untagged inside the tunnel.
-* E: VNI used twice.
-* E: a (non-witness) member without `vtep-address`.
-* Details in 5.7.
+Extends the VLAN over VXLAN to the remote VTEPs that list the VNI (5.7). E: VNI used twice. E: no
+`switch-options vxlan source-address`. The stack tunnels carry the VLAN between members as for any VLAN.
 
 ### 5.5 protocols
 
@@ -1344,6 +1360,49 @@ same chassis ID and system name, so a neighbour sees one switch with many ports,
   management addresses) and the ports LLDP runs on.
 * `show lldp statistics`: per port LLDPDUs sent and received, discarded and aged-out neighbours.
 
+#### `protocols igmp-snooping { … }`, `protocols mld-snooping { … }`
+IGMP snooping (IPv4) and MLD snooping (IPv6): the switch watches the group memberships hosts announce and sends a
+group's traffic only to the ports with receivers and to the multicast-router ports, instead of to every port of the
+VLAN. **Both are on by default** in every VLAN, also without the statements.
+```
+protocols igmp-snooping {
+    disable;                         # off everywhere
+    vlan <vlan>|all {                # per VLAN (all: the default for every VLAN)
+        disable;
+        querier;                     # send general queries in this VLAN
+        version 2|3;                 # IGMP version of the queries (default 2; MLD: version 1|2, default 1)
+    }
+    interface <interface> {          # a switch port or ae
+        immediate-leave;             # a leave removes the port at once (one receiver per port)
+        multicast-router-interface;  # always send all group traffic of its VLANs here
+    }
+}
+```
+* `interface <interface> immediate-leave`: a leave message removes the port from the group at once, without the
+  usual last-member queries. Only for ports with a single receiver behind them.
+* `interface <interface> multicast-router-interface`: the port always receives all group traffic of its VLANs (a
+  multicast router or another switch's uplink that snooping cannot detect).
+* **Never dropped for lack of a querier.** Without a querier in a VLAN (no IGMP/MLD queries seen, and no `querier`
+  here), group traffic is flooded in the VLAN as without snooping. Link-local groups (224.0.0.0/24, ff02::/16) are
+  always flooded. Ports where queries (or multicast routing protocols) arrive become multicast-router ports by
+  themselves.
+* `querier`: this switch sends general queries in the VLAN when no other querier with a lower address is active. IGMP
+  queries come from the VLAN's irb address (5.3.3), else from 0.0.0.0, which most hosts accept. MLD queries need an
+  IPv6 link-local address: with an MLD querier the bridge keeps its link-local address (only for that purpose).
+* **The stack**: every stack tunnel is a multicast-router port, so group traffic reaches every member that has the
+  VLAN, and each member sends it only to its own ports with receivers. Membership reports cross the stack the same
+  way, so every member knows the groups (`show igmp snooping membership` lists each where it was learned).
+* **MC-LAG**: groups learned on an MC-LAG bundle are installed on the peer's leg too (with the leg states, over the
+  stacking plane), so a leg failure loses no group until the next query; they are removed when they expire on the
+  member that learned them.
+* **VXLAN** ports (5.7) are multicast-router ports.
+* E: `interface` not configured or a bundle member port. W: not a switch port. E: `version` outside 2–3 (IGMP) or
+  1–2 (MLD).
+* `show igmp snooping membership [vlan <vlan>]` / `show mld snooping membership …`: per VLAN and group the
+  interfaces with receivers, the source filter (IGMPv3/MLDv2) and the time until expiry; one table for the stack.
+* `show igmp snooping vlans` / `show mld snooping vlans`: per VLAN whether snooping runs, the querier (this switch,
+  another address, or none: flooding) and the multicast-router ports.
+
 #### `protocols layer2-control bpdu-block { interface [ <if> … ]; disable-timeout <s>; }`
 *Not implemented yet* (W at commit: the listed ports are not protected yet).
 BPDU protection. It works with or without RSTP. A listed port that receives any BPDU (STP/RSTP/MSTP, or Cisco PVST+
@@ -1445,33 +1504,55 @@ the peer is not delayed (see failure handling). It applies to every MC-LAG of th
 Seconds after which an unused dynamically learned MAC is removed. Default 300.
 On MC-LAG bundles, MACs age out only when both members age them out (5.6).
 
-#### `switch-options vxlan { … }`
-Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxlan vni`.
+#### `switch-options vxlan { source-address <ipv4>; udp-port <n>; remote-vtep <ip> { vni [ <vni> … ]; } }`
+Extends VLANs (`vlans <v> vxlan vni <vni>`) over VXLAN to **VTEPs outside the stack** (servers, hypervisors, other
+vendors' switches). Between the members of the stack nothing is configured: the stack tunnels (5.2) carry every VLAN
+already.
 
-* `mode control-plane|flood-and-learn`: default `control-plane`.
-  * `control-plane`: members tell each other over the stack's mTLS channel which MACs they have learned in each VNI.
-    Remote MACs are installed directly, and data-plane learning on tunnels is off.
-    Broadcast, unknown-unicast and multicast (BUM) traffic is replicated to every member that has the VNI (head-end replication).
-  * `flood-and-learn`: remote MACs are learned from received tunnel traffic. BUM traffic is replicated in the same way.
-* `udp-port <n>`: VXLAN UDP port. Default 4789.
-* `remote-vtep <ip> { vni [ <vni> … ]; }`: a static VTEP outside the stack (a server or another vendor's switch).
-  It receives BUM traffic for the listed VNIs, and its MACs are always learned from traffic.
-  E: a listed VNI that is not mapped to a VLAN.
-* `encryption`: tunnels between stack members run over WireGuard (keys are managed automatically). Static remote
-  VTEPs are not encrypted. The cost is software crypto throughput and 60/80 bytes more overhead (see PLAN §6).
+**The stack is one VTEP.** It has one source address, `source-address`, on every member, as the stack is one switch
+(like a Junos Virtual Chassis). Remote VTEPs see one VTEP whichever member a frame comes from or goes to.
+* `source-address <ipv4>`: the stack's VTEP address. switchd puts it on an internal loopback device (`swvtep`) of every
+  switch member, in the default routing instance; the network must route it to the stack (e.g. a static route to the
+  routed interface of one or more members; with several, the network's ECMP picks one). E: missing while a VLAN has a
+  `vni`. E: an IPv6 address (IPv6 underlays come later). E: also the address of an interface.
+* `udp-port <n>`: default 4789.
+* `remote-vtep <ip> { vni [ <vni> … ]; }`: a remote VTEP and the VNIs it takes part in. Broadcast, unknown unicast and
+  multicast (BUM) of a VNI is sent to every remote VTEP that lists it (head-end replication). E: a listed VNI that is
+  not mapped to a VLAN. W: a remote VTEP without VNIs. E: the stack's own `source-address`.
+* The remote VTEPs are reached through the routed interfaces of the default instance (irb, routed ports) and its
+  static routes, on each member by its own routing table. A member without a route to a remote VTEP cannot send to it
+  (`show vxlan remote-vtep` shows this per member).
 
-**Behaviour and interactions:**
-* A member joins a VNI only if one of its switch ports is in the VLAN (or its MC-LAG peer has such a port), so that BUM traffic reaches only members that need it.
-* **Loop freedom**: frames received from a tunnel are never sent into another tunnel (split horizon), so the full
-  mesh cannot loop. Tunnels do not run RSTP.
-* **MTU**:
-  * The tunnel accepts frames up to the largest `mtu` of the VXLAN VLANs (default 1514).
-  * The underlay's `mtu` (frame size, 1.3) must be at least that plus 50 bytes (IPv4 underlay) or 70 (IPv6),
-    plus 80 with `encryption`. For example, VXLAN VLANs with `mtu 9014` need an underlay `mtu` of 9064 (IPv4).
-    W: underlay MTU too small.
-  * Frames that do not fit are dropped at the tunnel and counted.
-* **MC-LAG**: how remote VTEPs reach devices behind MC-LAG bundles (a shared anycast VTEP of the pair) is defined
-  with the VXLAN control plane (Phase 9).
+**Behaviour:**
+* Every member has one VXLAN port per VNI (`swvx<vni>`) in the bridge, untagged in the VNI's VLAN, sending from
+  `source-address`.
+* **Sending**: each member sends the traffic of its own ports to the remote VTEPs itself. Frames that reached it over a
+  stack tunnel are never sent into VXLAN (the member where they entered the stack sent them), so a remote VTEP gets
+  every frame once.
+* **Receiving**: a frame from a remote VTEP arrives at whichever member the network delivers it to. That member
+  bridges it into the VLAN: to its own ports and, over the stack tunnels, to the other members. Frames from a VXLAN
+  port are never sent into another VXLAN port (split horizon), so remote VTEPs never forward for each other.
+* **MAC addresses**: remote MACs are learned from received VXLAN traffic (flood and learn, the way remote VTEPs without
+  a control plane learn ours). The member that learns one tells every member over the stacking protocol, and each
+  installs it on its own VXLAN port with the VTEP it belongs to, so its hosts reach the remote host directly. The
+  address ages out when the learning member no longer sees it. `show ethernet-switching table` shows them as
+  `vtep <ip>`.
+* **RSTP**: VXLAN ports do not run RSTP and never receive or send BPDUs (the mesh to the remote VTEPs is loop-free by
+  split horizon).
+* **Multicast**: IGMP/MLD snooping (5.5) treats the VXLAN ports as multicast-router ports: group traffic of the VLAN
+  is always sent to the remote VTEPs.
+* **MTU**: a VXLAN port carries frames up to the VLAN's `mtu` (default 1514). The routed path to the remote VTEPs needs
+  50 bytes more (IPv4 + UDP + VXLAN + the inner Ethernet header): W when a routed interface of the default instance
+  (the one towards the remote VTEPs is not known at commit time: every routed interface is checked) has a smaller
+  `mtu`. Frames that do not fit are dropped where they enter the VXLAN port and counted.
+* **Protection**: UDP to `source-address` and `udp-port` is accepted from the configured remote VTEPs only (1.5).
+* **MC-LAG** needs nothing extra: a device behind an MC-LAG bundle is behind the one VTEP of the stack.
+* `show vxlan`: per VNI the VLAN, the VXLAN port, the remote VTEPs and the remote MACs learned.
+* `show vxlan remote-vtep`: per remote VTEP and member the route used to reach it (next hop and interface) or
+  `no route`, and the frames sent and received.
+* Statements of earlier versions that no longer exist (`virtual-chassis member <id> vtep-address|underlay`,
+  `switch-options vxlan mode|encryption`, `mclag … anycast-vtep`) are removed when a stored configuration is read,
+  and logged. Encryption of the VXLAN underlay returns with Phase 10.
 
 ### 5.8 routing-options
 
@@ -1684,15 +1765,15 @@ protocols {
 #   request virtual-chassis vc-port set 1/2/1
 set system management-instance oob
 set virtual-chassis member 1 host-name sw-a
-set virtual-chassis member 1 vtep-address 10.255.0.1
-set virtual-chassis member 1 underlay interface 1/5/0
-set virtual-chassis member 1 underlay address 10.99.0.1/24
 set virtual-chassis member 2 host-name sw-b
-set virtual-chassis member 2 vtep-address 10.255.0.2
-set virtual-chassis member 2 underlay interface 2/5/0
-set virtual-chassis member 2 underlay address 10.99.0.2/24
+# routed uplinks towards the remote VTEPs (the network routes 10.255.0.1 to them)
 set interfaces 1/5/0 mtu 9216
+set interfaces 1/5/0 unit 0 family inet address 10.99.0.1/31
 set interfaces 2/5/0 mtu 9216
+set interfaces 2/5/0 unit 0 family inet address 10.99.0.3/31
+set routing-options static route 10.200.0.0/16 next-hop [ 10.99.0.0 10.99.0.2 ]
+set switch-options vxlan source-address 10.255.0.1
+set switch-options vxlan remote-vtep 10.200.1.10 vni 10010
 set interfaces 1/1/0 ether-options 802.3ad ae1
 set interfaces 2/1/0 ether-options 802.3ad ae1
 set interfaces ae1 description "server A (dual-homed)"
@@ -1740,7 +1821,9 @@ set forwarding-options analyzer debug output interface 1/3/0
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
 | `protocols layer2-control bpdu-block` | not implemented (W at commit) |
 | `system services web-management` | not implemented (W at commit) |
-| VXLAN (`vlans <v> vxlan`, `vtep-address`, `underlay`, `switch-options vxlan`) | not implemented (W at commit; Phase 9) |
+| VXLAN to remote VTEPs (5.7) | implemented |
+| IGMP/MLD snooping (5.5) | implemented |
+| `show system bottlenecks` (3.5.2), software update daemon (3.6) | implemented |
 | OS takeover (1.4: masking the operating system's network services, ending DHCP clients), own systemd unit | implemented |
 
 ---
@@ -1812,12 +1895,6 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `virtual-chassis member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
 | `virtual-chassis member <member-id> mastership-priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
 | `virtual-chassis member <member-id> role` | leaf | switch \\| witness | switch | Member role |
-| `virtual-chassis member <member-id> vtep-address` | leaf | &lt;ip-address&gt; |  | Local VXLAN tunnel endpoint address |
-| `virtual-chassis member <member-id> underlay` | container |  |  | Layer 3 interface carrying VXLAN tunnels (default VRF) |
-| `virtual-chassis member <member-id> underlay vlan` | leaf (excl. ul-attach) | &lt;vlan&gt; |  | Attach the underlay IP to this VLAN (IRB-like) |
-| `virtual-chassis member <member-id> underlay interface` | leaf (excl. ul-attach) | &lt;interface-name&gt; |  | Dedicated, non-switched underlay port |
-| `virtual-chassis member <member-id> underlay address` | leaf-list | &lt;address/prefix&gt; |  | Underlay addresses |
-| `virtual-chassis member <member-id> underlay gateway` | leaf-list | &lt;ip-address&gt; |  | Next hop towards remote VTEPs, at most one per address family |
 | `interface-range <name>` | list | &lt;name&gt; |  | Apply one configuration to many ports |
 | `interface-range <name> member` | leaf-list | &lt;pattern&gt; |  | Ports by pattern, e.g. 1/0/* or */1/[0-3] |
 | `interface-range <name> member-range <interface-name>` | list | &lt;interface-name&gt; |  | Contiguous ports on one card, e.g. 1/0/0 to 1/0/23 |
@@ -1929,6 +2006,24 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `protocols rstp interface <interface-name> mode` | leaf | point-to-point \\| shared |  | Link type |
 | `protocols rstp interface <interface-name> disable` | flag |  |  | Do not run RSTP on this port |
 | `protocols rstp disable` | flag |  |  | Disable RSTP |
+| `protocols igmp-snooping` | presence |  |  | IGMP snooping (on by default in every VLAN) |
+| `protocols igmp-snooping disable` | flag |  |  | Snooping off in every VLAN |
+| `protocols igmp-snooping vlan <vlan>` | list | &lt;vlan&gt; |  | Per-VLAN settings (all: every VLAN) |
+| `protocols igmp-snooping vlan <vlan> disable` | flag |  |  | Snooping off in this VLAN |
+| `protocols igmp-snooping vlan <vlan> querier` | flag |  |  | Send general queries in this VLAN |
+| `protocols igmp-snooping vlan <vlan> version` | leaf | &lt;version&gt; 2..3 | 2 | Version of the queries |
+| `protocols igmp-snooping interface <interface-name>` | list | &lt;interface-name&gt; |  | Per-port settings |
+| `protocols igmp-snooping interface <interface-name> immediate-leave` | flag |  |  | A leave removes the port at once |
+| `protocols igmp-snooping interface <interface-name> multicast-router-interface` | flag |  |  | Always send all group traffic here |
+| `protocols mld-snooping` | presence |  |  | MLD snooping (on by default in every VLAN) |
+| `protocols mld-snooping disable` | flag |  |  | Snooping off in every VLAN |
+| `protocols mld-snooping vlan <vlan>` | list | &lt;vlan&gt; |  | Per-VLAN settings (all: every VLAN) |
+| `protocols mld-snooping vlan <vlan> disable` | flag |  |  | Snooping off in this VLAN |
+| `protocols mld-snooping vlan <vlan> querier` | flag |  |  | Send general queries in this VLAN |
+| `protocols mld-snooping vlan <vlan> version` | leaf | &lt;version&gt; 1..2 | 1 | Version of the queries |
+| `protocols mld-snooping interface <interface-name>` | list | &lt;interface-name&gt; |  | Per-port settings |
+| `protocols mld-snooping interface <interface-name> immediate-leave` | flag |  |  | A leave removes the port at once |
+| `protocols mld-snooping interface <interface-name> multicast-router-interface` | flag |  |  | Always send all group traffic here |
 | `protocols layer2-control` | container |  |  | Layer 2 protocol protection |
 | `protocols layer2-control bpdu-block` | container |  |  | Shut down ports that receive BPDUs |
 | `protocols layer2-control bpdu-block interface` | leaf-list | &lt;interface-name&gt; |  | Protected interfaces |
@@ -1937,12 +2032,11 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `mclag delay-restore` | leaf | &lt;seconds&gt; 0..3600 | 300 | Seconds to wait after a boot before MC-LAG legs join their bundles |
 | `switch-options` | container |  |  | Global switching options |
 | `switch-options mac-table-aging-time` | leaf | &lt;seconds&gt; 10..1000000 | 300 | MAC table aging time in seconds |
-| `switch-options vxlan` | container |  |  | VXLAN transport |
-| `switch-options vxlan mode` | leaf | control-plane \\| flood-and-learn | control-plane | How remote MACs are learned |
+| `switch-options vxlan` | container |  |  | VXLAN to VTEPs outside the stack (the stack is one VTEP) |
+| `switch-options vxlan source-address` | leaf | &lt;ipv4-address&gt; |  | The stack's VTEP address (on every member) |
 | `switch-options vxlan udp-port` | leaf | &lt;port&gt; 1..65535 | 4789 | VXLAN UDP destination port |
-| `switch-options vxlan remote-vtep <ip-address>` | list | &lt;ip-address&gt; |  | Static VTEP outside the stack |
+| `switch-options vxlan remote-vtep <ip-address>` | list | &lt;ip-address&gt; |  | Remote VTEP |
 | `switch-options vxlan remote-vtep <ip-address> vni` | leaf-list | &lt;vni&gt; 1..16777214 |  | VNIs to extend to this VTEP |
-| `switch-options vxlan encryption` | flag |  |  | Encrypt VXLAN underlay traffic with WireGuard |
 | `routing-options` | container |  |  | Routing of the default instance |
 | `routing-options static` | container |  |  | Static routes |
 | `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |

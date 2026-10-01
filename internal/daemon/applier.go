@@ -57,16 +57,11 @@ func (a *kernelApplier) master() bool { return a.isMaster == nil || a.isMaster()
 
 // unconfigured returns this member's present ports that the desired state
 // does not use: switchd owns them too and keeps them down without
-// addresses (reference 1.4). Stacking ports and the underlay port are
-// someone else's.
+// addresses (reference 1.4). Stacking ports are the stack manager's.
 func (a *kernelApplier) unconfigured(cfg *model.Config, desired *dataplane.State) []string {
-	underlay := ""
-	if m := cfg.Members[a.member]; m != nil && m.Underlay.Interface != "" {
-		underlay, _ = a.names.Linux(m.Underlay.Interface)
-	}
 	var out []string
 	for _, p := range a.names.Ports() {
-		if desired.Links[p.Linux] != nil || p.Linux == underlay || (a.stackPort != nil && a.stackPort(p.Linux)) {
+		if desired.Links[p.Linux] != nil || (a.stackPort != nil && a.stackPort(p.Linux)) {
 			continue
 		}
 		out = append(out, p.Linux)

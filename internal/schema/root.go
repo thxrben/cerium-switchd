@@ -148,13 +148,6 @@ func build() *Node {
 				E("switch", "Regular switching member"),
 				E("witness", "Quorum-only member without data plane"),
 			), "switch"),
-			V("vtep-address", "Local VXLAN tunnel endpoint address", IP),
-			C("underlay", "Layer 3 interface carrying VXLAN tunnels (default VRF)",
-				g("ul-attach", V("vlan", "Attach the underlay IP to this VLAN (IRB-like)", VlanSingle)),
-				g("ul-attach", V("interface", "Dedicated, non-switched underlay port", PhysInterface)),
-				LL("address", "Underlay addresses", IPPrefix),
-				LL("gateway", "Next hop towards remote VTEPs, at most one per address family", IP),
-			),
 		),
 	)
 
@@ -255,6 +248,24 @@ func build() *Node {
 		F("disable", "Do not run RSTP on this port"),
 	)
 
+	snooping := func(name, help, versions, def string) *Node {
+		lo, hi := uint64(2), uint64(3)
+		if versions == "1|2" {
+			lo, hi = 1, 2
+		}
+		return P(name, help,
+			F("disable", "Snooping off in every VLAN"),
+			L("vlan", "Per-VLAN settings (all: every VLAN)", VlanRefAll,
+				F("disable", "Snooping off in this VLAN"),
+				F("querier", "Send general queries in this VLAN"),
+				VD("version", "Version of the queries", Uint("<version>", lo, hi), def),
+			),
+			L("interface", "Per-port settings", Interface,
+				F("immediate-leave", "A leave removes the port at once"),
+				F("multicast-router-interface", "Always send all group traffic here"),
+			),
+		)
+	}
 	protocols := C("protocols", "Protocol configuration",
 		P("lldp", "Link layer discovery protocol (802.1AB); the stack is one system",
 			F("disable", "Stop LLDP on every port"),
@@ -272,6 +283,8 @@ func build() *Node {
 			rstpIf,
 			F("disable", "Disable RSTP"),
 		),
+		snooping("igmp-snooping", "IGMP snooping (on by default in every VLAN)", "2|3", "2"),
+		snooping("mld-snooping", "MLD snooping (on by default in every VLAN)", "1|2", "1"),
 		C("layer2-control", "Layer 2 protocol protection",
 			C("bpdu-block", "Shut down ports that receive BPDUs",
 				LL("interface", "Protected interfaces", Interface),
@@ -286,16 +299,12 @@ func build() *Node {
 
 	switchOpts := C("switch-options", "Global switching options",
 		VD("mac-table-aging-time", "MAC table aging time in seconds", Uint("<seconds>", MinMACAging, MaxMACAging), "300"),
-		C("vxlan", "VXLAN transport",
-			VD("mode", "How remote MACs are learned", Enum(
-				E("control-plane", "Distribute MACs between stack members (no flooding to learn)"),
-				E("flood-and-learn", "Learn from data traffic"),
-			), "control-plane"),
+		C("vxlan", "VXLAN to VTEPs outside the stack (the stack is one VTEP)",
+			V("source-address", "The stack's VTEP address (on every member)", IPv4),
 			VD("udp-port", "VXLAN UDP destination port", Uint("<port>", 1, 65535), "4789"),
-			L("remote-vtep", "Static VTEP outside the stack", IP,
+			L("remote-vtep", "Remote VTEP", IP,
 				LL("vni", "VNIs to extend to this VTEP", VNI),
 			),
-			F("encryption", "Encrypt VXLAN underlay traffic with WireGuard"),
 		),
 	)
 

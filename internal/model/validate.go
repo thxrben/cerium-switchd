@@ -1,10 +1,12 @@
 package model
 
 import (
+	"cmp"
 	"fmt"
-	"mclag/internal/schema"
+	"net/netip"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -111,6 +113,7 @@ func (b *builder) validate() {
 	b.validateLLDP()
 	b.validateMTU()
 	b.validateVXLAN()
+	b.validateSnooping()
 	b.validateAnalyzers()
 	b.validateRSTP()
 
@@ -148,93 +151,7 @@ func (b *builder) validateMembers() {
 			}
 			names[m.HostName] = id
 		}
-		b.validateL3(id, path+" underlay", m.Underlay)
-		if m.Underlay.VLAN != 0 {
-			if v := c.VLANByID[m.Underlay.VLAN]; v != nil && v.VNI != 0 {
-				b.errorf(path+" underlay vlan", "vlan %s is extended over VXLAN and cannot carry the VXLAN underlay", v.Name)
-			}
-		}
 	}
-}
-
-// validateL3 checks a management or underlay IP interface.
-func (b *builder) validateL3(member int, path string, l L3Interface) {
-	c := b.cfg
-	if !l.Configured() {
-		if l.HasAddress() || len(l.Gateways) > 0 {
-			b.errorf(path, "addresses require 'vlan' or 'interface'")
-		}
-		return
-	}
-	if !l.HasAddress() {
-		b.warnf(path, "no address configured")
-	}
-	v4 := 0
-	for _, a := range l.Addresses {
-		if !strings.Contains(a, ":") {
-			v4++
-		}
-	}
-	if l.DHCP && v4 > 0 {
-		b.errorf(path, "use either 'dhcp' or a static IPv4 address, not both")
-	}
-	gw := map[bool]int{}
-	for _, g := range l.Gateways {
-		v6 := strings.Contains(g, ":")
-		gw[v6]++
-		hasFamily := l.DHCP && !v6
-		for _, a := range l.Addresses {
-			if strings.Contains(a, ":") == v6 {
-				hasFamily = true
-			}
-		}
-		if !hasFamily {
-			b.warnf(path+" gateway", "gateway %s has no address of its family on this interface", g)
-		}
-	}
-	if gw[false] > 1 || gw[true] > 1 {
-		b.errorf(path+" gateway", "at most one gateway per address family")
-	}
-	if l.Interface != "" {
-		name := l.Interface
-		if p, ok := schema.ParsePhysical(name); ok && p.Member != member {
-			b.errorf(path+" interface", "%s belongs to member %d, not %d", name, p.Member, member)
-		}
-		if i, ok := c.Interfaces[name]; ok && (i.Switching || i.Parent != "") {
-			b.errorf(path+" interface", "%s is used as a switch port and cannot carry an IP interface", i.Name)
-		}
-		if info, ok, _ := b.port(member, l.Interface); ok && info.StackPort {
-			b.errorf(path+" interface", "%s is a stacking port and never carries IP", l.Interface)
-		}
-	}
-	if l.VLAN != 0 && !b.memberHasVLAN(member, l.VLAN) {
-		b.warnf(path+" vlan", "no switch port of member %d carries vlan-id %d; the address is unreachable", member, l.VLAN)
-	}
-}
-
-// memberHasVLAN reports whether any switch port of a member (or a bundle
-// with ports on it) carries the VLAN.
-func (b *builder) memberHasVLAN(member, vid int) bool {
-	for _, i := range b.cfg.Interfaces {
-		if !i.Switching {
-			continue
-		}
-		on := i.Member == member
-		for _, p := range i.MemberPorts {
-			if pi := b.cfg.Interfaces[p]; pi != nil && pi.Member == member {
-				on = true
-			}
-		}
-		if !on {
-			continue
-		}
-		for _, v := range i.VLANs {
-			if v == vid {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (b *builder) validateInterfaces() {
@@ -411,72 +328,95 @@ func (b *builder) validateStackMTU() {
 func (b *builder) validateVXLAN() {
 	c := b.cfg
 	vnis := map[int]string{}
-	used := false
+	maxMTU := 0
+	var first string
 	for _, name := range sortedKeys(c.VLANs) {
 		v := c.VLANs[name]
 		if v.VNI == 0 {
 			continue
 		}
-		used = true
+		if first == "" {
+			first = name
+		}
 		if o, dup := vnis[v.VNI]; dup {
 			b.errorf("vlans "+name+" vxlan vni", "vni %d is already used by vlan %s", v.VNI, o)
 		}
 		vnis[v.VNI] = name
+		maxMTU = max(maxMTU, cmp.Or(v.MTU, DefaultMTU))
 	}
-	if !used {
-		return
-	}
-	for _, id := range sortedKeys(c.Members) {
-		m := c.Members[id]
-		if !m.Witness && m.VTEPAddress == "" {
-			b.errorf(fmt.Sprintf("virtual-chassis member %d", id), "vtep-address is required when VLANs are extended over VXLAN")
+	src := c.Switch.VTEPSource
+	path := "switch-options vxlan"
+	if src == "" {
+		if first != "" {
+			b.errorf("vlans "+first+" vxlan vni", "VXLAN needs the stack's VTEP address: switch-options vxlan source-address")
 		}
-	}
-	// The underlay must carry the largest extended frame plus encapsulation.
-	maxMTU := DefaultMTU
-	for _, v := range c.VLANs {
-		if v.VNI != 0 && v.MTU > maxMTU {
-			maxMTU = v.MTU
-		}
-	}
-	for _, id := range sortedKeys(c.Members) {
-		m := c.Members[id]
-		if !m.Underlay.Configured() {
-			continue
-		}
-		overhead := 50 // IPv4 + UDP + VXLAN + inner Ethernet
-		if strings.Contains(m.VTEPAddress, ":") {
-			overhead = 70
-		}
-		if c.Switch.VXLANEncrypt {
-			overhead += 80 // WireGuard over IPv6 worst case
-		}
-		var mtu int
-		var where string
-		if m.Underlay.Interface != "" {
-			where = fmt.Sprintf("interfaces %s mtu", m.Underlay.Interface)
-			if i, ok := c.Interfaces[m.Underlay.Interface]; ok {
-				mtu = i.MTU
-			} else if info, ok, _ := b.port(id, m.Underlay.Interface); ok && info.MTU > 0 {
-				mtu = info.MTU + EthHeader // unmanaged port: its current MTU
-			} else {
-				continue
+	} else if a, err := netip.ParseAddr(src); err == nil {
+		for _, n := range sortedKeys(c.L3) {
+			for _, p := range c.L3[n].Addrs {
+				if p.Addr() == a {
+					b.errorf(path+" source-address", "%s is also the address of %s; the VTEP address must be its own", src, n)
+				}
 			}
-		} else {
-			v := c.VLANByID[m.Underlay.VLAN]
-			if v == nil || v.MTU == 0 {
-				continue
-			}
-			where, mtu = "vlans "+v.Name+" mtu", v.MTU
-		}
-		if mtu < maxMTU+overhead {
-			b.warnf(where, "underlay MTU %d is below %d (largest VXLAN VLAN MTU %d + %d bytes encapsulation); larger frames are dropped at the tunnel", mtu, maxMTU+overhead, maxMTU, overhead)
 		}
 	}
-	for vtep, list := range c.Switch.RemoteVTEPs {
+	for _, vtep := range sortedKeys(c.Switch.RemoteVTEPs) {
+		list := c.Switch.RemoteVTEPs[vtep]
+		rp := path + " remote-vtep " + vtep
+		if vtep == src {
+			b.errorf(rp, "%s is the stack's own VTEP address", vtep)
+		}
+		if len(list) == 0 {
+			b.warnf(rp, "no vni listed; the VTEP receives nothing")
+		}
 		for _, vni := range list {
 			if _, ok := vnis[vni]; !ok {
-				b.errorf("switch-options vxlan remote-vtep "+vtep, "vni %d is not mapped to any VLAN", vni)
+				b.errorf(rp+" vni", "vni %d is not mapped to any VLAN", vni)
+			}
+		}
+	}
+	if len(vnis) == 0 || src == "" {
+		return
+	}
+	// The routed path to the remote VTEPs needs the largest VXLAN frame plus
+	// 50 bytes (reference 5.7): every routed interface of the default
+	// instance could be that path.
+	need := maxMTU + 50
+	for _, n := range sortedKeys(c.L3) {
+		u := c.L3[n]
+		if u.Instance != "" || u.CME() {
+			continue
+		}
+		mtu, where := DefaultMTU, "interfaces "+u.Parent+" mtu"
+		if u.IRB() {
+			where = "interfaces irb unit " + strconv.Itoa(u.Unit)
+			if v := c.VLANByID[u.VLAN]; v != nil && v.MTU != 0 {
+				mtu, where = v.MTU, "vlans "+v.Name+" mtu"
+			}
+		} else if i := c.Interfaces[u.Parent]; i != nil {
+			mtu = i.MTU
+		}
+		if mtu < need {
+			b.warnf(where, "%s may carry VXLAN to remote VTEPs: frames of %d bytes need %d there (VXLAN adds 50); larger frames are dropped", n, maxMTU, need)
+		}
+	}
+}
+
+// validateSnooping checks igmp-snooping and mld-snooping (reference 5.5).
+func (b *builder) validateSnooping() {
+	for _, x := range []struct {
+		name string
+		s    *Snooping
+	}{{"igmp-snooping", b.cfg.IGMP}, {"mld-snooping", b.cfg.MLD}} {
+		for _, n := range sortedKeys(x.s.Ports) {
+			path := "protocols " + x.name + " interface " + n
+			i, ok := b.cfg.Interfaces[n]
+			switch {
+			case !ok:
+				b.errorf(path, "%s is not configured under 'interfaces'", n)
+			case i.Parent != "":
+				b.errorf(path, "%s is a member of %s; configure %s", n, i.Parent, i.Parent)
+			case !i.Switching:
+				b.warnf(path, "%s is not a switch port", n)
 			}
 		}
 	}
@@ -675,23 +615,5 @@ func (b *builder) notImplemented() {
 	}
 	if r.Get("system", "services", "web-management") != nil {
 		b.warnf("system services web-management", "web-management is not implemented yet: the statement has no effect")
-	}
-	var vx []string
-	for _, name := range sortedKeys(b.cfg.VLANs) {
-		if b.cfg.VLANs[name].VNI != 0 {
-			vx = append(vx, "vlans "+name+" vxlan")
-		}
-	}
-	for _, id := range sortedKeys(b.cfg.Members) {
-		m := b.cfg.Members[id]
-		if m.VTEPAddress != "" || m.Underlay.Configured() || m.Underlay.HasAddress() {
-			vx = append(vx, fmt.Sprintf("virtual-chassis member %d vtep-address/underlay", id))
-		}
-	}
-	if r.Get("switch-options", "vxlan") != nil {
-		vx = append(vx, "switch-options vxlan")
-	}
-	if len(vx) > 0 {
-		b.warnf("", "VXLAN is not implemented yet; these statements have no effect: %s", strings.Join(vx, ", "))
 	}
 }

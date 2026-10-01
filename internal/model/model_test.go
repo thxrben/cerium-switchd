@@ -12,7 +12,6 @@ set system host-name core
 set system login user alice class super-user
 set system login user alice authentication encrypted-password "$6$abc$def"
 set virtual-chassis member 1 host-name sw-a
-set virtual-chassis member 1 vtep-address 10.255.0.1
 set virtual-chassis member 2 host-name sw-b
 set system management-instance oob
 set interfaces 1/9/0 management
@@ -20,7 +19,7 @@ set interfaces 2/9/0 management
 set interfaces cme unit 0 family inet address 192.168.1.11/24
 set routing-instances oob interface cme.0
 set routing-instances oob routing-options static route 0.0.0.0/0 next-hop 192.168.1.1
-set virtual-chassis member 2 vtep-address 10.255.0.2
+set switch-options vxlan source-address 10.255.0.1
 set interfaces 1/0/1 ether-options 802.3ad ae1
 set interfaces 1/0/2 ether-options 802.3ad ae1
 set interfaces 2/0/2 ether-options 802.3ad ae1
@@ -105,7 +104,10 @@ func TestInvalidConfigs(t *testing.T) {
 		{"dup vlan id", "set vlans dup vlan-id 10", "already used by vlan"},
 		{"vlan without id", "set vlans noid description x", "vlan-id is required"},
 		{"dup vni", "set vlans storage vxlan vni 10010", "vni 10010 is already used"},
-		{"vtep missing", "delete virtual-chassis member 2 vtep-address", "vtep-address is required"},
+		{"vtep missing", "delete switch-options vxlan source-address", "needs the stack's VTEP address"},
+		{"vtep is irb address", "set switch-options vxlan source-address 192.168.1.11", "the VTEP address must be its own"},
+		{"remote vni unmapped", "set switch-options vxlan remote-vtep 10.9.9.9 vni 77", "vni 77 is not mapped"},
+		{"snooping unknown port", "set protocols igmp-snooping interface 1/0/9 immediate-leave", "1/0/9 is not configured"},
 		{"unknown ae", "set interfaces 1/0/5 ether-options 802.3ad ae9", "ae9 is not configured"},
 		{"member with family", "set interfaces 1/0/1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},
@@ -135,7 +137,6 @@ func TestInvalidConfigs(t *testing.T) {
 		{"non-routed unit in instance", "set routing-instances data interface 1/0/5.0", "is not a routed interface"},
 		{"member on port address", "set interfaces 1/0/5 unit 0 family inet address 10.8.0.1/24 member 1", "irb addresses only"},
 		{"member not configured", "set vlans v99 vlan-id 99\nset vlans v99 l3-interface irb.99\nset interfaces irb unit 99 family inet address 10.8.0.1/24 member 7", "member 7 is not configured"},
-		{"underlay in vxlan vlan", "set virtual-chassis member 1 underlay vlan users", "cannot carry the VXLAN underlay"},
 		{"range overlap", "set interface-range a member-range 1/0/10 to 1/0/12\nset interface-range b member-range 1/0/12 to 1/0/13", "already part of interface-range a"},
 		{"range bad ends", "set interface-range a member-range 1/0/10 to 2/0/12", "same member"},
 		{"range reversed", "set interface-range a member-range 1/0/12 to 1/0/10", "comes before"},
@@ -161,9 +162,9 @@ func TestWarnings(t *testing.T) {
 		{"set system login user bob class operator", "cannot log in"},
 		{"set protocols layer2-control bpdu-block interface 1/0/3", "bpdu-block is not implemented yet"},
 		{"set system services web-management port 8443", "web-management is not implemented yet"},
-		{"", "VXLAN is not implemented yet"},
+		{"set switch-options vxlan remote-vtep 10.9.9.9", "no vni listed"},
+		{"set interfaces 1/0/5 unit 0 family inet address 10.7.0.1/24", "may carry VXLAN to remote VTEPs"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
-		{"set virtual-chassis member 1 underlay interface 1/0/5\nset virtual-chassis member 1 underlay address 10.9.0.1/24\nset interfaces 1/0/5 mtu 1514", "underlay MTU 1514 is below 1564"},
 		{"set routing-instances oob routing-options static route ::/0 next-hop 2001:db8::1", "not in a subnet of any routed interface of this instance"},
 		{"delete interfaces 1/9/0\ndelete interfaces 2/9/0", "no member has a management port"},
 		{"set protocols layer2-control bpdu-block interface ae1\nset protocols rstp interface ae1 cost 10\ndelete protocols rstp interface ae1 edge", "non-edge port"},

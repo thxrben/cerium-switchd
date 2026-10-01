@@ -30,6 +30,8 @@ type Config struct {
 	Switch    SwitchOptions
 	Analyzers map[string]*Analyzer
 	BPDUBlock BPDUBlock
+	// IGMP and MLD snooping (reference 5.5): never nil.
+	IGMP, MLD *Snooping
 	StackBFD  BFD
 	L3        map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
 	Routes    []StaticRoute      // default instance
@@ -117,29 +119,11 @@ type OffloadPolicy struct {
 }
 
 type Member struct {
-	ID          int
-	HostName    string
-	Priority    int
-	Witness     bool
-	VTEPAddress string
-	Underlay    L3Interface
+	ID       int
+	HostName string
+	Priority int
+	Witness  bool
 }
-
-// L3Interface is the VXLAN underlay IP interface of a member, attached
-// either to a VLAN of the bridge (IRB-like) or to a dedicated port.
-type L3Interface struct {
-	VLAN      int    // resolved VLAN id (0 = not VLAN based)
-	Interface string // dedicated port (<member>/<card>/<port>)
-	Addresses []string
-	DHCP      bool
-	Gateways  []string
-}
-
-// Configured reports whether the interface is attached anywhere.
-func (l L3Interface) Configured() bool { return l.VLAN != 0 || l.Interface != "" }
-
-// HasAddress reports whether the interface gets any address.
-func (l L3Interface) HasAddress() bool { return len(l.Addresses) > 0 || l.DHCP }
 
 // DefaultMTU is the default interface MTU: a standard Ethernet frame of
 // 1500 bytes payload plus the 14 byte header (Junos convention).
@@ -304,6 +288,37 @@ type RSTPPort struct {
 	Disabled   bool
 }
 
+// Snooping is protocols igmp-snooping or mld-snooping.
+type Snooping struct {
+	Disabled bool
+	// VLANs by VLAN id; All applies to VLANs without an entry.
+	VLANs map[int]SnoopVLAN
+	All   SnoopVLAN
+	Ports map[string]SnoopPort
+}
+
+// SnoopVLAN is the snooping of one VLAN.
+type SnoopVLAN struct {
+	Disabled bool
+	Querier  bool
+	Version  int
+}
+
+// SnoopPort is the snooping setting of one interface.
+type SnoopPort struct {
+	ImmediateLeave bool
+	Router         bool // multicast-router-interface
+}
+
+// VLAN returns the settings of VLAN id (on: snooping runs there).
+func (s *Snooping) VLAN(id int) (v SnoopVLAN, on bool) {
+	v, ok := s.VLANs[id]
+	if !ok {
+		v = s.All
+	}
+	return v, !s.Disabled && !v.Disabled
+}
+
 type BPDUBlock struct {
 	Interfaces     []string
 	DisableTimeout int // seconds, 0 = never re-enable automatically
@@ -359,11 +374,11 @@ type MCLAGOptions struct {
 }
 
 type SwitchOptions struct {
-	MACAging     int
-	VXLANMode    string
-	VXLANPort    int
-	RemoteVTEPs  map[string][]int
-	VXLANEncrypt bool
+	MACAging int
+	// VTEPSource is the stack's VTEP address (reference 5.7; "": none).
+	VTEPSource  string
+	VXLANPort   int
+	RemoteVTEPs map[string][]int // remote VTEP -> VNIs
 }
 
 type Analyzer struct {
@@ -505,14 +520,11 @@ func (b *builder) build() {
 	for _, e := range r.Get("virtual-chassis").Entries("member") {
 		id := atoi(e.Key, 0)
 		m := &Member{
-			ID:          id,
-			HostName:    e.Leaf("host-name"),
-			Priority:    atoi(e.Leaf("mastership-priority"), 128),
-			Witness:     e.Leaf("role") == "witness",
-			VTEPAddress: e.Leaf("vtep-address"),
+			ID:       id,
+			HostName: e.Leaf("host-name"),
+			Priority: atoi(e.Leaf("mastership-priority"), 128),
+			Witness:  e.Leaf("role") == "witness",
 		}
-		path := fmt.Sprintf("virtual-chassis member %d", id)
-		m.Underlay = b.buildL3(e.Get("underlay"), path+" underlay")
 		c.Members[id] = m
 	}
 	if len(c.Members) == 0 {
@@ -615,11 +627,10 @@ func (b *builder) build() {
 	// Switch options.
 	so := r.Get("switch-options")
 	c.Switch = SwitchOptions{
-		MACAging:     atoi(so.Leaf("mac-table-aging-time"), 300),
-		VXLANMode:    orDefault(so.Leaf("vxlan", "mode"), "control-plane"),
-		VXLANPort:    atoi(so.Leaf("vxlan", "udp-port"), 4789),
-		RemoteVTEPs:  map[string][]int{},
-		VXLANEncrypt: so.Has("vxlan", "encryption"),
+		MACAging:    atoi(so.Leaf("mac-table-aging-time"), 300),
+		VTEPSource:  so.Leaf("vxlan", "source-address"),
+		VXLANPort:   atoi(so.Leaf("vxlan", "udp-port"), 4789),
+		RemoteVTEPs: map[string][]int{},
 	}
 	for _, e := range so.Get("vxlan").Entries("remote-vtep") {
 		var vnis []int
@@ -630,6 +641,10 @@ func (b *builder) build() {
 	}
 
 	c.StackBFD = buildBFD(r.Get("virtual-chassis", "bfd"), 100)
+
+	// IGMP and MLD snooping.
+	c.IGMP = b.buildSnooping(r.Get("protocols", "igmp-snooping"), "protocols igmp-snooping", 2)
+	c.MLD = b.buildSnooping(r.Get("protocols", "mld-snooping"), "protocols mld-snooping", 1)
 
 	// BPDU protection.
 	bb := r.Get("protocols", "layer2-control", "bpdu-block")
@@ -769,28 +784,33 @@ func compactRanges(ids []int) string {
 	return strings.Join(parts, ",")
 }
 
-// buildL3 builds a management or underlay IP interface.
-func (b *builder) buildL3(n *config.Node, path string) L3Interface {
-	l := L3Interface{
-		Interface: n.Leaf("interface"),
-		Addresses: n.List("address"),
-		DHCP:      n.Has("dhcp"),
-		Gateways:  n.List("gateway"),
-	}
-	if ref := n.Leaf("vlan"); ref != "" {
-		ids, err := b.resolveVLANRef(ref)
-		if err != nil {
-			b.errorf(path+" vlan", "%v", err)
-		} else {
-			l.VLAN = ids[0]
-		}
-	}
-	return l
-}
-
 func orDefault(s, def string) string {
 	if s == "" {
 		return def
+	}
+	return s
+}
+
+// buildSnooping builds igmp-snooping or mld-snooping (absent: on with the
+// defaults).
+func (b *builder) buildSnooping(n *config.Node, path string, version int) *Snooping {
+	s := &Snooping{Disabled: n.Has("disable"), VLANs: map[int]SnoopVLAN{}, Ports: map[string]SnoopPort{},
+		All: SnoopVLAN{Version: version}}
+	for _, e := range n.Entries("vlan") {
+		v := SnoopVLAN{Disabled: e.Has("disable"), Querier: e.Has("querier"), Version: atoi(e.Leaf("version"), version)}
+		if e.Key == "all" {
+			s.All = v
+			continue
+		}
+		ids, err := b.resolveVLANRef(e.Key)
+		if err != nil {
+			b.errorf(path+" vlan "+e.Key, "%v", err)
+			continue
+		}
+		s.VLANs[ids[0]] = v
+	}
+	for _, e := range n.Entries("interface") {
+		s.Ports[e.Key] = SnoopPort{ImmediateLeave: e.Has("immediate-leave"), Router: e.Has("multicast-router-interface")}
 	}
 	return s
 }

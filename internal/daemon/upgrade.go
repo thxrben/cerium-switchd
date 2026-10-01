@@ -43,7 +43,10 @@ type portNames interface {
 //   - MC-LAG domains were dropped (reference 5.6: a bundle with ports on two
 //     members is an MC-LAG): "mclag domain <n> delay-restore" becomes
 //     "mclag delay-restore", the rest of the domains and the bundles'
-//     "aggregated-ether-options mclag" flag are removed.
+//     "aggregated-ether-options mclag" flag are removed,
+//   - VXLAN became one VTEP for the stack (reference 5.7): the members'
+//     vtep-address and underlay, and switch-options vxlan mode and
+//     encryption, are removed.
 //
 // A name that cannot be converted (its port no longer exists) would make the
 // whole configuration unreadable, so that statement is dropped and logged.
@@ -72,6 +75,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	u.convertManagement(m)
 	u.removePeerLink(m)
 	u.removeMCLAGDomains(m)
+	u.removeMemberVXLAN(m)
 	u.dropManagementFlag(m)
 	u.walk(schema.Root(), m, "")
 	// A newer member (e.g. the master during a software update) may know
@@ -679,4 +683,32 @@ func cmpNumeric(a, b string) int {
 	x, _ := strconv.Atoi(a)
 	y, _ := strconv.Atoi(b)
 	return x - y
+}
+
+// removeMemberVXLAN drops the per-member VXLAN statements of older versions
+// (reference 5.7: switch-options vxlan source-address replaces them).
+func (u *upgrader) removeMemberVXLAN(m map[string]any) {
+	var gone []string
+	members, _ := lookup(m, "virtual-chassis")["member"].(map[string]any)
+	for id, mv := range members {
+		mo, _ := mv.(map[string]any)
+		for _, k := range []string{"vtep-address", "underlay"} {
+			if _, ok := mo[k]; ok {
+				delete(mo, k)
+				gone = append(gone, "virtual-chassis member "+id+" "+k)
+			}
+		}
+	}
+	vx := lookup(m, "switch-options", "vxlan")
+	for _, k := range []string{"mode", "encryption"} {
+		if _, ok := vx[k]; ok {
+			delete(vx, k)
+			gone = append(gone, "switch-options vxlan "+k)
+		}
+	}
+	if len(gone) > 0 {
+		slices.Sort(gone)
+		u.log.Warn("stored configuration: VXLAN statements of an older version removed (the stack is one VTEP: switch-options vxlan source-address)",
+			"statements", strings.Join(gone, "; "))
+	}
 }
