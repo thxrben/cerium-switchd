@@ -9,44 +9,47 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-
-	"mclag/packaging"
 )
 
-// unitPath is where switchd keeps its systemd unit.
-const unitPath = "/etc/systemd/system/switchd.service"
+// unitPath is where switchd keeps its systemd unit, updateUnitPath the
+// update daemon's.
+const (
+	unitPath       = "/etc/systemd/system/switchd.service"
+	updateUnitPath = "/etc/systemd/system/switchd-update.service"
+)
 
-// renderUnit is switchd's unit with exe as the program.
-func renderUnit(exe string) string {
+// renderUnit is a unit with exe as the program.
+func renderUnit(unit, exe string) string {
 	if exe == "" {
-		return packaging.Unit
+		return unit
 	}
-	return strings.ReplaceAll(packaging.Unit, "/usr/local/sbin/switchd", exe)
+	return strings.ReplaceAll(unit, "/usr/local/sbin/switchd", exe)
 }
 
 // ensureUnit keeps switchd's systemd unit current (reference 1.4): a
 // software update may change it, and only the program is replaced by an
 // update. The new unit applies the next time systemd starts or stops switchd.
-func ensureUnit(path, exe string, reload func() error, log *slog.Logger) {
-	want := renderUnit(exe)
+func ensureUnit(path, unit, exe string, reload func() error, log *slog.Logger) bool {
+	want := renderUnit(unit, exe)
 	have, err := os.ReadFile(path)
 	if err == nil && string(have) == want {
-		return
+		return false
 	}
 	tmp := path + ".switchd-tmp"
 	if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
 		log.Warn("systemd unit: not updated", "path", path, "err", err)
-		return
+		return false
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		log.Warn("systemd unit: not updated", "path", path, "err", err)
-		return
+		return false
 	}
 	if err := reload(); err != nil {
 		log.Warn("systemd unit: daemon-reload", "err", err)
 	}
 	log.Info("systemd unit updated", "path", path)
+	return true
 }
 
 // osNetworkUnits are the operating system's network services that switchd

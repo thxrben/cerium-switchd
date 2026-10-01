@@ -37,6 +37,10 @@ type Pending struct {
 	// ExitMaintenance: the update put the member into maintenance mode; it
 	// leaves it once the new version is healthy.
 	ExitMaintenance bool `json:"exit_maintenance,omitempty"`
+	// Daemon: the update daemon (switchd-update) runs this update and
+	// returns to the previous version itself; switchd does not count its
+	// starts then.
+	Daemon bool `json:"daemon,omitempty"`
 }
 
 // MaxAttempts: a new version that starts this often without becoming
@@ -67,6 +71,15 @@ func (in *Installer) prev() string { return in.Program + ".prev" }
 // one (current) as the previous version. The running process is not
 // affected; the new program runs from the next start.
 func (in *Installer) Install(prog []byte, version, current string, exitMaintenance bool) error {
+	return in.install(prog, version, current, exitMaintenance, false)
+}
+
+// InstallByDaemon is Install for the update daemon (Pending.Daemon).
+func (in *Installer) InstallByDaemon(prog []byte, version, current string, exitMaintenance bool) error {
+	return in.install(prog, version, current, exitMaintenance, true)
+}
+
+func (in *Installer) install(prog []byte, version, current string, exitMaintenance, daemon bool) error {
 	if len(prog) == 0 {
 		return errors.New("empty program")
 	}
@@ -79,7 +92,7 @@ func (in *Installer) Install(prog []byte, version, current string, exitMaintenan
 	}
 	st := in.Load()
 	st.Previous = current
-	st.Pending = &Pending{Version: version, Since: time.Now().UTC(), ExitMaintenance: exitMaintenance}
+	st.Pending = &Pending{Version: version, Since: time.Now().UTC(), ExitMaintenance: exitMaintenance, Daemon: daemon}
 	if err := in.save(st); err != nil {
 		return err
 	}
@@ -92,13 +105,49 @@ func (in *Installer) Install(prog []byte, version, current string, exitMaintenan
 // Rollback puts the previous program back (from the next start on); the
 // current one becomes the previous one.
 func (in *Installer) Rollback(current string, exitMaintenance bool) (string, error) {
+	return in.rollback(current, exitMaintenance, false)
+}
+
+// RollbackByDaemon is Rollback for the update daemon.
+func (in *Installer) RollbackByDaemon(current string, exitMaintenance bool) (string, error) {
+	return in.rollback(current, exitMaintenance, true)
+}
+
+func (in *Installer) rollback(current string, exitMaintenance, daemon bool) (string, error) {
 	st := in.Load()
 	prog, err := os.ReadFile(in.prev())
 	if err != nil || st.Previous == "" {
 		return "", errors.New("there is no previous version on this member")
 	}
 	to := st.Previous
-	return to, in.Install(prog, to, current, exitMaintenance)
+	return to, in.install(prog, to, current, exitMaintenance, daemon)
+}
+
+// Revert puts the previous program back because the pending version did
+// not become healthy (why); the previous version is pending then.
+func (in *Installer) Revert(why string) error {
+	st := in.Load()
+	p := st.Pending
+	if p == nil {
+		return errors.New("no update pending")
+	}
+	prog, err := os.ReadFile(in.prev())
+	if err != nil {
+		st.Pending = nil
+		st.Note = fmt.Sprintf("%s %s and there is no previous program", p.Version, why)
+		return errors.Join(in.save(st), err)
+	}
+	failed := p.Version
+	if cur, err := os.ReadFile(in.Program); err == nil {
+		_ = writeAtomic(in.prev(), cur, 0o755) // the failed one becomes the previous one
+	}
+	if err := writeAtomic(in.Program, prog, 0o755); err != nil {
+		return err
+	}
+	st.Note = fmt.Sprintf("%s %s; returned to %s at %s", failed, why, st.Previous, time.Now().UTC().Format(time.RFC3339))
+	st.Pending = &Pending{Version: st.Previous, Since: time.Now().UTC(), ExitMaintenance: p.ExitMaintenance, Daemon: p.Daemon}
+	st.Previous = failed
+	return in.save(st)
 }
 
 // Start runs when switchd starts with version running. It counts the
@@ -116,28 +165,20 @@ func (in *Installer) Start(running string) (restart bool, err error) {
 		st.Pending = nil
 		return false, in.save(st)
 	}
+	if p.Daemon {
+		return false, nil // the update daemon watches this one
+	}
 	p.Attempts++
 	if p.Attempts <= MaxAttempts {
 		return false, in.save(st)
 	}
-	prog, err := os.ReadFile(in.prev())
-	if err != nil {
-		st.Pending = nil
-		st.Note = fmt.Sprintf("%s did not come up and there is no previous program", running)
-		return false, errors.Join(in.save(st), err)
-	}
-	failed := p.Version
-	if cur, err := os.ReadFile(in.Program); err == nil {
-		_ = writeAtomic(in.prev(), cur, 0o755) // the failed one becomes the previous one
-	}
-	if err := writeAtomic(in.Program, prog, 0o755); err != nil {
+	if err := in.save(st); err != nil {
 		return false, err
 	}
-	st.Note = fmt.Sprintf("%s did not come up after %d starts; returned to %s at %s", failed, MaxAttempts, st.Previous,
-		time.Now().UTC().Format(time.RFC3339))
-	st.Pending = &Pending{Version: st.Previous, Since: time.Now().UTC(), ExitMaintenance: p.ExitMaintenance}
-	st.Previous = failed
-	return true, in.save(st)
+	if err := in.Revert(fmt.Sprintf("did not come up after %d starts", MaxAttempts)); err != nil {
+		return false, err
+	}
+	return in.Load().Pending != nil, nil
 }
 
 // Healthy runs once switchd is working with running: the pending update is

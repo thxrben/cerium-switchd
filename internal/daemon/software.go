@@ -22,6 +22,7 @@ import (
 	"mclag/internal/config"
 	"mclag/internal/software"
 	"mclag/internal/stack"
+	"mclag/internal/updated"
 	"mclag/internal/version"
 )
 
@@ -38,7 +39,9 @@ type updater struct {
 	maint   func() *maintCtl
 	mgmtVRF func() string
 	restart func()
-	log     *slog.Logger
+	// updateSocket is the update daemon's socket ("": the default).
+	updateSocket string
+	log          *slog.Logger
 
 	mu  sync.Mutex
 	run *cli.SoftwareRun // the current or last update started here
@@ -60,6 +63,8 @@ type swStatus struct {
 	// Transit: member pairs that have no other stacking path than this
 	// member (cut off while it restarts).
 	Transit []string `json:"transit,omitempty"`
+	// Daemon: the update daemon's state ("": not running).
+	Daemon string `json:"daemon,omitempty"`
 }
 
 type swInstall struct {
@@ -107,6 +112,9 @@ func (u *updater) status() swStatus {
 		st.Transit = m.transit()
 	}
 	st.Current = u.ctl == nil || u.ctl.node.Current()
+	if rep, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err == nil {
+		st.Daemon = rep.State
+	}
 	files, _ := filepath.Glob(filepath.Join(u.dir, "ceros-*.tar.gz"))
 	for _, f := range files {
 		v := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "ceros-"), ".tar.gz")
@@ -207,6 +215,18 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 		out.WriteString(text)
 		exitMaint = true
 	}
+	// The update daemon installs and watches the restart (reference 3.6);
+	// without it (it is not running), switchd installs itself.
+	if to, err := u.viaDaemon(r, prog, exitMaint); err == nil {
+		u.log.Warn("software: handed to the update daemon; it restarts switchd", "facility", "change-log", "version", to, "from", version.Version, "by", by)
+		fmt.Fprintf(&out, "member %d installs %s (switchd-update) and restarts\n", u.member, to)
+		return out.String(), nil
+	} else if !errors.Is(err, errNoDaemon) {
+		if exitMaint {
+			u.maint().exit("software update")
+		}
+		return "", err
+	}
 	var err error
 	to := r.Version
 	if r.Rollback {
@@ -232,6 +252,12 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 // healthy runs once this switchd works (configuration applied, stack
 // state current): a pending update is done.
 func (u *updater) healthy() {
+	// The update daemon waits for this (best effort: it may not run).
+	defer func() {
+		if _, err := updated.Call(u.daemonSocket(), updated.Request{Op: "healthy", Version: version.Version}); err != nil {
+			u.log.Debug("software: update daemon", "err", err)
+		}
+	}()
 	p, err := u.inst.Healthy(version.Version)
 	if err != nil || p == nil {
 		return
@@ -571,6 +597,7 @@ func (u *updater) Status() (cli.SoftwareStatus, error) {
 			m.Error = err.Error()
 		} else {
 			m.Version, m.Built, m.Previous, m.Note, m.Maintenance = st.Version, st.Built, st.State.Previous, st.State.Note, st.Maintenance
+			m.Daemon = st.Daemon
 			if st.State.Pending != nil {
 				m.Pending = st.State.Pending.Version
 			}
@@ -578,4 +605,37 @@ func (u *updater) Status() (cli.SoftwareStatus, error) {
 		out.Members = append(out.Members, m)
 	}
 	return out, nil
+}
+
+// errNoDaemon: the update daemon is not running on this member.
+var errNoDaemon = errors.New("the update daemon is not running")
+
+func (u *updater) daemonSocket() string {
+	if u.updateSocket != "" {
+		return u.updateSocket
+	}
+	return updated.DefaultSocket
+}
+
+// viaDaemon hands the installation to the update daemon: the verified
+// program is staged for it, it installs it and restarts switchd.
+func (u *updater) viaDaemon(r swInstall, prog []byte, exitMaint bool) (string, error) {
+	if _, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err != nil {
+		return "", errNoDaemon
+	}
+	req := updated.Request{Op: "install", Version: r.Version, Running: version.Version, ExitMaintenance: exitMaint}
+	if r.Rollback {
+		req.Op = "rollback"
+	} else {
+		req.Program = filepath.Join(u.dir, "staged-"+r.Version)
+		if err := os.WriteFile(req.Program, prog, 0o600); err != nil {
+			return "", err
+		}
+	}
+	rep, err := updated.Call(u.daemonSocket(), req)
+	if err != nil {
+		os.Remove(req.Program)
+		return "", fmt.Errorf("update daemon: %w", err)
+	}
+	return rep.Version, nil
 }

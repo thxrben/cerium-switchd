@@ -6,19 +6,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"mclag/packaging"
 )
 
 func TestEnsureUnit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "switchd.service")
 	reloads := 0
 	reload := func() error { reloads++; return nil }
-	ensureUnit(path, "/opt/ceros/switchd", reload, slog.Default())
+	ensureUnit(path, packaging.Unit, "/opt/ceros/switchd", reload, slog.Default())
 	raw, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(raw), "ExecStart=/opt/ceros/switchd $SWITCHD_ARGS") ||
 		!strings.Contains(string(raw), "ExecStopPost=-/usr/sbin/ip link del cme") || reloads != 1 {
 		t.Fatalf("unit (reloads %d, err %v):\n%s", reloads, err, raw)
 	}
-	ensureUnit(path, "/opt/ceros/switchd", reload, slog.Default())
+	ensureUnit(path, packaging.Unit, "/opt/ceros/switchd", reload, slog.Default())
 	if reloads != 1 {
 		t.Errorf("unchanged unit reloaded again")
 	}

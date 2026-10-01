@@ -219,12 +219,9 @@ func McastGroups() ([]McastEntry, []McastRouterPort, error) {
 				Address string `json:"address"`
 			} `json:"source_list"`
 		} `json:"mdb"`
-		Router []struct {
-			Port  string `json:"port"`
-			VID   int    `json:"vid"`
-			Type  string `json:"type"`
-			Timer string `json:"timer"`
-		} `json:"router"`
+		// iproute2 writes the router ports as an object (by bridge) or a
+		// list, depending on its version: walked generically.
+		Router json.RawMessage `json:"router"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, nil, fmt.Errorf("bridge mdb show: %w", err)
@@ -242,8 +239,9 @@ func McastGroups() ([]McastEntry, []McastRouterPort, error) {
 			}
 			es = append(es, me)
 		}
-		for _, r := range o.Router {
-			rs = append(rs, McastRouterPort{Port: r.Port, VID: r.VID, Permanent: r.Type == "permanent", Expires: parseTimer(r.Timer)})
+		var any interface{}
+		if len(o.Router) > 0 && json.Unmarshal(o.Router, &any) == nil {
+			walkRouters(any, &rs)
 		}
 	}
 	return es, rs, nil
@@ -256,4 +254,31 @@ func McastGroups() ([]McastEntry, []McastRouterPort, error) {
 func McastRefresh(port string, vid int, group string) error {
 	_, err := runTool("bridge", "mdb", "replace", "dev", BridgeName, "port", port, "grp", group, "temp", "vid", strconv.Itoa(vid))
 	return err
+}
+
+// walkRouters collects router port entries (objects with a "port") from
+// iproute2's JSON, whatever their nesting.
+func walkRouters(v interface{}, out *[]McastRouterPort) {
+	switch x := v.(type) {
+	case []interface{}:
+		for _, e := range x {
+			walkRouters(e, out)
+		}
+	case map[string]interface{}:
+		if port, ok := x["port"].(string); ok {
+			r := McastRouterPort{Port: port}
+			if vid, ok := x["vid"].(float64); ok {
+				r.VID = int(vid)
+			}
+			r.Permanent = x["type"] == "permanent"
+			if t, ok := x["timer"].(string); ok {
+				r.Expires = parseTimer(t)
+			}
+			*out = append(*out, r)
+			return
+		}
+		for _, e := range x {
+			walkRouters(e, out)
+		}
+	}
 }

@@ -9,3 +9,8 @@ import _ "embed"
 //
 //go:embed switchd.service
 var Unit string
+
+// UpdateUnit is the update daemon's unit (switchd-update, reference 3.6).
+//
+//go:embed switchd-update.service
+var UpdateUnit string

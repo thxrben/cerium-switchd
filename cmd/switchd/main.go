@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"mclag/internal/daemon"
 	"mclag/internal/software"
 	"mclag/internal/swcli"
+	"mclag/internal/updated"
 	"mclag/internal/version"
 )
 
@@ -35,6 +37,8 @@ func main() {
 			os.Exit(checkConfig(os.Args[2:]))
 		case "package":
 			os.Exit(makePackage(os.Args[2:]))
+		case "update-daemon":
+			os.Exit(updateDaemon())
 		}
 	}
 
@@ -119,6 +123,34 @@ func makePackage(args []string) int {
 	}
 	if err := f.Close(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// updateDaemon is "switchd update-daemon", the update daemon switchd-update
+// (reference 3.6).
+func updateDaemon() int {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exe, err := os.Executable()
+	if err != nil {
+		log.Error("switchd-update", "err", err)
+		return 1
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	exe = strings.TrimSuffix(exe, " (deleted)") // replaced while running
+	d := &updated.Daemon{
+		Inst:    &software.Installer{Program: exe, StateFile: "/var/lib/switchd/software.json"},
+		Socket:  updated.DefaultSocket,
+		Version: version.Version,
+		Log:     log,
+		Restart: func() error { return exec.Command("systemctl", "restart", "switchd.service").Run() },
+		Exit:    func() { os.Exit(0) }, // systemd starts the new program
+	}
+	if err := d.Run(context.Background()); err != nil {
+		log.Error("switchd-update", "err", err)
 		return 1
 	}
 	return 0

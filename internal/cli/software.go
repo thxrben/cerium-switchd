@@ -35,6 +35,7 @@ type SoftwareMember struct {
 	Version, Built, Previous, Pending, Note string
 	Maintenance                             bool
 	Error                                   string
+	Daemon                                  string // the update daemon's state ("": not running)
 }
 
 // SoftwareStatus is "show system software".
@@ -220,6 +221,11 @@ func (sh *Shell) showSoftware(c *call) error {
 		fmt.Fprintf(c.out, "%-7d %-16s %-17s %-16s %s\n", m.Member, m.Version, built, orDash(m.Previous), state)
 		if m.Note != "" {
 			fmt.Fprintf(c.out, "        %s\n", m.Note)
+		}
+		if m.Daemon == "" {
+			c.out.WriteString("        update daemon: not running (switchd installs itself)\n")
+		} else if !strings.HasPrefix(m.Daemon, "idle") {
+			fmt.Fprintf(c.out, "        update daemon: %s\n", m.Daemon)
 		}
 	}
 	if r := st.Run; r != nil {

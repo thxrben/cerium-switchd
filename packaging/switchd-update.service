@@ -1,0 +1,15 @@
+[Unit]
+Description=cerOS update daemon (switchd-update): installs software, restarts switchd, rolls back
+Documentation=file:///usr/share/doc/switchd/config-reference.md
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/switchd update-daemon
+Restart=always
+RestartSec=2
+RuntimeDirectory=switchd-update
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

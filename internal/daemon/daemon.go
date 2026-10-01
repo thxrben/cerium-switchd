@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"log/slog"
 	"mclag/internal/config"
 	"mclag/internal/osconf"
@@ -23,6 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"mclag/internal/access"
 	"mclag/internal/cli"
 	"mclag/internal/commit"
@@ -37,6 +38,7 @@ import (
 	"mclag/internal/software"
 	"mclag/internal/syslog"
 	"mclag/internal/version"
+	"mclag/packaging"
 )
 
 // Options configure the daemon.
@@ -87,7 +89,15 @@ func Run(ctx context.Context, o Options) error {
 		// Only an installed switchd that systemd started: a program run by
 		// hand (a test build) must not become the unit's program.
 		if _, err := os.Stat(unitPath); err == nil && os.Getenv("INVOCATION_ID") != "" {
-			ensureUnit(unitPath, inst.Program, func() error { return command("systemctl", "daemon-reload") }, log)
+			reload := func() error { return command("systemctl", "daemon-reload") }
+			ensureUnit(unitPath, packaging.Unit, inst.Program, reload, log)
+			// The update daemon (reference 3.6) runs beside switchd.
+			ensureUnit(updateUnitPath, packaging.UpdateUnit, inst.Program, reload, log)
+			if state, _ := systemctlOutput("is-active", "switchd-update.service"); strings.TrimSpace(state) != "active" {
+				if err := command("systemctl", "enable", "--now", "switchd-update.service"); err != nil {
+					log.Warn("update daemon: not started", "err", err)
+				}
+			}
 		}
 		takeOverOSNetwork(systemctlOutput, "/proc", log)
 	}
