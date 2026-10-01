@@ -12,6 +12,7 @@ import (
 
 	"mclag/internal/commit"
 	"mclag/internal/config"
+	"mclag/internal/diag"
 	"mclag/internal/lacp"
 	"mclag/internal/lldp"
 	"mclag/internal/model"
@@ -67,6 +68,10 @@ type Operational interface {
 	CardForget(card int, user string) error
 	// VLANMTUDrops counts frames dropped per VLAN for exceeding its mtu.
 	VLANMTUDrops() (map[int]uint64, error)
+	// Bottlenecks reports what limits this member's forwarding.
+	Bottlenecks() ([]diag.Finding, error)
+	// Multicast reports IGMP/MLD snooping (each member its own).
+	Multicast() ([]McastStatus, error)
 	// DHCPBindings reports this member's DHCP clients.
 	DHCPBindings() ([]DHCPBinding, error)
 	// SpanningTree reports the stack's RSTP bridge (from the RSTP owner).
@@ -1362,6 +1367,8 @@ func registerOperational() {
 				}},
 				stpCommand(),
 				lldpCommand(),
+				snoopingCommand("igmp", "IGMP", false),
+				snoopingCommand("mld", "MLD", true),
 				&command{name: "dhcp", help: "Show DHCP information", class: commit.ReadOnly, sub: []*command{
 					{name: "client", help: "DHCP client", class: commit.ReadOnly, sub: []*command{
 						{name: "binding", help: "Leases of the interfaces with 'family inet dhcp'", class: commit.ReadOnly, run: (*Shell).showDHCPBinding},
@@ -1374,7 +1381,8 @@ func registerOperational() {
 						&command{name: "uptime", help: "Show the time, boot time and last configuration change", class: commit.ReadOnly, run: (*Shell).showUptime},
 						&command{name: "ntp", help: "Show the NTP servers and the clock", class: commit.ReadOnly, run: (*Shell).showNTP},
 						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload},
-						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits})
+						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits},
+						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })
@@ -1409,6 +1417,7 @@ func registerOperational() {
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
 			swRequest,
+			{name: "diagnose", help: "Check what limits forwarding (as show system bottlenecks)", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
 			{name: "maintenance-mode", help: "Take this member out of service without losing traffic", class: commit.SuperUser, sub: []*command{
 				{name: "enter", help: "Drain this member (mastership, stack transit, MC-LAG legs)", class: commit.SuperUser,
 					run:      func(sh *Shell, c *call) error { return sh.maintenance(c, true) },
@@ -1622,4 +1631,29 @@ func joinIDs(ids []int) string {
 		out[i] = strconv.Itoa(id)
 	}
 	return strings.Join(out, ", ")
+}
+
+// showBottlenecks is "show system bottlenecks" (reference 3.5.2).
+func (sh *Shell) showBottlenecks(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("diagnostics are not available")
+	}
+	fs, err := sh.env.Ops.Bottlenecks()
+	if err != nil {
+		return err
+	}
+	if len(fs) == 0 {
+		c.out.WriteString("Nothing found that limits forwarding.\n")
+		return nil
+	}
+	for _, f := range fs {
+		fmt.Fprintf(c.out, "%-5s %-6s %-22s %s\n", f.Severity, f.Area, f.Subject, f.Text)
+		if f.Advice != "" {
+			fmt.Fprintf(c.out, "%36s-> %s\n", "", f.Advice)
+		}
+	}
+	return nil
 }

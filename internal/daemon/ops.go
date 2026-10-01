@@ -24,6 +24,7 @@ import (
 	"mclag/internal/commit"
 	"mclag/internal/dataplane"
 	"mclag/internal/dhcp"
+	"mclag/internal/diag"
 	"mclag/internal/model"
 	"mclag/internal/ntp"
 )
@@ -52,6 +53,7 @@ type ops struct {
 	dhcp    *dhcp.Manager
 	// restart ends switchd so that systemd starts it again.
 	restart func()
+	diag    diag.Collector
 }
 
 func (o *ops) model() *model.Config {
@@ -810,4 +812,47 @@ func (o *ops) AddVCMember(id int, user string) (string, error) {
 func (o *ops) JoinVC(token, user string) (int, error) {
 	o.log.Warn("joining a virtual chassis", "facility", "change-log", "user", user)
 	return o.vc.Join(token)
+}
+
+// Multicast is this member's IGMP/MLD snooping (reference 5.5).
+func (o *ops) Multicast() ([]cli.McastStatus, error) {
+	cfg := o.model()
+	st := cli.McastStatus{Member: o.member}
+	es, rs, err := dataplane.McastGroups()
+	if err != nil {
+		return nil, err
+	}
+	name := func(k string) string {
+		if n := o.cfgName(k, dataplane.Physical); n != "" {
+			return n
+		}
+		if m := dataplane.TunnelMember(k); m > 0 {
+			return fmt.Sprintf("vc-%d", m)
+		}
+		return k // ae, VXLAN ports
+	}
+	for _, e := range es {
+		st.Groups = append(st.Groups, cli.McastGroup{VLAN: e.VID, Group: e.Group, Interface: name(e.Port), Static: e.Permanent,
+			Mode: e.Mode, Sources: e.Sources, Expires: e.Expires})
+	}
+	for _, r := range rs {
+		st.Routers = append(st.Routers, cli.McastRouter{VLAN: r.VID, Interface: name(r.Port), Permanent: r.Permanent, Expires: r.Expires})
+	}
+	desired, _ := dataplane.Compute(cfg, o.member, o.names.Linux)
+	mc := dataplane.ComputeMulticast(cfg, desired, o.names.Linux)
+	for _, vid := range slices.Sorted(maps.Keys(mc.VLANs)) {
+		v := mc.VLANs[vid]
+		st.VLANs = append(st.VLANs, cli.McastVLAN{VLAN: int(vid), Snooping: v.Snooping, Querier: v.Snooping && v.Querier})
+	}
+	return []cli.McastStatus{st}, nil
+}
+
+// Bottlenecks is "show system bottlenecks" of this member (reference 3.5.2).
+func (o *ops) Bottlenecks() ([]diag.Finding, error) {
+	o.names.Refresh()
+	var ports []diag.PortRef
+	for _, p := range o.names.Ports() {
+		ports = append(ports, diag.PortRef{Name: p.Name, Linux: p.Linux})
+	}
+	return diag.Analyze(o.diag.Collect(ports)), nil
 }

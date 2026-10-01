@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -49,13 +50,19 @@ type mclagCtl struct {
 	legState   string          // local and peer legs as last seen (flush on change)
 	curLegs    map[string]bool // local legs, current
 	macs       *macSync
-	peerFacts  map[string]string    // the peer's bundle facts (nil: not sent)
-	peerReady  map[string]int       // the peer's LACP-ready ports per bundle (minimum-links)
-	differs    map[string]time.Time // bundle -> facts differ since
-	maint      bool                 // maintenance mode: legs held
-	maintEnd   time.Time            // maintenance mode ended: legs held until then
-	drainFrom  map[string]time.Time // maintenance: leg reported down to the peer since
-	leaveTo    sync.Map             // bundle -> peer tunnel for beforeLeave (read under the LACP lock)
+	peerFacts  map[string]string // the peer's bundle facts (nil: not sent)
+	peerReady  map[string]int    // the peer's LACP-ready ports per bundle (minimum-links)
+	peerGroups []mcastKey        // the peer's multicast groups on MC-LAG bundles
+	groups     struct {
+		applied   map[mcastKey]bool
+		refreshed time.Time
+		busy      atomic.Bool
+	}
+	differs   map[string]time.Time // bundle -> facts differ since
+	maint     bool                 // maintenance mode: legs held
+	maintEnd  time.Time            // maintenance mode ended: legs held until then
+	drainFrom map[string]time.Time // maintenance: leg reported down to the peer since
+	leaveTo   sync.Map             // bundle -> peer tunnel for beforeLeave (read under the LACP lock)
 	// moved: addresses beforeLeave pointed at the peer's tunnel (they do
 	// not age); removed when the leg is back or the peer is gone, unless
 	// MAC synchronisation has taken them over.
@@ -86,7 +93,21 @@ type legsMsg struct {
 	// Ready: ports LACP has ready per bundle (minimum-links counts both
 	// members' ports).
 	Ready map[string]int `json:"ready,omitempty"`
+	// Groups: the multicast groups this member learned on its MC-LAG legs
+	// (installed on the peer's legs too, reference 5.5).
+	Groups []mcastKey `json:"groups,omitempty"`
 }
+
+// mcastKey is a group membership of an MC-LAG bundle.
+type mcastKey struct {
+	Bundle string `json:"bundle"`
+	VID    int    `json:"vid"`
+	Group  string `json:"group"`
+}
+
+// mclagGroupRefresh: the peer's groups are installed again this often
+// (learned entries expire after the membership interval, 260 s).
+const mclagGroupRefresh = 60 * time.Second
 
 // bundleFacts is what both members must agree on for an MC-LAG bundle
 // (reference 5.6, consistency checks).
@@ -134,7 +155,7 @@ func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *
 			// older versions sent their configured domain id).
 			if d := m.domainLocked(); d != nil && m.peerOf(d) == from {
 				m.peerLegs, m.peerSeen, m.peerKnown = l.Legs, time.Now(), true
-				m.peerFacts, m.peerReady = l.Facts, l.Ready
+				m.peerFacts, m.peerReady, m.peerGroups = l.Facts, l.Ready, l.Groups
 			}
 			m.mu.Unlock()
 			return nil, nil
@@ -431,9 +452,21 @@ func (m *mclagCtl) step(now time.Time) {
 			m.log.Info("mclag: leg changed, addresses learned on the peer's tunnel flushed", "count", n)
 		}
 	}
+	var installGroups []mcastKey
+	if reachable && !m.groups.busy.Load() {
+		if changed := !groupsEqual(m.peerGroups, m.groups.applied); changed || now.Sub(m.groups.refreshed) >= mclagGroupRefresh {
+			installGroups = slices.Clone(m.peerGroups)
+			m.groups.refreshed = now
+		}
+	}
+	if installGroups != nil {
+		m.groups.busy.Store(true)
+		go m.installGroups(installGroups)
+	}
 	if send {
 		go func() {
-			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready}, time.Second); err != nil {
+			groups := localGroups(bundles)
+			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready, Groups: groups}, time.Second); err != nil {
 				m.log.Debug("mclag: leg state to the peer", "err", err)
 			}
 		}()
@@ -598,4 +631,52 @@ func (m *mclagCtl) status() ([]cli.MCLAGStatus, error) {
 			Facts: bundleFacts(m.cfg, b), PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
 	}
 	return []cli.MCLAGStatus{st}, nil
+}
+
+func groupsEqual(list []mcastKey, set map[mcastKey]bool) bool {
+	if len(list) != len(set) {
+		return false
+	}
+	for _, k := range list {
+		if !set[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// localGroups lists the groups this member learned on its MC-LAG bundles
+// (not those it installed for the peer: those are refreshed from the peer).
+func localGroups(bundles []string) []mcastKey {
+	es, _, err := dataplane.McastGroups()
+	if err != nil {
+		return nil
+	}
+	var out []mcastKey
+	for _, e := range es {
+		if !e.Permanent && slices.Contains(bundles, e.Port) {
+			out = append(out, mcastKey{Bundle: e.Port, VID: e.VID, Group: e.Group})
+		}
+	}
+	slices.SortFunc(out, func(a, b mcastKey) int {
+		return strings.Compare(fmt.Sprint(a.Bundle, a.VID, a.Group), fmt.Sprint(b.Bundle, b.VID, b.Group))
+	})
+	return out
+}
+
+// installGroups installs (refreshes) the peer's groups on this member's
+// legs (reference 5.5). Groups the peer no longer reports are left to
+// expire.
+func (m *mclagCtl) installGroups(keys []mcastKey) {
+	defer m.groups.busy.Store(false)
+	applied := map[mcastKey]bool{}
+	for _, k := range keys {
+		if err := dataplane.McastRefresh(k.Bundle, k.VID, k.Group); err != nil {
+			m.log.Debug("mclag: multicast group of the peer", "bundle", k.Bundle, "group", k.Group, "err", err)
+		}
+		applied[k] = true // (a failure is retried with the next refresh)
+	}
+	m.mu.Lock()
+	m.groups.applied = applied
+	m.mu.Unlock()
 }

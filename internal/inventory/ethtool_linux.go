@@ -187,3 +187,22 @@ func features(linux string) map[string]string {
 	}
 	return out
 }
+
+// Rings are a NIC's receive and transmit ring sizes (ETHTOOL_GRINGPARAM).
+type Rings struct {
+	RX, RXMax, TX, TXMax int
+}
+
+// ReadRings reads a port's ring sizes; ok is false when the driver does
+// not report them.
+func ReadRings(linux string) (Rings, bool) {
+	const ethtoolGRingParam = 0x10
+	buf := make([]byte, 9*4)
+	le := binary.LittleEndian
+	le.PutUint32(buf, ethtoolGRingParam)
+	if err := ethtool(linux, buf); err != nil {
+		return Rings{}, false
+	}
+	u := func(i int) int { return int(le.Uint32(buf[4*i:])) }
+	return Rings{RXMax: u(1), TXMax: u(4), RX: u(5), TX: u(8)}, true
+}

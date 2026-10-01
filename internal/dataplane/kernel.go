@@ -30,6 +30,8 @@ type Kernel interface {
 	SyncMirrors(want map[string]*MirrorPort) (bool, error)
 	// SyncVLANMTU converges the per-VLAN MTU filters (vid -> frame size).
 	SyncVLANMTU(mtus map[int]int) (bool, error)
+	// SyncMulticast converges IGMP/MLD snooping.
+	SyncMulticast(m *Multicast) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -45,9 +47,10 @@ func Execute(k Kernel, ops []Op) error {
 // Fake is an in-memory kernel with Linux semantics, used by tests and by
 // the dry-run mode. It rejects operations the real kernel would reject.
 type Fake struct {
-	S       *State
-	Mirrors map[string]*MirrorPort
-	VLANMTU map[int]int
+	S         *State
+	Mirrors   map[string]*MirrorPort
+	VLANMTU   map[int]int
+	Multicast *Multicast
 }
 
 // NewFake returns a fake kernel holding a copy of s.
@@ -69,6 +72,12 @@ func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 }
 
 // SyncVLANMTU records the VLAN MTU filters.
+func (f *Fake) SyncMulticast(m *Multicast) (bool, error) {
+	changed := !reflect.DeepEqual(f.Multicast, m)
+	f.Multicast = m
+	return changed, nil
+}
+
 func (f *Fake) SyncVLANMTU(mtus map[int]int) (bool, error) {
 	changed := !reflect.DeepEqual(f.VLANMTU, mtus)
 	f.VLANMTU = mtus

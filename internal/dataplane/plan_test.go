@@ -488,3 +488,37 @@ func TestComputeTunnels(t *testing.T) {
 		}
 	}
 }
+
+func TestComputeMulticast(t *testing.T) {
+	cfg := &model.Config{
+		Members: map[int]*model.Member{1: {ID: 1}, 2: {ID: 2}},
+		Interfaces: map[string]*model.Interface{
+			"1/0/0": {Name: "1/0/0", Member: 1, MTU: 1514, Switching: true, Mode: "trunk", VLANs: []int{10, 20}},
+			"1/0/1": {Name: "1/0/1", Member: 1, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: 20, VLANs: []int{20}},
+			"2/0/0": {Name: "2/0/0", Member: 2, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: 10, VLANs: []int{10}},
+		},
+		IGMP: &model.Snooping{VLANs: map[int]model.SnoopVLAN{20: {Querier: true, Version: 3}}, All: model.SnoopVLAN{Version: 2},
+			Ports: map[string]model.SnoopPort{"1/0/0": {Router: true}, "1/0/1": {ImmediateLeave: true}}},
+		MLD: &model.Snooping{VLANs: map[int]model.SnoopVLAN{}, All: model.SnoopVLAN{Version: 1}, Ports: map[string]model.SnoopPort{}},
+	}
+	s, _ := Compute(cfg, 1, testNames)
+	mc := ComputeMulticast(cfg, s, testNames)
+	p0, _ := testNames("1/0/0")
+	p1, _ := testNames("1/0/1")
+	if !mc.On || !mc.Router["swvc2"] || !mc.Router[p0] || mc.Router[p1] || !mc.FastLeave[p1] {
+		t.Fatalf("multicast: %+v", mc)
+	}
+	if v := mc.VLANs[20]; !v.Snooping || !v.Querier || v.IGMPVersion != 3 || v.MLDVersion != 1 {
+		t.Errorf("vlan 20: %+v", v)
+	}
+	if v := mc.VLANs[10]; !v.Snooping || v.Querier || v.IGMPVersion != 2 {
+		t.Errorf("vlan 10: %+v", v)
+	}
+	if slices.Contains(s.L3.NoIP, BridgeName) {
+		t.Errorf("an MLD querier needs the bridge's link-local address: %v", s.L3.NoIP)
+	}
+	cfg.IGMP.Disabled, cfg.MLD.Disabled = true, true
+	if mc := ComputeMulticast(cfg, s, testNames); mc.On {
+		t.Errorf("snooping disabled but on: %+v", mc)
+	}
+}

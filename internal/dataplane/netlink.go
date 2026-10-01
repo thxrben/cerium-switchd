@@ -182,13 +182,15 @@ func (k *Netlink) Apply(op Op) error {
 		pvid := uint16(0)
 		ageing := uint32(op.Bridge.AgeingSeconds * 100)
 		br := &netlink.Bridge{
-			LinkAttrs:         netlink.LinkAttrs{Name: BridgeName},
-			VlanFiltering:     &on,
-			VlanDefaultPVID:   &pvid,
-			MulticastSnooping: &off, // flood multicast: never drop for lack of a querier
-			AgeingTime:        &ageing,
+			LinkAttrs:       netlink.LinkAttrs{Name: BridgeName},
+			VlanFiltering:   &on,
+			VlanDefaultPVID: &pvid,
+			AgeingTime:      &ageing,
 		}
 		if op.Kind == OpCreateBridge {
+			// Snooping starts off; SyncMulticast switches it on once the
+			// router ports are set (reference 5.5).
+			br.MulticastSnooping = &off
 			return netlink.LinkAdd(br)
 		}
 		return netlink.LinkModify(br)

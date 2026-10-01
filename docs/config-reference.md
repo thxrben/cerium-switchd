@@ -488,7 +488,7 @@ throughput or causes drops now; `hint`: worth changing) and names the port, NIC 
   backlog drops and `time squeeze` counts of the network softirq, as rates since the previous run of the command
   (the first run shows the totals since boot).
 * **Memory**: little available memory.
-`request system diagnose` is the same command.
+`request system diagnose` is the same command (as every `request`, for super-users, 4.3).
 
 ### 3.6 Software updates
 
@@ -1396,8 +1396,10 @@ protocols igmp-snooping {
   stacking plane), so a leg failure loses no group until the next query; they are removed when they expire on the
   member that learned them.
 * **VXLAN** ports (5.7) are multicast-router ports.
-* E: `interface` not configured or a bundle member port. W: not a switch port. E: `version` outside 2–3 (IGMP) or
-  1–2 (MLD).
+* **IGMP and MLD together**: the switch (the Linux bridge) snoops both in one: in a VLAN, both are on or both off
+  (E otherwise), and `querier` in either sends IGMP and MLD queries in that VLAN.
+* E: `interface` not configured or a bundle member port. W: not a switch port. The schema allows `version` 2–3
+  (IGMP) and 1–2 (MLD).
 * `show igmp snooping membership [vlan <vlan>]` / `show mld snooping membership …`: per VLAN and group the
   interfaces with receivers, the source filter (IGMPv3/MLDv2) and the time until expiry; one table for the stack.
 * `show igmp snooping vlans` / `show mld snooping vlans`: per VLAN whether snooping runs, the querier (this switch,

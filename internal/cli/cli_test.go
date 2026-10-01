@@ -15,6 +15,7 @@ import (
 	"mclag/internal/access"
 	"mclag/internal/commit"
 	"mclag/internal/config"
+	"mclag/internal/diag"
 	"mclag/internal/lacp"
 	"mclag/internal/lldp"
 )
@@ -564,6 +565,21 @@ func (f *fakeOps) MCLAG() ([]MCLAGStatus, error) {
 	}, nil
 }
 
+func (f *fakeOps) Bottlenecks() ([]diag.Finding, error) {
+	return []diag.Finding{{Severity: diag.Limit, Area: "PCIe", Subject: "card 1", Text: "the link carries 16 Gbit/s", Advice: "use another slot"}}, nil
+}
+
+func (f *fakeOps) Multicast() ([]McastStatus, error) {
+	return []McastStatus{
+		{Member: 1, Groups: []McastGroup{{VLAN: 10, Group: "239.1.1.1", Interface: "1/0/1", Expires: 250},
+			{VLAN: 10, Group: "239.1.1.1", Interface: "vc-2", Expires: 250}, {VLAN: 10, Group: "ff0e::1", Interface: "1/0/1", Expires: 200}},
+			Routers: []McastRouter{{VLAN: 10, Interface: "vc-2", Permanent: true}, {VLAN: 10, Interface: "1/0/2", Expires: 200}},
+			VLANs:   []McastVLAN{{VLAN: 10, Snooping: true}}},
+		{Member: 2, Groups: []McastGroup{{VLAN: 10, Group: "239.1.1.1", Interface: "ae1", Static: true}},
+			VLANs: []McastVLAN{{VLAN: 10, Snooping: true}}},
+	}, nil
+}
+
 func (f *fakeOps) Limits() (LimitsStatus, error) {
 	return LimitsStatus{Member: 1, Ports: 9, StackPorts: 2, LowestMaxMTU: 9014, LowestMaxPort: "1/1/0", HighestMaxMTU: 16014, HighestMaxPort: "1/3/0",
 		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12}, nil
@@ -1008,4 +1024,27 @@ func TestShowMCLAG(t *testing.T) {
 		"  ae1        up                   up                   1:on 2:on      -",
 		"  ae2        down                 down                 1:off 2:off    1: delay-restore (4m50s left)")
 	contains(t, ts.ok("show mclag consistency"), "  ae1: consistent")
+}
+
+func TestShowSnooping(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	out := ts.ok("show igmp snooping membership")
+	contains(t, out, "1/0/1", "ae1", "static", "2 memberships")
+	if strings.Contains(out, "vc-2") || strings.Contains(out, "ff0e::1") {
+		t.Errorf("stack copies or IPv6 groups listed:\n%s", out)
+	}
+	contains(t, ts.ok("show mld snooping membership"), "ff0e::1", "1 memberships")
+	contains(t, ts.ok("show igmp snooping vlans"), "seen on 1/0/2")
+}
+
+func TestShowBottlenecks(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.ok("show system bottlenecks"), "limit PCIe   card 1", "-> use another slot")
+	su := newTester(t, e, "root", commit.SuperUser)
+	su.sh.env.Ops = &fakeOps{}
+	contains(t, su.ok("request system diagnose"), "card 1") // request: super-user (4.3)
 }

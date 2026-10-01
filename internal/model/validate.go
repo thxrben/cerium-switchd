@@ -403,6 +403,14 @@ func (b *builder) validateVXLAN() {
 
 // validateSnooping checks igmp-snooping and mld-snooping (reference 5.5).
 func (b *builder) validateSnooping() {
+	// The bridge snoops IGMP and MLD together.
+	for _, id := range sortedKeys(b.cfg.VLANByID) {
+		_, igmp := b.cfg.IGMP.VLAN(id)
+		_, mld := b.cfg.MLD.VLAN(id)
+		if igmp != mld {
+			b.errorf("protocols", "vlan %s: igmp-snooping and mld-snooping must both be on or both off (the switch snoops both together)", b.cfg.VLANByID[id].Name)
+		}
+	}
 	for _, x := range []struct {
 		name string
 		s    *Snooping

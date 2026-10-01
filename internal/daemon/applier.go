@@ -267,6 +267,12 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	} else if changed {
 		a.log.Log(context.Background(), level, "VLAN mtu filters updated", "reason", reason)
 	}
+	// IGMP/MLD snooping (reference 5.5): after the ports and VLANs exist.
+	if changed, err := a.kernel.SyncMulticast(dataplane.ComputeMulticast(cfg, desired, a.names.Linux)); err != nil {
+		a.log.Error("multicast snooping", "err", err)
+	} else if changed {
+		a.log.Log(context.Background(), level, "multicast snooping updated", "reason", reason)
+	}
 	// Port mirroring (forwarding-options analyzer): after the devices exist.
 	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, a.names.Linux)); err != nil {
 		a.log.Error("port mirroring", "err", err)

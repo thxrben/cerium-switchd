@@ -106,7 +106,9 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 	}
 	computeTunnels(cfg, m, s)
 	s.L3 = computeL3(cfg, m, names, s)
-	s.L3.NoIP = []string{BridgeName}
+	if mc := ComputeMulticast(cfg, s, names); !mc.Querier() {
+		s.L3.NoIP = []string{BridgeName} // (an MLD querier needs its link-local address)
+	}
 	for _, n := range slices.Sorted(maps.Keys(s.Links)) {
 		if l := s.Links[n]; l.Master != "" || l.Kind == Tunnel {
 			s.L3.NoIP = append(s.L3.NoIP, n)

@@ -166,7 +166,7 @@ func markPerMember() {
 		confirm string
 	}{
 		{"show interfaces", ""}, {"show ethernet-switching table", ""}, {"show vlans", ""},
-		{"show chassis hardware", ""}, {"show system uptime", ""}, {"show system ntp", ""}, {"show system offload", ""}, {"show system limits", ""},
+		{"show chassis hardware", ""}, {"show system uptime", ""}, {"show system ntp", ""}, {"show system offload", ""}, {"show system limits", ""}, {"show system bottlenecks", ""}, {"request system diagnose", ""},
 		{"show system syslog", ""}, {"show version", ""}, {"show log", ""}, {"show arp", ""},
 		{"show ipv6 neighbors", ""}, {"show route", ""}, {"show virtual-chassis vc-port", ""}, {"show virtual-chassis mtu", ""},
 		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""}, {"show dhcp client binding", ""}, {"request chassis card", ""},
@@ -185,7 +185,8 @@ func markPerMember() {
 	for _, path := range []string{"show interfaces", "show ethernet-switching table", "show vlans", "show chassis hardware",
 		"show system offload", "show arp", "show ipv6 neighbors", "show virtual-chassis vc-port", "show virtual-chassis mtu",
 		"show lacp interfaces", "show lacp statistics interfaces", "show dhcp client binding", "clear ethernet-switching table",
-		"show lldp neighbors", "show lldp local-information", "show lldp statistics", "show mclag"} {
+		"show lldp neighbors", "show lldp local-information", "show lldp statistics", "show mclag",
+		"show igmp snooping membership", "show igmp snooping vlans", "show mld snooping membership", "show mld snooping vlans"} {
 		findCmd(operational, strings.Fields(path)).stackWide = true
 	}
 }

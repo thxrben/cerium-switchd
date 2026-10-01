@@ -63,6 +63,19 @@ func TunnelMember(name string) int {
 	return m
 }
 
+// VXLANName is the kernel name of a member's VXLAN port of a VNI towards
+// the remote VTEPs (reference 5.7).
+func VXLANName(vni int) string { return fmt.Sprintf("swvx%d", vni) }
+
+// VXLANVNI returns the VNI of a VXLAN port (0: not one).
+func VXLANVNI(name string) int {
+	var v int
+	if _, err := fmt.Sscanf(name, "swvx%d", &v); err != nil || VXLANName(v) != name {
+		return 0
+	}
+	return v
+}
+
 // TunnelVNI is the VNI of the tunnel between two members.
 func TunnelVNI(a, b int) int { return 32*min(a, b) + max(a, b) }
 

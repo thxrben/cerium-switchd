@@ -70,6 +70,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.VirtualChassis()
 	case "mclag":
 		return o.MCLAG()
+	case "multicast":
+		return o.Multicast()
 	case "stack-mtu":
 		return o.StackMTU()
 	}
@@ -292,6 +294,12 @@ func (s *stackOps) LACP() ([]lacp.BundleStatus, error) {
 		}
 	}
 	return out, err
+}
+
+// Multicast collects every member's snooping state.
+func (s *stackOps) Multicast() ([]cli.McastStatus, error) {
+	by, err := each[[]cli.McastStatus](s, opsRequest{Method: "multicast"})
+	return rows(by), err
 }
 
 // MCLAG collects every member's view of its MC-LAG pair.
