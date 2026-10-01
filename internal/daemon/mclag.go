@@ -579,15 +579,15 @@ func (m *mclagCtl) drainBlockers(draining []int) []string {
 }
 
 // status is "show mclag".
-func (m *mclagCtl) status() (cli.MCLAGStatus, error) {
+func (m *mclagCtl) status() ([]cli.MCLAGStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d := m.domainLocked()
 	if d == nil {
-		return cli.MCLAGStatus{}, nil
+		return nil, nil
 	}
 	peer := m.peerOf(d)
-	st := cli.MCLAGStatus{Domain: d.ID, Member: m.member, Peer: peer, Primary: m.primaryLocked(d),
+	st := cli.MCLAGStatus{Pair: d.ID, Member: m.member, Peer: peer, Primary: m.primaryLocked(d),
 		PeerReachable: m.peerReachable(peer), PeerKnown: m.peerKnown, PeerSeen: m.peerSeen}
 	st.Reach, st.Members = m.reachLocked()
 	legs := m.lacp.Legs()
@@ -597,5 +597,5 @@ func (m *mclagCtl) status() (cli.MCLAGStatus, error) {
 			SplitHorizon: slices.Contains(m.split, b), Hold: m.holds[b],
 			Facts: bundleFacts(m.cfg, b), PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
 	}
-	return st, nil
+	return []cli.MCLAGStatus{st}, nil
 }

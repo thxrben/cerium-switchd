@@ -176,7 +176,13 @@ func Run(ctx context.Context, o Options) error {
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
-	lldpAgent := &lldp.Agent{Log: log, Carrier: dataplane.Carrier}
+	lldpAgent := &lldp.Agent{Log: log, Carrier: dataplane.Carrier, Aggregated: func(linux string) bool {
+		// LACP bundles: LACP has the port in; static bundles: it has a link.
+		if on, known := lacpRT.PortEnabled(linux); known {
+			return on
+		}
+		return dataplane.Carrier(linux)
+	}}
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.

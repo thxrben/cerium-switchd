@@ -549,12 +549,19 @@ func (f *fakeOps) LACP() ([]lacp.BundleStatus, error) {
 	}}}, nil
 }
 
-func (f *fakeOps) MCLAG() (MCLAGStatus, error) {
-	return MCLAGStatus{Domain: 1, Member: 1, Peer: 2, Primary: true, PeerReachable: true, Reach: 3, Members: 3,
-		PeerKnown: true, PeerSeen: time.Now(), Bundles: []MCLAGBundle{
-			{Name: "ae1", LocalUp: true, PeerUp: true, PeerKnown: true, SplitHorizon: true},
-			{Name: "ae2", LocalUp: false, PeerUp: false, PeerKnown: true, Hold: "delay-restore (4m50s left)"},
-		}}, nil
+func (f *fakeOps) MCLAG() ([]MCLAGStatus, error) {
+	return []MCLAGStatus{
+		{Pair: 34, Member: 1, Peer: 2, Primary: true, PeerReachable: true, Reach: 3, Members: 3,
+			PeerKnown: true, PeerSeen: time.Now(), Bundles: []MCLAGBundle{
+				{Name: "ae1", LocalUp: true, PeerUp: true, PeerKnown: true, SplitHorizon: true, Facts: "x", PeerFacts: "x"},
+				{Name: "ae2", LocalUp: false, PeerUp: false, PeerKnown: true, Hold: "delay-restore (4m50s left)"},
+			}},
+		{Pair: 34, Member: 2, Peer: 1, PeerReachable: true, Reach: 3, Members: 3,
+			PeerKnown: true, PeerSeen: time.Now(), Bundles: []MCLAGBundle{
+				{Name: "ae1", LocalUp: true, PeerUp: true, PeerKnown: true, SplitHorizon: true, Facts: "x", PeerFacts: "x"},
+				{Name: "ae2", LocalUp: false, PeerUp: false, PeerKnown: true},
+			}},
+	}, nil
 }
 
 func (f *fakeOps) Limits() (LimitsStatus, error) {
@@ -995,8 +1002,10 @@ func TestShowMCLAG(t *testing.T) {
 	e := newEngine(t)
 	ts := newTester(t, e, "alice", commit.ReadOnly)
 	ts.sh.env.Ops = &fakeOps{}
-	contains(t, ts.ok("show mclag"), "MC-LAG domain 1: member 1 (primary), peer member 2",
-		"Peer and its stack tunnel vc-2: reachable", "Stack members reached: 3 of 3",
-		"  ae1        up     up       on             -",
-		"  ae2        down   down     off            delay-restore (4m50s left)")
+	out := ts.ok("show mclag")
+	contains(t, out, "MC-LAG pair: member 1 (primary), member 2 (secondary)",
+		"Member 1: reaches its peer over the stack (stack members reached: 3 of 3)",
+		"  ae1        up                   up                   1:on 2:on      -",
+		"  ae2        down                 down                 1:off 2:off    1: delay-restore (4m50s left)")
+	contains(t, ts.ok("show mclag consistency"), "  ae1: consistent")
 }

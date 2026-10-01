@@ -185,7 +185,7 @@ func markPerMember() {
 	for _, path := range []string{"show interfaces", "show ethernet-switching table", "show vlans", "show chassis hardware",
 		"show system offload", "show arp", "show ipv6 neighbors", "show virtual-chassis vc-port", "show virtual-chassis mtu",
 		"show lacp interfaces", "show lacp statistics interfaces", "show dhcp client binding", "clear ethernet-switching table",
-		"show lldp neighbors", "show lldp local-information", "show lldp statistics"} {
+		"show lldp neighbors", "show lldp local-information", "show lldp statistics", "show mclag"} {
 		findCmd(operational, strings.Fields(path)).stackWide = true
 	}
 }

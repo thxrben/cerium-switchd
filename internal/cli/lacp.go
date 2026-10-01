@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -98,9 +99,21 @@ func (sh *Shell) showLACP(c *call) error {
 			c.out.WriteString("\n")
 		}
 		fmt.Fprintf(c.out, "Aggregated interface: %s\n", b.Name)
+		// One system for the stack (reference 5.3.2): any port that
+		// announces another one is named.
 		if len(b.Ports) > 0 {
 			a := b.Ports[0].Actor
 			fmt.Fprintf(c.out, "    Actor system: %s, key %d\n", a.System, a.Key)
+			for _, p := range b.Ports[1:] {
+				if p.Actor.System != a.System || p.Actor.Key != a.Key {
+					fmt.Fprintf(c.out, "    Actor system of %s: %s, key %d (differs!)\n", b.PortNames[p.Name], p.Actor.System, p.Actor.Key)
+				}
+			}
+		}
+		for _, p := range b.Ports {
+			if p.SlowPartner {
+				fmt.Fprintf(c.out, "    Warning: the partner of %s sends LACPDUs less often than 'periodic fast' needs; configure 'lacp periodic slow'\n", b.PortNames[p.Name])
+			}
 		}
 		fmt.Fprintf(c.out, "    LACP state:       %8s %5s %5s %5s %4s %4s %5s %8s %9s\n", "Role", "Exp", "Def", "Dist", "Col", "Syn", "Aggr", "Timeout", "Activity")
 		for _, p := range b.Ports {
@@ -154,11 +167,13 @@ func (sh *Shell) showLACPStats(c *call) error {
 	return nil
 }
 
-// showMCLAG implements "show mclag".
+// showMCLAG implements "show mclag [consistency]": every MC-LAG pair of the
+// stack (reference 5.6), from both members' views; "member <id>" narrows it
+// to that member's pair.
 func (sh *Shell) showMCLAG(c *call) error {
 	consistency := false
 	switch {
-	case len(c.args) == 1 && c.args[0].Text == "consistency":
+	case len(c.args) == 1 && prefixOf(c.args[0].Text, "consistency"):
 		consistency = true
 	default:
 		if err := noArgs(c); err != nil {
@@ -168,79 +183,179 @@ func (sh *Shell) showMCLAG(c *call) error {
 	if sh.env.Ops == nil {
 		return errors.New("MC-LAG information is not available")
 	}
-	st, err := sh.env.Ops.MCLAG()
-	if err != nil {
+	sts, err := sh.env.Ops.MCLAG()
+	if err := partial(c, err); err != nil {
 		return err
 	}
-	if st.Domain == 0 {
-		c.out.WriteString("This member is not in an MC-LAG domain.\n")
+	pairs := mclagPairs(sts, c.only)
+	if len(pairs) == 0 {
+		c.out.WriteString("No MC-LAG bundles (an MC-LAG is a bundle with ports on two members).\n")
 		return nil
 	}
-	if consistency {
-		return showMCLAGConsistency(c, st)
-	}
-	role := "secondary"
-	if st.Primary {
-		role = "primary"
-	}
-	stack := "reachable"
-	if !st.PeerReachable {
-		stack = "not reachable"
-	}
-	fmt.Fprintf(c.out, "MC-LAG domain %d: member %d (%s), peer member %d\n", st.Domain, st.Member, role, st.Peer)
-	fmt.Fprintf(c.out, "  Peer and its stack tunnel vc-%d: %s\n", st.Peer, stack)
-	if st.Members > 2 {
-		fmt.Fprintf(c.out, "  Stack members reached: %d of %d\n", st.Reach, st.Members)
-	}
-	if st.PeerKnown {
-		fmt.Fprintf(c.out, "  Peer leg states: received %s ago\n", fmtDuration(time.Since(st.PeerSeen)))
-	} else {
-		c.out.WriteString("  Peer leg states: not received yet (split horizon assumes the peer's legs are up)\n")
-	}
-	if len(st.Bundles) == 0 {
-		c.out.WriteString("\nNo MC-LAG bundles with a leg on this member.\n")
-		return nil
-	}
-	fmt.Fprintf(c.out, "\n  %-10s %-6s %-8s %-14s %s\n", "Bundle", "Local", "Peer", "Split horizon", "Hold")
-	for _, b := range st.Bundles {
-		peer := upDown(b.PeerUp)
-		if !b.PeerKnown {
-			peer = "unknown"
+	for i, p := range pairs {
+		if i > 0 {
+			c.out.WriteString("\n")
 		}
-		split := "off"
-		if b.SplitHorizon {
-			split = "on"
+		if consistency {
+			showMCLAGConsistency(c, p)
+		} else {
+			showMCLAGPair(c, p)
 		}
-		hold := "-"
-		if b.Hold != "" {
-			hold = b.Hold
-		}
-		fmt.Fprintf(c.out, "  %-10s %-6s %-8s %-14s %s\n", b.Name, upDown(b.LocalUp), peer, split, hold)
 	}
 	return nil
 }
 
-func showMCLAGConsistency(c *call, st MCLAGStatus) error {
-	if len(st.Bundles) == 0 {
-		c.out.WriteString("No MC-LAG bundles with a leg on this member.\n")
-		return nil
+// mclagPair is one pair with what each of its members reported (nil: it
+// did not answer).
+type mclagPair struct {
+	a, b   int // members, a < b
+	st     map[int]*MCLAGStatus
+	bundle []string
+}
+
+func mclagPairs(sts []MCLAGStatus, only []int) []*mclagPair {
+	by := map[int]*mclagPair{}
+	for i := range sts {
+		s := &sts[i]
+		if s.Pair == 0 || (only != nil && !slices.Contains(only, s.Member)) {
+			continue
+		}
+		p := by[s.Pair]
+		if p == nil {
+			p = &mclagPair{a: min(s.Member, s.Peer), b: max(s.Member, s.Peer), st: map[int]*MCLAGStatus{}}
+			by[s.Pair] = p
+		}
+		p.st[s.Member] = s
+		for _, bd := range s.Bundles {
+			if !slices.Contains(p.bundle, bd.Name) {
+				p.bundle = append(p.bundle, bd.Name)
+			}
+		}
 	}
-	for i, b := range st.Bundles {
-		if i > 0 {
-			c.out.WriteString("\n")
+	var out []*mclagPair
+	for _, id := range slices.Sorted(maps.Keys(by)) {
+		p := by[id]
+		slices.SortFunc(p.bundle, func(x, y string) int { return strings.Compare(x, y) })
+		out = append(out, p)
+	}
+	return out
+}
+
+// leg is member m's leg of bundle b: from m itself, else as its peer saw it.
+func (p *mclagPair) leg(m int, b string) (MCLAGBundle, string) {
+	if s := p.st[m]; s != nil {
+		for _, x := range s.Bundles {
+			if x.Name == b {
+				return x, upDown(x.LocalUp)
+			}
+		}
+		return MCLAGBundle{}, "-"
+	}
+	o := p.a + p.b - m
+	if s := p.st[o]; s != nil {
+		for _, x := range s.Bundles {
+			if x.Name == b && x.PeerKnown {
+				return MCLAGBundle{}, upDown(x.PeerUp) + " (peer's view)"
+			}
+		}
+	}
+	return MCLAGBundle{}, "unknown"
+}
+
+func showMCLAGPair(c *call, p *mclagPair) {
+	role := func(m int) string {
+		if s := p.st[m]; s != nil {
+			if s.Primary {
+				return "primary"
+			}
+			return "secondary"
+		}
+		if s := p.st[p.a+p.b-m]; s != nil {
+			if s.Primary {
+				return "secondary"
+			}
+			return "primary"
+		}
+		return "?"
+	}
+	fmt.Fprintf(c.out, "MC-LAG pair: member %d (%s), member %d (%s)\n", p.a, role(p.a), p.b, role(p.b))
+	for _, m := range []int{p.a, p.b} {
+		s := p.st[m]
+		if s == nil {
+			fmt.Fprintf(c.out, "  Member %d: did not answer\n", m)
+			continue
+		}
+		reach := "reaches its peer over the stack"
+		if !s.PeerReachable {
+			reach = "does NOT reach its peer over the stack"
+		}
+		legs := "peer's leg states received " + fmtDuration(time.Since(s.PeerSeen)) + " ago"
+		if !s.PeerKnown {
+			legs = "no leg states from the peer yet (split horizon assumes its legs are up)"
+		}
+		fmt.Fprintf(c.out, "  Member %d: %s (stack members reached: %d of %d); %s\n", m, reach, s.Reach, s.Members, legs)
+	}
+	ma, mb := fmt.Sprintf("Member %d", p.a), fmt.Sprintf("Member %d", p.b)
+	fmt.Fprintf(c.out, "\n  %-10s %-20s %-20s %-14s %s\n", "Bundle", ma, mb, "Split horizon", "Hold")
+	for _, b := range p.bundle {
+		la, sa := p.leg(p.a, b)
+		lb, sb := p.leg(p.b, b)
+		var split, hold []string
+		for _, x := range []struct {
+			m int
+			l MCLAGBundle
+		}{{p.a, la}, {p.b, lb}} {
+			if p.st[x.m] == nil {
+				continue
+			}
+			on := "off"
+			if x.l.SplitHorizon {
+				on = "on"
+			}
+			split = append(split, fmt.Sprintf("%d:%s", x.m, on))
+			if x.l.Hold != "" {
+				hold = append(hold, fmt.Sprintf("%d: %s", x.m, x.l.Hold))
+			}
+		}
+		h := "-"
+		if len(hold) > 0 {
+			h = strings.Join(hold, "; ")
+		}
+		fmt.Fprintf(c.out, "  %-10s %-20s %-20s %-14s %s\n", b, sa, sb, strings.Join(split, " "), h)
+	}
+}
+
+func showMCLAGConsistency(c *call, p *mclagPair) {
+	fmt.Fprintf(c.out, "MC-LAG pair: member %d, member %d\n", p.a, p.b)
+	for _, b := range p.bundle {
+		facts := map[int]string{}
+		var differs time.Time
+		for m, s := range p.st {
+			for _, x := range s.Bundles {
+				if x.Name != b {
+					continue
+				}
+				facts[m] = x.Facts
+				if x.PeerFacts != "" && facts[s.Peer] == "" {
+					facts[s.Peer] = x.PeerFacts
+				}
+				if !x.DiffersSince.IsZero() && (differs.IsZero() || x.DiffersSince.Before(differs)) {
+					differs = x.DiffersSince
+				}
+			}
 		}
 		state := "consistent"
 		switch {
-		case b.PeerFacts == "":
-			state = "unknown (nothing received from the peer)"
-		case !b.DiffersSince.IsZero():
-			state = "inconsistent for " + fmtDuration(time.Since(b.DiffersSince))
+		case facts[p.a] == "" || facts[p.b] == "":
+			state = "unknown (one member's view is missing)"
+		case !differs.IsZero():
+			state = "inconsistent for " + fmtDuration(time.Since(differs))
+		case facts[p.a] != facts[p.b]:
+			state = "differs (a commit on its way?)"
 		}
-		fmt.Fprintf(c.out, "%s: %s\n", b.Name, state)
-		fmt.Fprintf(c.out, "  Member %d: %s\n", st.Member, b.Facts)
-		if b.PeerFacts != "" {
-			fmt.Fprintf(c.out, "  Member %d: %s\n", st.Peer, b.PeerFacts)
+		fmt.Fprintf(c.out, "  %s: %s\n", b, state)
+		for _, m := range []int{p.a, p.b} {
+			fmt.Fprintf(c.out, "    Member %d: %s\n", m, orDash(facts[m]))
 		}
 	}
-	return nil
 }

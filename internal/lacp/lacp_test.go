@@ -183,7 +183,7 @@ func TestWrongPartner(t *testing.T) {
 // short timeout still applies to what it receives.
 func TestSlowPartner(t *testing.T) {
 	s := newSim()
-	s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1")
+	a := s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1")
 	b := s.add("B", Config{System: sys(2), Key: 1, Active: true, Fast: false}, "p1")
 	s.connect("A/p1", "B/p1")
 	s.run(5 * time.Second)
@@ -197,6 +197,9 @@ func TestSlowPartner(t *testing.T) {
 	}
 	if len(dist(b)) != 1 {
 		t.Errorf("slow partner not distributing: %+v", b.Status())
+	}
+	if got := a.SlowPartners(); len(got) != 0 {
+		t.Errorf("B answers A's fast request, but A reports it slow: %v", got)
 	}
 }
 
@@ -349,5 +352,34 @@ func TestHoldDrains(t *testing.T) {
 	s.run(400 * time.Millisecond)
 	if len(dist(a)) != 0 {
 		t.Fatal("still in after DrainWait")
+	}
+}
+
+// A partner that sends only every 30 s although we ask for fast (some
+// switches ignore the request) is noticed and reported.
+func TestPartnerIgnoresFast(t *testing.T) {
+	now := time.Unix(1000, 0)
+	b := NewBundle(Config{System: SystemID{Priority: 1, MAC: [6]byte{2, 0, 0, 0, 0, 1}}, Key: 1, Active: true, Fast: true}, func(string, *PDU) {})
+	b.AddPort("p1", 1, 32768)
+	b.SetLink("p1", true, now)
+	partner := &PDU{Actor: Info{System: SystemID{Priority: 1, MAC: [6]byte{2, 0, 0, 0, 0, 9}}, Key: 7, Port: 3, State: Activity | Aggregation}}
+	for i := 0; i < 3; i++ {
+		b.Receive("p1", partner, now)
+		b.Tick(now)
+		now = now.Add(30 * time.Second)
+	}
+	if got := b.SlowPartners(); !slices.Equal(got, []string{"p1"}) {
+		t.Fatalf("slow partners: %v", got)
+	}
+	if !b.Status()[0].SlowPartner {
+		t.Error("status does not report the slow partner")
+	}
+	// It sends every second again (e.g. after a firmware fix).
+	for i := 0; i < 3; i++ {
+		b.Receive("p1", partner, now)
+		now = now.Add(time.Second)
+	}
+	if got := b.SlowPartners(); len(got) != 0 {
+		t.Errorf("still slow: %v", got)
 	}
 }

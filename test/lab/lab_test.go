@@ -1921,7 +1921,7 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 		time.Sleep(200 * time.Millisecond)
 	}
 	ping("both legs", 300)
-	if o := mustSSH(t, sw1, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +on`).MatchString(o) {
+	if o := mustSSH(t, sw1, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +1:on 2:on`).MatchString(o) {
 		t.Errorf("sw1 show mclag:\n%s", o)
 	}
 	for _, addr := range []string{sw1, sw2Addr} {
@@ -2083,7 +2083,7 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 	if n > 60 || strings.Contains(res, "DUP!") {
 		t.Errorf("ring cable cut: %d lost, duplicates %v", n, strings.Contains(res, "DUP!"))
 	}
-	if o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +\S+ +-`).MatchString(o) {
+	if o := mustSSH(t, sw2Addr, "swcli -c 'show mclag'"); !regexp.MustCompile(`ae1 +up +up +\S+ \S+ +-`).MatchString(o) {
 		t.Errorf("sw2 after the ring cut:\n%s", o)
 	}
 	ping("ring cable cut", 200)

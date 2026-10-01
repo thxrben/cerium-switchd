@@ -68,6 +68,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.VLANMTUDrops()
 	case "vc":
 		return o.VirtualChassis()
+	case "mclag":
+		return o.MCLAG()
 	case "stack-mtu":
 		return o.StackMTU()
 	}
@@ -156,14 +158,30 @@ func (s *stackOps) Interfaces() ([]cli.IfStatus, error) {
 	by, err := each[[]cli.IfStatus](s, opsRequest{Method: "interfaces"})
 	// Units of the whole stack (irb, bundles) are listed by every member
 	// that has them: once is enough, this member's first.
-	seen := map[string]bool{}
+	// A bundle's parts on two members (MC-LAG) are one interface: up when
+	// either part is, with the sum of both parts' speed and counters.
+	at := map[string]int{}
 	var out []cli.IfStatus
 	for _, id := range append([]int{s.member}, sortedIDs(by)...) {
 		for _, i := range by[id] {
-			if !seen[i.Name] {
-				seen[i.Name] = true
+			n, dup := at[i.Name]
+			if !dup {
+				at[i.Name] = len(out)
 				out = append(out, i)
+				continue
 			}
+			if len(i.Members) == 0 || len(out[n].Members) == 0 {
+				continue // a unit of the whole stack (irb): once is enough
+			}
+			m := &out[n]
+			m.OperUp = m.OperUp || i.OperUp
+			m.SpeedMbps += i.SpeedMbps
+			m.Members = append(m.Members, i.Members...)
+			k, x := &m.Counters, i.Counters
+			k.RxPackets, k.TxPackets, k.RxBytes, k.TxBytes = k.RxPackets+x.RxPackets, k.TxPackets+x.TxPackets, k.RxBytes+x.RxBytes, k.TxBytes+x.TxBytes
+			k.RxErrors, k.TxErrors, k.RxDropped, k.TxDropped = k.RxErrors+x.RxErrors, k.TxErrors+x.TxErrors, k.RxDropped+x.RxDropped, k.TxDropped+x.TxDropped
+			k.RxMulticast += x.RxMulticast
+			m.TaggedDrops += i.TaggedDrops
 		}
 		delete(by, id)
 	}
@@ -259,23 +277,27 @@ func (s *stackOps) LACP() ([]lacp.BundleStatus, error) {
 		i, ok := at[b.Name]
 		if !ok {
 			at[b.Name] = len(out)
-			if b.PortNames == nil {
-				b.PortNames = map[string]string{}
-			}
-			out = append(out, b)
-			continue
+			i = len(out)
+			out = append(out, lacp.BundleStatus{Name: b.Name, PortNames: map[string]string{}})
 		}
-		// Kernel names repeat across members: key the ports by their
+		// Kernel names repeat across members: key every port by its
 		// configuration name.
 		m := &out[i]
 		for _, p := range b.Ports {
-			name := b.PortNames[p.Name]
-			p.Name = name
-			m.PortNames[name] = name
+			if name := b.PortNames[p.Name]; name != "" {
+				p.Name = name
+			}
+			m.PortNames[p.Name] = p.Name
 			m.Ports = append(m.Ports, p)
 		}
 	}
 	return out, err
+}
+
+// MCLAG collects every member's view of its MC-LAG pair.
+func (s *stackOps) MCLAG() ([]cli.MCLAGStatus, error) {
+	by, err := each[[]cli.MCLAGStatus](s, opsRequest{Method: "mclag"})
+	return rows(by), err
 }
 
 func (s *stackOps) DHCPBindings() ([]cli.DHCPBinding, error) {

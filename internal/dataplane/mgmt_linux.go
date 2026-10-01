@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 
 	"github.com/vishvananda/netlink"
@@ -163,6 +164,7 @@ func syncBare(ports []string, unconfigured map[string]bool) (bool, error) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", n, err))
 		}
+		flushNeighbors(ln) // not a change of configuration: not reported
 		if unconfigured[n] && ln.Attrs().Alias != "" {
 			changed = true
 			if err := netlink.LinkSetAlias(ln, ""); err != nil {
@@ -171,6 +173,43 @@ func syncBare(ports []string, unconfigured map[string]bool) (bool, error) {
 		}
 	}
 	return changed, errors.Join(errs...)
+}
+
+// syncNoIP disables IPv6 on layer 2 devices (reference 1.5: no IP on
+// switch ports).
+func syncNoIP(links []string) (bool, error) {
+	changed := false
+	var errs []error
+	for _, n := range links {
+		c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+n+"/disable_ipv6", "1")
+		changed = changed || c
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return changed, errors.Join(errs...)
+}
+
+// flushNeighbors removes the neighbour entries of a link that has no
+// address any more (they would stay in show arp until the kernel collects
+// garbage).
+func flushNeighbors(ln netlink.Link) bool {
+	changed := false
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		ns, err := netlink.NeighList(ln.Attrs().Index, fam)
+		if err != nil {
+			continue
+		}
+		for _, n := range ns {
+			if n.State&netlink.NUD_PERMANENT != 0 {
+				continue
+			}
+			if netlink.NeighDel(&n) == nil {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // Carrier reports whether a kernel port has a link.

@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
+	"strings"
 
 	"mclag/internal/inventory"
 	"mclag/internal/lldp"
@@ -47,11 +49,15 @@ func lldpConfig(cfg *model.Config, member int, names *inventory.Naming, chassisM
 			continue
 		}
 		p := lldp.PortSpec{Linux: linux, Name: i.Name, Desc: i.Description, MaxFrame: uint16(min(i.MTU, 65535))}
+		sw := i // the switching settings: a bundle member's are its ae's
+		if ae := cfg.Interfaces[i.Parent]; ae != nil {
+			sw = ae
+		}
 		switch {
-		case i.AccessVLAN != 0:
-			p.PVID = uint16(i.AccessVLAN)
-		case i.NativeVLAN != 0:
-			p.PVID = uint16(i.NativeVLAN)
+		case sw.AccessVLAN != 0:
+			p.PVID = uint16(sw.AccessVLAN)
+		case sw.NativeVLAN != 0:
+			p.PVID = uint16(sw.NativeVLAN)
 		}
 		if i.Parent != "" {
 			p.Bundle = i.Parent
@@ -61,9 +67,10 @@ func lldpConfig(cfg *model.Config, member int, names *inventory.Naming, chassisM
 					p.Desc = i.Parent + ": " + ae.Description
 				}
 			}
-			if bi, err := net.InterfaceByName(i.Parent); err == nil {
-				p.BundleIndex, p.InBundle = uint32(bi.Index), true
-			}
+			// Not the kernel's ifindex: it differs between the members of
+			// an MC-LAG, which must look like one bundle.
+			n, _ := strconv.Atoi(strings.TrimPrefix(i.Parent, "ae"))
+			p.BundleIndex = uint32(n + 1)
 		}
 		ports = append(ports, p)
 	}

@@ -9,9 +9,6 @@ import (
 	"mclag/internal/schema"
 )
 
-// maxRangePorts bounds member-range expansion.
-const maxRangePorts = 4096
-
 // effectiveInterfaces returns one node per interface: explicit entries
 // under "interfaces", completed with the statements of the interface-range
 // that matches them, plus interfaces that exist only through a range.

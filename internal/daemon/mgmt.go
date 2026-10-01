@@ -30,10 +30,9 @@ type mgmtCtl struct {
 	// dryRun: services outside switchd are left alone.
 	dryRun bool
 
-	mu      sync.Mutex
-	cfg     *model.Config
-	relayQ  chan syslog.Message
-	started bool
+	mu     sync.Mutex
+	cfg    *model.Config
+	relayQ chan syslog.Message
 }
 
 // Relayed messages wait here while the master cannot be reached; the
@@ -58,6 +57,7 @@ func (m *mgmtCtl) start(ctx context.Context) {
 			return nil, err
 		}
 		for _, msg := range msgs {
+			msg.Severity = min(max(msg.Severity, 0), 7) // a valid syslog PRI whatever the sender
 			m.hub.Log(msg)
 		}
 		return nil, nil

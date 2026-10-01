@@ -106,6 +106,12 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 	}
 	computeTunnels(cfg, m, s)
 	s.L3 = computeL3(cfg, m, names, s)
+	s.L3.NoIP = []string{BridgeName}
+	for _, n := range slices.Sorted(maps.Keys(s.Links)) {
+		if l := s.Links[n]; l.Master != "" || l.Kind == Tunnel {
+			s.L3.NoIP = append(s.L3.NoIP, n)
+		}
+	}
 	self := map[int]bool{}
 	for _, i := range s.L3.Ifs {
 		if i.Parent == BridgeName {

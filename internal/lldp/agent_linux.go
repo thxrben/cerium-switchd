@@ -19,6 +19,10 @@ type Agent struct {
 	Log *slog.Logger
 	// Carrier reports whether a kernel port has a link.
 	Carrier func(linux string) bool
+	// Aggregated reports whether a bundle member port carries traffic for
+	// its bundle now (LACP has it collecting and distributing); nil: as
+	// PortSpec.InBundle says.
+	Aggregated func(linux string) bool
 
 	mu    sync.Mutex
 	sys   System
@@ -86,6 +90,9 @@ func (a *Agent) Sync(sys System, ports []PortSpec) {
 			}
 			a.ports[s.Linux] = p
 			p.dirty = true
+		}
+		if a.Aggregated != nil {
+			s.InBundle = p.spec.InBundle // follows the bundle at run time (tick)
 		}
 		if sysChanged || !reflect.DeepEqual(p.spec, s) {
 			if p.spec.Name != "" && p.spec.Name != s.Name {
@@ -212,6 +219,11 @@ func (a *Agent) tick(now time.Time) {
 			continue
 		case !p.up:
 			p.up, p.dirty = true, true // a link that comes up announces at once
+		}
+		if p.spec.Bundle != "" && a.Aggregated != nil {
+			if in := a.Aggregated(p.spec.Linux); in != p.spec.InBundle {
+				p.spec.InBundle, p.dirty = in, true // joined or left its bundle
+			}
 		}
 		if p.dirty || !now.Before(p.next) {
 			a.send(p, a.sys.TTL())

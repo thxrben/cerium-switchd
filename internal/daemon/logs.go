@@ -17,7 +17,11 @@ type logs struct{ hub *syslog.Hub }
 func (l logs) Recent() []cli.LogLine {
 	var out []cli.LogLine
 	for _, m := range l.hub.Recent() {
-		out = append(out, cli.LogLine{Time: m.Time, Facility: m.Facility, Severity: severityName[m.Severity], Text: m.Text})
+		sev := "unknown"
+		if m.Severity >= 0 && m.Severity < len(severityName) { // relayed messages come from other members
+			sev = severityName[m.Severity]
+		}
+		out = append(out, cli.LogLine{Time: m.Time, Facility: m.Facility, Severity: sev, Text: m.Text, Host: m.Host})
 	}
 	return out
 }

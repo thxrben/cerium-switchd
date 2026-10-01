@@ -24,7 +24,8 @@ type PortSpec struct {
 	Desc  string // description ("": the name)
 	PVID  uint16
 	// Bundle: the ae the port belongs to ("": none); InBundle: it is
-	// aggregated now; BundleIndex: the aggregate's ifIndex.
+	// aggregated now; BundleIndex: the aggregated port id announced, N+1
+	// for aeN (the same on every member: an MC-LAG is one bundle).
 	Bundle      string
 	InBundle    bool
 	BundleIndex uint32

@@ -162,6 +162,10 @@ type L3 struct {
 	// ports and ports that are not configured (reference 1.4);
 	// Unconfigured are the latter (they carry no description either).
 	Bare, Unconfigured []string
+	// NoIP are the layer 2 devices: the bridge, its ports, bundle member
+	// ports and the stack tunnels. They never carry IP, not even an IPv6
+	// link-local address (reference 1.5).
+	NoIP []string
 }
 
 // VRF is a routing instance in the kernel.

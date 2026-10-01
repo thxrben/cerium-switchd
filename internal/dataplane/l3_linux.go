@@ -208,7 +208,9 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 				routes = append(routes, Route{VRF: i.VRF, Prefix: netip.MustParsePrefix("0.0.0.0/0"), NextHops: []netip.Addr{le.Router}})
 			}
 		}
-		l = &L3{VRFs: l.VRFs, Ifs: ifs, Routes: routes, CME: l.CME, Bare: l.Bare, Unconfigured: l.Unconfigured}
+		withLeases := *l
+		withLeases.Ifs, withLeases.Routes = ifs, routes
+		l = &withLeases
 	}
 
 	// The chassis management interface, after its routing instance exists.
@@ -218,6 +220,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		unconf[n] = true
 	}
 	note(syncBare(l.Bare, unconf))
+	note(syncNoIP(l.NoIP))
 
 	want := map[string]bool{}
 	var protect []string // data L3 interfaces: only ping/ND/replies reach the switch
@@ -490,6 +493,10 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	// (anycast gateway): duplicate address detection would see the other
 	// members' copies and disable them, so it is off there, and addresses
 	// that failed it before are added again.
+	// A port that was a switch or management port before has IPv6 off.
+	if c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+i.Name+"/disable_ipv6", "0"); err == nil {
+		changed = changed || c
+	}
 	anycast := i.Own && i.Parent == BridgeName && i.Anycast
 	if anycast {
 		c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+i.Name+"/accept_dad", "0")

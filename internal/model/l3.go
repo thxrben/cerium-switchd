@@ -423,12 +423,3 @@ func sortedVLANs(c *Config) []*VLAN {
 	sort.Slice(vs, func(i, j int) bool { return vs[i].Name < vs[j].Name })
 	return vs
 }
-
-func sortedMemberIDs(c *Config) []int {
-	ids := make([]int, 0, len(c.Members))
-	for id := range c.Members {
-		ids = append(ids, id)
-	}
-	sort.Ints(ids)
-	return ids
-}

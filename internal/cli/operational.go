@@ -47,8 +47,9 @@ type Operational interface {
 	LACP() ([]lacp.BundleStatus, error)
 	// LLDP reports what LLDP announces, its ports, counters and neighbours.
 	LLDP() (LLDPStatus, error)
-	// MCLAG reports this member's MC-LAG domain (Domain 0: none).
-	MCLAG() (MCLAGStatus, error)
+	// MCLAG reports the MC-LAG state of the members that have MC-LAG
+	// bundles (each member its own view of its pair).
+	MCLAG() ([]MCLAGStatus, error)
 	StackMTU() (StackMTUStatus, error)
 	Limits() (LimitsStatus, error)
 	// SwitchMaster hands mastership to member to (0: the best other member).
@@ -151,13 +152,13 @@ type StackMTUPort struct {
 
 // MCLAGStatus is "show mclag".
 type MCLAGStatus struct {
-	Domain, Member, Peer int
-	Primary              bool
-	PeerReachable        bool // over the stack (and so its stack tunnel)
-	PeerKnown            bool // leg states received from the peer
-	PeerSeen             time.Time
-	Reach, Members       int // switch members reached (itself included) / in the stack
-	Bundles              []MCLAGBundle
+	Pair, Member, Peer int // Pair: model.PairID of Member and Peer
+	Primary            bool
+	PeerReachable      bool // over the stack (and so its stack tunnel)
+	PeerKnown          bool // leg states received from the peer
+	PeerSeen           time.Time
+	Reach, Members     int // switch members reached (itself included) / in the stack
+	Bundles            []MCLAGBundle
 }
 
 // MCLAGBundle is one MC-LAG bundle of "show mclag".
@@ -242,6 +243,11 @@ type IfStatus struct {
 	Addrs       []string // IP addresses of a routed unit
 	Counters    IfCounters
 	TaggedDrops uint64
+	// Ports: the member ports of a bundle (all members); Members: the
+	// stack members whose part of the bundle is included (an MC-LAG's
+	// state and counters are the sum of both members' parts).
+	Ports   []string
+	Members []int
 }
 
 // IfCounters are interface statistics.
@@ -273,6 +279,8 @@ type LogLine struct {
 	Facility string
 	Severity string
 	Text     string
+	// Host: the member the message comes from ("": this one).
+	Host string
 }
 
 // ForwarderStatus describes one remote syslog server.
@@ -293,8 +301,12 @@ func (sh *Shell) showLog(c *call) error {
 	if sh.env.Logs == nil {
 		return errors.New("log buffer not available")
 	}
-	host := sh.env.HostName()
+	local := sh.env.HostName()
 	for _, l := range sh.env.Logs.Recent() {
+		host := l.Host // relayed from another member (reference 1.8)
+		if host == "" {
+			host = local
+		}
 		fmt.Fprintf(c.out, "%s %s %s.%s: %s\n", l.Time.Local().Format("2006-01-02 15:04:05"), host, l.Facility, l.Severity, l.Text)
 	}
 	return nil
@@ -436,6 +448,12 @@ func (sh *Shell) showInterfaces(c *call) error {
 		}
 		fmt.Fprintf(c.out, "  Linux name: %s, MAC: %s, Speed: %s, MTU: %d\n", i.Linux, i.MAC, speed(i.SpeedMbps), i.MTU)
 		fmt.Fprintf(c.out, "  Configured: %s, Role: %s\n", cfg, i.Role)
+		if len(i.Ports) > 0 {
+			fmt.Fprintf(c.out, "  Member ports: %s\n", strings.Join(i.Ports, ", "))
+		}
+		if len(i.Members) > 1 {
+			fmt.Fprintf(c.out, "  MC-LAG: link and counters of members %s together\n", joinIDs(i.Members))
+		}
 		if len(i.Addrs) > 0 {
 			fmt.Fprintf(c.out, "  Addresses: %s\n", strings.Join(i.Addrs, ", "))
 		}
@@ -1334,7 +1352,7 @@ func registerOperational() {
 					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
 				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
-				&command{name: "mclag", help: "Show the MC-LAG domain of this member", class: commit.ReadOnly, run: (*Shell).showMCLAG,
+				&command{name: "mclag", help: "Show the MC-LAG pairs and their bundles", class: commit.ReadOnly, run: (*Shell).showMCLAG,
 					complete: words(Completion{Text: "consistency", Help: "Compare the MC-LAG bundles with the peer"})},
 				&command{name: "lacp", help: "Show LACP information", class: commit.ReadOnly, sub: []*command{
 					{name: "interfaces", help: "Show LACP state per bundle and port", class: commit.ReadOnly, run: (*Shell).showLACP, complete: completeAE},
@@ -1596,4 +1614,12 @@ func fmtSpeed(mbps int) string {
 		return fmt.Sprintf("%dG", mbps/1000)
 	}
 	return fmt.Sprintf("%dM", mbps)
+}
+
+func joinIDs(ids []int) string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = strconv.Itoa(id)
+	}
+	return strings.Join(out, ", ")
 }

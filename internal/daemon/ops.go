@@ -104,6 +104,9 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 		}
 		if i != nil {
 			s.Description = i.Description
+			if i.AE {
+				s.Ports, s.Members = i.MemberPorts, []int{o.member}
+			}
 		}
 		switch {
 		case o.vc != nil && o.vc.IsPort(p.Name):
@@ -523,6 +526,9 @@ func (o *ops) Offload() ([]cli.OffloadPort, error) {
 
 func (o *ops) Routes(instance string) ([]cli.Route, error) {
 	table := unix.RT_TABLE_MAIN
+	if instance == dataplane.StackVRF {
+		return nil, fmt.Errorf("routing instance %s does not exist on this member", instance) // internal (reference 5.2)
+	}
 	if instance != "" {
 		l, err := netlink.LinkByName(instance)
 		v, ok := l.(*netlink.Vrf)
@@ -727,9 +733,9 @@ func (o *ops) LACP() ([]lacp.BundleStatus, error) {
 	return o.lacp.Status(), nil
 }
 
-func (o *ops) MCLAG() (cli.MCLAGStatus, error) {
+func (o *ops) MCLAG() ([]cli.MCLAGStatus, error) {
 	if o.mclag == nil {
-		return cli.MCLAGStatus{}, errors.New("MC-LAG is not running (dry-run mode?)")
+		return nil, errors.New("MC-LAG is not running (dry-run mode?)")
 	}
 	return o.mclag.status()
 }
