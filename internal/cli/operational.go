@@ -1012,10 +1012,12 @@ func (sh *Shell) showRoute(c *call) error {
 	instance := ""
 	switch {
 	case len(c.args) == 0:
+	case len(c.args) == 1 && prefixOf(c.args[0].Text, "instance"):
+		return sh.showRouteInstances(c)
 	case len(c.args) == 2 && prefixOf(c.args[0].Text, "instance"):
 		instance = c.args[1].Text
 	default:
-		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'instance <name>'"}
+		return &posError{pos: c.argPos(0), msg: "syntax error, expecting 'instance [<name>]'"}
 	}
 	if sh.env.Ops == nil {
 		return errors.New("routing information is not available")
@@ -1661,6 +1663,39 @@ func (sh *Shell) showBottlenecks(c *call) error {
 		if f.Advice != "" {
 			fmt.Fprintf(c.out, "%36s-> %s\n", "", f.Advice)
 		}
+	}
+	return nil
+}
+
+// showRouteInstances is "show route instance": the routing instances of
+// this member with their interfaces and routes (as Junos).
+func (sh *Shell) showRouteInstances(c *call) error {
+	if sh.env.Ops == nil {
+		return errors.New("routing information is not available")
+	}
+	cfg := sh.activeModel()
+	fmt.Fprintf(c.out, "%-16s %-16s %-8s %s\n", "Instance", "Type", "Routes", "Interfaces")
+	count := func(name string) string {
+		rs, err := sh.env.Ops.Routes(name)
+		if err != nil {
+			return "-" // not on this member (e.g. management: only on the master)
+		}
+		return strconv.Itoa(len(rs))
+	}
+	var defIfs []string
+	for _, n := range slices.Sorted(maps.Keys(cfg.L3)) {
+		if u := cfg.L3[n]; u.Instance == "" && !u.CME() {
+			defIfs = append(defIfs, n)
+		}
+	}
+	fmt.Fprintf(c.out, "%-16s %-16s %-8s %s\n", "default", "forwarding", count(""), orDash(strings.Join(defIfs, ", ")))
+	for _, name := range slices.Sorted(maps.Keys(cfg.Instances)) {
+		in := cfg.Instances[name]
+		typ := "virtual-router"
+		if name == cfg.System.MgmtInstance {
+			typ = "management"
+		}
+		fmt.Fprintf(c.out, "%-16s %-16s %-8s %s\n", name, typ, count(name), orDash(strings.Join(in.Units, ", ")))
 	}
 	return nil
 }

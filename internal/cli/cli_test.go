@@ -939,7 +939,7 @@ func TestMemberTargets(t *testing.T) {
 	// Reboot: one question for all targets, the others first, this one last.
 	st.calls, ops.power = nil, nil
 	ts.term.answers = []string{"yes"}
-	out = ts.run("request system reboot all-members")
+	ts.run("request system reboot all-members")
 	if len(st.calls) != 2 || st.calls[0] != "2 request system reboot true" || st.calls[1] != "3 request system reboot true" {
 		t.Errorf("remote reboots: %v", st.calls)
 	}
@@ -1066,4 +1066,26 @@ func TestShowVXLAN(t *testing.T) {
 	ts.sh.env.Ops = &fakeOps{}
 	contains(t, ts.ok("show vxlan"), "Stack VTEP 10.255.0.1", "10010     users          swvx10010    1       up", "10.200.1.10 (3)")
 	contains(t, ts.ok("show vxlan remote-vtep"), "10.200.1.10      1       10.99.0.0, 1/5/0", "10.200.1.10      2       no route")
+}
+
+func TestShowRouteInstance(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.ok("configure")
+	for _, l := range []string{"set interfaces 1/0/5 unit 0 family inet address 10.7.0.1/24", "set routing-instances data interface 1/0/5.0",
+		"commit", "exit"} {
+		ts.ok(l)
+	}
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.ok("show route instance"), "default ", "data             virtual-router", "1/0/5.0")
+}
+
+func TestPlainErrors(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.ReadOnly)
+	ts.sh.SetPlainErrors()
+	out := ts.run("show route nonsense")
+	if strings.Contains(out, "^") || !strings.Contains(out, "error: syntax error") {
+		t.Errorf("plain error: %q", out)
+	}
 }

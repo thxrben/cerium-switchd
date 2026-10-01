@@ -96,7 +96,14 @@ type Shell struct {
 	// "exit".
 	edit   []config.Step
 	levels [][]config.Step
+	// plainErrors: errors without the caret line (the command runs for
+	// another member, whose section does not show the command line).
+	plainErrors bool
 }
+
+// SetPlainErrors makes the shell report errors as "error: <text>" without
+// pointing into the command line (commands run for another member).
+func (sh *Shell) SetPlainErrors() { sh.plainErrors = true }
 
 // New creates a shell in operational mode.
 func New(env Env) *Shell {
@@ -270,7 +277,11 @@ func (sh *Shell) Execute(ctx context.Context, line string, term Terminal) (rep R
 		err = sh.dispatch(c, cmds, cmdToks)
 	}
 	if err != nil {
-		out.WriteString(renderErr(sh.Prompt(), err))
+		if sh.plainErrors {
+			out.WriteString("error: " + err.Error() + "\n")
+		} else {
+			out.WriteString(renderErr(sh.Prompt(), err))
+		}
 		rep.Output = out.String()
 		return rep
 	}

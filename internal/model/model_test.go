@@ -304,11 +304,11 @@ set interfaces 1/0/11 mtu 1514
 set interfaces 1/0/11 unit 0 family ethernet-switching vlan members users
 `
 	inv := fakeInv{"1/9/0": 9000, "1/1/0": 9000, "1/1/1": 9000, "1/2/0": 9000, "1/9/9": -1}
-	c, issues := build(t, cfg+"set interface-range all member \"1/*/*\"\n", inv)
-	if !strings.Contains(issues.String(), "already part of interface-range") {
-		t.Errorf("overlapping wildcard range must be reported:\n%s", issues)
+	_, issues0 := build(t, cfg+"set interface-range all member \"1/*/*\"\n", inv)
+	if !strings.Contains(issues0.String(), "already part of interface-range") {
+		t.Errorf("overlapping wildcard range must be reported:\n%s", issues0)
 	}
-	c, issues = build(t, cfg, inv)
+	c, issues := build(t, cfg, inv)
 	if issues.HasErrors() {
 		t.Fatalf("unexpected errors:\n%s", issues)
 	}

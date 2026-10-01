@@ -442,6 +442,7 @@ vlans {
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
 | `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, management and data instances, including `cme`). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
+| `show route [instance [<name>]]` | A routing table (default instance, or `<name>`); `show route instance` alone lists the instances with their type, route count and interfaces. |
 | `show system bottlenecks` | What limits this member's forwarding, with recommendations (3.5.2). |
 | `show igmp snooping membership\|vlans`, `show mld snooping …` | Multicast groups and per-VLAN snooping state (5.5). |
 | `show vxlan [remote-vtep]` | VNIs, remote VTEPs and their reachability (5.7). |

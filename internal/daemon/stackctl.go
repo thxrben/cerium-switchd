@@ -516,6 +516,7 @@ func (s *stackCtl) serveExec(env func(user string, class commit.Class) cli.Env) 
 		e.Stack, e.Role = nil, nil // no further hops
 		sh := cli.New(e)
 		defer sh.Close()
+		sh.SetPlainErrors() // the section on the other member shows no command line
 		s.log.Info("cli command", "facility", "interactive-commands", "user", r.User, "command", r.Line, "from_member", from)
 		ctx, cancel := context.WithTimeout(context.Background(), memberExecTimeout)
 		defer cancel()

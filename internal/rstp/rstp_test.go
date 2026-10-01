@@ -30,7 +30,7 @@ func newNet(t *testing.T) *net {
 func key(b string, port uint16) string { return fmt.Sprintf("%s/%d", b, port) }
 
 func (n *net) add(name string, prio uint16, last byte) *Bridge {
-	var br *Bridge
+	var br *Bridge //lint:ignore S1021 the callbacks below refer to br
 	br = New(BridgeConfig{ID: MakeBridgeID(prio, [6]byte{2, 0, 0, 0, 0, last}), HelloTime: 2, MaxAge: 20, ForwardDelay: 15}, Callbacks{
 		Send: func(port uint16, b *BPDU) {
 			from := key(name, port)
