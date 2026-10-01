@@ -899,7 +899,9 @@ func (o *ops) VXLAN() ([]cli.VXLANStatus, error) {
 	for _, r := range slices.Sorted(maps.Keys(cfg.Switch.RemoteVTEPs)) {
 		ip := net.ParseIP(r)
 		vr := cli.VTEPRoute{VTEP: r}
-		rs, err := netlink.RouteGet(ip)
+		// As the VXLAN ports send: from the stack's VTEP address (an
+		// unspecified source follows the management origin rules).
+		rs, err := netlink.RouteGetWithOptions(ip, &netlink.RouteGetOptions{SrcAddr: net.ParseIP(st.Source)})
 		if err != nil || len(rs) == 0 || rs[0].Type == unix.RTN_UNREACHABLE {
 			vr.NoRoute = true
 		} else {
