@@ -82,6 +82,16 @@ func Run(ctx context.Context, o Options) error {
 		inst.Program = exe
 	}
 	if !o.DryRun {
+		// The operating system's network configuration is switchd's
+		// (reference 1.4), and its unit is the one this version brings.
+		// Only an installed switchd that systemd started: a program run by
+		// hand (a test build) must not become the unit's program.
+		if _, err := os.Stat(unitPath); err == nil && os.Getenv("INVOCATION_ID") != "" {
+			ensureUnit(unitPath, inst.Program, func() error { return command("systemctl", "daemon-reload") }, log)
+		}
+		takeOverOSNetwork(systemctlOutput, "/proc", log)
+	}
+	if !o.DryRun {
 		if back, err := inst.Start(version.Version); err != nil {
 			log.Error("software", "err", err)
 		} else if back {

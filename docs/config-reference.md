@@ -94,8 +94,12 @@ excluding 802.1Q tags. Each VLAN tag may add 4 bytes on top, so a trunk with `mt
 * Every switch is a **stack member** with an id from 1 to 16. A switch without any `virtual-chassis` configuration is member 1.
 * Interface names carry the member id, so the whole stack is configured in one place.
 * **switchd owns every network port of the switch.** There are no operating-system defaults: the OS network
-  configuration (DHCP on an installer NIC, networkd/ifupdown/NetworkManager files) is disabled when cerOS is installed,
-  and a blank switch has no management interface and no address at all. The first access is the local console
+  configuration (DHCP on an installer NIC, networkd/ifupdown/NetworkManager files) is disabled, and a blank switch has
+  no management interface and no address at all. switchd does this itself when it starts: it masks the OS network
+  services (`networking`, `systemd-networkd`, `NetworkManager`, `dhcpcd`; effective from the next boot, so nothing
+  is taken down while it runs), ends running DHCP clients (`dhclient`, `dhcpcd`, `udhcpc`), and logs what it disabled.
+  Their configuration files stay untouched. switchd also keeps its own systemd unit current (a software update can
+  change it). The first access is the local console
   (serial or display, 5.1 `system ports`).
   * A port that is not configured (not under `interfaces`, not selected by an `interface-range`, not a stacking port)
     is administratively down, outside the bridge, without addresses and with IPv6 disabled. New NICs never start
@@ -1737,7 +1741,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `protocols layer2-control bpdu-block` | not implemented (W at commit) |
 | `system services web-management` | not implemented (W at commit) |
 | VXLAN (`vlans <v> vxlan`, `vtep-address`, `underlay`, `switch-options vxlan`) | not implemented (W at commit; Phase 9) |
-| OS takeover (1.4: disabling the operating system's network configuration) | not implemented: the OS network configuration must be removed by hand |
+| OS takeover (1.4: masking the operating system's network services, ending DHCP clients), own systemd unit | implemented |
 
 ---
 
