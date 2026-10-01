@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -242,7 +243,11 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	}
 	changed, warnings, err := a.kernel.SyncL3(desired.L3)
 	if changed {
-		a.log.Log(context.Background(), level, "routed interfaces updated", "reason", reason, "err", err)
+		var steps []string
+		if nk, ok := a.kernel.(*dataplane.Netlink); ok {
+			steps = nk.L3Changes
+		}
+		a.log.Log(context.Background(), level, "routed interfaces updated", "reason", reason, "steps", strings.Join(steps, " "), "err", err)
 	}
 	for _, w := range warnings {
 		if reason == "commit" {

@@ -11,7 +11,9 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/vishvananda/netlink"
@@ -130,12 +132,20 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	st := k.loadL3()
 	changed := false
 	var errs []error
+	k.L3Changes = nil
 	if c, err := k.syncGatewayMAC(l); err != nil {
 		errs = append(errs, err)
-	} else {
-		changed = changed || c
+	} else if c {
+		changed = true
+		k.L3Changes = append(k.L3Changes, "gateway MAC")
 	}
 	note := func(c bool, err error) {
+		if c {
+			// Which step changed something (the log names it: a step that
+			// changes something on every pass does not converge).
+			_, _, line, _ := runtime.Caller(1)
+			k.L3Changes = append(k.L3Changes, "l3_linux.go:"+strconv.Itoa(line))
+		}
 		changed = changed || c
 		if err != nil {
 			errs = append(errs, err)
@@ -592,6 +602,9 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 		} else {
 			nr.Family = netlink.FAMILY_V4
 		}
+		// The kernel reports unicast routes as RTN_UNICAST: the same here, or
+		// routePresent never matches and every pass replaces the route.
+		nr.Type = unix.RTN_UNICAST
 		switch {
 		case r.Discard:
 			nr.Type = unix.RTN_BLACKHOLE

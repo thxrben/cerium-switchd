@@ -86,12 +86,16 @@ func syncOriginRules(table int, addrs []netip.Addr) (bool, error) {
 			if r.Src != nil {
 				k.src = r.Src.String()
 			}
+			// The netlink library does not decode a rule's action (Type is
+			// always 0 when read), so the two rules are told apart by their
+			// table: an unreachable rule has none. Comparing Type made every
+			// pass delete and re-add the block rules (briefly unprotected).
 			w, ok := want[k]
 			same := false
 			if r.Priority == originPrioBlock {
-				same = r.Type == unix.FR_ACT_UNREACHABLE
+				same = r.Table == 0
 			} else {
-				same = r.Type != unix.FR_ACT_UNREACHABLE && r.Table == w.Table
+				same = r.Table == w.Table && w.Table != 0
 			}
 			if ok && same && !have[k] {
 				have[k] = true

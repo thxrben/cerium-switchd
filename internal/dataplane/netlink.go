@@ -34,6 +34,9 @@ type Netlink struct {
 	mlOnce sync.Once
 	macl   *macLimits
 
+	// L3Changes names the steps of the last SyncL3 that changed something.
+	L3Changes []string
+
 	protMu    sync.Mutex
 	protected string // nftables rules last installed by syncProtect
 	protInit  bool
