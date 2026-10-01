@@ -118,6 +118,7 @@ func (b *builder) validate() {
 	b.validateRSTP()
 
 	b.notImplemented()
+	b.checkPlainPorts()
 
 	if n := len(c.System.NameServers); n > 3 {
 		b.warnf("system name-server", "only the first 3 of %d name servers are used", n)
@@ -623,5 +624,27 @@ func (b *builder) notImplemented() {
 	}
 	if r.Get("system", "services", "web-management") != nil {
 		b.warnf("system services web-management", "web-management is not implemented yet: the statement has no effect")
+	}
+}
+
+// checkPlainPorts warns about physical ports that are configured but
+// neither switched, routed, a bundle member, a management port nor a
+// mirror output (reference 5.3.2, "plain port"): they are up and carry
+// nothing, and they run no RSTP. That is rarely what was meant.
+func (b *builder) checkPlainPorts() {
+	c := b.cfg
+	used := map[string]bool{}
+	for _, a := range c.Analyzers {
+		used[a.Output] = true
+	}
+	for _, u := range c.L3 {
+		used[u.Parent] = true
+	}
+	for _, name := range sortedKeys(c.Interfaces) {
+		i := c.Interfaces[name]
+		if i.AE || i.Switching || i.Parent != "" || i.Management || i.VlanTagging || i.Disabled || used[name] {
+			continue
+		}
+		b.warnf("interfaces "+name, "%s is a plain port: up, but neither switched, routed nor a bundle member, so it carries no traffic and runs no RSTP (add 'unit 0 family ethernet-switching' to switch on it)", name)
 	}
 }

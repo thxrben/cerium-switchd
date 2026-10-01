@@ -163,6 +163,7 @@ func TestWarnings(t *testing.T) {
 		{"set protocols layer2-control bpdu-block interface 1/0/3", "bpdu-block is not implemented yet"},
 		{"set system services web-management port 8443", "web-management is not implemented yet"},
 		{"set switch-options vxlan remote-vtep 10.9.9.9", "no vni listed"},
+		{"set interfaces 1/0/8", "1/0/8 is a plain port"},
 		{"set interfaces 1/0/5 unit 0 family inet address 10.7.0.1/24", "may carry VXLAN to remote VTEPs"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
 		{"set routing-instances oob routing-options static route ::/0 next-hop 2001:db8::1", "not in a subnet of any routed interface of this instance"},

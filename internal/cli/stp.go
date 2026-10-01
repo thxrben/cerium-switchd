@@ -135,7 +135,20 @@ func (sh *Shell) showSTPInterface(c *call) error {
 		fmt.Fprintf(c.out, "  BPDUs received %d, sent %d\n", p.Rx, p.Tx)
 	}
 	if name != "" && !found {
+		// Say why (reference 5.5: RSTP runs on switch ports and bundles).
+		cfg := sh.activeModel()
+		switch i := cfg.Interfaces[name]; {
+		case i == nil:
+			return fmt.Errorf("%s is not configured, so it runs no RSTP", name)
+		case i.Parent != "":
+			return fmt.Errorf("%s is a member of %s; RSTP runs on %s (see show spanning-tree interface %s)", name, i.Parent, i.Parent, i.Parent)
+		case !i.Switching:
+			return fmt.Errorf("%s is not a switch port (no 'unit 0 family ethernet-switching'); RSTP runs on switch ports only", name)
+		}
 		return fmt.Errorf("%s is not an RSTP port", name)
+	}
+	if name == "" && !found {
+		c.out.WriteString("No RSTP ports: RSTP runs on switch ports (unit 0 family ethernet-switching) and bundles.\n")
 	}
 	return nil
 }

@@ -1089,3 +1089,16 @@ func TestPlainErrors(t *testing.T) {
 		t.Errorf("plain error: %q", out)
 	}
 }
+
+func TestSTPWhyNotAPort(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.ok("configure")
+	for _, l := range []string{"set interfaces 1/0/7", "set interfaces 1/0/8 ether-options 802.3ad ae1", "set interfaces ae1",
+		"set protocols rstp", "commit", "exit"} {
+		ts.ok(l)
+	}
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.run("show spanning-tree interface 1/0/7"), "not a switch port")
+	contains(t, ts.run("show spanning-tree interface 1/0/8"), "member of ae1; RSTP runs on ae1")
+}

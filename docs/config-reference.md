@@ -1045,7 +1045,7 @@ What a port does depends on which statements are present:
 |---|---|
 | `unit 0 family ethernet-switching` | **Switch port**: member of the bridge, forwards according to its VLAN settings. |
 | `ether-options 802.3ad aeN` | **Bundle member**: carries traffic for `aeN`. Switching settings belong on `aeN`. |
-| neither | **Plain port**: up, MTU applied, not switched. Used as a mirror destination. |
+| neither | **Plain port**: up, MTU applied, not switched. Used as a mirror destination. W: a plain port that is not a mirror output (it carries nothing and runs no RSTP; usually `unit 0 family ethernet-switching` is missing). |
 
 #### `description <text>`
 Free text shown in `show interfaces`.
@@ -1265,7 +1265,8 @@ Enables Rapid Spanning Tree (IEEE 802.1w) on **all** switch ports of all members
 `unit 0 family ethernet-switching`, and every `ae` (a bundle is one RSTP port; its member ports never run RSTP themselves).
 `interface` entries only tune individual ports.
 
-These are never part of RSTP:
+`show spanning-tree interface <if>` explains why a port is not an RSTP port (not configured, a bundle member: RSTP
+runs on its `ae`, or not a switch port). These are never part of RSTP:
 * **stack tunnels**: loop-free by design (5.2),
 * **VXLAN tunnels**: the VXLAN mesh is loop-free by design (5.7),
 * **plain ports**.
