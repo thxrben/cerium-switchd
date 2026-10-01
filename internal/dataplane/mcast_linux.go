@@ -60,7 +60,7 @@ func (k *Netlink) SyncMulticast(m *Multicast) (bool, error) {
 	var ports []struct {
 		Ifname string `json:"ifname"`
 		VLANs  []struct {
-			VLAN   int `json:"vlan"`
+			VLAN   int  `json:"vlan"`
 			Router *int `json:"mcast_router"`
 		} `json:"vlans"`
 	}
@@ -209,12 +209,12 @@ func McastGroups() ([]McastEntry, []McastRouterPort, error) {
 	}
 	var out []struct {
 		MDB []struct {
-			Port    string   `json:"port"`
-			Grp     string   `json:"grp"`
-			VID     int      `json:"vid"`
-			State   string   `json:"state"`
-			Timer   string   `json:"timer"`
-			Mode    string   `json:"filter_mode"`
+			Port    string `json:"port"`
+			Grp     string `json:"grp"`
+			VID     int    `json:"vid"`
+			State   string `json:"state"`
+			Timer   string `json:"timer"`
+			Mode    string `json:"filter_mode"`
 			Sources []struct {
 				Address string `json:"address"`
 			} `json:"source_list"`

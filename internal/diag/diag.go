@@ -55,7 +55,7 @@ type Port struct {
 
 // CPU is one CPU's network softirq counters.
 type CPU struct {
-	ID                  int
+	ID                   int
 	Dropped, TimeSqueeze uint64
 }
 
@@ -102,7 +102,9 @@ func pcieGen(gts float64) string {
 	return "6.0"
 }
 
-func gbit(mbps float64) string { return strings.TrimSuffix(fmt.Sprintf("%.1f", mbps/1000), ".0") + " Gbit/s" }
+func gbit(mbps float64) string {
+	return strings.TrimSuffix(fmt.Sprintf("%.1f", mbps/1000), ".0") + " Gbit/s"
+}
 
 // Analyze turns facts into findings (most severe first).
 func Analyze(f Facts) []Finding {
