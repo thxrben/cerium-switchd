@@ -526,6 +526,7 @@ func (o *ops) Offload() ([]cli.OffloadPort, error) {
 			Csum:       feat(c.Features, "tx-checksum-ip-generic", "tx-checksum-ipv4"),
 			TSO:        feat(c.Features, "tx-tcp-segmentation"),
 			GRO:        feat(c.Features, "rx-gro"),
+			MACsec:     feat(c.Features, "macsec-hw-offload"),
 		})
 	}
 	return out, nil
@@ -671,8 +672,12 @@ func (o *ops) Limits() (cli.LimitsStatus, error) {
 				st.HighestMaxMTU, st.HighestMaxPort = f, p.Name
 			}
 		}
-		if c := inventory.ReadCaps("/sys", p.Linux); c.MaxSpeedMbps > st.FastestMbps {
+		c := inventory.ReadCaps("/sys", p.Linux)
+		if c.MaxSpeedMbps > st.FastestMbps {
 			st.FastestMbps, st.FastestPort = c.MaxSpeedMbps, p.Name
+		}
+		if c.Features["macsec-hw-offload"] != "" {
+			st.MACsecOffload++
 		}
 	}
 	if fdb, err := o.kernel.FDB(); err == nil {

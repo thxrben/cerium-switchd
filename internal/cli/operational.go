@@ -135,7 +135,9 @@ type LimitsStatus struct {
 	LowestMaxPort, HighestMaxPort string
 	FastestMbps                   int
 	FastestPort                   string
-	MACEntries                    int
+	// MACsecOffload: ports whose NIC encrypts MACsec in hardware.
+	MACsecOffload int
+	MACEntries    int
 }
 
 // StackMTUStatus is "show virtual-chassis mtu" of one member (frame sizes,
@@ -193,6 +195,7 @@ type OffloadPort struct {
 	Pause                          string // yes, no, "-" (unknown)
 	Switchdev                      bool
 	TC, VLANFilter, Csum, TSO, GRO string
+	MACsec                         string // macsec-hw-offload
 }
 
 // Neighbor is one entry of "show arp" / "show ipv6 neighbors".
@@ -1118,17 +1121,18 @@ func (sh *Shell) showOffload(c *call) error {
 	}
 	ps = slices.DeleteFunc(ps, func(p OffloadPort) bool { return !c.shows(p.Name) })
 	sort.SliceStable(ps, func(i, j int) bool { return config.NaturalLess(ps[i].Name, ps[j].Name) })
-	fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %s\n",
-		"Interface", "Linux name", "Driver", "Speed", "Pause", "Switchdev", "TC", "VLAN", "Csum", "TSO", "GRO")
+	fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %-4s %s\n",
+		"Interface", "Linux name", "Driver", "Speed", "Pause", "Switchdev", "TC", "VLAN", "Csum", "TSO", "GRO", "MACsec")
 	for _, p := range ps {
 		sd := "no"
 		if p.Switchdev {
 			sd = "yes"
 		}
-		fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %s\n",
-			p.Name, p.Linux, p.Driver, speed(p.MaxSpeedMbps), p.Pause, sd, p.TC, p.VLANFilter, p.Csum, p.TSO, p.GRO)
+		fmt.Fprintf(c.out, "%-10s %-12s %-11s %-6s %-5s %-9s %-4s %-5s %-4s %-4s %-4s %s\n",
+			p.Name, p.Linux, p.Driver, speed(p.MaxSpeedMbps), p.Pause, sd, p.TC, p.VLANFilter, p.Csum, p.TSO, p.GRO, orDash(p.MACsec))
 	}
 	c.out.WriteString("Speed: highest supported link speed. TC: tc rule offload (storm control, filters). VLAN: VLAN filter offload.\n" +
+		"MACsec: MACsec encryption in the NIC (without it, MACsec is encrypted by the CPU).\n" +
 		"on = active, off = available but off, - = not supported by the NIC or driver.\n")
 	return nil
 }
@@ -1617,6 +1621,7 @@ func (sh *Shell) showLimits(c *call) error {
 	if hw.FastestMbps > 0 {
 		line("Fastest port", fmt.Sprintf("%s (%s)", fmtSpeed(hw.FastestMbps), hw.FastestPort))
 	}
+	line("MACsec offload", fmt.Sprintf("%d of %d ports (the others encrypt in software)", hw.MACsecOffload, hw.Ports))
 	return nil
 }
 
