@@ -230,12 +230,18 @@ type DHCPLease struct {
 	Router netip.Addr // invalid: none
 }
 
-// Route is a static route of the default instance.
+// Route is a route switchd installs (reference 5.8): a static route or an
+// active route of a routing protocol from the RIB.
 type Route struct {
 	VRF      string // routing instance ("" = default)
 	Prefix   netip.Prefix
 	NextHops []netip.Addr
-	Discard  bool
+	// Devs are the kernel devices of the next hops (same order; "" lets the
+	// kernel resolve the gateway). Routing protocols always set them.
+	Devs    []string
+	Discard bool
+	// Proto is the kernel protocol id (0: RouteProto, static).
+	Proto int
 }
 
 // IPv6 reports whether any data interface (not management) has an IPv6
@@ -284,6 +290,7 @@ func (s *State) Clone() *State {
 		}
 		for n := range l.Routes {
 			l.Routes[n].NextHops = slices.Clone(l.Routes[n].NextHops)
+			l.Routes[n].Devs = slices.Clone(l.Routes[n].Devs)
 		}
 		if s.L3.CME != nil {
 			cme := *s.L3.CME

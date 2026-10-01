@@ -34,6 +34,7 @@ import (
 	"mclag/internal/lldp"
 	"mclag/internal/model"
 	"mclag/internal/ntp"
+	"mclag/internal/routing"
 	"mclag/internal/rpc"
 	"mclag/internal/syslog"
 	"mclag/internal/version"
@@ -190,7 +191,15 @@ func Run(ctx context.Context, o Options) error {
 		return dataplane.Carrier(linux)
 	}}
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
+	// Routing (reference 5.8): the RIB with connected and static routes, and
+	// the routing protocols; their active routes go into the kernel with
+	// the next data plane apply.
+	rt := routing.New(log)
+	defer rt.Stop()
+	applier.protoRoutes = rt.FIB
+	rt.Changed = func() { go applier.reconcile("routing") }
 	applier.afterApply = func(cfg *model.Config) {
+		rt.Apply(cfg)
 		// LACP bundles: after the data plane created their devices.
 		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
 		if !o.DryRun {

@@ -22,11 +22,17 @@ import (
 
 // Static routes are installed with this protocol id, so switchd only ever
 // removes its own routes, and with this metric, so they never replace a
-// route the operating system installed for the same destination.
+// route the operating system installed for the same destination. Routes of
+// the routing protocols use the standard ids (reference 5.8).
 const (
 	RouteProto  = 250
 	RouteMetric = 20
+	ProtoOSPF   = unix.RTPROT_OSPF // 188
+	ProtoBGP    = unix.RTPROT_BGP  // 186
 )
+
+// ownProtos are the kernel protocol ids of routes switchd installs.
+var ownProtos = []int{RouteProto, ProtoOSPF, ProtoBGP}
 
 // l3Owned is what switchd changed outside its own devices, so that it can
 // be undone (addresses on ports, IPv6 forwarding, accept_ra).
@@ -212,6 +218,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 				continue
 			}
 			ifs[n].Addrs = append(slices.Clone(i.Addrs), le.Addr)
+			// Any other default route (static or from a routing protocol) wins.
 			static := slices.ContainsFunc(l.Routes, func(r Route) bool { return r.VRF == i.VRF && r.Prefix.Bits() == 0 && r.Prefix.Addr().Is4() })
 			if le.Router.IsValid() && !static && !defaulted[i.VRF] {
 				defaulted[i.VRF] = true
@@ -594,10 +601,38 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 // whose next hop is not reachable yet is skipped (it is retried on every
 // reconcile) and reported.
 func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
-	cur, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: RouteProto, Table: unix.RT_TABLE_UNSPEC},
-		netlink.RT_FILTER_PROTOCOL|netlink.RT_FILTER_TABLE)
-	if err != nil {
-		return false, nil, err
+	var cur []netlink.Route
+	for _, p := range ownProtos {
+		rs, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netlink.RouteProtocol(p), Table: unix.RT_TABLE_UNSPEC},
+			netlink.RT_FILTER_PROTOCOL|netlink.RT_FILTER_TABLE)
+		if err != nil {
+			return false, nil, err
+		}
+		cur = append(cur, rs...)
+	}
+	devIndex := map[string]int{}
+	index := func(dev string) int {
+		if dev == "" {
+			return 0
+		}
+		if i, ok := devIndex[dev]; ok {
+			return i
+		}
+		i := 0
+		if ln, err := netlink.LinkByName(dev); err == nil {
+			i = ln.Attrs().Index
+		}
+		devIndex[dev] = i
+		return i
+	}
+	// Kernel routes by table and destination: the comparison stays linear
+	// for large routing tables (BGP).
+	curBy := map[string][]netlink.Route{}
+	for _, c := range cur {
+		if c.Dst != nil {
+			k := fmt.Sprintf("%d %s", c.Table, c.Dst)
+			curBy[k] = append(curBy[k], c)
+		}
 	}
 	changed := false
 	var errs []error
@@ -610,7 +645,11 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 				continue // the instance could not be created (reported)
 			}
 		}
-		nr := &netlink.Route{Protocol: RouteProto, Priority: RouteMetric, Table: table,
+		proto := r.Proto
+		if proto == 0 {
+			proto = RouteProto
+		}
+		nr := &netlink.Route{Protocol: netlink.RouteProtocol(proto), Priority: RouteMetric, Table: table,
 			Dst: &net.IPNet{IP: r.Prefix.Addr().AsSlice(), Mask: net.CIDRMask(r.Prefix.Bits(), r.Prefix.Addr().BitLen())}}
 		if r.Prefix.Addr().Is6() {
 			nr.Family = netlink.FAMILY_V6
@@ -624,14 +663,29 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 		case r.Discard:
 			nr.Type = unix.RTN_BLACKHOLE
 		case len(r.NextHops) == 1:
-			nr.Gw = r.NextHops[0].AsSlice()
+			if r.NextHops[0].IsValid() {
+				nr.Gw = r.NextHops[0].AsSlice()
+			}
+			if len(r.Devs) > 0 {
+				if nr.LinkIndex = index(r.Devs[0]); nr.LinkIndex == 0 {
+					warnings = append(warnings, fmt.Sprintf("route %s: interface %s does not exist yet", r.Prefix, r.Devs[0]))
+					continue
+				}
+			}
 		default:
-			for _, h := range r.NextHops {
-				nr.MultiPath = append(nr.MultiPath, &netlink.NexthopInfo{Gw: h.AsSlice()})
+			for n, h := range r.NextHops {
+				nh := &netlink.NexthopInfo{}
+				if h.IsValid() {
+					nh.Gw = h.AsSlice()
+				}
+				if n < len(r.Devs) {
+					nh.LinkIndex = index(r.Devs[n])
+				}
+				nr.MultiPath = append(nr.MultiPath, nh)
 			}
 		}
-		keep[fmt.Sprintf("%d %s", table, r.Prefix)] = true
-		if routePresent(cur, nr) {
+		keep[fmt.Sprintf("%d %s %d", table, r.Prefix, proto)] = true
+		if routePresent(curBy[fmt.Sprintf("%d %s", table, nr.Dst)], nr) {
 			continue
 		}
 		if err := netlink.RouteReplace(nr); err != nil {
@@ -650,7 +704,7 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 		}
 		p, ok := netip.AddrFromSlice(c.Dst.IP)
 		ones, _ := c.Dst.Mask.Size()
-		if ok && keep[fmt.Sprintf("%d %s", c.Table, netip.PrefixFrom(p.Unmap(), ones))] {
+		if ok && keep[fmt.Sprintf("%d %s %d", c.Table, netip.PrefixFrom(p.Unmap(), ones), c.Protocol)] {
 			continue
 		}
 		if err := netlink.RouteDel(&c); err != nil {
@@ -665,11 +719,12 @@ func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
 // routePresent reports whether an identical route exists.
 func routePresent(cur []netlink.Route, r *netlink.Route) bool {
 	for _, c := range cur {
-		if c.Dst == nil || c.Table != r.Table || c.Dst.String() != r.Dst.String() || c.Type != r.Type || c.Priority != r.Priority {
+		if c.Dst == nil || c.Table != r.Table || c.Dst.String() != r.Dst.String() || c.Type != r.Type || c.Priority != r.Priority ||
+			c.Protocol != r.Protocol {
 			continue
 		}
 		if len(r.MultiPath) == 0 {
-			if len(c.MultiPath) == 0 && c.Gw.Equal(r.Gw) {
+			if len(c.MultiPath) == 0 && c.Gw.Equal(r.Gw) && (r.LinkIndex == 0 || c.LinkIndex == r.LinkIndex) {
 				return true
 			}
 			continue
@@ -679,7 +734,9 @@ func routePresent(cur []netlink.Route, r *netlink.Route) bool {
 		}
 		same := true
 		for _, h := range r.MultiPath {
-			if !slices.ContainsFunc(c.MultiPath, func(x *netlink.NexthopInfo) bool { return x.Gw.Equal(h.Gw) }) {
+			if !slices.ContainsFunc(c.MultiPath, func(x *netlink.NexthopInfo) bool {
+				return x.Gw.Equal(h.Gw) && (h.LinkIndex == 0 || x.LinkIndex == h.LinkIndex)
+			}) {
 				same = false
 			}
 		}

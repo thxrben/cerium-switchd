@@ -1200,8 +1200,8 @@ are routed subinterfaces (below).
     by broadcast, release when the statement is removed). The client identifier is the interface's MAC. On an irb
     unit every member runs its own client with its own MAC and gets its own address (no anycast address).
   * The leased address is added to the unit; switchd's removal of unconfigured addresses leaves it alone.
-  * The router option becomes the default route of the unit's routing instance, unless that instance has a static
-    `0.0.0.0/0` (static routes win). The route goes away with the lease.
+  * The router option becomes the default route of the unit's routing instance, unless that instance has another
+    `0.0.0.0/0` (a static route or one from a routing protocol wins). The route goes away with the lease.
   * The DNS servers and domain from the lease are only shown; the switch's own resolver uses `system name-server`.
   * When the lease expires without renewal, the address and route are removed and the client starts over.
   * `show dhcp client binding [<interface>]`: per unit and member the state (`selecting`, `requesting`, `bound`,

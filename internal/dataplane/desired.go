@@ -180,6 +180,29 @@ func SubifName(parent string, unit int) string {
 	return fmt.Sprintf("%s.%d", parent, unit)
 }
 
+// UnitDevice returns the kernel device of a routed unit on this member
+// ("irb.10", "sw-0-6.100", the port itself); ok is false when the unit
+// does not exist here (reference 5.8: routes of the routing protocols name
+// the unit of their next hop).
+func UnitDevice(cfg *model.Config, unit string, names PortNames) (string, bool) {
+	u := cfg.L3[unit]
+	switch {
+	case u == nil:
+		return "", false
+	case u.IRB():
+		return unit, true
+	case u.CME():
+		return CMEName, true
+	}
+	if u.Tag != 0 {
+		return SubifName(u.Parent, u.Unit), true
+	}
+	if schema.IsAE(u.Parent) {
+		return u.Parent, true
+	}
+	return names(u.Parent)
+}
+
 // computeL3 returns the routed interfaces of member m.
 func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	l := &L3{}
