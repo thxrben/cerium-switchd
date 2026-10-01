@@ -201,6 +201,24 @@ Last updated: 2026-09-30 (night).
   distribution, member by member drained, master last, automatic return after 3 failed starts, transit check with
   force, older members ignore unknown statements). Lab: sw1-sw3 + physw4 updated 4c3e25e -> b131b9e -> 2f76bbb by
   the stack itself.
+0a. Done 2026-10-01 (afternoon; deployed and checked on the lab stack):
+   - IGMP/MLD snooping (Phase 8b, reference 5.5): on by default, per-VLAN contexts of the bridge (IGMP and MLD
+     together), stack tunnels and VXLAN ports are permanent router ports, querier/version/immediate-leave/
+     multicast-router-interface, MC-LAG group refresh on the peer's leg, show igmp|mld snooping membership|vlans.
+     Lab: snooping on with the router ports set; no multicast traffic test yet (srv1/srv2 not reachable).
+   - VXLAN (Phase 9, reference 5.7): the stack is one VTEP (switch-options vxlan source-address on swvtep of every
+     member), swvx<vni> ports, head-end replication, no stack-tunnel -> VXLAN forwarding (nftables), remote MACs
+     shared between members (vxlanSync), protection accepts the remote VTEPs, show vxlan [remote-vtep]. The stack
+     tunnels move to UDP 4790 while VXLAN uses 4789 (shared port impossible across VRFs; found in the lab).
+     Lab: objects created and removed cleanly on all 4 members; no traffic test with a real remote VTEP yet.
+   - show system bottlenecks / request system diagnose (Phase 13, internal/diag).
+   - Update daemon switchd-update (reference 3.6): installs, restarts switchd, rolls back once; lab: the update
+     to ea234ce went through the daemon on all members.
+   - Fixes: show route instance lists the instances; per-member errors without a misplaced caret.
+   - Repository prepared for GitHub: README, .gitignore, CI workflow (vet, gofmt, unit tests, cross build).
+   Open: end-to-end tests with srv1/srv2 (multicast receivers, a remote VTEP) once they are reachable again; the
+   lab test harness still addresses sw2/sw3 directly; a LICENSE (the user's choice).
+
 0. Review and cleanup (2026-10-01). Done and deployed to the lab stack (a827e79, all 4 members):
    - MC-LAG without domains (spec 5.6): a bundle with ports on two members is an MC-LAG; `mclag delay-restore` is
      the only setting; stored configurations converted (domain/flag removed); one LACP system id for the stack

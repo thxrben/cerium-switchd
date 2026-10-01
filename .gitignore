@@ -1,5 +1,24 @@
+# Build output (make build / make cross / make package)
 /bin/
 /dist/
 /tmp/
+
+# Go test and profiling artefacts
 *.test
 *.out
+*.prof
+coverage.*
+cover.html
+
+# Captures and local lab notes
+*.pcap
+*.pcapng
+/lab/*.retry
+/lab/.vault*
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
