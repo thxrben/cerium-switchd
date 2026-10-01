@@ -50,12 +50,14 @@ type System struct {
 	Syslog       []SyslogHost
 	LogBuffer    int
 	Users        map[string]*User
-	Banner       string
-	SSH          SSHService
-	Web          WebService
-	Commit       CommitPolicy
-	Consoles     map[string]*Console
-	AutoConsole  bool
+	// Root: system root-authentication (nil: not configured).
+	Root        *User
+	Banner      string
+	SSH         SSHService
+	Web         WebService
+	Commit      CommitPolicy
+	Consoles    map[string]*Console
+	AutoConsole bool
 	// ConsoleLogin: local consoles ask for credentials (default: autologin
 	// as root into the CLI).
 	ConsoleLogin bool
@@ -478,6 +480,9 @@ func (b *builder) build() {
 			PasswordHash: e.Leaf("authentication", "encrypted-password"),
 			SSHKeys:      e.List("authentication", "ssh-key"),
 		}
+	}
+	if ra := sys.Get("root-authentication"); sys.Has("root-authentication") {
+		s.Root = &User{Name: "root", UID: 0, Class: "super-user", PasswordHash: ra.Leaf("encrypted-password"), SSHKeys: ra.List("ssh-key")}
 	}
 	s.Banner = sys.Leaf("login", "message")
 	s.SSH = SSHService{Configured: sys.Has("services", "ssh"), Port: atoi(sys.Leaf("services", "ssh", "port"), 22), RootLogin: orDefault(sys.Leaf("services", "ssh", "root-login"), "deny")}

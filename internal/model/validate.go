@@ -123,6 +123,9 @@ func (b *builder) validate() {
 	if n := len(c.System.NameServers); n > 3 {
 		b.warnf("system name-server", "only the first 3 of %d name servers are used", n)
 	}
+	if c.System.ConsoleLogin && (c.System.Root == nil || c.System.Root.PasswordHash == "" && len(c.System.Root.SSHKeys) == 0) {
+		b.warnf("system ports login-required", "root has no password or key (system root-authentication): root cannot log in on the consoles")
+	}
 	for _, u := range sortedKeys(c.System.Users) {
 		usr := c.System.Users[u]
 		if usr.PasswordHash == "" && len(usr.SSHKeys) == 0 {

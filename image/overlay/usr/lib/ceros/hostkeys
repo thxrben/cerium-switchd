@@ -1,0 +1,13 @@
+#!/bin/sh
+# The SSH host keys live on /config (docs/os-image.md §3.1): created at the
+# first boot, copied into the volatile /etc at every boot.
+set -e
+for t in ed25519 ecdsa rsa; do
+    k=/config/ssh/ssh_host_${t}_key
+    if [ ! -s "$k" ]; then
+        rm -f "$k" "$k.pub"
+        ssh-keygen -q -t "$t" -N '' -C "root@ceros" -f "$k"
+    fi
+    install -m 0600 "$k" /etc/ssh/
+    install -m 0644 "$k.pub" /etc/ssh/
+done

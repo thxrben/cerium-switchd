@@ -749,6 +749,16 @@ func TestPlainTextPassword(t *testing.T) {
 	if got := completions(ts.sh.Complete("set ")); !strings.Contains(got, "plain-text-password") {
 		t.Errorf("completion at the authentication level: %s", got)
 	}
+	// root (system root-authentication).
+	ts.ok("top")
+	ts.term.answers = []string{"root pass 1", "root pass 1"}
+	ts.ok("set system root-authentication plain-text-password")
+	if h := ts.sh.sess.Candidate().Root.Leaf("system", "root-authentication", "encrypted-password"); !access.CheckPassword("root pass 1", h) {
+		t.Fatalf("root hash %q does not match", h)
+	}
+	if got := completions(ts.sh.Complete("set system root-authentication ")); !strings.Contains(got, "plain-text-password") {
+		t.Errorf("completion below root-authentication: %s", got)
+	}
 }
 
 func TestStartShell(t *testing.T) {

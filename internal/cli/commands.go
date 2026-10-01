@@ -394,9 +394,15 @@ func (sh *Shell) cfgSet(c *call) error {
 	return sh.sess.Modify(func(t *config.Tree) error { return t.Set(steps) })
 }
 
-// plainTextPassword is a CLI-only statement below "authentication": it
-// prompts for a password and stores only its hash in encrypted-password.
+// plainTextPassword is a CLI-only statement below "system login user <name>
+// authentication" and "system root-authentication": it prompts for a
+// password and stores only its hash in encrypted-password.
 const plainTextPassword = "plain-text-password"
+
+// passwordParent: the statements that hold encrypted-password.
+func passwordParent(name string) bool {
+	return name == "authentication" || name == "root-authentication"
+}
 
 func (sh *Shell) setPlainTextPassword(c *call) error {
 	toks := append(append([]config.Token(nil), c.args[:len(c.args)-1]...), config.Token{Text: "encrypted-password", Pos: c.args[len(c.args)-1].Pos})
@@ -405,8 +411,8 @@ func (sh *Shell) setPlainTextPassword(c *call) error {
 		return err
 	}
 	last := steps[len(steps)-1]
-	if last.Schema.Name != "encrypted-password" || len(steps) < 2 || steps[len(steps)-2].Schema.Name != "authentication" {
-		return &posError{pos: c.args[len(c.args)-1].Pos, msg: "plain-text-password is only valid below 'system login user <name> authentication'"}
+	if last.Schema.Name != "encrypted-password" || len(steps) < 2 || !passwordParent(steps[len(steps)-2].Schema.Name) {
+		return &posError{pos: c.args[len(c.args)-1].Pos, msg: "plain-text-password is only valid below 'system login user <name> authentication' and 'system root-authentication'"}
 	}
 	pw, err := c.term.Ask("New password: ", false)
 	if err != nil {

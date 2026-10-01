@@ -8,8 +8,7 @@ Virtual Chassis) that is configured, managed and seen from the outside as a sing
 The project's priorities, in this order: no dropped frames, then speed; a CLI that never leaves you without access;
 every change through commit and confirm; a web interface last.
 
-> Status: under active development and tested in a lab of Debian 13 VMs and physical machines. Not yet used in
-> production.
+> Status: under active development and tested in a lab of VMs and physical machines. Not yet used in production.
 
 ## Features
 
@@ -42,48 +41,54 @@ every change through commit and confirm; a web interface last.
 * [docs/config-reference.md](docs/config-reference.md): the specification of the configuration and the commands.
   The code follows it; where they disagree, that is a bug.
 * [docs/stack-protocol.md](docs/stack-protocol.md): the stacking protocol (wire format, TLS, Raft, stack tunnels).
+* [docs/os-image.md](docs/os-image.md): the operating system image: disk layout, file systems, signed A/B updates
+  and automatic rollback.
 * [PLAN.md](PLAN.md): architecture, design decisions and the roadmap.
 * [STATUS.md](STATUS.md): the development log: what is done, what is next.
 * [tools/wireshark](tools/wireshark): a Wireshark dissector for the stacking protocol.
 
 ## Requirements
 
-* Linux with a recent kernel (developed on Debian 13, kernel 6.12) on `amd64`, `arm64` or `arm`.
-* `iproute2` (`ip`, `bridge`), `nftables`, `systemd`. switchd takes over the machine's network configuration: it masks
-  the operating system's network services (from the next boot) and manages every port itself. Install it on a
-  machine you can reach through a console.
-* Go (see `go.mod`) to build.
+cerOS runs as a **firmware image** (docs/os-image.md): a read-only Debian 13 system with switchd, the tools it needs
+and a set of network test tools, and nothing that configures the network by itself (no DHCP client, no network
+manager). The disk holds two system slots (the running version and the previous one as a backup), a configuration
+partition and a data partition. Updates are signed bundles; a version that does not come up returns to the previous
+one by itself.
+
+* x86_64 with UEFI (servers, mini PCs, virtual machines with OVMF), a disk of at least 8 GB, and at least two network
+  ports (one for management, one or more switched). arm64 follows.
+* Building: Go (see `go.mod`) and docker.
 
 ## Building
 
 ```
 make            # go vet, gofmt check, unit tests, bin/switchd (bin/swcli is a link to it)
-make cross      # static binaries for amd64, arm64 and arm in dist/
-make package    # dist/ceros-<version>.tar.gz for 'request system software add'
+make image      # dist/ceros-<version>-amd64.bundle (signed update) and dist/ceros-<version>-amd64.img (disk, DISK=8 GiB)
 ```
+
+The bundle is signed with `CEROS_SIGNING_KEY` (a file made by `switchd keygen <name>`). Without it the development key
+in `image/keys/dev.key` signs it, and only images that trust `image/keys/dev.pub` accept such bundles. A release build
+sets `CEROS_SIGNING_KEY` to the release key and `CEROS_TRUSTED_KEYS` to a directory with the release public keys only.
 
 ## Installing
 
-On the switch (as root):
+Write the disk image to the switch's disk (or a USB stick, or use it as a VM disk):
 
 ```
-install -m 0755 switchd /usr/local/sbin/switchd
-ln -sf /usr/local/sbin/switchd /usr/local/bin/swcli
-echo /usr/local/bin/swcli >> /etc/shells
-install -m 0644 packaging/switchd.service /etc/systemd/system/switchd.service
-systemctl daemon-reload && systemctl enable --now switchd
-swcli
+dd if=dist/ceros-<version>-amd64.img of=/dev/<disk> bs=4M conv=fsync
 ```
 
-switchd then keeps its systemd units current (and starts the update daemon `switchd-update` itself). Later versions
-are installed with `request system software add <package>` from the CLI, member by member. `lab/deploy.yml` does the
-first installation with Ansible.
+At the first boot the switch has no configuration: every port is down and the serial console (115200 baud) and the
+screen log in as root into the CLI. Configure a management address (`set interfaces <port> management`, reference
+5.3.4) and `system root-authentication`, then commit. Later versions are installed with
+`request system software add <bundle>` from the CLI, member by member (reference 3.6).
 
 ## Testing
 
 ```
 go test ./...                      # unit tests (no root, no network changes)
 go test -tags lab ./test/lab -v    # integration tests against the lab VMs (lab/README.md)
+test/image/test-update.sh <v1> <v2> # the image in QEMU: update, rollback, power loss, bad bundles
 ```
 
 The unit tests never change the network of the machine they run on. The lab tests reconfigure the lab switches and
@@ -93,7 +98,7 @@ servers described in `lab/README.md`.
 
 | Path | Contents |
 |---|---|
-| `cmd/switchd` | the program: daemon, CLI (`swcli`), `check-config`, `package`, `update-daemon` |
+| `cmd/switchd` | the program: daemon, CLI (`swcli`), `check-config`, `bundle`, `keygen`, `verify-bundle`, `update-daemon` |
 | `internal/schema`, `internal/config`, `internal/model` | configuration schema, parser/formats, typed model and commit checks |
 | `internal/commit` | candidates, commit, confirmation, rollback |
 | `internal/cli`, `internal/swcli`, `internal/rpc` | the CLI, its client and the session protocol |
@@ -102,8 +107,9 @@ servers described in `lab/README.md`.
 | `internal/stack` | stacking: links, mesh routing, Raft control, PKI and joining |
 | `internal/lacp`, `internal/lldp`, `internal/rstp`, `internal/dhcp`, `internal/ntp`, `internal/syslog` | protocols |
 | `internal/access`, `internal/osconf` | accounts, SSH, consoles; host name and resolver |
-| `internal/software`, `internal/updated` | software packages, installation and the update daemon |
+| `internal/software`, `internal/updated` | signed bundles, boot state and slots; the update daemon |
 | `internal/diag`, `internal/inventory` | diagnostics; port numbering and hardware facts |
 | `packaging` | systemd units |
+| `image`, `test/image` | the operating system image (build in docker, GRUB, initramfs) and its QEMU tests |
 | `lab`, `test/lab` | the Proxmox test lab (Ansible) and its integration tests |
 | `docs` | the specification |

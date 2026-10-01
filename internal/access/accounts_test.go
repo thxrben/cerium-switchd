@@ -57,6 +57,13 @@ func (f *fakeSys) Delete(n string) error {
 	delete(f.accounts, n)
 	return nil
 }
+func (f *fakeSys) SetPassword(e Entry) error {
+	f.calls = append(f.calls, "passwd "+e.Name)
+	a := f.accounts[e.Name]
+	a.Hash = e.Hash
+	f.accounts[e.Name] = a
+	return nil
+}
 func (f *fakeSys) WriteKeys(e Entry, k []string) error {
 	if len(k) == 0 {
 		delete(f.keys, e.Name)
@@ -128,7 +135,7 @@ func TestCheck(t *testing.T) {
 	m := &Manager{Sys: sys, StateFile: filepath.Join(t.TempDir(), "a.json"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	is := m.Check(cfgWith(&model.User{Name: "user"}, &model.User{Name: "root"}, &model.User{Name: "dave", UID: 1000}, &model.User{Name: "ok"}))
 	s := is.String()
-	for _, want := range []string{"OS account named user exists", "root is not managed", "uid 1000 is already used"} {
+	for _, want := range []string{"OS account named user exists", "use system root-authentication", "uid 1000 is already used"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q:\n%s", want, s)
 		}
@@ -160,5 +167,25 @@ func TestAccountRecordedBeforeCreation(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(state); strings.Contains(string(raw), "erin") {
 		t.Errorf("failed account recorded: %s", raw)
+	}
+}
+
+func TestRootAuthentication(t *testing.T) {
+	sys := newFakeSys()
+	m := &Manager{Sys: sys, StateFile: filepath.Join(t.TempDir(), "accounts.json"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := cfgWith()
+	c.System.Root = &model.User{Name: "root", PasswordHash: "$6$new", SSHKeys: []string{"ssh-ed25519 AAAA r"}}
+	if err := m.Sync(c); err != nil {
+		t.Fatal(err)
+	}
+	if sys.accounts["root"].Hash != "$6$new" || len(sys.keys["root"]) != 1 || sys.accounts["root"].Shell != "/bin/bash" {
+		t.Fatalf("root %+v keys %v", sys.accounts["root"], sys.keys["root"])
+	}
+	// Removed: no password, no keys (console login only).
+	if err := m.Sync(cfgWith()); err != nil {
+		t.Fatal(err)
+	}
+	if sys.accounts["root"].Hash != "" || sys.keys["root"] != nil {
+		t.Fatalf("root %+v keys %v", sys.accounts["root"], sys.keys["root"])
 	}
 }

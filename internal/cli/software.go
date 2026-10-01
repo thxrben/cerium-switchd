@@ -36,6 +36,15 @@ type SoftwareMember struct {
 	Maintenance                             bool
 	Error                                   string
 	Daemon                                  string // the update daemon's state ("": not running)
+	Slots                                   []SoftwareSlot
+}
+
+// SoftwareSlot is one of a member's two system slots (docs/os-image.md).
+type SoftwareSlot struct {
+	Name, Version string
+	Active        bool // running
+	OK            bool // bootable
+	Next          bool // booted next
 }
 
 // SoftwareStatus is "show system software".
@@ -60,9 +69,9 @@ func (sh *Shell) software() (Software, error) {
 
 func softwareCommands() (request, show *command) {
 	request = &command{name: "software", help: "Update the stack's software", class: commit.SuperUser, sub: []*command{
-		{name: "add", help: "Update every member from a package: http(s)://, ftp://, sftp://, usb:<file> or a file", class: commit.SuperUser,
+		{name: "add", help: "Update every member from a signed bundle: http(s)://, ftp://, sftp://, usb:<file> or a file", class: commit.SuperUser,
 			run: (*Shell).softwareAdd, complete: completeSoftwareAdd},
-		{name: "rollback", help: "Return the members to their previous version", class: commit.SuperUser, run: (*Shell).softwareRollback,
+		{name: "rollback", help: "Boot the members into their backup slot (the previous version)", class: commit.SuperUser, run: (*Shell).softwareRollback,
 			complete: words(Completion{Text: "member", Help: "Only this member"})},
 	}}
 	show = &command{name: "software", help: "Show the software of every member and a running update", class: commit.ReadOnly, run: (*Shell).showSoftware}
@@ -74,7 +83,7 @@ func completeSoftwareAdd(_ *Shell, args []config.Token, partial string) []Comple
 		return []Completion{{Text: "<source>", Help: "http(s)://…, ftp://…, sftp://user@host/path, usb:<file>, /path", Placeholder: true}}
 	}
 	return append([]Completion{enter}, filter([]Completion{
-		{Text: "sha256", Help: "Expected SHA-256 of the package"},
+		{Text: "sha256", Help: "Expected SHA-256 of the bundle"},
 		{Text: "member", Help: "Only this member"},
 		{Text: "no-validate", Help: "Update even if the new version rejects the configuration"},
 		{Text: "force", Help: "Update a member even if it is the only stacking path to others"},
@@ -118,7 +127,7 @@ func (sh *Shell) softwareAdd(c *call) error {
 		return err
 	}
 	if len(c.args) == 0 {
-		return &posError{pos: c.argPos(0), msg: "expecting the package: http(s)://…, ftp://…, sftp://user@host/path, usb:<file> or a file"}
+		return &posError{pos: c.argPos(0), msg: "expecting the bundle: http(s)://…, ftp://…, sftp://user@host/path, usb:<file> or a file"}
 	}
 	req := SoftwareRequest{Source: c.args[0].Text}
 	if err := softwareOptions(c, c.args[1:], &req); err != nil {
@@ -222,9 +231,27 @@ func (sh *Shell) showSoftware(c *call) error {
 		if m.Note != "" {
 			fmt.Fprintf(c.out, "        %s\n", m.Note)
 		}
+		for _, sl := range m.Slots {
+			role := "backup"
+			if sl.Active {
+				role = "active"
+			}
+			var notes []string
+			if !sl.OK {
+				notes = append(notes, "failed, not booted")
+			}
+			if sl.Next && !sl.Active {
+				notes = append(notes, "booted next")
+			}
+			line := fmt.Sprintf("        slot %s: %-16s %s", sl.Name, orDash(sl.Version), role)
+			if len(notes) > 0 {
+				line += " (" + strings.Join(notes, ", ") + ")"
+			}
+			c.out.WriteString(line + "\n")
+		}
 		if m.Daemon == "" {
-			c.out.WriteString("        update daemon: not running (switchd installs itself)\n")
-		} else if !strings.HasPrefix(m.Daemon, "idle") {
+			c.out.WriteString("        update daemon: not running (this member cannot be updated)\n")
+		} else if !strings.HasPrefix(m.Daemon, "idle") && !strings.HasPrefix(m.Daemon, "rolled back") {
 			fmt.Fprintf(c.out, "        update daemon: %s\n", m.Daemon)
 		}
 	}

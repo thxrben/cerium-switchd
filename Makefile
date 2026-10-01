@@ -4,7 +4,7 @@ BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X mclag/internal/version.Version=$(VERSION) -X mclag/internal/version.Date=$(BUILD_DATE)
 ARCHES  := amd64 arm64 arm
 
-.PHONY: all build test fuzz vet cross package clean
+.PHONY: all build test fuzz vet cross image clean
 
 all: vet test build
 
@@ -36,11 +36,12 @@ cross:
 	  CGO_ENABLED=0 GOOS=linux GOARCH=$$a GOARM=7 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/switchd-linux-$$a ./cmd/switchd || exit 1; \
 	done
 
-# The software package for "request system software add" (reference 3.6).
-package: cross
-	$(GO) run ./cmd/switchd package -o dist/ceros-$(VERSION).tar.gz -version $(VERSION) -built $(BUILD_DATE) \
-	  $(foreach a,$(ARCHES),$(a)=dist/switchd-linux-$(a))
-	cd dist && sha256sum ceros-$(VERSION).tar.gz > ceros-$(VERSION).tar.gz.sha256
+# The cerOS image (docs/os-image.md §6): a signed bundle for updates and a
+# complete disk image (DISK GiB). Needs docker. CEROS_SIGNING_KEY signs it
+# (default: the development key).
+DISK ?= 8
+image:
+	image/build.sh $(VERSION) $(DISK)
 
 clean:
-	rm -rf bin dist
+	rm -rf bin dist build

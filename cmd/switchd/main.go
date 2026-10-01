@@ -9,11 +9,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"mclag/internal/daemon"
 	"mclag/internal/software"
@@ -35,8 +36,12 @@ func main() {
 		switch os.Args[1] {
 		case "check-config":
 			os.Exit(checkConfig(os.Args[2:]))
-		case "package":
-			os.Exit(makePackage(os.Args[2:]))
+		case "bundle":
+			os.Exit(makeBundle(os.Args[2:]))
+		case "keygen":
+			os.Exit(keygen(os.Args[2:]))
+		case "verify-bundle":
+			os.Exit(verifyBundle(os.Args[2:]))
 		case "update-daemon":
 			os.Exit(updateDaemon())
 		}
@@ -86,38 +91,45 @@ func checkConfig(args []string) int {
 	return 0
 }
 
-// makePackage is "switchd package -o <file> -version <v> [-built <time>]
-// <arch>=<program> …": builds a software package (reference 3.6).
-func makePackage(args []string) int {
-	fs := flag.NewFlagSet("package", flag.ExitOnError)
-	out := fs.String("o", "", "package file")
-	ver := fs.String("version", version.Version, "version")
-	built := fs.String("built", version.Date, "build time (RFC 3339)")
+// makeBundle is "switchd bundle": signs a slot image into a bundle
+// (docs/os-image.md §4.1). The verity values come from the image build.
+func makeBundle(args []string) int {
+	fs := flag.NewFlagSet("bundle", flag.ExitOnError)
+	out := fs.String("o", "", "output bundle")
+	img := fs.String("image", "", "slot image (squashfs + verity hash tree)")
+	keyFile := fs.String("key", "", "signing key file (ceros-ed25519-private …)")
+	m := software.BundleManifest{Arch: "amd64", Platform: "x86_64-efi", Compatible: "ceros-x86_64"}
+	fs.StringVar(&m.Version, "version", version.Version, "version")
+	fs.StringVar(&m.Built, "built", version.Date, "build time (RFC 3339)")
+	fs.StringVar(&m.Arch, "arch", m.Arch, "architecture")
+	fs.StringVar(&m.Platform, "platform", m.Platform, "platform")
+	fs.StringVar(&m.Compatible, "compatible", m.Compatible, "compatible string")
+	fs.StringVar(&m.RootHash, "roothash", "", "dm-verity root hash")
+	fs.Int64Var(&m.HashOffset, "hash-offset", 0, "offset of the verity hash tree")
+	fs.StringVar(&m.MinFrom, "min-from", "", "oldest version it updates from")
 	fs.Parse(args)
-	progs := map[string][]byte{}
-	for _, a := range fs.Args() {
-		arch, path, ok := strings.Cut(a, "=")
-		if !ok {
-			fmt.Fprintln(os.Stderr, "expecting <arch>=<program>:", a)
-			return 2
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		progs[arch] = b
-	}
-	if *out == "" || len(progs) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: switchd package -o <file> -version <v> <arch>=<program> …")
+	if *out == "" || *img == "" || *keyFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: switchd bundle -o <file> -image <rootfs.img> -key <key> -roothash <hex> -hash-offset <n> [-version <v>]")
 		return 2
+	}
+	raw, err := os.ReadFile(*keyFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	key, err := software.ParsePrivateKey(string(raw))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	f, err := os.Create(*out)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := software.Write(f, *ver, *built, progs); err != nil {
+	if err := software.WriteBundle(f, m, *img, key); err != nil {
+		f.Close()
+		os.Remove(*out)
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -128,26 +140,86 @@ func makePackage(args []string) int {
 	return 0
 }
 
+// keygen is "switchd keygen <name>": a new bundle signing key, written to
+// <name>.key (keep it secret) and <name>.pub (goes into the image).
+func keygen(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: switchd keygen <name>")
+		return 2
+	}
+	priv, pub, err := software.GenerateKey(filepath.Base(args[0]))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := os.Stat(args[0] + ".key"); err == nil {
+		fmt.Fprintln(os.Stderr, args[0]+".key exists")
+		return 1
+	}
+	if err := os.WriteFile(args[0]+".key", []byte(priv), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := os.WriteFile(args[0]+".pub", []byte(pub), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// verifyBundle is "switchd verify-bundle <bundle> <keys-dir>".
+func verifyBundle(args []string) int {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: switchd verify-bundle <bundle> <keys-dir>")
+		return 2
+	}
+	keys, err := software.LoadKeys(args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	m, err := software.VerifyBundleFile(args[0], keys)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("%s %s (%s), %d bytes, root hash %s: signature and image verified\n", m.Version, m.Arch, m.Built, m.ImageSize, m.RootHash)
+	return 0
+}
+
 // updateDaemon is "switchd update-daemon", the update daemon switchd-update
-// (reference 3.6).
+// (reference 3.6, docs/os-image.md §4).
 func updateDaemon() int {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	exe, err := os.Executable()
+	sys, err := updated.NewSystem()
 	if err != nil {
 		log.Error("switchd-update", "err", err)
 		return 1
 	}
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
+	switchdDir := filepath.Join(updated.ConfigRoot, "switchd")
+	sys.Check = updated.RunCheck
+	sys.ActiveConfig = func() ([]byte, error) { return updated.ConfigFromStore(switchdDir) }
+	// ceros.healthtimeout=<seconds> on the kernel command line shortens the
+	// health timeout (image tests).
+	var timeout time.Duration
+	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+		for _, f := range strings.Fields(string(cmdline)) {
+			if v, ok := strings.CutPrefix(f, "ceros.healthtimeout="); ok {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					timeout = time.Duration(n) * time.Second
+				}
+			}
+		}
 	}
-	exe = strings.TrimSuffix(exe, " (deleted)") // replaced while running
 	d := &updated.Daemon{
-		Inst:    &software.Installer{Program: exe, StateFile: "/var/lib/switchd/software.json"},
-		Socket:  updated.DefaultSocket,
-		Version: version.Version,
-		Log:     log,
-		Restart: func() error { return exec.Command("systemctl", "restart", "switchd.service").Run() },
-		Exit:    func() { os.Exit(0) }, // systemd starts the new program
+		P:           sys,
+		Timeout:     timeout,
+		ConfigDir:   filepath.Join(updated.ConfigRoot, "update"),
+		SwitchdDir:  switchdDir,
+		BackupDir:   filepath.Join(updated.ConfigRoot, "backup"),
+		Socket:      updated.DefaultSocket,
+		Log:         log,
+		RebootDelay: 2 * time.Second,
 	}
 	if err := d.Run(context.Background()); err != nil {
 		log.Error("switchd-update", "err", err)

@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-09-30 (night).
+Last updated: 2026-10-01 (evening).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -161,6 +161,27 @@ Last updated: 2026-09-30 (night).
   srv1 needs a full Proxmox stop/start). TestForceMaster added and passes.
 - Proxmox bridges: forward-bpdu had not been active after the MTU change (ovs_options does not apply it; user set it
   live with ovs-vsctl). LACP, MC-LAG, storm control pass again.
+
+## cerOS firmware image (2026-10-01, decided by the user)
+- cerOS ships only as an image (the .deb / binary-swap path is gone): docs/os-image.md is the design (disk layout,
+  mounts, boot, A/B slots, GRUB boot counting, config/data partitions, signed bundles, rollback, failure table).
+  Reference 3.6 rewritten; `system root-authentication` added (5.1) because /etc is volatile.
+- Code: internal/software (bundle.go: Ed25519-signed bundles, streaming verification; slots.go: grubenv, slot
+  detection, slot write + read-back), internal/updated (install to the backup slot, reboot, health confirmation,
+  rollback, config backup/restore, `check` for the master), daemon/software.go orchestrates bundles; old
+  package/install code removed. `switchd bundle|keygen|verify-bundle`.
+- Image: image/ (Dockerfile, build-rootfs.sh with mmdebstrap, dracut module 90ceros, grub.cfg, make-disk.sh,
+  build.sh = `make image`). Development key in image/keys (dev.key is meant to be public; release builds use
+  CEROS_SIGNING_KEY / CEROS_TRUSTED_KEYS).
+- QEMU tests (test/image/test-update.sh, vm.py drives the serial console): boot + confirm, update, rollback command,
+  unhealthy switchd -> daemon rollback, corrupted hash tree -> verity -> boot loader returns, unreadable slot ->
+  GRUB starts the other slot, power loss during the slot write, changed/foreign bundles rejected.
+  Found on the way: dm-verity only notices blocks that are read (a test must corrupt the hash tree); GRUB's
+  `fallback` does not catch errors inside a menu entry (boot_slot checks the kernel itself).
+- Open: lab switches still run Debian + binary (migrate with new VM disks, user's go); `request system zeroize` /
+  `storage cleanup`; arm64; Secure Boot (UKI with the root hash); delta updates.
+- VC guide review (docs/VC-Bestpractice-guide.pdf, read in full): docs/vc-guide-review.md lists the deviations and
+  the questions for the user.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

@@ -41,6 +41,8 @@ type System interface {
 	Delete(name string) error
 	// WriteKeys installs the SSH keys (none: remove the file).
 	WriteKeys(e Entry, keys []string) error
+	// SetPassword sets only the password hash of e.Name ("": none).
+	SetPassword(e Entry) error
 }
 
 // Manager keeps the configured users and the OS accounts in sync. It only
@@ -83,7 +85,7 @@ func (m *Manager) Check(cfg *model.Config) model.Issues {
 	for _, name := range sortedUsers(cfg) {
 		path := "system login user " + name
 		if name == "root" {
-			is = append(is, model.Issue{Severity: model.Error, Path: path, Msg: "root is not managed by switchd; its password is maintained by the OS"})
+			is = append(is, model.Issue{Severity: model.Error, Path: path, Msg: "root is not a login user; use system root-authentication"})
 			continue
 		}
 		if _, managed := st.Users[name]; !managed {
@@ -202,7 +204,32 @@ func (m *Manager) Sync(cfg *model.Config) error {
 	if err := m.save(st); err != nil {
 		errs = append(errs, err)
 	}
+	if err := m.syncRoot(cfg.System.Root); err != nil {
+		errs = append(errs, fmt.Errorf("root: %w", err))
+	}
 	return errors.Join(errs...)
+}
+
+// syncRoot sets root's password and SSH keys (system root-authentication).
+// Without it root has no password (console login only) and no keys.
+func (m *Manager) syncRoot(r *model.User) error {
+	cur, ok := m.Sys.Lookup("root")
+	if !ok {
+		return errors.New("no root account")
+	}
+	hash, keys := "", []string(nil)
+	if r != nil {
+		hash, keys = r.PasswordHash, r.SSHKeys
+	}
+	if cur.Hash != hash {
+		e := cur
+		e.Hash = hash
+		if err := m.Sys.SetPassword(e); err != nil {
+			return err
+		}
+		m.Log.Info("root password updated", "facility", "authorization")
+	}
+	return m.Sys.WriteKeys(cur, keys)
 }
 
 func (m *Manager) nextUID(st state) int {
@@ -299,6 +326,10 @@ func (o *OS) Modify(e Entry) error {
 	}
 	return run("usermod", "--append", "--groups", CLIGroup, "--uid", strconv.Itoa(e.UID), "--shell", e.Shell,
 		"--comment", e.FullName, "--password", e.Hash, e.Name)
+}
+
+func (o *OS) SetPassword(e Entry) error {
+	return run("usermod", "--password", e.Hash, e.Name)
 }
 
 // Delete ends the user's sessions (a removed user must not stay logged in)

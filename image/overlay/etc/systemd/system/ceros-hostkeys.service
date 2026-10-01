@@ -1,0 +1,13 @@
+[Unit]
+Description=cerOS: SSH host keys from /config
+DefaultDependencies=no
+After=local-fs.target
+Before=switchd.service sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/ceros/hostkeys
+
+[Install]
+WantedBy=sysinit.target

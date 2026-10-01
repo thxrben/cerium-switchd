@@ -35,7 +35,6 @@ import (
 	"mclag/internal/model"
 	"mclag/internal/ntp"
 	"mclag/internal/rpc"
-	"mclag/internal/software"
 	"mclag/internal/syslog"
 	"mclag/internal/version"
 	"mclag/packaging"
@@ -77,12 +76,7 @@ func Run(ctx context.Context, o Options) error {
 	hub := syslog.NewHub(o.Log.Handler(), 5000)
 	defer hub.Close()
 	log := slog.New(hub.Handler())
-	// A new version that does not come up returns to the previous one
-	// (reference 3.6).
-	inst := &software.Installer{StateFile: filepath.Join(o.StateDir, "software.json")}
-	if exe, err := os.Executable(); err == nil {
-		inst.Program = exe
-	}
+	exe, _ := os.Executable()
 	if !o.DryRun {
 		// The operating system's network configuration is switchd's
 		// (reference 1.4), and its unit is the one this version brings.
@@ -90,9 +84,9 @@ func Run(ctx context.Context, o Options) error {
 		// hand (a test build) must not become the unit's program.
 		if _, err := os.Stat(unitPath); err == nil && os.Getenv("INVOCATION_ID") != "" {
 			reload := func() error { return command("systemctl", "daemon-reload") }
-			ensureUnit(unitPath, packaging.Unit, inst.Program, reload, log)
+			ensureUnit(unitPath, packaging.Unit, exe, reload, log)
 			// The update daemon (reference 3.6) runs beside switchd.
-			ensureUnit(updateUnitPath, packaging.UpdateUnit, inst.Program, reload, log)
+			ensureUnit(updateUnitPath, packaging.UpdateUnit, exe, reload, log)
 			if state, _ := systemctlOutput("is-active", "switchd-update.service"); strings.TrimSpace(state) != "active" {
 				if err := command("systemctl", "enable", "--now", "switchd-update.service"); err != nil {
 					log.Warn("update daemon: not started", "err", err)
@@ -100,14 +94,6 @@ func Run(ctx context.Context, o Options) error {
 			}
 		}
 		takeOverOSNetwork(systemctlOutput, "/proc", log)
-	}
-	if !o.DryRun {
-		if back, err := inst.Start(version.Version); err != nil {
-			log.Error("software", "err", err)
-		} else if back {
-			log.Error("software: "+inst.Load().Note+"; starting the previous version", "facility", "change-log")
-			return errors.New("returning to the previous version")
-		}
 	}
 	store, err := commit.OpenFileStore(filepath.Join(o.StateDir, "config"), 50)
 	if err != nil {
@@ -350,7 +336,7 @@ func Run(ctx context.Context, o Options) error {
 		maint.Store(liveOps.maint)
 		liveOps.stp = stp
 		liveOps.dhcp = dhcpMgr
-		upd := &updater{member: member, dir: filepath.Join(o.StateDir, "software"), inst: inst, vc: vc, ctl: ctl, log: log, restart: restart,
+		upd := &updater{member: member, dir: softwareDir, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
 			mgmtVRF: func() string {
 				if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
@@ -360,6 +346,7 @@ func Run(ctx context.Context, o Options) error {
 			}}
 		liveOps.updater = upd
 		upd.start(ctx)
+		upd.started()
 		// Healthy: the configuration is applied and the stack state is
 		// current; a pending update is done then.
 		go func() {

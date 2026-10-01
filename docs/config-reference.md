@@ -189,7 +189,8 @@ features such as `vlan-challenged` and `hw-tc-offload`). Where a driver reports 
 * W: an `ae` bundle whose member ports have different maximum speeds (e.g. 1G and 10G): traffic is hashed evenly,
   so the slowest port limits each flow's share. For MC-LAG bundles this is checked across both members (5.6).
 * `show system offload` lists per port: maximum speed, pause support, switchdev (hardware switch), tc offload,
-  VLAN filter offload, checksum/TSO/GRO, and whether switchd's rules on the port are in hardware.
+  VLAN filter offload, checksum/TSO/GRO, MACsec encryption offload (`macsec-hw-offload`; without it MACsec is
+  encrypted by the CPU), and whether switchd's rules on the port are in hardware.
 * The PCIe link of each NIC (negotiated vs. possible speed and width) is part of the system diagnostics (PLAN.md Phase 13).
 
 ### 1.8 Managing the virtual chassis
@@ -467,7 +468,7 @@ target, 3.5, those of that member). Sections and lines (a `-` means no limit app
 | **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
 | **MC-LAG** | members per MC-LAG bundle (2), peers per member (1); the configured MC-LAG bundles and pairs |
 | **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
-| **Ports** | physical ports of this member, the fastest port speed, stacking ports |
+| **Ports** | physical ports of this member, the fastest port speed, stacking ports, the ports whose NIC encrypts MACsec in hardware (`MACsec offload: n of m ports`; the others encrypt in software) |
 
 Use of a limit is shown as `n of max`. A line whose limit is reached is marked `(full)`; a configured value above a
 hardware limit cannot exist (commit refuses it), so the page never shows one.
@@ -493,56 +494,71 @@ throughput or causes drops now; `hint`: worth changing) and names the port, NIC 
 
 ### 3.6 Software updates
 
+cerOS runs as a **firmware image** with two slots (`docs/os-image.md`): the active one and a backup holding the
+previous version. An update writes the whole new system (kernel, tools, switchd) into the backup slot and reboots into
+it. A member whose new version does not come up returns to the old one by itself.
+
 The stack is updated as one switch: the master fetches the software, checks it, and updates the members **one at a
 time**, each drained first, so traffic keeps flowing (reference 5.2, maintenance mode).
 
-**Package.** A software package is one file, `ceros-<version>.tar.gz`: a `manifest.json` (version, build time, the
-SHA-256 of every file) and the `switchd` program for each architecture (`amd64`, `arm64`, `arm`). One package
-serves a stack of mixed hardware. A SHA-256 of the whole package is verified when one is given (`sha256 <hex>`, or
-a `<package>.sha256` file next to it on the server); the files inside are always verified against the manifest.
-(A signature by a stack signing key follows later.)
+**Bundle.** The software is one file per platform, `ceros-<version>-amd64.bundle`: a manifest (version, build time,
+platform, SHA-256 and verity root hash of the image), its **Ed25519 signature**, and the image. The signing key must be
+one the running version trusts. Development builds are signed with the development key, which only development
+builds trust. **No option accepts an unsigned bundle or one with a wrong signature.** A SHA-256 of the whole bundle is
+also verified when one is given (`sha256 <hex>`, or a `<bundle>.sha256` file next to it on the server).
 
 **`request system software add <source> [sha256 <hex>] [member <id>] [no-validate] [force]`** (super-user):
 * `<source>`: `http://…`, `https://…`, `ftp://…`, `sftp://user@host/path` (asks for the password unless a key of
-  the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), or a local file of the master (`/var/tmp/…`). Downloads leave through the management instance (1.8).
+  the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), or a local
+  file of the master (`/var/tmp/…`). Downloads leave through the management instance (1.8).
 * Steps, each reported on the terminal as it happens:
-  1. **Fetch and verify** the package on the master.
-  2. **Check**: every member's architecture is in the package; the new version reads the active configuration and
-     accepts it (it runs the new program's configuration check on the master); with `no-validate` a failed
-     configuration check is only a warning.
-  3. **Distribute** the package to every member over the stacking protocol; each member verifies it.
-  4. **Update the members one by one**, the master last: the member enters maintenance mode (drained), installs
-     the new program (the previous one is kept), restarts switchd, comes back with the stack's configuration,
-     and leaves maintenance mode once it is current again. The next member starts only then. Before its own
-     turn, the master hands mastership to an updated member, which finishes the update.
+  1. **Fetch and verify** the bundle on the master: signature, platform, SHA-256.
+  2. **Check**: every member has the bundle's platform. The new version reads the active configuration and accepts it:
+     the master runs the new image's configuration check. With `no-validate`, a failed configuration check is only a
+     warning.
+  3. **Distribute** the bundle to every member over the stacking protocol. Each member verifies it again.
+  4. **Update the members one by one**, the master last. The member enters maintenance mode (drained), writes the new
+     image into its backup slot, checks it and reboots into it. It comes back with the stack's configuration and
+     leaves maintenance mode once it is current again. The next member starts only then. Before its own turn, the
+     master hands mastership to an updated member, which finishes the update.
 * `member <id>`: only that member (e.g. a member that joined with an older version).
 * A member that is the **only stacking path** to other members (e.g. a switch cabled to it alone) is not updated:
   the update stops before draining it and names the members that would be cut off, because they (and possibly the
-  stack's majority) would be lost while it restarts. `force` updates it anyway.
+  stack's majority) would be lost while it reboots. `force` updates it anyway.
 * Members that already run the version are skipped. The command can be repeated: it continues where an update
   stopped.
-* **Failure**: a member that is not back and current within 5 minutes stops the update; it is reported, and the
-  members not yet updated keep the old version. A member whose new switchd fails to start three times in a row
-  returns to the previous version by itself.
+* **Failure**: a member that is not back and current within 10 minutes stops the update. It is reported, and the
+  members not yet updated keep the old version. A member whose new version does not become healthy returns to the
+  previous version by itself (below).
 * The update runs on the master, not in the CLI session: leaving the CLI does not stop it. `show system software`
   shows its progress.
-* **The update daemon.** On every member the installation itself is done by `switchd-update` (systemd unit
-  `switchd-update.service`, the same program in another role), not by switchd: switchd hands it the verified program,
-  and the daemon installs it (the previous program is kept), restarts switchd, and watches it come back. switchd is
-  healthy when it answers on its CLI socket with the new version and has applied the stack's configuration; if it is
-  not within 3 minutes (or it fails to start 3 times), the daemon puts the previous program back and restarts
-  switchd again, by itself, also when switchd hangs or crashes. Since the daemon is not part of switchd, a failed
-  switchd cannot stop its own rollback. It reports to switchd (`show system software`: `installing`, `restarting`,
-  `waiting for switchd`, `rolled back: <reason>`). switchd installs and updates the daemon's unit, and the daemon
-  restarts itself onto the new program once switchd is healthy. Without the daemon (an older member), switchd
-  installs itself as before.
+* **The update daemon.** On every member, the installation itself is done by `switchd-update` (systemd unit
+  `switchd-update.service`, the same program in another role), not by switchd. switchd hands it the verified bundle.
+  The daemon checks the signature again, writes the image into the backup slot, reads it back and compares it, and
+  runs the new image's configuration check. It keeps a copy of the configuration, makes the new slot the one to boot,
+  and reboots the member. After the reboot it watches switchd. switchd is healthy when it answers on its CLI socket
+  with the new version and has applied the stack's configuration. If it is not healthy within 5 minutes, the daemon
+  makes the old slot the one to boot and reboots again. A new system that does not get that far (kernel panic, hang)
+  is caught by the boot loader: a slot that has not confirmed its last boot is skipped, and the old one starts.
+  Since the daemon is not part of switchd, a failed switchd cannot stop its own rollback. It reports to switchd
+  (`show system software`: `writing slot B`, `checking`, `rebooting`, `waiting for switchd`,
+  `rolled back: <reason>`). The details, including every failure case, are in `docs/os-image.md` §4.
 
-**`request system software rollback [member <id>]`**: the members (or one) return to the version they ran before,
-the same way (one by one, drained).
+**`request system software rollback [member <id>]`**: the members (or one) reboot into their backup slot, the
+version they ran before, the same way (one by one, drained). Afterwards the slots have changed roles, so a second
+rollback returns to the newer version.
 
-**`show system software`**: per member the running version and build time, the previous version (for rollback),
-and the state of a running update (`fetching`, `checking`, `distributing`, `updating member 3`, `done`, `failed:
-<reason>`).
+**`show system software`**: per member the running version and build time, both slots (version, `active` or
+`backup`, `failed` when the slot must not be booted), the result of the last update (`rolled back: <reason>`), and the
+state of a running update (`fetching`, `checking`, `distributing`, `updating member 3`, `done`, `failed: <reason>`).
+
+**`request system zeroize [member <id>]`** (super-user, after a `[yes,no] (no)` question): erases the configuration
+and everything on the data partition (logs, state) of the member and reboots it with the factory default: no
+configuration, every port down, root logs in on the console. The member leaves the virtual chassis (its keys are
+gone).
+
+**`request system storage cleanup [member <id>]`**: deletes logs, crash reports and old software bundles from the data
+partition. The configuration stays.
 
 **Mixed versions.** During an update, members run different versions for a while:
 * Stacking, MC-LAG and the stack tunnels keep working between the previous release and the current one.
@@ -732,8 +748,19 @@ Creates a local Linux account on **every** member. Its login shell is the CLI, s
   (mode 0700), so a later account that gets the same uid cannot read it. A new user with the same name gets it back. If the account
   cannot be deleted yet (e.g. a process of the user is still running), switchd retries every 30 seconds. switchd only ever modifies accounts that it created itself.
   Existing OS accounts with the same name are **not** taken over, and that conflict is reported as an E at commit.
-* `root` is not managed. Its password is maintained by the OS (used with `login-required` consoles and SSH).
+* `root` is not a `system login user`; its password and keys are `system root-authentication`.
 * W: a user with neither password nor key (they cannot log in).
+
+#### `system root-authentication { encrypted-password <hash>; ssh-key <key>; }`
+The password and SSH keys of `root` on **every** member: the image keeps no OS files across a reboot
+(`docs/os-image.md` §3), so root's login is part of the configuration like every other account's.
+* `encrypted-password <hash>`: a crypt(3) hash, as for `system login user` (`plain-text-password` in the CLI creates one).
+* `ssh-key <key>`: an OpenSSH public key line; several are allowed. They are used by the CLI SSH server for root
+  according to `system services ssh root-login`.
+* Without it, root has no password and no key: root can only log in on a local console (which logs in root without a
+  password unless `system ports login-required` is set, 5.1). W when `login-required` is set without
+  `root-authentication` (root cannot log in at all then).
+* Root lands in the CLI as super-user; `start shell` leads on to a Linux shell.
 
 #### `system services ssh { port <n>; root-login deny|allow|key-only; }`
 SSH access to the CLI. switchd runs **its own SSH server instance** for this (unit `switchd-sshd`, configuration in
@@ -1832,7 +1859,9 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `system services web-management` | not implemented (W at commit) |
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |
-| `show system bottlenecks` (3.5.2), software update daemon (3.6) | implemented |
+| `show system bottlenecks` (3.5.2) | implemented |
+| Firmware image (docs/os-image.md), signed bundles, A/B slots, update daemon with automatic rollback (3.6), `system root-authentication` | implemented; unit tested and tested in QEMU; not yet on the lab switches |
+| `request system zeroize`, `request system storage cleanup` | not implemented yet |
 | OS takeover (1.4: masking the operating system's network services, ending DHCP clients), own systemd unit | implemented |
 
 ---
@@ -1862,6 +1891,9 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system syslog host <host> severity` | leaf | emergency \\| alert \\| critical \\| error \\| warning \\| notice \\| info \\| debug \\| any | info | Minimum severity to send |
 | `system syslog host <host> ca-certificate` | leaf | &lt;path&gt; |  | PEM file used to verify the TLS server |
 | `system syslog local-buffer-size` | leaf | &lt;lines&gt; 100..100000 | 5000 | Lines kept for 'show log' |
+| `system root-authentication` | container |  |  | Password and SSH keys of root |
+| `system root-authentication encrypted-password` | leaf | &lt;hash&gt; |  | Crypt(3) password hash ($6$/$y$) |
+| `system root-authentication ssh-key` | leaf-list | &lt;public-key&gt; |  | SSH public key ("ssh-ed25519 AAAA... comment") |
 | `system login` | container |  |  | Local user accounts |
 | `system login message` | leaf | &lt;text&gt; |  | Login banner |
 | `system login user <username>` | list | &lt;username&gt; |  | User account |

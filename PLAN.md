@@ -267,9 +267,13 @@ serial console and the firewall. Everything else that touches those is a conflic
   again by the admin or a package upgrade raises an alarm.
 * **Opt-out** for NICs switchd must not touch (e.g. a Wi-Fi card or a storage NIC): a planned statement
   `system ports unmanaged [ <linux-name> … ]` (to be specified in the reference before implementing it).
-* **Appliance image (later, optional, Phase 11)**: an mmdebstrap-built minimal image per architecture (read-only
-  root, A/B updates, console on serial by default). The .deb path above must work regardless, because many
-  ARM boards ship only their vendor's Debian image.
+* **Appliance image (decided 2026-10-01, replaces the .deb path)**: cerOS ships only as a firmware image: Debian 13
+  built with mmdebstrap, read-only squashfs with dm-verity, two system slots (A/B) with GRUB boot counting, a
+  configuration and a data partition, signed update bundles (Ed25519) and automatic rollback. x86_64 UEFI first,
+  arm64 later. Design: docs/os-image.md. SWUpdate and RAUC were evaluated; their concepts (signed manifest,
+  streaming hashed install to the inactive slot, ORDER/TRY boot state) are implemented in switchd-update instead,
+  because GRUB has no boot counter of its own, the health check and stack rollout are switchd's, and the stack
+  already uses Ed25519 keys. Alpine was considered and rejected: switchd depends on systemd.
 
 ## 5. Configuration
 
@@ -546,16 +550,17 @@ routing for irbs.
 ### Phase 11: Polish and packaging
 1. Full web UI: stack view, port grid per member, live graphs, MC-LAG/RSTP/VXLAN status, alarms.
 2. `show system alarms`, config archival.
-3. **Software update**: `request system software add <usb:|http(s):|ftp:|file>`; a SHA-256 hash is always
-   verified, a signature (stack signing key) is verified when present and can be required; `force` overrides a
-   missing signature only. Rolling upgrade across the stack (one member at a time, drained first).
+3. **Software update**: `request system software add <usb:|http(s):|ftp:|file>` with signed image bundles
+   (docs/os-image.md); a signature is always required. Rolling upgrade across the stack (one member at a time,
+   drained first), each member reboots into its backup slot and returns by itself when the new version fails.
 4. **USB storage**: `save usb:<file>` / `load … usb:<file>`, `request system storage usb eject`; automount
    read/write only while in use.
 5. **chassisd** (environment): temperatures, fans (speed control with a curve), PSUs from hwmon/IPMI/PMBus;
    `show chassis environment`, alarms and syslog on thresholds.
 6. **SFP diagnostics**: `show interfaces diagnostics optics <if>` via the ethtool module EEPROM (SFF-8472
    DOM: temperature, voltage, bias, TX/RX power with thresholds). Works on most 10G SFP+ NICs.
-7. `.deb` packages (Debian first) and a bootstrap script. Docs: user guide and a CLI reference generated from the schema.
+7. Docs: user guide and a CLI reference generated from the schema. (The `.deb` packages planned here are replaced by
+   the firmware image, docs/os-image.md.)
 
 ### Phase 12: Port authentication (802.1X)
 Authenticator on switch ports (hostapd wired driver, per port, EAP → RADIUS or local users; MAB fallback;
