@@ -201,47 +201,34 @@ Last updated: 2026-09-30 (night).
   distribution, member by member drained, master last, automatic return after 3 failed starts, transit check with
   force, older members ignore unknown statements). Lab: sw1-sw3 + physw4 updated 4c3e25e -> b131b9e -> 2f76bbb by
   the stack itself.
-0. Review and cleanup (2026-10-01; plan agreed with the user before continuing; f/g dropped: lab only).
-   Findings, checked in the code and live on the lab (show commands, tcpdump):
-   Lab facts: (a) the MAC table is empty because ae0 (the only switch port) has no LAG: correct output, not a
-   bug. (c/d) our LACPDUs and LLDPDUs leave 1/9/0 correctly (decoded); the UniFi reports Defaulted with a zero
-   partner on 23 and 24 = it never accepts our PDUs, and it ignores our LLDP there too -> check the UniFi side
-   and sw1's Proxmox path (vmbr802). sw2/sw3 still run the OS network config (ifupdown/DHCP on ens18): every 30 s
-   switchd strips the address again and restores resolv.conf; sw1 has `networking` active with a static .95 on ens18.
-   A. Safety (unexpected input):
-     1. routing-instances named like a kernel device (swbr0, swstack, cme, ens18, ae0, lo, default...): syncVRF
-        deletes the existing device as "wrong type" -> one commit removes the bridge/stack VRF on every member.
-        Schema: reserve names; commit check: no clash with a port's Linux name; syncVRF never deletes a non-VRF.
-     2. A VLAN named `all` is accepted (`members all` then means every VLAN). Reserve it.
-     3. Port names with leading zeros (1/07/0 and 1/7/0 are two entries for one port): canonicalise or reject.
-     4. MC-LAG minimum-links counts only local ports (spec: both members): min-links 2 with one port per member
-        never comes up. Exchange distributing counts with the peer (legs message).
-   B. Spec says it, code does not:
-     5. IPv6 stays on switch ports, bundle members, swbr0 and the stack tunnels (link-local addresses, fe80 routes
-        in `show route`). Disable it on every L2 device; flush stale neighbours of ports that lose their role.
-     6. Accepted but not implemented, silently: protocols layer2-control bpdu-block, system services
-        web-management, VXLAN (vlans vxlan vni, vtep-address, underlay, anycast-vtep, switch-options vxlan).
-        Commit check: warning "not implemented yet" until they are; section 8 of the reference is outdated too.
-     7. OS takeover (1.4): the package does not disable ifupdown/networkd/NM/DHCP clients (see lab facts). Plus e:
-        the systemd unit is not in the package.
-   C. Show commands:
-     8. show log on the master labels other members' messages with the master's name (LogLine drops Host).
-     9. show mclag: stack-wide (b).
-     10. show system limits: "Stacking links of this member" counts all members' links (8 instead of 3).
-     11. show lacp: prints the actor system of the first port only (would hide a peer mismatch); per member.
-         Merge: normalise every member's ports to configuration names.
-     12. LLDP on bundle members: aggregation port id is the kernel ifindex (differs between the MC-LAG members),
-         "in aggregation" is set whenever the ae exists (not when LACP has the port), PVID missing (take the ae's).
-     13. LACP fast vs. a partner sending every 30 s (c): runtime warning in show lacp and the log (commit check
-         cannot know the partner).
-     14. show route instance swstack shows the hidden instance; show interfaces <ae>: list member ports/members.
-   D. Small: checkBundleSpeeds returns instead of continue (skips later bundles); staticcheck leftovers
-     (unused mgmtCtl.started, sortedMemberIDs, maxRangePorts); stale peer-link comments; LACP port number wraps
-     for cards >= 16 / ports >= 64.
-   Not yet reviewed line by line: commit engine, config package, stack (manager/control/mesh/link/pki), rstp,
-   dhcp, ntp, syslog, access, swcli, software, rpc. Review them while fixing, package by package.
-   Open design questions (user): MC-LAG without domains (derive the pair from the bundle's ports, one stack LACP
-   system id, delay-restore global); a separate per-member update daemon (install/restart/verify/rollback).
+0. Review and cleanup (2026-10-01). Done and deployed to the lab stack (a827e79, all 4 members):
+   - MC-LAG without domains (spec 5.6): a bundle with ports on two members is an MC-LAG; `mclag delay-restore` is
+     the only setting; stored configurations converted (domain/flag removed); one LACP system id for the stack
+     (derived from the stack id); minimum-links counts both members' ready ports; a member has one peer (E).
+   - Safety: reserved routing-instance names (switchd's devices, ae*, default, ...) and port kernel names; syncVRF
+     never deletes a non-VRF device; VLAN `all` reserved; W for bpdu-block, web-management, VXLAN (not implemented).
+   - Show: stack-wide `show mclag` (per pair, both views); `show lacp` per member actor system and slow-partner
+     warning; `show interfaces` merges MC-LAG bundle parts and lists member ports; `show log` names the member;
+     `show system limits` own stacking links; `show route` hides swstack.
+   - LLDP on bundle members: aggregated port id N+1, in-bundle state from LACP at run time, the ae's PVID.
+   - No IPv6 on the bridge, its ports, bundle members, tunnels; stale neighbours of bare ports flushed.
+   - switchd keeps its systemd unit current (embedded) and masks the OS network services / ends DHCP clients
+     (lab: sw2/sw3 resolv.conf and address fights stopped).
+   - Reconciliation churn fixed: origin block rules (library reads the rule action as 0) and static routes
+     (RTN_UNICAST) were re-installed every 30 s; the log now names the steps of a routed-interface update.
+   - Lab check: the UniFi still reports Defaulted on 23/24 although our LACPDUs/LLDPDUs leave the ports correctly
+     (decoded): to be checked on the UniFi side (and sw1's Proxmox bridge vmbr802 path).
+   Open from the review:
+   - The lab test suite still addresses sw2/sw3 directly (10.5.176.96/.97, gone since the single cme address):
+     rework the harness (reach members through the stack, e.g. `start shell` on the master after a mastership
+     switch, or a jump through srv1) before TestMCLAG etc. can run again; TestMCLAG's expectations are updated
+     for the new show mclag already.
+   - Not yet reviewed line by line: config package, stack (manager/control/mesh/link/pki), rstp, dhcp, ntp,
+     syslog, access, swcli, software. Reviewed: model, schema, dataplane, daemon (ops, stackops, mclag, lacp,
+     lldp, applier), cli (operational, lacp), commit engine, rpc server.
+   - LACP port numbers wrap for cards >= 16 or ports >= 64 (member*1024 + card*64 + port).
+   Ideas (user, 2026-10-01): a separate per-member update daemon (install, restart, verify, rollback; switchd
+   orchestrates); f/g of the earlier list dropped (lab topology).
 1. Phase 7b rest: protocol version window (versioned stack messages), signed packages.
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
 3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge
