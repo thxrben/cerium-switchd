@@ -48,7 +48,6 @@ set interfaces 1/0/2 mtu 9216
 set interfaces 1/0/10 description "uplink to core"
 set interfaces 1/0/10 disable
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members 10
 set interfaces ae1 unit 0 family ethernet-switching vlan members storage

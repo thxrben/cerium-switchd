@@ -110,10 +110,11 @@ func (b *builder) validate() {
 	b.validateMembers()
 	b.validateLLDP()
 	b.validateMTU()
-	b.validateDomains()
 	b.validateVXLAN()
 	b.validateAnalyzers()
 	b.validateRSTP()
+
+	b.notImplemented()
 
 	if n := len(c.System.NameServers); n > 3 {
 		b.warnf("system name-server", "only the first 3 of %d name servers are used", n)
@@ -211,8 +212,8 @@ func (b *builder) validateL3(member int, path string, l L3Interface) {
 	}
 }
 
-// memberHasVLAN reports whether any switch port of a member (or an MC-LAG
-// bundle / peer-link with ports on it) carries the VLAN.
+// memberHasVLAN reports whether any switch port of a member (or a bundle
+// with ports on it) carries the VLAN.
 func (b *builder) memberHasVLAN(member, vid int) bool {
 	for _, i := range b.cfg.Interfaces {
 		if !i.Switching {
@@ -305,44 +306,44 @@ func (b *builder) validateInterfaces() {
 		if len(i.MemberPorts) > 0 && i.MinLinks > len(i.MemberPorts) {
 			b.warnf(path+" aggregated-ether-options minimum-links", "minimum-links %d exceeds the %d member ports; the bundle can never come up", i.MinLinks, len(i.MemberPorts))
 		}
-		if i.MCLAG {
-			if i.LACP == nil {
-				b.errorf(path+" aggregated-ether-options", "MC-LAG interfaces require 'lacp'")
-			}
-			if d := b.domainFor(i.MemberIDs); d == nil && len(i.MemberIDs) > 0 {
-				b.errorf(path+" aggregated-ether-options mclag", "no mclag domain contains member(s) %s", joinInts(i.MemberIDs))
-			} else if d != nil && i.LACPPriSet && i.LACP != nil && i.LACP.SystemPriority != d.SystemPriority {
-				b.warnf(path+" aggregated-ether-options lacp system-priority", "ignored on MC-LAG interfaces; mclag domain %d system-priority %d is used", d.ID, d.SystemPriority)
-			}
-		}
 		switch {
 		case len(i.MemberIDs) > 2:
-			b.errorf(path, "ports on %d stack members (%s); at most two are possible (MC-LAG)", len(i.MemberIDs), joinInts(i.MemberIDs))
-		case len(i.MemberIDs) == 2 && !i.MCLAG:
-			b.errorf(path, "ports on members %s require 'aggregated-ether-options mclag'", joinInts(i.MemberIDs))
-		}
-	}
-}
-
-// domainFor returns the MC-LAG domain whose members include all ids.
-func (b *builder) domainFor(ids []int) *Domain {
-	for _, did := range sortedKeys(b.cfg.Domains) {
-		d := b.cfg.Domains[did]
-		all := true
-		for _, id := range ids {
-			found := false
-			for _, m := range d.Members {
-				if m == id {
-					found = true
-				}
+			b.errorf(path, "ports on %d stack members (%s); a bundle spans at most two members (MC-LAG)", len(i.MemberIDs), joinInts(i.MemberIDs))
+		case len(i.MemberIDs) == 2:
+			i.MCLAG = true
+			if i.LACP == nil {
+				b.errorf(path+" aggregated-ether-options", "ports on members %s make %s an MC-LAG, which needs 'lacp'", joinInts(i.MemberIDs), name)
 			}
-			all = all && found
-		}
-		if all {
-			return d
+			id := PairID(i.MemberIDs[0], i.MemberIDs[1])
+			p := c.Pairs[id]
+			if p == nil {
+				p = &Pair{ID: id, Members: [2]int{i.MemberIDs[0], i.MemberIDs[1]}}
+				c.Pairs[id] = p
+			}
+			p.Bundles = append(p.Bundles, name)
 		}
 	}
-	return nil
+	// A member has one MC-LAG peer.
+	peers := map[int]map[int][]string{}
+	for _, id := range sortedKeys(c.Pairs) {
+		p := c.Pairs[id]
+		for _, m := range p.Members {
+			if peers[m] == nil {
+				peers[m] = map[int][]string{}
+			}
+			peers[m][p.Peer(m)] = p.Bundles
+		}
+	}
+	for _, m := range sortedKeys(peers) {
+		if ps := peers[m]; len(ps) > 1 {
+			var parts []string
+			for _, peer := range sortedKeys(ps) {
+				parts = append(parts, fmt.Sprintf("%s with member %d", strings.Join(ps[peer], ", "), peer))
+			}
+			b.errorf("interfaces", "member %d has MC-LAG bundles with different members (%s); all MC-LAG bundles of a member must have the same peer",
+				m, strings.Join(parts, "; "))
+		}
+	}
 }
 
 func (b *builder) validateMTU() {
@@ -403,32 +404,6 @@ func (b *builder) validateStackMTU() {
 				b.warnf(where, "frames of %d bytes need %d on the stacking links, but the cable at stacking port %s of member %d carries only %d (verified with probe frames); larger frames are lost. Check media converters, bridges and switches in between, or lower the mtu to %d",
 					mtu, mtu+StackOverhead, name, m, p.PathMTU, p.PathMTU-StackOverhead)
 			}
-		}
-	}
-}
-
-func (b *builder) validateDomains() {
-	c := b.cfg
-	inDomain := map[int]int{}
-	for _, did := range sortedKeys(c.Domains) {
-		d := c.Domains[did]
-		path := fmt.Sprintf("mclag domain %d", did)
-		if len(d.Members) != 2 {
-			b.errorf(path+" members", "an MC-LAG domain needs exactly two members, got %d", len(d.Members))
-		}
-		for _, m := range d.Members {
-			mem, ok := c.Members[m]
-			if !ok {
-				b.errorf(path+" members", "virtual-chassis member %d is not configured", m)
-				continue
-			}
-			if mem.Witness {
-				b.errorf(path+" members", "member %d is a witness", m)
-			}
-			if o, dup := inDomain[m]; dup {
-				b.errorf(path+" members", "member %d is already part of domain %d", m, o)
-			}
-			inDomain[m] = did
 		}
 	}
 }
@@ -661,6 +636,7 @@ func (b *builder) checkBundleSpeeds() {
 			continue
 		}
 		speeds := map[int][]string{}
+		unknown := false
 		for _, p := range i.MemberPorts {
 			pi := b.cfg.Interfaces[p]
 			if pi == nil {
@@ -668,11 +644,12 @@ func (b *builder) checkBundleSpeeds() {
 			}
 			info, ok, _ := b.port(pi.Member, p)
 			if !ok || info.MaxSpeedMbps == 0 {
-				return // unknown: no check
+				unknown = true // no check for this bundle
+				break
 			}
 			speeds[info.MaxSpeedMbps] = append(speeds[info.MaxSpeedMbps], p)
 		}
-		if len(speeds) > 1 {
+		if !unknown && len(speeds) > 1 {
 			var parts []string
 			for _, sp := range sortedKeys(speeds) {
 				parts = append(parts, fmt.Sprintf("%s: %s", speedName(sp), strings.Join(speeds[sp], ", ")))
@@ -687,4 +664,34 @@ func speedName(mbps int) string {
 		return fmt.Sprintf("%dG", mbps/1000)
 	}
 	return fmt.Sprintf("%dM", mbps)
+}
+
+// notImplemented warns about statements that are accepted but have no
+// effect yet (reference 8).
+func (b *builder) notImplemented() {
+	r := b.root
+	if len(b.cfg.BPDUBlock.Interfaces) > 0 {
+		b.warnf("protocols layer2-control bpdu-block", "bpdu-block is not implemented yet: the listed ports are not protected")
+	}
+	if r.Get("system", "services", "web-management") != nil {
+		b.warnf("system services web-management", "web-management is not implemented yet: the statement has no effect")
+	}
+	var vx []string
+	for _, name := range sortedKeys(b.cfg.VLANs) {
+		if b.cfg.VLANs[name].VNI != 0 {
+			vx = append(vx, "vlans "+name+" vxlan")
+		}
+	}
+	for _, id := range sortedKeys(b.cfg.Members) {
+		m := b.cfg.Members[id]
+		if m.VTEPAddress != "" || m.Underlay.Configured() || m.Underlay.HasAddress() {
+			vx = append(vx, fmt.Sprintf("virtual-chassis member %d vtep-address/underlay", id))
+		}
+	}
+	if r.Get("switch-options", "vxlan") != nil {
+		vx = append(vx, "switch-options vxlan")
+	}
+	if len(vx) > 0 {
+		b.warnf("", "VXLAN is not implemented yet; these statements have no effect: %s", strings.Join(vx, ", "))
+	}
 }

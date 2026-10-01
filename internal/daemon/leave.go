@@ -91,7 +91,6 @@ func (s *standalone) walk(sn *schema.Node, m map[string]any) {
 		switch c.Kind {
 		case schema.Container:
 			if sub, ok := v.(map[string]any); ok {
-				delete(sub, "mclag") // a bundle spanning two members
 				s.walk(c, sub)
 			}
 		case schema.List:

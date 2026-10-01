@@ -64,6 +64,10 @@ type rtBundle struct {
 	spec    BundleSpec
 	b       *Bundle
 	enabled map[string]bool // what the kernel was told
+	// peerReady: ports the MC-LAG peer has ready (minimum-links counts
+	// both members' ports).
+	peerReady  int
+	slowWarned map[string]bool
 }
 
 type rtSock struct {
@@ -223,8 +227,24 @@ func (r *Runtime) tick(now time.Time) {
 // minimum-links).
 func (r *Runtime) enforce(rb *rtBundle) {
 	dist := rb.b.Distributing()
-	if len(dist) < max(rb.spec.MinLinks, 1) {
+	if len(dist) == 0 || len(dist)+rb.peerReady < max(rb.spec.MinLinks, 1) {
 		dist = nil
+	}
+	slow := rb.b.SlowPartners()
+	for p := range rb.slowWarned {
+		if !slices.Contains(slow, p) {
+			delete(rb.slowWarned, p) // warn again if it comes back
+		}
+	}
+	for _, p := range slow {
+		if !rb.slowWarned[p] {
+			if rb.slowWarned == nil {
+				rb.slowWarned = map[string]bool{}
+			}
+			rb.slowWarned[p] = true
+			r.Log.Warn("lacp: the partner sends LACPDUs less often than 'periodic fast' needs; this side times out and the port cannot stay in the bundle. Configure 'aggregated-ether-options lacp periodic slow'",
+				"bundle", rb.spec.Name, "port", r.portName(rb, p))
+		}
 	}
 	if len(dist) == 0 && rb.b.Held() && r.BeforeLeave != nil {
 		for _, on := range rb.enabled {
@@ -295,6 +315,29 @@ func (r *Runtime) SetHold(bundle string, hold bool) {
 		rb.b.SetHold(hold)
 		now := time.Now()
 		rb.b.Tick(now)
+		r.enforce(rb)
+	}
+}
+
+// Ready reports per bundle how many ports LACP has collecting and
+// distributing (before minimum-links).
+func (r *Runtime) Ready() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]int{}
+	for n, rb := range r.bundles {
+		out[n] = len(rb.b.Distributing())
+	}
+	return out
+}
+
+// SetPeerReady tells a bundle how many ports the MC-LAG peer has ready
+// (minimum-links counts both members' ports, reference 5.3.2).
+func (r *Runtime) SetPeerReady(bundle string, n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rb := r.bundles[bundle]; rb != nil && rb.peerReady != n {
+		rb.peerReady = n
 		r.enforce(rb)
 	}
 }

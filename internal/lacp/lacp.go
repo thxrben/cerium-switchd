@@ -70,6 +70,11 @@ type Port struct {
 	ntt          bool
 	txTimes      []time.Time
 	stats        Stats
+	lastRx       time.Time
+	// slowPartner: with `periodic fast`, the partner's LACPDUs arrived more
+	// than ShortTimeout apart (it ignores the request to send every
+	// second), so this side keeps timing out.
+	slowPartner bool
 }
 
 // Stats counts LACPDUs of a port.
@@ -86,6 +91,9 @@ type PortStatus struct {
 	Mux      MuxState
 	Selected bool
 	Stats    Stats
+	// SlowPartner: the partner sends less often than `periodic fast`
+	// needs (configure `periodic slow`).
+	SlowPartner bool
 }
 
 // BundleStatus is a bundle for "show lacp".
@@ -168,6 +176,18 @@ func (b *Bundle) actorInfo(p *Port) Info {
 	return Info{System: b.cfg.System, Key: b.cfg.Key, PortPriority: p.Priority, Port: p.Number, State: st}
 }
 
+// SlowPartners lists the ports whose partner sends less often than
+// `periodic fast` needs.
+func (b *Bundle) SlowPartners() []string {
+	var out []string
+	for _, n := range b.Ports() {
+		if p := b.ports[n]; p.slowPartner && b.cfg.Fast {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // SetLink reports a port's link state (port_enabled).
 func (b *Bundle) SetLink(name string, up bool, now time.Time) {
 	p := b.ports[name]
@@ -176,6 +196,7 @@ func (b *Bundle) SetLink(name string, up bool, now time.Time) {
 	}
 	p.up = up
 	if !up {
+		p.lastRx = time.Time{}
 		p.rx = RxPortDisabled
 		p.partner.State &^= Sync
 		p.currentWhile, p.periodicAt = time.Time{}, time.Time{}
@@ -211,6 +232,16 @@ func (b *Bundle) Receive(name string, pdu *PDU, now time.Time) {
 		return
 	}
 	p.stats.RxPDUs++
+	if !p.lastRx.IsZero() {
+		gap := now.Sub(p.lastRx)
+		switch {
+		case b.cfg.Fast && gap > ShortTimeout:
+			p.slowPartner = true
+		case gap <= FastPeriodic+FastPeriodic/2:
+			p.slowPartner = false // it does send every second
+		}
+	}
+	p.lastRx = now
 	actor := b.actorInfo(p)
 	// updateNTT: the partner's view of us is outdated.
 	pp := pdu.Partner
@@ -435,7 +466,8 @@ func (b *Bundle) Status() []PortStatus {
 	var out []PortStatus
 	for _, n := range b.Ports() {
 		p := b.ports[n]
-		out = append(out, PortStatus{Name: n, Actor: b.actorInfo(p), Partner: p.partner, Rx: p.rx, Mux: p.mux, Selected: p.selected, Stats: p.stats})
+		out = append(out, PortStatus{Name: n, Actor: b.actorInfo(p), Partner: p.partner, Rx: p.rx, Mux: p.mux, Selected: p.selected, Stats: p.stats,
+			SlowPartner: p.slowPartner && b.cfg.Fast})
 	}
 	return out
 }

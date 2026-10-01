@@ -184,7 +184,6 @@ func build() *Node {
 					E("layer2+3", "MAC and IP addresses"),
 					E("layer3+4", "IP addresses and ports"),
 				), "layer3+4"),
-				P("mclag", "Bundle spans the two members of an MC-LAG domain"),
 			),
 			C("storm-control", "Rate limit flooded traffic",
 				V("broadcast", "Broadcast packets per second", stormLevel),
@@ -237,7 +236,7 @@ func build() *Node {
 	)
 	ifRange.MinAbbrev = len("interface-")
 
-	vlans := L("vlans", "VLAN configuration", Identifier,
+	vlans := L("vlans", "VLAN configuration", VlanName,
 		V("vlan-id", "802.1Q VLAN id", VlanID),
 		V("description", "VLAN description", Text),
 		V("l3-interface", "VLAN IP interface (routing between VLANs)", IrbUnit),
@@ -281,14 +280,8 @@ func build() *Node {
 		),
 	)
 
-	mclag := C("mclag", "Multi-chassis link aggregation",
-		L("domain", "MC-LAG domain (a pair of stack members)", Uint("<domain-id>", 1, MaxDomain),
-			LL("members", "The two stack members forming this domain", MemberID),
-			V("system-mac", "Shared LACP system MAC (derived if unset)", MAC),
-			VD("system-priority", "Shared LACP system priority", Uint("<priority>", 1, 65535), "32768"),
-			V("anycast-vtep", "Shared VTEP address of the pair", IP),
-			VD("delay-restore", "Seconds to wait after reboot before enabling MC-LAG ports", Uint("<seconds>", 0, 3600), "300"),
-		),
+	mclag := C("mclag", "Multi-chassis link aggregation (bundles with ports on two members)",
+		VD("delay-restore", "Seconds to wait after a boot before MC-LAG legs join their bundles", Uint("<seconds>", 0, 3600), "300"),
 	)
 
 	switchOpts := C("switch-options", "Global switching options",

@@ -1876,9 +1876,9 @@ ip -n m link set bond0 up; ip -n m addr add 192.168.1.1/24 dev bond0`)
 	_, _ = p1, p2 // (peer1/peer2 stay unconfigured: no peer-link)
 	cfg := vlans + access(hSw3.sw1Port, "v10") +
 		"set interfaces ae1 aggregated-ether-options lacp active\nset interfaces ae1 aggregated-ether-options lacp periodic fast\n" +
-		"set interfaces ae1 aggregated-ether-options mclag\nset interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
+		"set interfaces ae1 unit 0 family ethernet-switching vlan members v10\n" +
 		"set interfaces 1/ens23 ether-options 802.3ad ae1\nset interfaces " + srv1b + " ether-options 802.3ad ae1\n" +
-		"set mclag domain 1 members [ 1 2 ]\nset mclag domain 1 delay-restore 5\n"
+		"set mclag delay-restore 5\n"
 	configure(t, cfg)
 
 	// srv1 aggregates both legs towards one partner.
@@ -2237,9 +2237,9 @@ ip -n %[1]s link add vx0 type vxlan id 42 dstport 4789 local 192.168.1.%[4]d rem
 ip -n %[1]s link set vx0 mtu %[6]d up; ip -n %[1]s addr add 192.168.42.%[4]d/24 dev vx0
 ip -n %[1]s route add 192.168.1.0/24 dev %[2]s mtu %[3]d 2>/dev/null; ip -n %[1]s route replace 192.168.1.0/24 dev %[2]s mtu %[3]d
 ip -n %[1]s neigh flush all`, ns, nic, host, n, 3-n, host-50, host+4)
-	// The host NIC and its outer VLAN device carry the customer tag on top
-	// (4 bytes more than the host MTU, else the host's own NIC drops the
-	// double-tagged frame); the untagged route keeps the host MTU.
+		// The host NIC and its outer VLAN device carry the customer tag on top
+		// (4 bytes more than the host MTU, else the host's own NIC drops the
+		// double-tagged frame); the untagged route keeps the host MTU.
 	}
 	mustSSH(t, hSrv1.vm, setup("h", "ens19", 1)+"\n"+setup("j", "ens20", 2))
 	t.Cleanup(func() {

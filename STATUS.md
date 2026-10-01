@@ -201,24 +201,47 @@ Last updated: 2026-09-30 (night).
   distribution, member by member drained, master last, automatic return after 3 failed starts, transit check with
   force, older members ignore unknown statements). Lab: sw1-sw3 + physw4 updated 4c3e25e -> b131b9e -> 2f76bbb by
   the stack itself.
-0. To do (user reports and findings, 2026-10-01), in this order:
-   a. show ethernet-switching table is empty although addresses are learned; show arp shows too few entries
-      (check stackOps.MACTable/Neighbors merge and the per-member ops, e.g. the vc-* filter and FDB read).
-   b. show mclag without a target runs on the master; if the master is not in a domain it says "not in an MC-LAG
-      domain". It must show the stack's domains (stack-wide like the other listings; member <id> narrows).
-   c. commit check / show lacp: warn when a bundle runs `periodic fast` but the partner sends only every 30 s
-      (UniFi does; our side expires after 3 s, stays Defaulted, the LAG never forms) and suggest `periodic slow`.
-      Lab: ae0 (1/9/0 sw1 + 4/0/3 physw4, MC-LAG domain 1 [1 4]) to NET-BRI-01-SW-01 ports 23/24 (LAG 1); the
-      user was told to set `lacp periodic slow`. Re-check the LACP merge of MC-LAG bundles (kernel/config names).
-   d. LLDP on bundle member ports: the UniFi lists only port 14 (4/2/0) as neighbour, not 23/24; re-check once the
-      LAG is up (LLDP on team member ports may not leave).
-   e. The systemd unit is not part of the package: sw1 still has the old switchd.service (no ExecStopPost that
-      removes cme after a crash). switchd should install/refresh its own unit (or the package carries it).
-   f. Lab topology (user's): physw4 has only one stacking link (to sw1, 1/8/0 <-> 4/0/0). sw1 is then the only path
-      to physw4: updating sw1 needs `force`, and if sw1 fails physw4 is a minority and drops its MC-LAG leg. The
-      user was advised to add a second stacking cable (physw4 to sw2 or sw3).
-   g. A stack of 4 voters loses its majority when 2 are unreachable (sw1 restart cuts physw4 too): consider a
-      voter count that tolerates this (odd voter count, or physw4 as non-voter) and document it.
+0. Review and cleanup (2026-10-01; plan agreed with the user before continuing; f/g dropped: lab only).
+   Findings, checked in the code and live on the lab (show commands, tcpdump):
+   Lab facts: (a) the MAC table is empty because ae0 (the only switch port) has no LAG: correct output, not a
+   bug. (c/d) our LACPDUs and LLDPDUs leave 1/9/0 correctly (decoded); the UniFi reports Defaulted with a zero
+   partner on 23 and 24 = it never accepts our PDUs, and it ignores our LLDP there too -> check the UniFi side
+   and sw1's Proxmox path (vmbr802). sw2/sw3 still run the OS network config (ifupdown/DHCP on ens18): every 30 s
+   switchd strips the address again and restores resolv.conf; sw1 has `networking` active with a static .95 on ens18.
+   A. Safety (unexpected input):
+     1. routing-instances named like a kernel device (swbr0, swstack, cme, ens18, ae0, lo, default...): syncVRF
+        deletes the existing device as "wrong type" -> one commit removes the bridge/stack VRF on every member.
+        Schema: reserve names; commit check: no clash with a port's Linux name; syncVRF never deletes a non-VRF.
+     2. A VLAN named `all` is accepted (`members all` then means every VLAN). Reserve it.
+     3. Port names with leading zeros (1/07/0 and 1/7/0 are two entries for one port): canonicalise or reject.
+     4. MC-LAG minimum-links counts only local ports (spec: both members): min-links 2 with one port per member
+        never comes up. Exchange distributing counts with the peer (legs message).
+   B. Spec says it, code does not:
+     5. IPv6 stays on switch ports, bundle members, swbr0 and the stack tunnels (link-local addresses, fe80 routes
+        in `show route`). Disable it on every L2 device; flush stale neighbours of ports that lose their role.
+     6. Accepted but not implemented, silently: protocols layer2-control bpdu-block, system services
+        web-management, VXLAN (vlans vxlan vni, vtep-address, underlay, anycast-vtep, switch-options vxlan).
+        Commit check: warning "not implemented yet" until they are; section 8 of the reference is outdated too.
+     7. OS takeover (1.4): the package does not disable ifupdown/networkd/NM/DHCP clients (see lab facts). Plus e:
+        the systemd unit is not in the package.
+   C. Show commands:
+     8. show log on the master labels other members' messages with the master's name (LogLine drops Host).
+     9. show mclag: stack-wide (b).
+     10. show system limits: "Stacking links of this member" counts all members' links (8 instead of 3).
+     11. show lacp: prints the actor system of the first port only (would hide a peer mismatch); per member.
+         Merge: normalise every member's ports to configuration names.
+     12. LLDP on bundle members: aggregation port id is the kernel ifindex (differs between the MC-LAG members),
+         "in aggregation" is set whenever the ae exists (not when LACP has the port), PVID missing (take the ae's).
+     13. LACP fast vs. a partner sending every 30 s (c): runtime warning in show lacp and the log (commit check
+         cannot know the partner).
+     14. show route instance swstack shows the hidden instance; show interfaces <ae>: list member ports/members.
+   D. Small: checkBundleSpeeds returns instead of continue (skips later bundles); staticcheck leftovers
+     (unused mgmtCtl.started, sortedMemberIDs, maxRangePorts); stale peer-link comments; LACP port number wraps
+     for cards >= 16 / ports >= 64.
+   Not yet reviewed line by line: commit engine, config package, stack (manager/control/mesh/link/pki), rstp,
+   dhcp, ntp, syslog, access, swcli, software, rpc. Review them while fixing, package by package.
+   Open design questions (user): MC-LAG without domains (derive the pair from the bundle's ports, one stack LACP
+   system id, delay-restore global); a separate per-member update daemon (install/restart/verify/rollback).
 1. Phase 7b rest: protocol version window (versioned stack messages), signed packages.
 2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
 3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge

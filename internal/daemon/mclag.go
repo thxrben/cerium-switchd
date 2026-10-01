@@ -2,15 +2,12 @@ package daemon
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
-	"net"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,11 +44,13 @@ type mclagCtl struct {
 	split      []string
 	lastSent   time.Time
 	lastLegs   map[string]bool
+	lastReady  map[string]int
 	initDone   bool
 	legState   string          // local and peer legs as last seen (flush on change)
 	curLegs    map[string]bool // local legs, current
 	macs       *macSync
 	peerFacts  map[string]string    // the peer's bundle facts (nil: not sent)
+	peerReady  map[string]int       // the peer's LACP-ready ports per bundle (minimum-links)
 	differs    map[string]time.Time // bundle -> facts differ since
 	maint      bool                 // maintenance mode: legs held
 	maintEnd   time.Time            // maintenance mode ended: legs held until then
@@ -84,6 +83,9 @@ type legsMsg struct {
 	// Facts of each MC-LAG bundle as this member applies them (consistency
 	// check).
 	Facts map[string]string `json:"facts,omitempty"`
+	// Ready: ports LACP has ready per bundle (minimum-links counts both
+	// members' ports).
+	Ready map[string]int `json:"ready,omitempty"`
 }
 
 // bundleFacts is what both members must agree on for an MC-LAG bundle
@@ -128,9 +130,11 @@ func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *
 				return nil, err
 			}
 			m.mu.Lock()
-			if d := m.domainLocked(); d != nil && d.ID == l.Domain && m.peerOf(d) == from {
+			// Only the peer's messages count (the pair id is not compared:
+			// older versions sent their configured domain id).
+			if d := m.domainLocked(); d != nil && m.peerOf(d) == from {
 				m.peerLegs, m.peerSeen, m.peerKnown = l.Legs, time.Now(), true
-				m.peerFacts = l.Facts
+				m.peerFacts, m.peerReady = l.Facts, l.Ready
 			}
 			m.mu.Unlock()
 			return nil, nil
@@ -146,41 +150,25 @@ func (m *mclagCtl) setConfig(cfg *model.Config) {
 	m.mu.Unlock()
 }
 
-func (m *mclagCtl) domainLocked() *model.Domain {
+// domainLocked returns this member's MC-LAG pair (nil: no MC-LAG bundle).
+func (m *mclagCtl) domainLocked() *model.Pair {
 	if m.cfg == nil {
 		return nil
 	}
-	for _, d := range m.cfg.Domains {
-		if slices.Contains(d.Members, m.member) {
-			return d
-		}
-	}
-	return nil
+	return m.cfg.PairOf(m.member)
 }
 
-func (m *mclagCtl) peerOf(d *model.Domain) int {
-	for _, id := range d.Members {
-		if id != m.member {
-			return id
-		}
-	}
-	return 0
-}
+func (m *mclagCtl) peerOf(d *model.Pair) int { return d.Peer(m.member) }
 
-// bundlesLocked lists the domain's MC-LAG bundles with a leg on this member.
-func (m *mclagCtl) bundlesLocked(d *model.Domain) []string {
-	var out []string
-	for n, i := range m.cfg.Interfaces {
-		if i.AE && i.MCLAG && slices.Contains(i.MemberIDs, m.member) {
-			out = append(out, n)
-		}
-	}
+// bundlesLocked lists the pair's MC-LAG bundles.
+func (m *mclagCtl) bundlesLocked(d *model.Pair) []string {
+	out := slices.Clone(d.Bundles)
 	sort.Strings(out)
 	return out
 }
 
 // primary: the member with the higher mastership-priority, ties: lower id.
-func (m *mclagCtl) primaryLocked(d *model.Domain) bool {
+func (m *mclagCtl) primaryLocked(d *model.Pair) bool {
 	peer := m.peerOf(d)
 	prio := func(id int) int {
 		if mem := m.cfg.Members[id]; mem != nil {
@@ -216,10 +204,10 @@ func (m *mclagCtl) reachLocked() (reach, total int) {
 
 // thirdsLocked returns the stack tunnels to the switch members outside the
 // domain.
-func (m *mclagCtl) thirdsLocked(d *model.Domain) []string {
+func (m *mclagCtl) thirdsLocked(d *model.Pair) []string {
 	var out []string
 	for _, id := range m.cfg.SwitchMembers() {
-		if !slices.Contains(d.Members, id) {
+		if !slices.Contains(d.Members[:], id) {
 			out = append(out, dataplane.TunnelName(id))
 		}
 	}
@@ -258,10 +246,10 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	peer := m.peerOf(d)
 	bundles := m.bundlesLocked(d)
-	all := m.lacp.Legs()
-	legs := map[string]bool{}
+	all, allReady := m.lacp.Legs(), m.lacp.Ready()
+	legs, ready := map[string]bool{}, map[string]int{}
 	for _, b := range bundles {
-		legs[b] = all[b]
+		legs[b], ready[b] = all[b], allReady[b]
 	}
 	m.curLegs = legs
 	if !m.initDone {
@@ -272,8 +260,8 @@ func (m *mclagCtl) step(now time.Time) {
 		for _, v := range legs {
 			up = up || v
 		}
-		if !up && d.DelayRestore > 0 {
-			m.restoreEnd = now.Add(time.Duration(d.DelayRestore) * time.Second)
+		if delay := m.cfg.MCLAG.DelayRestore; !up && delay > 0 {
+			m.restoreEnd = now.Add(time.Duration(delay) * time.Second)
 		}
 	}
 	reachable := m.peerReachable(peer)
@@ -399,9 +387,17 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 
 	// Tell the peer about our legs: on change and every second.
-	send := reachable && m.stack != nil && (!mapsEqualBool(legs, m.lastLegs) || now.Sub(m.lastSent) >= time.Second)
+	send := reachable && m.stack != nil && (!mapsEqualBool(legs, m.lastLegs) || !maps.Equal(ready, m.lastReady) ||
+		now.Sub(m.lastSent) >= time.Second)
 	if send {
-		m.lastLegs, m.lastSent = legs, now
+		m.lastLegs, m.lastReady, m.lastSent = legs, ready, now
+	}
+	// minimum-links counts the peer's ready ports while it is reachable.
+	peerReady := map[string]int{}
+	for _, b := range bundles {
+		if reachable {
+			peerReady[b] = m.peerReady[b]
+		}
 	}
 	domain := d.ID
 	peerTunnel := dataplane.TunnelName(peer)
@@ -410,6 +406,9 @@ func (m *mclagCtl) step(now time.Time) {
 	maintHeld := (m.maint || now.Before(m.maintEnd) || len(m.drainFrom) > 0) && reachable
 	m.mu.Unlock()
 
+	for b, n := range peerReady {
+		m.lacp.SetPeerReady(b, n)
+	}
 	for b, h := range changedHold {
 		if h {
 			// Maintenance: this member's traffic towards the partner takes
@@ -434,7 +433,7 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	if send {
 		go func() {
-			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts}, time.Second); err != nil {
+			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready}, time.Second); err != nil {
 				m.log.Debug("mclag: leg state to the peer", "err", err)
 			}
 		}()
@@ -599,21 +598,4 @@ func (m *mclagCtl) status() (cli.MCLAGStatus, error) {
 			Facts: bundleFacts(m.cfg, b), PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
 	}
 	return st, nil
-}
-
-// mclagSystem is the shared LACP system id of a domain (reference 5.6):
-// the configured system-mac, or one derived from the stack and domain id.
-func mclagSystem(d *model.Domain, stackID string) lacp.SystemID {
-	sys := lacp.SystemID{Priority: uint16(d.SystemPriority)}
-	if sys.Priority == 0 {
-		sys.Priority = 32768
-	}
-	if mac, err := net.ParseMAC(d.SystemMAC); err == nil && len(mac) == 6 {
-		copy(sys.MAC[:], mac)
-		return sys
-	}
-	sum := sha256.Sum256([]byte("mclag domain\x00" + stackID + "\x00" + strconv.Itoa(d.ID)))
-	copy(sys.MAC[:], sum[:6])
-	sys.MAC[0] = sys.MAC[0]&^0x01 | 0x02
-	return sys
 }

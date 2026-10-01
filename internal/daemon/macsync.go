@@ -17,7 +17,7 @@ import (
 	"mclag/internal/dataplane"
 )
 
-// MAC synchronisation between the two members of an MC-LAG domain
+// MAC synchronisation between the two members of an MC-LAG pair
 // (reference 5.6): what one member's bridge learns on its own ports is
 // installed on the peer, on the same MC-LAG bundle or on the peer's stack
 // tunnel. Addresses behind a bundle that one member loses are forgotten by
@@ -141,7 +141,7 @@ func (s *macSync) view() (domainView, bool) {
 	}
 	v.reach = m.peerReachable(v.peer)
 	for _, id := range m.cfg.SwitchMembers() {
-		if !slices.Contains(d.Members, id) {
+		if !slices.Contains(d.Members[:], id) {
 			v.thirds = append(v.thirds, id)
 		}
 	}
@@ -256,10 +256,11 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 // receive applies the peer's changes.
 func (s *macSync) receive(from int, msg macMsg) error {
 	v, ok := s.view()
-	if !ok || v.domain != msg.Domain || v.peer != from {
-		// E.g. this member has not applied the domain yet: the sender
-		// tries again.
-		return fmt.Errorf("not in MC-LAG domain %d with member %d", msg.Domain, from)
+	if !ok || v.peer != from {
+		// E.g. this member has not applied the bundles yet: the sender
+		// tries again. (The pair id is not compared: older versions sent
+		// their configured domain id.)
+		return fmt.Errorf("no MC-LAG with member %d", from)
 	}
 	s.mu.Lock()
 	if msg.Full {

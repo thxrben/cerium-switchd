@@ -3,7 +3,6 @@ package daemon
 import (
 	"crypto/sha256"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,14 +13,21 @@ import (
 	"mclag/internal/schema"
 )
 
-// lacpSystemMAC is this member's LACP system id (reference 5.1.3): derived
-// from the machine id, so it never changes with ports or restarts.
-func lacpSystemMAC() [6]byte {
-	id, err := os.ReadFile("/etc/machine-id")
-	if err != nil || len(strings.TrimSpace(string(id))) == 0 {
-		id, _ = os.ReadFile("/proc/sys/kernel/random/boot_id")
+// lacpSystemMAC is the stack's LACP system id (reference 5.3.2): one for
+// every bundle of every member, derived from the stack id, so it never
+// changes with ports, restarts or mastership, and a bundle that gains ports
+// on a second member (MC-LAG) keeps its identity. Without a stack id
+// (dry-run) it is derived from the machine id.
+func lacpSystemMAC(stackID string) [6]byte {
+	seed := "stack\x00" + stackID
+	if stackID == "" {
+		id, err := os.ReadFile("/etc/machine-id")
+		if err != nil || len(strings.TrimSpace(string(id))) == 0 {
+			id, _ = os.ReadFile("/proc/sys/kernel/random/boot_id")
+		}
+		seed = "machine\x00" + strings.TrimSpace(string(id))
 	}
-	sum := sha256.Sum256(append([]byte("mclag lacp system\x00"), []byte(strings.TrimSpace(string(id)))...))
+	sum := sha256.Sum256([]byte("ceros lacp system\x00" + seed))
 	var mac [6]byte
 	copy(mac[:], sum[:6])
 	mac[0] = mac[0]&^0x01 | 0x02 // unicast, locally administered
@@ -39,7 +45,7 @@ func lacpPortNumber(name string) uint16 {
 }
 
 // lacpSpecs lists this member's LACP bundles.
-func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool), sysMAC [6]byte, stackID string) []lacp.BundleSpec {
+func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool), sysMAC [6]byte) []lacp.BundleSpec {
 	var out []lacp.BundleSpec
 	for _, i := range cfg.Interfaces {
 		if !i.AE || i.LACP == nil || i.Disabled {
@@ -50,14 +56,6 @@ func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool),
 			System: lacp.SystemID{Priority: uint16(i.LACP.SystemPriority), MAC: sysMAC},
 			Key:    uint16(n + 1), Active: i.LACP.Active, Fast: i.LACP.Fast,
 		}}
-		if i.MCLAG {
-			// Both members present the domain's system (reference 5.6).
-			for _, d := range cfg.Domains {
-				if slices.Contains(d.Members, member) {
-					spec.Config.System = mclagSystem(d, stackID)
-				}
-			}
-		}
 		for _, p := range cfg.Interfaces {
 			if p.Parent != i.Name || p.Member != member || p.Disabled {
 				continue

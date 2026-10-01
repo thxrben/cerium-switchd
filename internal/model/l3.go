@@ -290,6 +290,15 @@ func (b *builder) buildInstances() {
 			in.Units = append(in.Units, n)
 		}
 		c.Instances[e.Key] = in
+		// The instance is a kernel VRF device of this name on every member.
+		for _, id := range sortedKeys(c.Members) {
+			ports, _ := b.portsOf(id)
+			for name, p := range ports {
+				if p.Linux == e.Key {
+					b.errorf(path, "%s is the kernel name of port %s; choose another instance name", e.Key, name)
+				}
+			}
+		}
 	}
 	// The management instance (reference 1.8, 5.1).
 	mi := c.System.MgmtInstance

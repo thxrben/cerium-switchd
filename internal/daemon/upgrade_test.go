@@ -129,7 +129,7 @@ func TestUpgradeManagement(t *testing.T) {
 }
 
 // The peer-link of earlier versions and its bundle are removed; the MC-LAG
-// bundles stay.
+// bundles stay (without their domain, which the ports imply now).
 func TestUpgradePeerLink(t *testing.T) {
 	tr := upgrade(t, `{
   "interfaces": {
@@ -148,7 +148,7 @@ func TestUpgradePeerLink(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"set interfaces 2/2/0 ether-options flow-control", "set interfaces 1/3/0 ether-options 802.3ad ae1",
-		"set interfaces ae1 aggregated-ether-options mclag", "set mclag domain 1 members 2"} {
+		"set interfaces ae1 aggregated-ether-options lacp active"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -184,6 +184,32 @@ func TestUpgradeIgnoresUnknownStatements(t *testing.T) {
 	for _, want := range []string{"set system host-name core", "set protocols lldp advertisement-interval 30", "set vlans v10 vlan-id 10"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// MC-LAG domains of earlier versions: delay-restore stays (stack-wide),
+// the rest of the domains and the bundles' mclag flag go.
+func TestUpgradeMCLAGDomains(t *testing.T) {
+	tr := upgrade(t, `{
+  "interfaces": {
+    "1/3/0": {"ether-options": {"802.3ad": "ae1"}},
+    "2/3/0": {"ether-options": {"802.3ad": "ae1"}},
+    "ae1": {"aggregated-ether-options": {"lacp": {"active": true}, "mclag": {}}},
+    "ae2": {"aggregated-ether-options": {"mclag": {}}}
+  },
+  "interface-range": {"r": {"member-range": {"1/4/0": {"to": "1/4/3"}}, "aggregated-ether-options": {"mclag": {}}}},
+  "mclag": {"domain": {"2": {"members": ["1", "2"], "delay-restore": "60", "system-mac": "02:00:00:00:00:01", "anycast-vtep": "10.0.0.1"}}}
+}`)
+	out := config.FormatSet(tr)
+	for _, gone := range []string{"domain", "aggregated-ether-options mclag", "system-mac", "anycast-vtep"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s left in:\n%s", gone, out)
+		}
+	}
+	for _, want := range []string{"set mclag delay-restore 60", "set interfaces ae1 aggregated-ether-options lacp active"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
 }

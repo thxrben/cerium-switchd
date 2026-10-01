@@ -167,6 +167,10 @@ var (
 	// Identifier is a config object name (vlan names, analyzer names, ...).
 	Identifier = String("<name>", 64, `^[A-Za-z][A-Za-z0-9_.-]*$`)
 
+	// VlanName is a VLAN name: an Identifier other than the keyword "all"
+	// (vlan members all).
+	VlanName = notReserved(Identifier, func(s string) bool { return s == "all" }, "is a keyword ('vlan members all')")
+
 	// Username is a local user account name.
 	Username = String("<username>", 32, `^[a-z_][a-z0-9_-]*$`)
 
@@ -190,8 +194,10 @@ var (
 	}}
 
 	// InstanceName names a routing instance (also the kernel VRF name, so
-	// at most 15 characters).
-	InstanceName = String("<instance-name>", 15, `^[A-Za-z][A-Za-z0-9_-]*$`)
+	// at most 15 characters). Names of switchd's own kernel devices and
+	// instances are reserved: a VRF of that name would replace the device.
+	InstanceName = notReserved(String("<instance-name>", 15, `^[A-Za-z][A-Za-z0-9_-]*$`), ReservedInstance,
+		"is reserved (a name of the switch's own devices or instances)")
 
 	// LLDPInterface is an interface or "all".
 	LLDPInterface = &Type{Name: "<interface-name>", Ref: "interface", Check: func(s string) (string, error) {
@@ -419,6 +425,36 @@ func CheckInterfaceName(s string) (string, error) {
 		return p.String(), nil
 	}
 	return "", fmt.Errorf("invalid interface name %q (expecting <member>/<card>/<port> like 1/0/0, ae<N>, irb or cme)", s)
+}
+
+// ReservedInstance reports whether name cannot be a routing instance: the
+// default instance, the kernel's and switchd's own device names (swbr0,
+// swstack, swvc<n>, sw-<c>-<p>.<u>, cme, irb, ae<N>, lo).
+func ReservedInstance(name string) bool {
+	switch strings.ToLower(name) {
+	case "default", "master", "main", "local", "lo", "all", "irb", CME:
+		return true
+	}
+	return ownDeviceRe.MatchString(name) || IsAE(name)
+}
+
+var ownDeviceRe = regexp.MustCompile(`^sw(br[0-9]*|vc[0-9]+|stack|-.*)$`)
+
+// notReserved wraps t so that values for which reserved is true fail.
+func notReserved(t *Type, reserved func(string) bool, why string) *Type {
+	inner := t.Check
+	out := *t
+	out.Check = func(s string) (string, error) {
+		v, err := inner(s)
+		if err != nil {
+			return "", err
+		}
+		if reserved(v) {
+			return "", fmt.Errorf("%q %s", v, why)
+		}
+		return v, nil
+	}
+	return &out
 }
 
 // ParseVlanRange parses "10" or "10-20".

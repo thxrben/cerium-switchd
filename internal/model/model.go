@@ -23,14 +23,17 @@ type Config struct {
 	VLANByID   map[int]*VLAN
 	RSTP       *RSTP // nil when not configured or disabled
 	LLDP       *LLDP
-	Domains    map[int]*Domain
-	Switch     SwitchOptions
-	Analyzers  map[string]*Analyzer
-	BPDUBlock  BPDUBlock
-	StackBFD   BFD
-	L3         map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
-	Routes     []StaticRoute      // default instance
-	Instances  map[string]*RoutingInstance
+	// Pairs are the MC-LAG pairs (reference 5.6), derived from the bundles
+	// with ports on two members, by Pair.ID.
+	Pairs     map[int]*Pair
+	MCLAG     MCLAGOptions
+	Switch    SwitchOptions
+	Analyzers map[string]*Analyzer
+	BPDUBlock BPDUBlock
+	StackBFD  BFD
+	L3        map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
+	Routes    []StaticRoute      // default instance
+	Instances map[string]*RoutingInstance
 }
 
 type System struct {
@@ -228,10 +231,9 @@ type Interface struct {
 	FlowControl *bool
 	// Aggregated interface options.
 	LACP         *LACP
-	LACPPriSet   bool // system-priority explicitly configured
 	MinLinks     int
 	HashPolicy   string
-	MCLAG        bool     // bundle is an MC-LAG (spans or may span both domain members)
+	MCLAG        bool     // bundle is an MC-LAG: its ports are on two members (reference 5.6)
 	MemberPorts  []string // physical ports with 802.3ad pointing here
 	MemberIDs    []int    // stack members hosting MemberPorts
 	StormControl StormControl
@@ -320,13 +322,40 @@ func buildBFD(n *config.Node, interval int) BFD {
 	return BFD{IntervalMS: atoi(n.Leaf("minimum-interval"), interval), Multiplier: atoi(n.Leaf("multiplier"), 3)}
 }
 
-type Domain struct {
-	ID             int
-	Members        []int
-	SystemMAC      string
-	SystemPriority int
-	AnycastVTEP    string
-	DelayRestore   int
+// Pair is the two members of MC-LAG bundles (reference 5.6).
+type Pair struct {
+	ID      int    // PairID(Members[0], Members[1])
+	Members [2]int // sorted
+	Bundles []string
+}
+
+// PairID identifies the pair of members a and b (in either order).
+func PairID(a, b int) int { return 32*min(a, b) + max(a, b) }
+
+// Peer returns the other member of the pair (0 if m is not in it).
+func (p *Pair) Peer(m int) int {
+	switch m {
+	case p.Members[0]:
+		return p.Members[1]
+	case p.Members[1]:
+		return p.Members[0]
+	}
+	return 0
+}
+
+// PairOf returns the MC-LAG pair of member m (nil: m has no MC-LAG).
+func (c *Config) PairOf(m int) *Pair {
+	for _, id := range sortedKeys(c.Pairs) {
+		if p := c.Pairs[id]; p.Peer(m) != 0 {
+			return p
+		}
+	}
+	return nil
+}
+
+// MCLAGOptions are the stack-wide MC-LAG settings.
+type MCLAGOptions struct {
+	DelayRestore int // seconds
 }
 
 type SwitchOptions struct {
@@ -392,7 +421,7 @@ func (b *builder) build() {
 		Interfaces: map[string]*Interface{},
 		VLANs:      map[string]*VLAN{},
 		VLANByID:   map[int]*VLAN{},
-		Domains:    map[int]*Domain{},
+		Pairs:      map[int]*Pair{},
 		Analyzers:  map[string]*Analyzer{},
 	}
 	b.cfg = c
@@ -521,8 +550,6 @@ func (b *builder) build() {
 		}
 		i.MinLinks = atoi(agg.Leaf("minimum-links"), 1)
 		i.HashPolicy = orDefault(agg.Leaf("hash-policy"), "layer3+4")
-		i.MCLAG = agg.Has("mclag")
-		i.LACPPriSet = agg.Leaf("lacp", "system-priority") != ""
 		sc := e.Get("storm-control")
 		i.StormControl = StormControl{Broadcast: atoi(sc.Leaf("broadcast"), 0), Multicast: atoi(sc.Leaf("multicast"), 0)}
 		i.MACLimit = atoi(e.Leaf("mac-limit"), 0)
@@ -582,20 +609,8 @@ func (b *builder) build() {
 		}
 	}
 
-	// MC-LAG domains.
-	for _, e := range r.Get("mclag").Entries("domain") {
-		d := &Domain{
-			ID:             atoi(e.Key, 0),
-			SystemMAC:      e.Leaf("system-mac"),
-			SystemPriority: atoi(e.Leaf("system-priority"), 32768),
-			AnycastVTEP:    e.Leaf("anycast-vtep"),
-			DelayRestore:   atoi(e.Leaf("delay-restore"), 300),
-		}
-		for _, m := range e.List("members") {
-			d.Members = append(d.Members, atoi(m, 0))
-		}
-		c.Domains[d.ID] = d
-	}
+	// MC-LAG (the pairs follow from the bundles, validateInterfaces).
+	c.MCLAG = MCLAGOptions{DelayRestore: atoi(r.Leaf("mclag", "delay-restore"), 300)}
 
 	// Switch options.
 	so := r.Get("switch-options")

@@ -172,7 +172,7 @@ func Run(ctx context.Context, o Options) error {
 				m.beforeLeave(b)
 			}
 		}}
-	sysMAC := lacpSystemMAC()
+	sysMAC := lacpSystemMAC(vc.StackID())
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
@@ -180,7 +180,7 @@ func Run(ctx context.Context, o Options) error {
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	applier.afterApply = func(cfg *model.Config) {
 		// LACP bundles: after the data plane created their devices.
-		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC, vc.StackID()))
+		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
 		if !o.DryRun {
 			lldpAgent.Sync(lldpConfig(cfg, member, names, chassisMAC, vc.IsPort))
 		}

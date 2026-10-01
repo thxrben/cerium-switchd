@@ -26,7 +26,6 @@ set interfaces 1/0/2 ether-options 802.3ad ae1
 set interfaces 2/0/2 ether-options 802.3ad ae1
 set interfaces ae1 mtu 9000
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members [ users 20 ]
 set interfaces ae1 native-vlan-id users
@@ -36,7 +35,6 @@ set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
 set vlans storage mtu 9000
-set mclag domain 1 members [ 1 2 ]
 set protocols rstp interface ae1 edge
 set forwarding-options analyzer dbg input ingress interface 1/0/3
 set forwarding-options analyzer dbg output interface 1/0/4
@@ -112,11 +110,10 @@ func TestInvalidConfigs(t *testing.T) {
 		{"member with family", "set interfaces 1/0/1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},
 		{"phys agg options", "set interfaces 1/0/3 aggregated-ether-options lacp active", "only valid on ae interfaces"},
-		{"span without mclag", "delete interfaces ae1 aggregated-ether-options mclag", "require 'aggregated-ether-options mclag'"},
+		{"two peers", "set virtual-chassis member 3 host-name sw-c\nset interfaces 1/0/7 ether-options 802.3ad ae2\nset interfaces 3/0/7 ether-options 802.3ad ae2\nset interfaces ae2 aggregated-ether-options lacp", "must have the same peer"},
 		{"rstp timers", "set protocols rstp max-age 40", "timers violate"},
 		{"bpdu-block unknown", "set protocols layer2-control bpdu-block interface 1/0/9", "1/0/9 is not configured"},
-		{"mclag without lacp", "delete interfaces ae1 aggregated-ether-options lacp", "require 'lacp'"},
-		{"domain members", "set mclag domain 1 members 3", "exactly two members"},
+		{"mclag without lacp", "delete interfaces ae1 aggregated-ether-options lacp", "which needs 'lacp'"},
 		{"analyzer same port", "set forwarding-options analyzer dbg input ingress interface 1/0/4", "both input and output"},
 		{"analyzer no output", "delete forwarding-options analyzer dbg output", "output interface is required"},
 		{"analyzer cross member", "set interfaces 2/0/9 description x\nset forwarding-options analyzer dbg input egress interface 2/0/9", "ports on the output's member"},
@@ -162,7 +159,9 @@ func TestWarnings(t *testing.T) {
 		{"set interfaces 1/0/3 mtu 1500\nset vlans storage mtu 9000", "larger frames are dropped"},
 		{"set interfaces ae1 aggregated-ether-options minimum-links 4", "can never come up"},
 		{"set system login user bob class operator", "cannot log in"},
-		{"set interfaces ae1 aggregated-ether-options lacp system-priority 100", "ignored on MC-LAG interfaces"},
+		{"set protocols layer2-control bpdu-block interface 1/0/3", "bpdu-block is not implemented yet"},
+		{"set system services web-management port 8443", "web-management is not implemented yet"},
+		{"", "VXLAN is not implemented yet"},
 		{"set system name-server [ 1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9 ]", "only the first 3"},
 		{"set virtual-chassis member 1 underlay interface 1/0/5\nset virtual-chassis member 1 underlay address 10.9.0.1/24\nset interfaces 1/0/5 mtu 1514", "underlay MTU 1514 is below 1564"},
 		{"set routing-instances oob routing-options static route ::/0 next-hop 2001:db8::1", "not in a subnet of any routed interface of this instance"},

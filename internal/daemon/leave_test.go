@@ -11,8 +11,7 @@ import (
 func TestStandaloneRewrite(t *testing.T) {
 	tr, err := config.ParseSet(`set virtual-chassis member 1 host-name a
 set virtual-chassis member 2 host-name b
-set mclag domain 1 members 1
-set mclag domain 1 members 2
+set mclag delay-restore 60
 set vlans v10 vlan-id 10
 set vlans v10 l3-interface irb.10
 set interfaces 2/0/1 unit 0 family ethernet-switching vlan members v10
@@ -20,7 +19,6 @@ set interfaces 2/0/2 mtu 9014
 set interfaces 1/0/3 disable
 set interfaces 3/0/1 disable
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag
 set interfaces 2/0/4 ether-options 802.3ad ae1
 set interfaces irb unit 10 family inet address 10.0.0.2/24 member 2
 set interfaces irb unit 10 family inet address 10.0.0.3/24 member 3

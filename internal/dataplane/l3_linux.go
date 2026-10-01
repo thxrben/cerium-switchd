@@ -362,8 +362,12 @@ func (k *Netlink) syncVRF(v VRF, st *l3Owned) (int, bool, error) {
 	}
 	changed := false
 	ln, _ := netlink.LinkByName(v.Name)
+	if ln != nil && ln.Type() != "vrf" {
+		// Never replace another device (commit check rejects the name).
+		return table, false, fmt.Errorf("routing instance %s: a %s device of that name exists", v.Name, ln.Type())
+	}
 	if cur, ok := ln.(*netlink.Vrf); ln != nil && (!ok || int(cur.Table) != table) {
-		// Wrong type or table: recreate (its members re-join below).
+		// Wrong table: recreate (its members re-join below).
 		if err := netlink.LinkDel(ln); err != nil {
 			return table, changed, err
 		}

@@ -457,7 +457,7 @@ target, 3.5, those of that member). Sections and lines (a `-` means no limit app
 | **Frame sizes** (frame size incl. the Ethernet header, without VLAN tags, 1.3) | configurable `mtu` range and default; the largest configured `mtu` and where it is set (and the host MTU that fits it); the extra bytes the stack tunnels need (58); the largest `mtu` the stack carries (`show virtual-chassis mtu` has the details per stacking port); the hardware maximum of this member's ports (lowest and highest, with the port) |
 | **Switching** | VLAN ids (1–4094) and how many are configured; VXLAN VNIs; learned MAC addresses now, the aging range and default, the `mac-limit` range per port |
 | **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
-| **MC-LAG** | domain numbers (1–255), members per domain (2), domains per member (1); configured domains and bundles |
+| **MC-LAG** | members per MC-LAG bundle (2), peers per member (1); the configured MC-LAG bundles and pairs |
 | **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
 | **Ports** | physical ports of this member, the fastest port speed, stacking ports |
 
@@ -717,6 +717,7 @@ automation access on the OS port.
 * The server is for people. The stack itself never uses it: sessions reach the master over the stacking protocol (1.8).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
+*Not implemented yet* (W at commit: the statement has no effect yet).
 HTTPS web interface and REST API, reachable through the management instance on the master (1.8). Default: port 443 with a self-signed certificate generated
 at first start. `certificate` and `key` must be given together (E otherwise). `disable` turns it off.
 
@@ -876,7 +877,7 @@ working path, so a ring survives one broken cable.
 * **The stack is one switch.** Everything that lists or selects interfaces covers **every member** and prints **one
   table** (full interface names carry the member): `show interfaces`, `show chassis hardware`, `show virtual-chassis
   vc-port|mtu`, `show system offload`, `show vlans`, `show ethernet-switching table`, `show arp`, `show ipv6 neighbors`,
-  `show lacp interfaces|statistics`, `show lldp neighbors|statistics`, `show dhcp client binding`,
+  `show lacp interfaces|statistics`, `show lldp neighbors|statistics`, `show dhcp client binding`, `show mclag`,
   `clear ethernet-switching table`, and the completion of
   interface names. A target at the end only narrows the rows: `member <id>`, or `local` (the member you are logged in
   to). The MAC table lists an address where it was learned (not the copies on the stack tunnels); an MC-LAG bundle's
@@ -885,7 +886,7 @@ working path, so a ring survives one broken cable.
   `local` (the member you are logged in to; without a target, the master). With more than one target the output has
   a section per member (`member2:` and a line). The command runs on the member as the same user and class.
   * Commands with targets: `show system uptime|ntp|syslog|limits`, `show version`, `show log`, `show route`,
-    `show mclag`, `request system reboot|halt|power-off`, `request system maintenance-mode enter|exit`,
+    `request system reboot|halt|power-off`, `request system maintenance-mode enter|exit`,
     `clear system reboot`, `request chassis card`.
   * `request system reboot all-members` asks once, naming the members, and reboots the other members before this
     one. (Junos reboots all members by default; here the default is the local member.)
@@ -965,7 +966,7 @@ members are rejected (E).
 * `host-name <hostname>`: sets the Linux host name and the CLI prompt of this member.
   E: the same host name on two members.
 * `mastership-priority <0-255>`: default 128. The highest priority healthy member becomes the stack leader (it coordinates
-  commits). In an MC-LAG domain the higher priority member is *primary* (ties: lower member id).
+  commits). Of an MC-LAG pair the higher priority member is *primary* (ties: lower member id).
 * `role switch|witness`: a `witness` member only takes part in stack quorum, over its own stacking cables. It keeps
   a two-switch stack able to commit when one switch is down. E: interfaces configured on a witness.
   * switchd does not manage a witness's data plane: no bridge, no switch ports; its NICs stay with the OS (a switch
@@ -1055,15 +1056,20 @@ Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W
   * `active` (default) sends LACPDUs, while `passive` only answers. Two passive ends never form a bundle.
   * `periodic fast` (default; Junos defaults to slow) asks the partner to send every second, so a failed partner is
     detected within 3 seconds. `slow` means 30 seconds and 90 seconds.
-  * `system-priority` (default 32768). The LACP system id is a MAC derived from the member's machine id (locally
-    administered, stable across restarts and port changes; shown by `show lacp interfaces`). On MC-LAG bundles the domain's
-    shared `system-mac`/`system-priority` replace both (W if `system-priority` is set on an MC-LAG bundle).
-  * Actor identity: key `N+1` for `aeN`; port number `member × 1024 + port index` (unique in the whole stack, so the
-    two members of an MC-LAG never announce the same port); port priority 32768.
+  * `system-priority` (default 32768). The LACP system id is **one MAC for the whole stack**, derived from the stack
+    id (locally administered; stable across restarts, port changes and mastership changes; shown by `show lacp
+    interfaces`). The stack is one switch, so every bundle announces the same system, whichever members its ports
+    are on: a bundle that gains ports on a second member (5.6) keeps its identity.
+  * Actor identity: key `N+1` for `aeN`; port number `member × 1024 + card × 64 + port` (unique in the whole stack, so
+    the two members of an MC-LAG never announce the same port); port priority 32768.
   * A member port carries traffic only while LACP has it *collecting and distributing* (in sync with the partner). A
     port that is not receives nothing but LACPDUs (data frames on it are dropped by the switch, as IEEE 802.1AX
     requires), and nothing is sent on it. Ports whose partner differs from the bundle's partner (a cabling error) stay
     out of the bundle and are shown as `not selected`.
+  * A partner that sends only every 30 seconds although `periodic fast` asks for every second (some switches ignore
+    the request) lets our side time out after 3 seconds again and again: the port flips between `Current` and
+    `Expired`/`Defaulted` and the bundle never forms. switchd notices the long gaps between the partner's LACPDUs,
+    logs a warning and shows it in `show lacp interfaces`, with the hint to configure `periodic slow`.
   * With LACP, `minimum-links` counts distributing ports; below it the bundle is down.
   * `show lacp interfaces [<aeN>]`: per member port the actor and partner state (activity, timeout, aggregation,
     synchronization, collecting, distributing, defaulted, expired) and the receive and mux machine states, as in
@@ -1072,15 +1078,8 @@ Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W
   bundle this counts ports on **both** members. Default 1. W: n larger than the number of configured member ports.
 * `hash-policy layer2|layer2+3|layer3+4`: how flows are spread across the active members of **this** switch.
   Default `layer3+4`. Non-IP traffic always uses layer 2. Frames of one flow always take the same link, so order is preserved.
-* `mclag`: this bundle is an **MC-LAG**, with member ports on the two members of an MC-LAG domain, which present
-  themselves to the partner as one LACP system (5.6). A bundle with ports on only one of the two members is allowed
-  (a single-homed device, or during a migration).
-  * E: `lacp` missing.
-  * E: there is no domain containing the bundle's members.
-
-  Rules for all bundles:
-  * E: an `ae` with ports on two members that is not `mclag`.
-  * E: ports on more than two members.
+* A bundle with member ports on two stack members is an **MC-LAG** (5.6). E: ports on more than two members. E: ports
+  on two members without `lacp`.
 
 #### `storm-control { broadcast <pps>; multicast <pps>; }`
 Rate-limits flooded traffic **received** on this port, in packets per second. Frames above the rate are dropped
@@ -1230,6 +1229,8 @@ Attaches the VLAN IP interface `irb.<n>` (5.3.3) to this VLAN. E: the irb unit i
 on two VLANs.
 
 #### `vxlan vni <vni>`
+*VXLAN (this statement, `virtual-chassis member vtep-address|underlay` and `switch-options vxlan`) is not implemented
+yet* (W at commit: the VLAN is not extended; Phase 9).
 Extends the VLAN over VXLAN to every other member that has the same VLAN, and to static remote VTEPs listing the VNI.
 The VLAN id is the same on all members (the configuration is shared), and frames are carried untagged inside the tunnel.
 * E: VNI used twice.
@@ -1267,7 +1268,7 @@ bridge, and one of its ends becomes a backup port (discarding).
 * **MC-LAG**: an MC-LAG bundle is **one** RSTP port with one role and state, applied to its legs on both members.
   BPDUs from the partner arrive on either leg; BPDUs to the partner leave on one leg that is up (the leg of the
   member with the lowest id). The port's path cost follows the speed of all active legs of both members. One leg
-  failing, or one member of the domain failing, is no topology change for RSTP.
+  failing, or one member of the pair failing, is no topology change for RSTP.
 * **Stack tunnels** are the bridge's internal fabric: always forwarding, never sending or receiving BPDUs. When RSTP
   runs, BPDUs are consumed on every switch port and never forwarded (not even between members).
 * Topology changes flush the learned addresses of the affected ports on every member.
@@ -1327,8 +1328,8 @@ same chassis ID and system name, so a neighbour sees one switch with many ports,
   | System description | `cerOS <version>` |
   | System capabilities | bridge (and router when routed interfaces exist); enabled as configured |
   | Management address | the addresses of `cme` (1.8), when there are any |
-  | Port VLAN ID (802.1) | the untagged VLAN of a switch port |
-  | Link aggregation (802.3) | for bundle member ports: aggregation capable, the bundle and whether the port is in it |
+  | Port VLAN ID (802.1) | the untagged VLAN of a switch port (on a bundle member port: of its `ae`) |
+  | Link aggregation (802.3) | for bundle member ports: aggregation capable; whether LACP has the port in the bundle now (collecting and distributing; a static bundle: the port is up); the aggregated port id `N+1` for `aeN`, the same on every member (an MC-LAG looks like one bundle) |
   | Maximum frame size (802.3) | the port's `mtu` |
 * Received LLDPDUs are kept per port until their time to live runs out (a shutdown LLDPDU removes them at once). At most
   8 neighbours per port; LLDP frames are never forwarded by the switch.
@@ -1340,6 +1341,7 @@ same chassis ID and system name, so a neighbour sees one switch with many ports,
 * `show lldp statistics`: per port LLDPDUs sent and received, discarded and aged-out neighbours.
 
 #### `protocols layer2-control bpdu-block { interface [ <if> … ]; disable-timeout <s>; }`
+*Not implemented yet* (W at commit: the listed ports are not protected yet).
 BPDU protection. It works with or without RSTP. A listed port that receives any BPDU (STP/RSTP/MSTP, or Cisco PVST+
 `01:00:0c:cc:cc:cd`) is **shut down immediately**, an alarm is raised, and a syslog `error` is sent.
 * The port stays down until `clear error bpdu interface <if>`, or until `disable-timeout` seconds have passed (if set).
@@ -1349,28 +1351,35 @@ BPDU protection. It works with or without RSTP. A listed port that receives any 
 
 ### 5.6 mclag
 
-#### `mclag domain <1-255> { … }`
-An MC-LAG domain is a pair of stack members that act as one LACP partner towards devices connected to both
-(`aggregated-ether-options mclag`). Each member can be in at most one domain.
+An **MC-LAG** is an `ae` bundle whose member ports are on **two** stack members. Nothing else declares it: the
+ports say which two members carry the bundle (`set interfaces 1/0/1 ether-options 802.3ad ae1` and
+`set interfaces 2/0/1 ether-options 802.3ad ae1` make `ae1` an MC-LAG of members 1 and 2). Towards the device on the
+other end, both members are one LACP partner, as the stack is one switch (like a LAG across Junos Virtual Chassis
+members). The two members of an MC-LAG are its **pair**; each is the other's **peer**.
 
-Both members of a domain are members of the same stack, and everything between them runs over the stacking ring
-(5.2): the stack tunnel between the two members takes the role that a dedicated peer-link has in other MC-LAG
+Both members are members of the same stack, and everything between them runs over the stacking ring (5.2): the
+stack tunnel between the two members takes the role that a dedicated peer-link has in other MC-LAG
 implementations, and the stacking protocol carries MAC synchronisation, leg states and consistency checks. No extra
 cable is needed. If the two are not cabled directly, both run through other members.
 
-Statements:
-* `members [ <a> <b> ]`: exactly two configured, non-witness stack members.
-  E: not exactly two. E: unknown member. E: witness. E: member already in another domain.
-* `peer-link`, `peer-link-bfd` and `heartbeat` of earlier versions no longer exist (E: the stacking links replace the
-  peer-link; remove the statement and the bundle that served as peer-link).
-* `system-mac <mac>` / `system-priority <n>`: the shared LACP system id presented by both members on MC-LAG bundles.
-  If `system-mac` is unset, a stable locally administered MAC is derived from the stack id and domain id. It never
-  changes, because a change would make partners re-negotiate. Default priority 32768.
-* `delay-restore <s>`: after a member boots, its MC-LAG ports stay out of the bundle for this long (default 300 s).
-  During that time the MAC table is synchronised and RSTP converges before traffic is attracted. A member that only
-  lost its connection to the peer is not delayed (see failure handling).
-* `anycast-vtep <ip>`: VXLAN source address shared by the pair. Remote VTEPs send traffic for devices behind MC-LAG
-  bundles to this one address, and either member can receive it (5.7).
+Rules (commit check):
+* E: an `ae` with ports on more than two members.
+* E: an `ae` with ports on two members without `aggregated-ether-options lacp` (a static bundle across members
+  cannot tell the partner which links to use).
+* E: a member that is paired with two different members (e.g. `ae1` on members 1 and 2, `ae2` on members 1 and 3).
+  All MC-LAG bundles of a member have the same peer.
+* A bundle whose ports are all on one member is an ordinary bundle, also while its second member's ports are being
+  added (migration): it becomes an MC-LAG when the commit adds them. Its LACP identity does not change (below), so the
+  partner does not re-negotiate.
+* `mclag domain …` and `aggregated-ether-options mclag` of earlier versions are no longer needed. A stored
+  configuration is converted when it is read: both are removed, and `mclag domain <n> delay-restore` becomes
+  `mclag delay-restore`. (`system-mac`, `system-priority` and `anycast-vtep` of a domain are dropped: the stack has
+  one LACP system id, see below; VXLAN comes with Phase 9.)
+
+#### `mclag delay-restore <0-3600>`
+After a member boots, its MC-LAG legs stay out of their bundles for this long (default 300 s). During that time the
+MAC table is synchronised and RSTP converges before traffic is attracted. A member that only lost its connection to
+the peer is not delayed (see failure handling). It applies to every MC-LAG of the stack.
 
 **Behaviour:**
 
@@ -1383,7 +1392,7 @@ Statements:
     down. When a member's leg of a bundle fails, the peer lifts this filter for that bundle, and the traffic reaches the
     device via the peer. Leg changes reach the peer within 50 ms.
 * **Traffic from other members** (stacks with more than two members): flooded traffic from a third member reaches
-  both members of the domain on their own tunnels. For every MC-LAG bundle only one of them delivers broadcast and
+  both members of the pair on their own tunnels. For every MC-LAG bundle only one of them delivers broadcast and
   multicast: the primary while its leg is up, otherwise the secondary. Known unicast is delivered by the member it
   was sent to. Unknown unicast from a third member can reach a dual-homed device twice until its address is learned.
   When a member's leg fails, the other members forget the addresses behind that bundle that point to this member,
@@ -1405,18 +1414,20 @@ Statements:
   | The peer is not reachable, **three or more members** | A member that reaches less than half of the stack's switch members (itself included) is in the minority part: it takes its MC-LAG legs out of the bundles (LACP out-of-sync), so the partners use the majority part. Otherwise, including an exact half, it keeps forwarding as above. |
   | The peer returns | The whole MAC tables are exchanged at once. Legs that stayed up stay up; legs that were held for the minority rule rejoin once the tables are exchanged. |
   | A member boots | `delay-restore` applies, then its legs rejoin. |
-* **LACP identity** of an MC-LAG bundle: both members announce the domain's `system-mac`/`system-priority` and the same
-  key (`N+1` for `aeN`); port numbers are unique per member (5.1.3), so the partner sees one system with one bundle.
+* **LACP identity** of an MC-LAG bundle: both members announce the stack's LACP system id (5.3.2
+  `aggregated-ether-options lacp`) and the same key (`N+1` for `aeN`); port numbers are unique in the stack, so the
+  partner sees one system with one bundle.
 * **Leg state**: each member tells its peer over the stacking plane, on every change and every second, which of its
-  MC-LAG legs are up (have ports that LACP has collecting and distributing). Split horizon for a bundle on a member
+  MC-LAG legs are up (have ports that LACP has collecting and distributing) and how many of its ports LACP has ready
+  (for `minimum-links`, which counts the ports of both members). Split horizon for a bundle on a member
   applies while the **peer's** leg of that bundle is up.
 * A leg that is *held* stays out of the bundle: LACP tells the partner "not in sync" on its ports, so the partner moves
   its traffic to the other member without loss. Holds: the minority rule above, a lasting configuration difference
   (below), and `delay-restore` after the member booted. A restart of switchd alone (the legs still up) does not hold
   anything.
-* `show mclag`: per domain the role (primary/secondary), the peer's reachability over the stack and its tunnel; per
-  MC-LAG bundle the local and peer leg state, split horizon, and a hold with its
-  reason and remaining time.
+* `show mclag`: every pair of the stack (one table, 5.2 "The stack is one switch"; `member <id>` narrows it to the
+  pairs of that member): per pair the primary and the secondary, whether they reach each other over the stack, and
+  per MC-LAG bundle each member's leg state, split horizon and a hold with its reason and remaining time.
 * **Consistency checks** at runtime: VLAN membership (and native VLAN), MTU, LACP mode and rate of each MC-LAG
   bundle as each member applies them are compared between the members (sent with the leg states). Both members
   apply the same configuration, so a difference while a commit propagates is ignored; one that lasts 10 seconds
@@ -1428,7 +1439,7 @@ Statements:
 
 #### `switch-options mac-table-aging-time <10-1000000>`
 Seconds after which an unused dynamically learned MAC is removed. Default 300.
-In MC-LAG domains, MACs age out only when both members age them out (5.6).
+On MC-LAG bundles, MACs age out only when both members age them out (5.6).
 
 #### `switch-options vxlan { … }`
 Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxlan vni`.
@@ -1446,8 +1457,7 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
   VTEPs are not encrypted. The cost is software crypto throughput and 60/80 bytes more overhead (see PLAN §6).
 
 **Behaviour and interactions:**
-* A member joins a VNI only if one of its switch ports is in the VLAN (or it is in an MC-LAG domain whose peer has
-  such a port), so that BUM traffic reaches only members that need it.
+* A member joins a VNI only if one of its switch ports is in the VLAN (or its MC-LAG peer has such a port), so that BUM traffic reaches only members that need it.
 * **Loop freedom**: frames received from a tunnel are never sent into another tunnel (split horizon), so the full
   mesh cannot loop. Tunnels do not run RSTP.
 * **MTU**:
@@ -1456,8 +1466,8 @@ Global VXLAN settings. VXLAN is active on a member as soon as any VLAN has `vxla
     plus 80 with `encryption`. For example, VXLAN VLANs with `mtu 9014` need an underlay `mtu` of 9064 (IPv4).
     W: underlay MTU too small.
   * Frames that do not fit are dropped at the tunnel and counted.
-* **MC-LAG with `anycast-vtep`**: traffic of devices behind MC-LAG bundles is sent from the anycast address, and
-  both members accept traffic to it. Single-homed devices use the member's own `vtep-address`.
+* **MC-LAG**: how remote VTEPs reach devices behind MC-LAG bundles (a shared anycast VTEP of the pair) is defined
+  with the VXLAN control plane (Phase 9).
 
 ### 5.8 routing-options
 
@@ -1684,7 +1694,6 @@ set interfaces 2/1/0 ether-options 802.3ad ae1
 set interfaces ae1 description "server A (dual-homed)"
 set interfaces ae1 mtu 9216
 set interfaces ae1 aggregated-ether-options lacp active
-set interfaces ae1 aggregated-ether-options mclag
 set interfaces ae1 native-vlan-id users
 set interfaces ae1 unit 0 family ethernet-switching interface-mode trunk
 set interfaces ae1 unit 0 family ethernet-switching vlan members [ storage mgmt ]
@@ -1703,7 +1712,6 @@ set vlans users vlan-id 10
 set vlans users vxlan vni 10010
 set vlans storage vlan-id 20
 set vlans storage mtu 9014
-set mclag domain 1 members [ 1 2 ]
 set protocols rstp
 set forwarding-options analyzer debug input ingress interface ae1
 set forwarding-options analyzer debug input egress interface ae1
@@ -1716,29 +1724,20 @@ set forwarding-options analyzer debug output interface 1/3/0
 
 | Area | Status |
 |---|---|
-| Schema, formats (hierarchical, set, JSON), diff | implemented, tested and fuzzed |
-| Commit check (the validation rules in this document) | implemented and tested, except where noted below |
-| `interface-range` expansion (member-range, wildcards, precedence) | implemented and tested (hot-plug re-evaluation with the data plane) |
-| `inactive:` / `activate` / `deactivate`, `replace:`/`delete:` tags, `load`, `copy`, `rename` | implemented and tested (config package); CLI commands next |
-| Commit / confirmation / rollback engine (sessions, locks, revisions, persisted confirmation, automatic rollback) | implemented and tested (`internal/commit`); stack-wide replication in Phase 5 |
-| CLI engine (modes, commands, pipes, completion, `?`) | implemented and tested (`internal/cli`), with swcli client and switchd (dry-run) |
-| Hitless apply (diff-driven, tighten before loosen), self-healing, switch ports, VLANs, static bundles, MTU, storm control, mac-limit, flow control | implemented; unit, property and lab tested |
-| `routing-instances` (VRFs, static routes), protection of data L3 addresses, `show route`, `family inet dhcp` | implemented, unit and lab tested |
-| Chassis management (1.8): `system management-instance <instance>`, `cme`, management ports, address on the master, services on the master, CLI forwarding to the master, `start shell local`, no OS defaults (1.4), VLAN 4094 no longer reserved | specified, not implemented yet (the fixed `mgmt_ceros` model is implemented) |
-| `system login user` (accounts, keys, classes, `plain-text-password`), `start shell` | implemented and lab tested |
-| `system services ssh` (own sshd instance for the CLI), `system ports` (console CLI: serial and display, `login-required`) | implemented and lab tested |
-| Interface numbering `<member>/<card>/<port>` (1.6), conversion of old names, `show chassis hardware` | implemented, unit and lab tested (also on physical hardware) |
-| L3: `interfaces irb`, routed ports and subinterfaces, `vlans <v> l3-interface`, `routing-options static` | implemented, unit and lab tested (IPv4 and IPv6); anycast MAC across the stack with Phase 5 |
-| `system host-name` / `virtual-chassis member <id> host-name` in the OS, `system name-server`, `domain-name` | implemented and unit tested; switchd's own lookups through the management instance not yet |
-| Hardware capability checks (1.7), `show system offload` | implemented, unit tested and checked on physical NICs (tg3, igb, r8169) and virtio |
-| Operational commands of 3.5 (`show arp`, `show system uptime`, `show system rollback`, `request system reboot` …) | implemented and tested; stack drain before reboot with Phase 5/7 |
-| Multi-user notices, persistent shared candidate, CLI surviving switchd restarts and its own crashes | implemented, unit and lab tested |
-| `system services web-management`, `system login message` on serial consoles | not implemented yet |
-| `system syslog` (UDP/TCP/TLS through the management instance, local buffer) | implemented and lab tested; kernel messages not yet forwarded |
-| `vlans <v> mtu` (VLAN MTU filter) | specified, not implemented yet (needs a per-VLAN length filter; planned with eBPF) |
-| Operator permission check at commit, OS account conflicts, cert/key pairing, time-zone check | with the respective subsystems |
-| Stacking plane (IP-less transport, TLS, relay, BFD), stack ports | Phase 5 |
-| Data plane, services, LACP, MC-LAG, stack tunnels, RSTP, VXLAN | later phases (see PLAN.md §8) |
+| Schema, formats (hierarchical, set, JSON), diff, directives, `load`, `copy`, `rename` | implemented, tested and fuzzed |
+| Commit check, commit / confirmation / rollback, stack-wide replication | implemented and tested, lab tested |
+| CLI (modes, pipes, completion, member targets, sessions surviving switchd restarts) | implemented, unit and lab tested |
+| Hitless apply, switch ports, VLANs, bundles (static and LACP), MTU, storm control, mac-limit, flow control, `interface-range` | implemented, unit and lab tested |
+| `vlans <v> mtu` (nftables bridge filter) | implemented; lab tested on access ports |
+| L3: irb, routed ports and subinterfaces, routing instances, static routes, `family inet dhcp`, protection of data addresses | implemented, unit and lab tested |
+| Chassis management (1.8): management instance, `cme`, services on the master, CLI forwarding | implemented, lab tested |
+| `system login`, `system services ssh`, `system ports`, host names, resolver, NTP, syslog | implemented and lab tested; kernel messages not yet forwarded to syslog; `system login message` not yet on serial consoles |
+| Stacking (transport, TLS, relay, BFD, stack tunnels, join/remove, force-master, maintenance mode, software updates) | implemented, lab tested |
+| LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
+| `protocols layer2-control bpdu-block` | not implemented (W at commit) |
+| `system services web-management` | not implemented (W at commit) |
+| VXLAN (`vlans <v> vxlan`, `vtep-address`, `underlay`, `switch-options vxlan`) | not implemented (W at commit; Phase 9) |
+| OS takeover (1.4: disabling the operating system's network configuration) | not implemented: the OS network configuration must be removed by hand |
 
 ---
 
@@ -1834,7 +1833,6 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interface-range <name> aggregated-ether-options lacp system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | LACP system priority |
 | `interface-range <name> aggregated-ether-options minimum-links` | leaf | &lt;links&gt; 1..64 | 1 | Minimum active links for the bundle to be up |
 | `interface-range <name> aggregated-ether-options hash-policy` | leaf | layer2 \\| layer2+3 \\| layer3+4 | layer3+4 | Load-balancing hash |
-| `interface-range <name> aggregated-ether-options mclag` | presence |  |  | Bundle spans the two members of an MC-LAG domain |
 | `interface-range <name> storm-control` | container |  |  | Rate limit flooded traffic |
 | `interface-range <name> storm-control broadcast` | leaf | &lt;pps&gt; 1..100000000 |  | Broadcast packets per second |
 | `interface-range <name> storm-control multicast` | leaf | &lt;pps&gt; 1..100000000 |  | Multicast packets per second |
@@ -1875,7 +1873,6 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `interfaces <interface-name> aggregated-ether-options lacp system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | LACP system priority |
 | `interfaces <interface-name> aggregated-ether-options minimum-links` | leaf | &lt;links&gt; 1..64 | 1 | Minimum active links for the bundle to be up |
 | `interfaces <interface-name> aggregated-ether-options hash-policy` | leaf | layer2 \\| layer2+3 \\| layer3+4 | layer3+4 | Load-balancing hash |
-| `interfaces <interface-name> aggregated-ether-options mclag` | presence |  |  | Bundle spans the two members of an MC-LAG domain |
 | `interfaces <interface-name> storm-control` | container |  |  | Rate limit flooded traffic |
 | `interfaces <interface-name> storm-control broadcast` | leaf | &lt;pps&gt; 1..100000000 |  | Broadcast packets per second |
 | `interfaces <interface-name> storm-control multicast` | leaf | &lt;pps&gt; 1..100000000 |  | Multicast packets per second |
@@ -1932,13 +1929,8 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `protocols layer2-control bpdu-block` | container |  |  | Shut down ports that receive BPDUs |
 | `protocols layer2-control bpdu-block interface` | leaf-list | &lt;interface-name&gt; |  | Protected interfaces |
 | `protocols layer2-control bpdu-block disable-timeout` | leaf | &lt;seconds&gt; 10..86400 |  | Seconds until a blocked port is re-enabled (never if unset) |
-| `mclag` | container |  |  | Multi-chassis link aggregation |
-| `mclag domain <domain-id>` | list | &lt;domain-id&gt; 1..255 |  | MC-LAG domain (a pair of stack members) |
-| `mclag domain <domain-id> members` | leaf-list | &lt;member-id&gt; 1..16 |  | The two stack members forming this domain |
-| `mclag domain <domain-id> system-mac` | leaf | &lt;mac-address&gt; |  | Shared LACP system MAC (derived if unset) |
-| `mclag domain <domain-id> system-priority` | leaf | &lt;priority&gt; 1..65535 | 32768 | Shared LACP system priority |
-| `mclag domain <domain-id> anycast-vtep` | leaf | &lt;ip-address&gt; |  | Shared VTEP address of the pair |
-| `mclag domain <domain-id> delay-restore` | leaf | &lt;seconds&gt; 0..3600 | 300 | Seconds to wait after reboot before enabling MC-LAG ports |
+| `mclag` | container |  |  | Multi-chassis link aggregation (bundles with ports on two members) |
+| `mclag delay-restore` | leaf | &lt;seconds&gt; 0..3600 | 300 | Seconds to wait after a boot before MC-LAG legs join their bundles |
 | `switch-options` | container |  |  | Global switching options |
 | `switch-options mac-table-aging-time` | leaf | &lt;seconds&gt; 10..1000000 | 300 | MAC table aging time in seconds |
 | `switch-options vxlan` | container |  |  | VXLAN transport |

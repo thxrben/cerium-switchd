@@ -293,10 +293,8 @@ func memberVLANs(cfg *model.Config, x int) map[int]bool {
 
 // mclagPeer returns the MC-LAG peer of member m (0: none).
 func mclagPeer(cfg *model.Config, m int) int {
-	for _, d := range cfg.Domains {
-		if len(d.Members) == 2 && slices.Contains(d.Members, m) {
-			return d.Members[0] + d.Members[1] - m
-		}
+	if p := cfg.PairOf(m); p != nil {
+		return p.Peer(m)
 	}
 	return 0
 }

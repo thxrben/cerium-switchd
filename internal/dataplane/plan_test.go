@@ -442,7 +442,7 @@ func TestComputeTunnels(t *testing.T) {
 			"ae1": {Name: "ae1", AE: true, MTU: 1514, MCLAG: true, MemberIDs: []int{1, 2}, Switching: true, Mode: "access",
 				AccessVLAN: 10, VLANs: []int{10}, LACP: &model.LACP{Active: true}},
 		},
-		Domains: map[int]*model.Domain{1: {ID: 1, Members: []int{1, 2}}},
+		Pairs: map[int]*model.Pair{34: {ID: 34, Members: [2]int{1, 2}, Bundles: []string{"ae1"}}},
 	}
 	s, _ := Compute(cfg, 1, testNames)
 	t2, t3 := s.Links["swvc2"], s.Links["swvc3"]

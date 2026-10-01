@@ -1552,23 +1552,28 @@ func (sh *Shell) showLimits(c *call) error {
 			mc++
 		}
 	}
-	line("Domains", use(len(cfg.Domains), schema.MaxDomain))
-	line("Members per domain", strconv.Itoa(schema.MembersPerDomain))
-	line("Domains per member", strconv.Itoa(schema.DomainsPerMember))
+	line("Members per MC-LAG bundle", strconv.Itoa(schema.MembersPerMCLAG))
+	line("Peers per member", strconv.Itoa(schema.PeersPerMember))
 	line("MC-LAG bundles", strconv.Itoa(mc))
+	line("MC-LAG pairs", strconv.Itoa(len(cfg.Pairs)))
 
 	head("Stack")
 	line("Members", use(len(cfg.Members), schema.MaxMember))
 	if vc.Control {
 		line("Voters", fmt.Sprintf("%d (at most %d)", len(vc.Voters), schema.MaxVoters))
 	}
-	up := 0
+	// The VC port listing covers every member: count this member's.
+	links, up := 0, 0
 	for _, p := range vc.Ports {
+		if !strings.HasPrefix(p.Port, strconv.Itoa(hw.Member)+"/") {
+			continue
+		}
+		links++
 		if p.State == "up" {
 			up++
 		}
 	}
-	line("Stacking links of this member", fmt.Sprintf("%d, %d up", len(vc.Ports), up))
+	line("Stacking links of this member", fmt.Sprintf("%d, %d up", links, up))
 
 	head("Ports")
 	line("Physical ports", strconv.Itoa(hw.Ports))

@@ -39,7 +39,11 @@ type portNames interface {
 //   - address leaf-lists became address entries (with an optional member),
 //   - the MC-LAG peer-link, peer-link-bfd and heartbeat were replaced by the
 //     stack tunnels (reference 5.6): the statements and the bundle that
-//     served as peer-link are removed.
+//     served as peer-link are removed,
+//   - MC-LAG domains were dropped (reference 5.6: a bundle with ports on two
+//     members is an MC-LAG): "mclag domain <n> delay-restore" becomes
+//     "mclag delay-restore", the rest of the domains and the bundles'
+//     "aggregated-ether-options mclag" flag are removed.
 //
 // A name that cannot be converted (its port no longer exists) would make the
 // whole configuration unreadable, so that statement is dropped and logged.
@@ -67,6 +71,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	normalizeAddresses(m)
 	u.convertManagement(m)
 	u.removePeerLink(m)
+	u.removeMCLAGDomains(m)
 	u.dropManagementFlag(m)
 	u.walk(schema.Root(), m, "")
 	// A newer member (e.g. the master during a software update) may know
@@ -626,4 +631,52 @@ func (u *upgrader) removePeerLink(m map[string]any) {
 			}
 		}
 	}
+}
+
+// removeMCLAGDomains converts the MC-LAG domains of older versions: the pair
+// of an MC-LAG follows from its bundle's ports now (reference 5.6), and only
+// delay-restore remains, for every pair.
+func (u *upgrader) removeMCLAGDomains(m map[string]any) {
+	mclag, _ := m["mclag"].(map[string]any)
+	if domains, ok := mclag["domain"].(map[string]any); ok {
+		ids := make([]string, 0, len(domains))
+		for id := range domains {
+			ids = append(ids, id)
+		}
+		slices.SortFunc(ids, func(a, b string) int { return cmpNumeric(a, b) })
+		for _, id := range ids {
+			d, _ := domains[id].(map[string]any)
+			if v, ok := d["delay-restore"]; ok {
+				if _, set := mclag["delay-restore"]; !set {
+					mclag["delay-restore"] = v
+				}
+			}
+		}
+		delete(mclag, "domain")
+		u.log.Info("stored configuration: MC-LAG domains converted (the pairs follow from the bundles' ports)", "domains", strings.Join(ids, ","))
+		if len(mclag) == 0 {
+			delete(m, "mclag")
+		}
+	}
+	for _, top := range []string{"interfaces", "interface-range"} {
+		entries, _ := m[top].(map[string]any)
+		for _, ev := range entries {
+			e, _ := ev.(map[string]any)
+			agg, _ := e["aggregated-ether-options"].(map[string]any)
+			if _, ok := agg["mclag"]; ok {
+				delete(agg, "mclag")
+				delete(agg, "@inactive:mclag")
+				if len(agg) == 0 {
+					delete(e, "aggregated-ether-options")
+				}
+			}
+		}
+	}
+}
+
+// cmpNumeric orders decimal strings by value.
+func cmpNumeric(a, b string) int {
+	x, _ := strconv.Atoi(a)
+	y, _ := strconv.Atoi(b)
+	return x - y
 }

@@ -25,9 +25,8 @@ const (
 	MaxMACAging     = 1000000
 	DefaultMACAging = 300
 
-	MaxDomain         = 255
-	MembersPerDomain  = 2
-	DomainsPerMember  = 1
+	MembersPerMCLAG   = 2 // members an MC-LAG bundle spans
+	PeersPerMember    = 1 // a member's MC-LAG bundles all have the same peer
 	MaxVoters         = 7
 	DefaultMemberPrio = 128
 )
