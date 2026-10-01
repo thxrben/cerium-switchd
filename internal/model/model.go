@@ -36,6 +36,10 @@ type Config struct {
 	L3        map[string]*L3Unit // routed interfaces by unit name ("irb.10", "1/0/6.100")
 	Routes    []StaticRoute      // default instance
 	Instances map[string]*RoutingInstance
+	// Routing is the routing protocol configuration of the default
+	// instance (nil: none); Policies is policy-options (never nil).
+	Routing  *Routing
+	Policies *Policies
 }
 
 type System struct {
@@ -587,6 +591,14 @@ func (b *builder) build() {
 	}
 	c.Routes = b.buildRoutes(r.Get("routing-options"), "routing-options")
 	b.buildInstances()
+	b.buildPolicies()
+	c.Routing = b.buildRouting("", "", r.Get("routing-options"), r.Get("protocols"))
+	for _, e := range r.Entries("routing-instances") {
+		if in := c.Instances[e.Key]; in != nil {
+			in.Routing = b.buildRouting(e.Key, "routing-instances "+e.Key, e.Get("routing-options"), e.Get("protocols"))
+		}
+	}
+	b.validateRoutingProtocols()
 
 	// LLDP.
 	if l := r.Get("protocols", "lldp"); l != nil && !l.Has("disable") {

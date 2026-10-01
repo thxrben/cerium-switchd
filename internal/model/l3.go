@@ -55,6 +55,7 @@ type RoutingInstance struct {
 	Description string
 	Units       []string
 	Routes      []StaticRoute
+	Routing     *Routing // routing protocols (nil: none)
 }
 
 // MgmtUnits returns the units of the management instance (reference 1.8).
@@ -90,9 +91,10 @@ func (u *L3Unit) CME() bool { return u.Parent == schema.CME }
 
 // StaticRoute is a route of the default instance.
 type StaticRoute struct {
-	Prefix   netip.Prefix
-	NextHops []netip.Addr
-	Discard  bool
+	Prefix     netip.Prefix
+	NextHops   []netip.Addr
+	Discard    bool
+	Preference int // 5 unless configured
 }
 
 // buildUnits collects the routed units of one interface node (physical, ae
@@ -244,7 +246,7 @@ func (b *builder) buildRoutes(ro *config.Node, base string) []StaticRoute {
 		if err != nil {
 			continue
 		}
-		r := StaticRoute{Prefix: p, Discard: e.Has("discard")}
+		r := StaticRoute{Prefix: p, Discard: e.Has("discard"), Preference: atoi(e.Leaf("preference"), 5)}
 		for _, h := range e.List("next-hop") {
 			a, err := netip.ParseAddr(h)
 			if err != nil {

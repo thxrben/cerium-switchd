@@ -290,6 +290,7 @@ func build() *Node {
 		),
 		snooping("igmp-snooping", "IGMP snooping (on by default in every VLAN)", "2|3", "2"),
 		snooping("mld-snooping", "MLD snooping (on by default in every VLAN)", "1|2", "1"),
+		ospfNode("ospf", "OSPF version 2 (IPv4)", true), ospfNode("ospf3", "OSPFv3 (IPv6)", false), bgpNode(),
 		C("layer2-control", "Layer 2 protocol protection",
 			C("bpdu-block", "Shut down ports that receive BPDUs",
 				LL("interface", "Protected interfaces", Interface),
@@ -313,22 +314,13 @@ func build() *Node {
 		),
 	)
 
-	routingOptions := func(help string) *Node {
-		return C("routing-options", help,
-			C("static", "Static routes",
-				L("route", "Destination network", RoutePrefix,
-					LL("next-hop", "Gateway addresses (several: ECMP)", IP),
-					F("discard", "Drop matching traffic silently"),
-				),
-			),
-		)
-	}
-	routing := routingOptions("Routing of the default instance")
+	routing := RoutingOptions("Routing of the default instance")
 	instances := L("routing-instances", "Separate routing tables (VRFs); system management-instance names the management instance", InstanceName,
 		V("description", "Instance description", Text),
 		VD("instance-type", "Instance type", Enum(E("virtual-router", "Separate routing table")), "virtual-router"),
 		LL("interface", "Routed units in this instance (irb.10, 1/0/5.0)", UnitName),
-		routingOptions("Routing of this instance"),
+		RoutingOptions("Routing of this instance"),
+		C("protocols", "Routing protocols of this instance", RoutingProtocols()...),
 	)
 	fwd := C("forwarding-options", "Forwarding options",
 		L("analyzer", "Port mirroring session", Identifier,
@@ -352,6 +344,6 @@ func build() *Node {
 	instances.Wrapped = true
 
 	return C("", "",
-		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd,
+		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd, PolicyOptions(),
 	)
 }

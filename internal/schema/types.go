@@ -193,6 +193,36 @@ var (
 		return p.String(), nil
 	}}
 
+	// ASN is a BGP AS number (4-byte, plain notation).
+	ASN = Uint("<asn>", 1, 4294967295)
+
+	// AreaID is an OSPF area, as a number or dotted; canonical dotted.
+	AreaID = &Type{Name: "<area-id>", Check: func(s string) (string, error) {
+		if n, err := strconv.ParseUint(s, 10, 32); err == nil {
+			return fmt.Sprintf("%d.%d.%d.%d", n>>24, n>>16&255, n>>8&255, n&255), nil
+		}
+		a, err := netip.ParseAddr(s)
+		if err != nil || !a.Is4() {
+			return "", fmt.Errorf("invalid area %q (a number or a dotted quad)", s)
+		}
+		return a.String(), nil
+	}}
+
+	// PolicyName names a policy, prefix list, community or AS path.
+	PolicyName = &Type{Name: "<name>", Ref: "policy", Check: Identifier.Check}
+
+	// Community is a BGP community member: <asn>:<value>,
+	// large:<a>:<b>:<c>, a well-known name, or a regular expression.
+	Community = &Type{Name: "<community>", Check: checkCommunity}
+
+	// Bandwidth is a speed with an optional k/m/g suffix (bit/s).
+	Bandwidth = &Type{Name: "<bandwidth>", Check: func(s string) (string, error) {
+		if _, err := ParseBandwidth(s); err != nil {
+			return "", err
+		}
+		return strings.ToLower(s), nil
+	}}
+
 	// InstanceName names a routing instance (also the kernel VRF name, so
 	// at most 15 characters). Names of switchd's own kernel devices and
 	// instances are reserved: a VRF of that name would replace the device.
@@ -507,3 +537,60 @@ func checkPrefix(s string) (string, error) {
 }
 
 func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// ParseBandwidth reads "100g", "10m", "1000000" into bit/s.
+func ParseBandwidth(s string) (uint64, error) {
+	mult := uint64(1)
+	t := strings.ToLower(s)
+	switch {
+	case strings.HasSuffix(t, "k"):
+		mult, t = 1e3, t[:len(t)-1]
+	case strings.HasSuffix(t, "m"):
+		mult, t = 1e6, t[:len(t)-1]
+	case strings.HasSuffix(t, "g"):
+		mult, t = 1e9, t[:len(t)-1]
+	}
+	n, err := strconv.ParseUint(t, 10, 64)
+	if err != nil || n == 0 || n > 1e15/mult {
+		return 0, fmt.Errorf("invalid bandwidth %q (e.g. 100g, 10m)", s)
+	}
+	return n * mult, nil
+}
+
+var wellKnownCommunities = map[string]bool{"no-export": true, "no-advertise": true, "no-export-subconfed": true}
+
+func checkCommunity(s string) (string, error) {
+	if wellKnownCommunities[s] {
+		return s, nil
+	}
+	if rest, ok := strings.CutPrefix(s, "large:"); ok {
+		parts := strings.Split(rest, ":")
+		if len(parts) == 3 {
+			ok := true
+			for _, p := range parts {
+				if _, err := strconv.ParseUint(p, 10, 32); err != nil {
+					ok = false
+				}
+			}
+			if ok {
+				return s, nil
+			}
+		}
+		return "", fmt.Errorf("invalid large community %q (large:<a>:<b>:<c>)", s)
+	}
+	if a, b, ok := strings.Cut(s, ":"); ok {
+		_, ea := strconv.ParseUint(a, 10, 16)
+		_, eb := strconv.ParseUint(b, 10, 16)
+		if ea == nil && eb == nil {
+			return s, nil
+		}
+	}
+	// A regular expression over the <asn>:<value> form.
+	if strings.ContainsAny(s, "^$.*+?[](){}|\\") {
+		if _, err := regexp.Compile(s); err != nil {
+			return "", fmt.Errorf("invalid community expression %q: %v", s, err)
+		}
+		return s, nil
+	}
+	return "", fmt.Errorf("invalid community %q (<asn>:<value>, large:<a>:<b>:<c>, no-export, or a regular expression)", s)
+}

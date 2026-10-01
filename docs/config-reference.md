@@ -24,6 +24,10 @@ Contents
    - [5.8 routing-options](#58-routing-options)
    - [5.9 routing-instances](#59-routing-instances)
    - [5.10 forwarding-options](#510-forwarding-options)
+   - [5.11 policy-options](#511-policy-options)
+   - [5.12 BFD](#512-bfd)
+   - [5.13 protocols ospf, protocols ospf3](#513-protocols-ospf-protocols-ospf3)
+   - [5.14 protocols bgp](#514-protocols-bgp)
 6. [Frame handling summary](#6-frame-handling-summary)
 7. [Complete examples](#7-complete-examples)
 8. [Implementation status](#8-implementation-status)
@@ -141,7 +145,8 @@ Rules that follow from this:
   plane, or between two instances.
 * **Services live in the management instance, on the master.** With `system management-instance`, the master's own
   traffic (syslog, NTP, DNS lookups, software downloads) goes out through the management instance (1.8). The addresses of data routed interfaces are protected:
-  they answer ping, ARP and neighbour discovery (and routing protocols once they exist), replies to connections the
+  they answer ping, ARP and neighbour discovery, the routing protocols configured on that interface (OSPF on its OSPF
+  interfaces, BGP from its configured neighbours, BFD from the neighbours of a BFD session), replies to connections the
   switch opened, and nothing else. So the SSH servers (the OS's and the CLI's) are reachable only through the
   management interfaces, or through the OS's own interfaces that switchd does not manage.
 * An in-band management VLAN on the data trunks is possible (an irb unit in the management instance). Management then
@@ -443,7 +448,8 @@ vlans {
 | `show ethernet-switching table [vlan <v>] [interface <if>]` | Learned and static MAC addresses. `clear ethernet-switching table …` removes learned ones. |
 | `show arp [no-resolve]` | The IPv4 neighbour table of all routing instances (default, management and data instances, including `cme`). Columns: MAC address, IP address, interface (switch name where it is a port), instance, state. |
 | `show ipv6 neighbors` | The same for IPv6. |
-| `show route [instance [<name>]]` | A routing table (default instance, or `<name>`); `show route instance` alone lists the instances with their type, route count and interfaces. |
+| `show route …` | The routing tables with every route and its source (5.14, `show route`); `show route instance` alone lists the instances with their type, route count and interfaces. |
+| `show ospf …`, `show ospf3 …`, `show bgp …`, `show bfd session` | Routing protocol state (5.12–5.14). |
 | `show system bottlenecks` | What limits this member's forwarding, with recommendations (3.5.2). |
 | `show igmp snooping membership\|vlans`, `show mld snooping …` | Multicast groups and per-VLAN snooping state (5.5). |
 | `show vxlan [remote-vtep]` | VNIs, remote VTEPs and their reachability (5.7). |
@@ -1592,23 +1598,80 @@ already.
 
 ### 5.8 routing-options
 
-#### `routing-options static route <prefix> { next-hop [ <ip> … ]; discard; }`
-Static routes of the default routing instance. Other instances have their own `routing-options` (5.9).
+Routing options of the default routing instance. Every routing instance (5.9) has the same statements under
+`routing-instances <name> routing-options`.
+
+#### `routing-options static route <prefix> { next-hop [ <ip> … ]; discard; preference <n>; }`
+Static routes.
 * `next-hop`: one or more gateway addresses. Several next hops share the traffic (ECMP). A next hop must be inside
-  a subnet of an L3 interface of the default instance, else the route is inactive (W at commit; it becomes active
+  a subnet of an L3 interface of the instance, else the route is inactive (W at commit; it becomes active
   once such an interface exists and is up).
 * `discard`: drop matching traffic silently (blackhole). E: `discard` together with `next-hop`. E: neither.
+* `preference <0-255>`: overrides the default preference of static routes (5), e.g. `preference 200` for a floating
+  static route that only takes over when the same prefix is not learned by OSPF or BGP.
 * IPv4 and IPv6 prefixes can be mixed; a next hop must have the family of its prefix (E).
-* switchd installs the routes with its own protocol id and only ever removes routes it installed.
+
+#### `routing-options router-id <ipv4>`
+The router id of OSPF, OSPFv3 and BGP in this instance. Default: the lowest IPv4 address of a `member`-less irb
+unit or routed interface of the instance that is up, chosen once at start and kept while that address exists (a
+router id never changes by itself while sessions are up). W: a protocol is configured and no router id can be chosen
+(no IPv4 address in the instance); the protocol does not start until one exists. Changing it restarts the protocols
+of the instance (`commit check` says so).
+
+#### `routing-options autonomous-system <asn>`
+The AS number of BGP in this instance (1–4294967295; 4-byte AS numbers in plain notation). E: `protocols bgp` without
+an autonomous system (here or `local-as` in every group).
+
+#### Routes, preferences and the routing table (RIB)
+Every routing instance has one routing table per family (`inet.0` and `inet6.0`; in an instance `<name>.inet.0`
+and `<name>.inet6.0`). It holds every route a source offers, also the ones that are not used. For each prefix the
+route with the **lowest preference** is active and installed into the kernel; among routes of equal preference the
+protocol's own rule decides (OSPF: path type and cost; BGP: best-path selection). Active routes with several
+next hops of equal cost are installed as ECMP routes.
+
+| Source | Preference | `show route` name |
+|---|---|---|
+| Interface subnets | 0 | `Direct` |
+| The switch's own addresses | 0 | `Local` |
+| Static routes | 5 (or `preference`) | `Static` |
+| OSPF and OSPFv3 internal (intra-area and inter-area) | 10 | `OSPF`, `OSPF3` |
+| OSPF and OSPFv3 external | 150 | `OSPF`, `OSPF3` |
+| BGP (external and internal) | 170 | `BGP` |
+
+* switchd installs routes with its own protocol ids (static: `switchd`, OSPF: `ospf`, BGP: `bgp`) and only ever
+  changes or removes routes with these ids. Only routes that changed are replaced; a commit that does not change a
+  route never touches it.
+* A route is never removed and added again to change it: next hops are replaced in place, so forwarding never has
+  a gap.
+
+#### Routing in a virtual chassis
+As in a Junos Virtual Chassis, the routing protocols run **on the master** (the routing engine):
+* The master runs OSPF, OSPFv3 and BGP for every instance and computes the routing tables. The result is replicated
+  over the stacking protocol to every member, and each member installs it in its own kernel, so every member forwards
+  by itself (the master is not in the forwarding path).
+* Protocol packets on an interface that lives on another member (a routed port or subinterface of member 2) are
+  passed between that member and the master over the stacking protocol: OSPF and BFD packets are received on the
+  member and handed to the master, and sent by the member on the master's behalf; a BGP session to an address of
+  that interface is relayed as a TCP stream. irb interfaces exist on every member: the master uses its own.
+* **BFD** sessions run on the member that owns the interface (an irb's on the master), so failure detection does not
+  depend on the stacking links; state changes go to the master.
+* **Mastership change**: the members keep the installed protocol routes, marked stale, while the new master brings
+  the sessions up again (at most the `graceful-restart` restart time, default 120 s). With graceful restart (on by
+  default for OSPF, OSPFv3 and BGP) the neighbours keep forwarding to the switch meanwhile. Routes that are not
+  learned again by then are removed.
+* `show route`, `show ospf …`, `show bgp …` and `show bfd session` run on the master and show the whole stack.
 
 ### 5.9 routing-instances
 
-#### `routing-instances <name> { description <text>; instance-type virtual-router; interface <unit-name>; routing-options { static { route … } } }`
+#### `routing-instances <name> { description <text>; instance-type virtual-router; interface <unit-name>; routing-options { … }; protocols { ospf|ospf3|bgp { … } } }`
 A separate routing table (a Linux VRF), as in Junos. Interfaces in an instance route only among themselves; nothing is
 routed between instances or to and from the default instance.
 * `interface <unit-name>`: a routed unit (`irb.<n>`, `1/0/5.0`, `1/0/6.100`, `ae1.0`) that belongs to this instance.
   E: the unit has no `family inet|inet6`. E: the unit is in two instances. Units in no instance are in the default one.
-* `routing-options static route …`: as in 5.8, for this instance.
+* `routing-options …`: as in 5.8 (static routes, router id, autonomous system), for this instance.
+* `protocols ospf|ospf3|bgp`: the routing protocols of this instance (5.13, 5.14), independent of those of the
+  default instance and of other instances (own router id, own neighbours, own routing table). E: routing protocols in
+  the management instance.
 * Addresses and subnets may overlap between instances, but not within one (E).
 * `instance-type virtual-router` (default and the only type for now; `vrf` with route distinguishers comes with BGP).
 * **The management instance** is the one named by `system management-instance <instance>` (5.1, 1.8); any name is
@@ -1634,7 +1697,7 @@ routed between instances or to and from the default instance.
 * Older configurations (`mgmt_ceros`, `system management-instance` without a name, per-member management
   addresses) are **not** converted: they fail the commit check and must be rewritten in this form.
 * In the kernel an instance is a VRF device named like the instance, with its own routing table.
-* `show route [instance <name>]` lists the routes; `show interfaces` marks management interfaces.
+* `show route instance <name>` lists the routes (5.14, `show route`); `show interfaces` marks management interfaces.
 
 ### 5.10 forwarding-options
 
@@ -1660,6 +1723,233 @@ the original traffic. If the output port is congested, only mirrored copies are 
   * E: the output is a bundle spanning two members.
   * E: an input or output is not configured under `interfaces`, or is a bundle member (use the `ae`).
   * W: the output port is also a switch port.
+
+
+### 5.11 policy-options
+
+Routing policies select routes and change their attributes. They are used by `import` and `export` of BGP and by
+`export` of OSPF/OSPFv3 (redistribution). The syntax and evaluation follow Junos.
+
+#### `policy-options prefix-list <name> prefix [ <prefix> … ]`
+A list of prefixes (IPv4 and IPv6 may be mixed). Used in `from prefix-list` (exact matches) and
+`from prefix-list-filter <name> match exact|orlonger|longer`. (Junos writes the prefixes directly inside the list;
+here they are a `prefix` leaf-list.)
+
+#### `policy-options community <name> members [ <community> … ]`
+A named BGP community set. A member is `<asn>:<value>` (standard), `large:<a>:<b>:<c>` (large community, RFC
+8092), a well-known name (`no-export`, `no-advertise`, `no-export-subconfed`), or a regular expression on the
+`<asn>:<value>` form (`^65000:1..$`). A route matches the community when it carries **all** listed members.
+
+#### `policy-options as-path <name> path "<regex>"`
+A regular expression over the AS path, Junos style: the elements are AS numbers, `.` matches one AS, and the
+operators `* + ? {m,n} | ( ) ^ $ [ ]` work on whole AS numbers (`"^65000 .*"`: learned from AS 65000;
+`"^$"`: originated in this AS).
+
+#### `policy-options policy-statement <name> { term <term> { from { … } then { … } } then { … } }`
+A policy is a list of terms evaluated in order. A route matches a term when it matches **every** condition in the
+term's `from` (an empty `from` matches everything); then the term's `then` actions run. A **terminating action**
+(`accept`, `reject`) ends the evaluation of all policies; `next term` continues with the next term (default when
+a term has no terminating action), `next policy` with the next policy of the chain. A `then` directly under the
+policy (without a term) applies to routes no term terminated.
+
+`from` conditions:
+* `protocol direct|local|static|ospf|ospf3|bgp|aggregate` (several: any of them)
+* `route-filter <prefix> exact`, `… orlonger`, `… longer`, `… upto /<n>`, `… prefix-length-range /<a>-/<b>`
+  (several route filters: any of them matches)
+* `prefix-list <name>`, `prefix-list-filter <name> match exact|orlonger|longer`
+* `community <name>`, `as-path <name>`
+* `neighbor <ip>` (BGP: the peer the route came from or goes to)
+* `area <area-id>` (OSPF: the area of the route)
+* `family inet|inet6`
+* `tag <n>` (OSPF external tag)
+
+`then` actions:
+* `accept`, `reject`, `next term`, `next policy`
+* `metric <n>` (BGP MED, OSPF external metric), `metric-add <n>`
+* `local-preference <n>`, `preference <n>` (the route's preference in this switch's RIB)
+* `community add|delete|set [ <name> … ]`
+* `as-path-prepend "<asn> …"`
+* `next-hop self|<ip>|discard`
+* `external-type 1|2` (OSPF external type), `tag <n>`
+
+A chain of policies (`export [ a b ]`) is evaluated in order; a route that no policy accepts or rejects gets the
+protocol's **default policy**:
+* BGP import: accept. BGP export: accept the active BGP routes, reject everything else (so OSPF, static and direct
+  routes are announced only through an explicit policy).
+* OSPF export: reject (nothing is redistributed unless a policy accepts it; OSPF's own routes are flooded by OSPF
+  itself and are not affected by export).
+
+Commit check:
+* E: a policy, prefix list, community or AS path that is referenced but not defined.
+* E: an invalid regular expression or community.
+* W: a defined policy that nothing uses.
+* W: a term after a term without `from` whose `then` terminates (the later term is never reached).
+
+### 5.12 BFD
+
+#### `bfd-liveness-detection { minimum-interval <ms>; multiplier <n>; authentication { algorithm keyed-sha-1|keyed-md5; key <secret>; key-id <n>; } }`
+Bidirectional Forwarding Detection (RFC 5880, 5881 single-hop, 5883 multihop) for a routing protocol neighbour: a
+neighbour that stops answering is declared down after `minimum-interval × multiplier` (default 300 ms × 3) instead
+of the protocol's hold time (OSPF 40 s, BGP 90 s by default). The statement goes under an OSPF/OSPFv3 interface
+(every neighbour on it) or a BGP group or neighbour.
+* Asynchronous mode; single-hop sessions use UDP 3784 with TTL 255, multihop sessions (BGP `multihop`, iBGP between
+  loopback-like irb addresses) UDP 4784.
+* `minimum-interval` 50–60000 ms (both directions); both sides use the slower of the two intervals.
+* `authentication`: optional keyed SHA-1 or MD5 (RFC 5880 §6.7); the neighbour must use the same key.
+* A BFD session going down takes the OSPF adjacency or BGP session down at once; it comes back through the protocol's
+  normal start (BGP waits for BFD to be up before it connects again).
+* BFD runs with real-time scheduling priority on the member that owns the interface (5.8, virtual chassis).
+* Values below 100 ms can cause false detections on small ARM boards (W at commit for `minimum-interval` < 100 on a
+  member with fewer than 4 CPU cores).
+* `show bfd session [extensive]`: per session the neighbour, interface, state, the negotiated interval and
+  multiplier, the detection time, the client (OSPF, BGP), uptime and transitions; `extensive` adds counters and the
+  local and remote discriminators.
+
+### 5.13 protocols ospf, protocols ospf3
+
+OSPF version 2 for IPv4 (RFC 2328) and OSPFv3 for IPv6 (RFC 5340), in the default instance (`protocols ospf`) and in
+routing instances (`routing-instances <name> protocols ospf`). OSPFv3 has the same statements as OSPF unless noted.
+
+#### `protocols ospf { area <area-id> { interface <unit> { … } } … }`
+* `area <area-id>`: an area, written as a number (`0`) or dotted (`0.0.0.0`); both mean the same area. Area 0 is the
+  backbone. With interfaces in more than one area the switch is an **area border router**: it must have an
+  interface in area 0 (E otherwise) and announces each area's networks into the others as summaries (type 3 LSAs;
+  OSPFv3: inter-area prefix LSAs). Stub and NSSA areas are not supported (planned).
+* `interface <unit>`: a routed unit of the instance (`irb.10`, `1/0/5.0`, `ae1.0`, `1/0/6.100`). E: the unit has
+  no address of the family (IPv4 for OSPF, IPv6 for OSPFv3; OSPFv3 also uses the link-local address). E: the unit is
+  in another instance, or in two areas. E: an irb address with `member` is the only address (OSPF runs once for the
+  whole stack, on the master's irb). OSPF on a management interface (`cme.0`) is an error.
+  * `passive`: the interface's subnets are announced, but no hellos are sent and no neighbours are formed.
+  * `metric <1-65535>`: the cost. Default: `reference-bandwidth` / interface speed, at least 1 (an irb counts as
+    the speed of the fastest port in its VLAN on the master; an `ae` as the sum of its active ports).
+  * `interface-type p2p`: point-to-point (no DR election; recommended for routed links between two routers).
+    Default: broadcast (DR/BDR election).
+  * `priority <0-255>`: DR election priority (default 128; 0: never DR or BDR).
+  * `hello-interval <s>` (default 10), `dead-interval <s>` (default 4 × hello), `retransmit-interval <s>`
+    (default 5), `transit-delay <s>` (default 1). E: the dead interval is not larger than the hello interval.
+    Hello and dead intervals must match the neighbours'.
+  * `authentication { simple-password <key>; }` or `authentication { md5 <key-id> key <key>; }` (OSPF only; several
+    `md5` keys for rollover: the newest is used to send, all are accepted). OSPF only: OSPFv3 has no
+    `authentication` statement (neither RFC 4552 IPsec nor the RFC 7166 trailer is supported yet).
+  * `bfd-liveness-detection { … }` (5.12).
+* `export [ <policy> … ]`: redistribution of routes into OSPF as external routes (type 5 LSAs; OSPFv3: AS-external
+  LSAs), e.g. static or BGP routes. Default: nothing (5.11). Exporting makes the switch an AS boundary router.
+  `then external-type 1|2` (default 2), `metric` (default 0 for type 2) and `tag`.
+* `reference-bandwidth <bandwidth>`: for the default metric, e.g. `100g` (default `100g`; Junos default is 100m,
+  which gives every port faster than 100 Mbit/s cost 1).
+* `overload`: the switch announces itself with maximum metric (RFC 6987), so traffic passes through it only when
+  there is no other way (e.g. before maintenance). `overload timeout <s>` keeps it for that long after every start.
+* `graceful-restart { disable; restart-duration <s>; }`: graceful restart (RFC 3623; OSPFv3 RFC 5187) as restarting
+  router (mastership change, switchd restart, software update) and as helper for neighbours. Default on, 120 s.
+* `disable`: OSPF is configured but not running.
+* Routes: intra-area before inter-area before external type 1 before external type 2; equal cost paths become ECMP
+  (up to 16 next hops).
+* The protection of the switch's addresses (1.5) lets OSPF packets in on the OSPF interfaces only.
+* Changing an interface's cost, passive or timers affects only that interface; adding an interface does not reset
+  other adjacencies. `commit check` names the adjacencies a change resets.
+
+Operational commands:
+* `show ospf neighbor [<address>] [detail]`: neighbour id, address, interface, state, priority, dead time; `detail`
+  adds the DR/BDR, the area, uptime and options.
+* `show ospf interface [<unit>] [detail]`: interface, area, state (DR, BDR, DRother, PtToPt, Passive, Down),
+  DR/BDR, neighbour count, cost, timers.
+* `show ospf database [router|network|summary|asbr-summary|external] [lsa-id <id>] [advertising-router <id>]
+  [detail|extensive]`: the link-state database per area.
+* `show ospf route`: the routes OSPF computed (with path type, cost and next hops), also those not active in the RIB.
+* `show ospf overview`: router id, ABR/ASBR role, areas, SPF runs and the last SPF time, graceful-restart state.
+* `show ospf statistics`: packets sent and received by type, errors.
+* `clear ospf neighbor [<address>]`: restarts adjacencies.
+* The same under `show ospf3 …` and `clear ospf3 neighbor`. All with `instance <name>`.
+
+### 5.14 protocols bgp
+
+BGP-4 (RFC 4271) with 4-byte AS numbers, IPv4 and IPv6 unicast, route refresh, graceful restart and route
+reflection, in the default instance and in routing instances. switchd embeds the GoBGP implementation.
+
+#### `protocols bgp { group <name> { type internal|external; peer-as <asn>; neighbor <ip> { … } … } }`
+Neighbours are configured in groups; a neighbour inherits everything from its group and can override it.
+* `type internal|external`: iBGP (the neighbour is in the switch's own AS) or eBGP. E: `type internal` with a
+  `peer-as` other than the own AS; E: `type external` with `peer-as` equal to it. E: a group without `type`.
+* `peer-as <asn>`: the neighbour's AS (group or neighbour; E: an external neighbour without one).
+* `neighbor <ip>`: a neighbour address (IPv4 or IPv6). E: the same neighbour in two groups.
+* `local-address <ip>`: the source address of the session (an address of the instance). Default: the address of the
+  interface the neighbour is reached through. Needed for iBGP between irb addresses with `member` or loopback-like
+  addresses.
+* `local-as <asn>`: a different local AS for this group/neighbour (AS migration).
+* `description <text>`.
+* `authentication-key <secret>`: TCP MD5 signatures (RFC 2385). Changing it resets the session.
+* `hold-time <0|3-65535>` (default 90; 0 disables keepalives), `passive` (never connect, only accept),
+  `multihop { ttl <n>; }` (eBGP to a neighbour that is not directly connected; default TTL 1 for eBGP, 255 for iBGP).
+* `family inet unicast`, `family inet6 unicast`: the address families (default: the family of the neighbour address).
+  An IPv6 neighbour can carry IPv4 routes and the other way round (next hops are then IPv4-mapped).
+* `import [ <policy> … ]`, `export [ <policy> … ]` (5.11): group or neighbour (the neighbour's replaces the group's).
+* `multipath`: up to 16 equal BGP paths are installed as ECMP (same AS path length, origin, MED, local preference).
+  `multipath multiple-as` also across different neighbouring ASes.
+* `cluster <ipv4>` (internal groups): this switch is a route reflector for the group's neighbours (RFC 4456), which are
+  its clients.
+* `remove-private` (external): private AS numbers are removed from the AS path towards the neighbour.
+* `bfd-liveness-detection { … }` (5.12).
+* `graceful-restart { disable; restart-time <s>; stale-routes-time <s>; }`: RFC 4724, default on (restart time 120 s,
+  stale routes kept 300 s).
+* `disable` (group or neighbour): configured, but no session.
+* Next hops: eBGP sets the next hop to the switch's address; iBGP keeps it unless the export policy says
+  `next-hop self`.
+
+**Hitless reconfiguration**: adding or removing a neighbour never affects the others. A changed policy is applied
+with route refresh (soft reconfiguration) without resetting the session. Changes that need a new session
+(`peer-as`, `local-address`, `local-as`, `authentication-key`, `type`, `family`, `multihop`, `hold-time`, `passive`)
+reset only that neighbour, and `commit check` names it (`warning: bgp neighbor 10.1.1.2: this change resets the
+session`).
+
+Operational commands:
+* `show bgp summary`: the router id and AS, per neighbour its AS, state (or prefixes received/accepted/active per
+  family when established), up/down time, messages and flaps.
+* `show bgp neighbor [<ip>]`: everything about a neighbour: state, timers, capabilities negotiated, families,
+  policies, last error, counters.
+* `show bgp group [<name>]`: the groups and their neighbours.
+* `show route receive-protocol bgp <ip> [extensive]`, `show route advertising-protocol bgp <ip> [extensive]`
+  (below).
+* `clear bgp neighbor [<ip>] [soft|soft-inbound]`: reset (or with `soft`: send route refresh / re-evaluate).
+* All with `instance <name>`.
+
+#### `show route` (full)
+`show route` shows the routing tables (RIB) the way Junos does. It replaces the earlier short listing.
+
+```
+inet.0: 7 destinations, 9 routes (7 active, 0 holddown, 1 hidden)
++ = Active Route, - = Last Active, * = Both
+
+0.0.0.0/0          *[OSPF/150] 01:02:03, metric 0, tag 0
+                    >  to 10.1.1.2 via 1/0/1.0
+                    [BGP/170] 00:10:00, localpref 100
+                      AS path: 65001 I, validation-state: unverified
+                    >  to 10.2.2.2 via irb.20
+10.1.1.0/30        *[Direct/0] 1d 02:03:04
+                    >  via 1/0/1.0
+10.1.1.1/32        *[Local/0] 1d 02:03:04
+                       Local via 1/0/1.0
+```
+
+* Tables: `inet.0`, `inet6.0`, and `<instance>.inet.0`/`<instance>.inet6.0` for routing instances; by default all
+  tables of the default instance, `instance <name>` / `table <name>` select others, `instance all` every table.
+* Per destination every route with its protocol and preference (`[OSPF/10]`), `*` for the active route, its age,
+  metric/tag/local preference, and its next hops (`>` marks the next hop in use; ECMP shows several `>`).
+* Filters (combinable): `show route <prefix>` (longest match for an address, the prefix and everything inside it
+  for a prefix; `exact` only that prefix; `longer` only more specific ones), `protocol <direct|local|static|ospf|
+  ospf3|bgp>`, `next-hop <ip>`, `active-path`, `hidden` (routes rejected by import policy or with an unresolvable
+  next hop).
+* `terse`: one line per route (destination, protocol, preference, metrics, next hop, AS path).
+* `detail` / `extensive`: everything the RIB knows: for OSPF the area, path type (intra, inter, ext1, ext2), cost and
+  advertising router; for BGP the neighbour, AS path, origin, local preference, MED, communities, originator and
+  cluster list, the reason a route is not active (`Inactive reason: Route Preference`, `AS path`, `Not Best in its
+  group - Router ID`), and the policy result.
+* `summary`: per table the number of destinations and routes per protocol, active and hidden.
+* `receive-protocol bgp <neighbor>`: the routes received from the neighbour before import policy (with `hidden`:
+  the ones import rejected). `advertising-protocol bgp <neighbor>`: the routes sent to it after export policy.
+* Routes installed in the kernel are checked against the RIB: a difference is marked (`# not in the kernel` / an
+  extra line `Kernel: <route>`) so a broken install is visible.
+* Member targets (`member <id>`, `all-members`) show a member's kernel routes (each member installs the master's
+  routing table, 5.8).
 
 ---
 
@@ -1860,6 +2150,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |
 | `show system bottlenecks` (3.5.2) | implemented |
+| Routing: RIB and preferences, `policy-options`, BFD, OSPF/OSPFv3, BGP, full `show route` (5.8, 5.11–5.14) | specified, being implemented |
 | Firmware image (docs/os-image.md), signed bundles, A/B slots, update daemon with automatic rollback (3.6), `system root-authentication` | implemented; unit tested and tested in QEMU; not yet on the lab switches |
 | `request system zeroize`, `request system storage cleanup` | not implemented yet |
 | OS takeover (1.4: masking the operating system's network services, ending DHCP clients), own systemd unit | implemented |
@@ -2065,6 +2356,128 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `protocols mld-snooping interface <interface-name>` | list | &lt;interface-name&gt; |  | Per-port settings |
 | `protocols mld-snooping interface <interface-name> immediate-leave` | flag |  |  | A leave removes the port at once |
 | `protocols mld-snooping interface <interface-name> multicast-router-interface` | flag |  |  | Always send all group traffic here |
+| `protocols ospf` | presence |  |  | OSPF version 2 (IPv4) |
+| `protocols ospf area <area-id>` | list | &lt;area-id&gt; |  | OSPF area |
+| `protocols ospf area <area-id> interface <unit-name>` | list | &lt;unit-name&gt; |  | Routed unit in this area |
+| `protocols ospf area <area-id> interface <unit-name> passive` | flag |  |  | Announce the subnets, form no neighbours |
+| `protocols ospf area <area-id> interface <unit-name> metric` | leaf | &lt;metric&gt; 1..65535 |  | Cost (default: reference-bandwidth / speed) |
+| `protocols ospf area <area-id> interface <unit-name> interface-type` | leaf | p2p |  | Network type |
+| `protocols ospf area <area-id> interface <unit-name> priority` | leaf | &lt;priority&gt; 0..255 | 128 | DR election priority (0: never DR) |
+| `protocols ospf area <area-id> interface <unit-name> hello-interval` | leaf | &lt;seconds&gt; 1..255 | 10 | Seconds between hellos |
+| `protocols ospf area <area-id> interface <unit-name> dead-interval` | leaf | &lt;seconds&gt; 2..65535 |  | Seconds without hellos until a neighbour is down (default 4 x hello) |
+| `protocols ospf area <area-id> interface <unit-name> retransmit-interval` | leaf | &lt;seconds&gt; 1..65535 | 5 | Seconds until an unacknowledged LSA is sent again |
+| `protocols ospf area <area-id> interface <unit-name> transit-delay` | leaf | &lt;seconds&gt; 1..65535 | 1 | Seconds added to LSA ages when flooding |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `protocols ospf area <area-id> interface <unit-name> authentication` | container |  |  | OSPF authentication |
+| `protocols ospf area <area-id> interface <unit-name> authentication simple-password` | leaf (excl. auth) | &lt;key&gt; |  | Plain-text password (8 characters at most) |
+| `protocols ospf area <area-id> interface <unit-name> authentication md5 <key-id>` | list (excl. auth) | &lt;key-id&gt; 0..255 |  | MD5 key (several: rollover) |
+| `protocols ospf area <area-id> interface <unit-name> authentication md5 <key-id> key` | leaf | &lt;key&gt; |  | Shared secret |
+| `protocols ospf export` | leaf-list | &lt;name&gt; |  | Policies redistributing routes into OSPF |
+| `protocols ospf reference-bandwidth` | leaf | &lt;bandwidth&gt; | 100g | Bandwidth with cost 1 |
+| `protocols ospf overload` | presence |  |  | Announce maximum metric (no transit traffic) |
+| `protocols ospf overload timeout` | leaf | &lt;seconds&gt; 60..1800 |  | Seconds after every start (default: always) |
+| `protocols ospf graceful-restart` | container |  |  | Graceful restart (RFC 3623) |
+| `protocols ospf graceful-restart disable` | flag |  |  | No graceful restart |
+| `protocols ospf graceful-restart restart-duration` | leaf | &lt;seconds&gt; 1..3600 | 120 | Seconds a restart may take |
+| `protocols ospf disable` | flag |  |  | Configured but not running |
+| `protocols ospf3` | presence |  |  | OSPFv3 (IPv6) |
+| `protocols ospf3 area <area-id>` | list | &lt;area-id&gt; |  | OSPF area |
+| `protocols ospf3 area <area-id> interface <unit-name>` | list | &lt;unit-name&gt; |  | Routed unit in this area |
+| `protocols ospf3 area <area-id> interface <unit-name> passive` | flag |  |  | Announce the subnets, form no neighbours |
+| `protocols ospf3 area <area-id> interface <unit-name> metric` | leaf | &lt;metric&gt; 1..65535 |  | Cost (default: reference-bandwidth / speed) |
+| `protocols ospf3 area <area-id> interface <unit-name> interface-type` | leaf | p2p |  | Network type |
+| `protocols ospf3 area <area-id> interface <unit-name> priority` | leaf | &lt;priority&gt; 0..255 | 128 | DR election priority (0: never DR) |
+| `protocols ospf3 area <area-id> interface <unit-name> hello-interval` | leaf | &lt;seconds&gt; 1..255 | 10 | Seconds between hellos |
+| `protocols ospf3 area <area-id> interface <unit-name> dead-interval` | leaf | &lt;seconds&gt; 2..65535 |  | Seconds without hellos until a neighbour is down (default 4 x hello) |
+| `protocols ospf3 area <area-id> interface <unit-name> retransmit-interval` | leaf | &lt;seconds&gt; 1..65535 | 5 | Seconds until an unacknowledged LSA is sent again |
+| `protocols ospf3 area <area-id> interface <unit-name> transit-delay` | leaf | &lt;seconds&gt; 1..65535 | 1 | Seconds added to LSA ages when flooding |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `protocols ospf3 export` | leaf-list | &lt;name&gt; |  | Policies redistributing routes into OSPF |
+| `protocols ospf3 reference-bandwidth` | leaf | &lt;bandwidth&gt; | 100g | Bandwidth with cost 1 |
+| `protocols ospf3 overload` | presence |  |  | Announce maximum metric (no transit traffic) |
+| `protocols ospf3 overload timeout` | leaf | &lt;seconds&gt; 60..1800 |  | Seconds after every start (default: always) |
+| `protocols ospf3 graceful-restart` | container |  |  | Graceful restart (RFC 3623) |
+| `protocols ospf3 graceful-restart disable` | flag |  |  | No graceful restart |
+| `protocols ospf3 graceful-restart restart-duration` | leaf | &lt;seconds&gt; 1..3600 | 120 | Seconds a restart may take |
+| `protocols ospf3 disable` | flag |  |  | Configured but not running |
+| `protocols bgp` | presence |  |  | BGP-4 (IPv4 and IPv6 unicast) |
+| `protocols bgp group <name>` | list | &lt;name&gt; |  | Neighbour group |
+| `protocols bgp group <name> type` | leaf | internal \\| external |  | Internal or external BGP |
+| `protocols bgp group <name> neighbor <ip-address>` | list | &lt;ip-address&gt; |  | Neighbour address |
+| `protocols bgp group <name> neighbor <ip-address> description` | leaf | &lt;text&gt; |  | Description |
+| `protocols bgp group <name> neighbor <ip-address> peer-as` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of the neighbour |
+| `protocols bgp group <name> neighbor <ip-address> local-address` | leaf | &lt;ip-address&gt; |  | Source address of the session |
+| `protocols bgp group <name> neighbor <ip-address> local-as` | leaf | &lt;asn&gt; 1..4294967295 |  | Local AS towards this neighbour (AS migration) |
+| `protocols bgp group <name> neighbor <ip-address> authentication-key` | leaf | &lt;secret&gt; |  | TCP MD5 signature secret |
+| `protocols bgp group <name> neighbor <ip-address> hold-time` | leaf | &lt;seconds&gt; 0..65535 |  | Hold time in seconds (0: no keepalives) |
+| `protocols bgp group <name> neighbor <ip-address> passive` | flag |  |  | Only accept connections, never connect |
+| `protocols bgp group <name> neighbor <ip-address> multihop` | presence |  |  | The neighbour is not directly connected |
+| `protocols bgp group <name> neighbor <ip-address> multihop ttl` | leaf | &lt;ttl&gt; 1..255 |  | TTL of the session's packets |
+| `protocols bgp group <name> neighbor <ip-address> family` | container |  |  | Address families |
+| `protocols bgp group <name> neighbor <ip-address> family inet` | container |  |  | IPv4 |
+| `protocols bgp group <name> neighbor <ip-address> family inet unicast` | flag |  |  | IPv4 unicast routes |
+| `protocols bgp group <name> neighbor <ip-address> family inet6` | container |  |  | IPv6 |
+| `protocols bgp group <name> neighbor <ip-address> family inet6 unicast` | flag |  |  | IPv6 unicast routes |
+| `protocols bgp group <name> neighbor <ip-address> import` | leaf-list | &lt;name&gt; |  | Import policies |
+| `protocols bgp group <name> neighbor <ip-address> export` | leaf-list | &lt;name&gt; |  | Export policies |
+| `protocols bgp group <name> neighbor <ip-address> remove-private` | flag |  |  | Remove private AS numbers towards external neighbours |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `protocols bgp group <name> neighbor <ip-address> graceful-restart` | container |  |  | Graceful restart (RFC 4724) |
+| `protocols bgp group <name> neighbor <ip-address> graceful-restart disable` | flag |  |  | No graceful restart |
+| `protocols bgp group <name> neighbor <ip-address> graceful-restart restart-time` | leaf | &lt;seconds&gt; 1..4095 | 120 | Seconds the neighbour keeps our routes |
+| `protocols bgp group <name> neighbor <ip-address> graceful-restart stale-routes-time` | leaf | &lt;seconds&gt; 1..3600 | 300 | Seconds we keep a restarting neighbour's routes |
+| `protocols bgp group <name> neighbor <ip-address> disable` | flag |  |  | Configured, but no session |
+| `protocols bgp group <name> multipath` | presence |  |  | Install equal BGP paths as ECMP |
+| `protocols bgp group <name> multipath multiple-as` | flag |  |  | Also across neighbouring ASes |
+| `protocols bgp group <name> cluster` | leaf | &lt;ipv4-address&gt; |  | Route reflector cluster id (the neighbours are clients) |
+| `protocols bgp group <name> description` | leaf | &lt;text&gt; |  | Description |
+| `protocols bgp group <name> peer-as` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of the neighbour |
+| `protocols bgp group <name> local-address` | leaf | &lt;ip-address&gt; |  | Source address of the session |
+| `protocols bgp group <name> local-as` | leaf | &lt;asn&gt; 1..4294967295 |  | Local AS towards this neighbour (AS migration) |
+| `protocols bgp group <name> authentication-key` | leaf | &lt;secret&gt; |  | TCP MD5 signature secret |
+| `protocols bgp group <name> hold-time` | leaf | &lt;seconds&gt; 0..65535 |  | Hold time in seconds (0: no keepalives) |
+| `protocols bgp group <name> passive` | flag |  |  | Only accept connections, never connect |
+| `protocols bgp group <name> multihop` | presence |  |  | The neighbour is not directly connected |
+| `protocols bgp group <name> multihop ttl` | leaf | &lt;ttl&gt; 1..255 |  | TTL of the session's packets |
+| `protocols bgp group <name> family` | container |  |  | Address families |
+| `protocols bgp group <name> family inet` | container |  |  | IPv4 |
+| `protocols bgp group <name> family inet unicast` | flag |  |  | IPv4 unicast routes |
+| `protocols bgp group <name> family inet6` | container |  |  | IPv6 |
+| `protocols bgp group <name> family inet6 unicast` | flag |  |  | IPv6 unicast routes |
+| `protocols bgp group <name> import` | leaf-list | &lt;name&gt; |  | Import policies |
+| `protocols bgp group <name> export` | leaf-list | &lt;name&gt; |  | Export policies |
+| `protocols bgp group <name> remove-private` | flag |  |  | Remove private AS numbers towards external neighbours |
+| `protocols bgp group <name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `protocols bgp group <name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `protocols bgp group <name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `protocols bgp group <name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `protocols bgp group <name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `protocols bgp group <name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `protocols bgp group <name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `protocols bgp group <name> graceful-restart` | container |  |  | Graceful restart (RFC 4724) |
+| `protocols bgp group <name> graceful-restart disable` | flag |  |  | No graceful restart |
+| `protocols bgp group <name> graceful-restart restart-time` | leaf | &lt;seconds&gt; 1..4095 | 120 | Seconds the neighbour keeps our routes |
+| `protocols bgp group <name> graceful-restart stale-routes-time` | leaf | &lt;seconds&gt; 1..3600 | 300 | Seconds we keep a restarting neighbour's routes |
+| `protocols bgp group <name> disable` | flag |  |  | Configured, but no session |
+| `protocols bgp disable` | flag |  |  | Configured but not running |
 | `protocols layer2-control` | container |  |  | Layer 2 protocol protection |
 | `protocols layer2-control bpdu-block` | container |  |  | Shut down ports that receive BPDUs |
 | `protocols layer2-control bpdu-block interface` | leaf-list | &lt;interface-name&gt; |  | Protected interfaces |
@@ -2083,6 +2496,9 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
 | `routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
 | `routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
+| `routing-options static route <prefix> preference` | leaf | &lt;preference&gt; 0..255 |  | Preference instead of 5 (lower wins) |
+| `routing-options router-id` | leaf | &lt;ipv4-address&gt; |  | Router id of OSPF and BGP |
+| `routing-options autonomous-system` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of BGP |
 | `routing-instances <instance-name>` | list | &lt;instance-name&gt; |  | Separate routing tables (VRFs); system management-instance names the management instance |
 | `routing-instances <instance-name> description` | leaf | &lt;text&gt; |  | Instance description |
 | `routing-instances <instance-name> instance-type` | leaf | virtual-router | virtual-router | Instance type |
@@ -2092,6 +2508,132 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `routing-instances <instance-name> routing-options static route <prefix>` | list | &lt;prefix&gt; |  | Destination network |
 | `routing-instances <instance-name> routing-options static route <prefix> next-hop` | leaf-list | &lt;ip-address&gt; |  | Gateway addresses (several: ECMP) |
 | `routing-instances <instance-name> routing-options static route <prefix> discard` | flag |  |  | Drop matching traffic silently |
+| `routing-instances <instance-name> routing-options static route <prefix> preference` | leaf | &lt;preference&gt; 0..255 |  | Preference instead of 5 (lower wins) |
+| `routing-instances <instance-name> routing-options router-id` | leaf | &lt;ipv4-address&gt; |  | Router id of OSPF and BGP |
+| `routing-instances <instance-name> routing-options autonomous-system` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of BGP |
+| `routing-instances <instance-name> protocols` | container |  |  | Routing protocols of this instance |
+| `routing-instances <instance-name> protocols ospf` | presence |  |  | OSPF version 2 (IPv4) |
+| `routing-instances <instance-name> protocols ospf area <area-id>` | list | &lt;area-id&gt; |  | OSPF area |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name>` | list | &lt;unit-name&gt; |  | Routed unit in this area |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> passive` | flag |  |  | Announce the subnets, form no neighbours |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> metric` | leaf | &lt;metric&gt; 1..65535 |  | Cost (default: reference-bandwidth / speed) |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> interface-type` | leaf | p2p |  | Network type |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> priority` | leaf | &lt;priority&gt; 0..255 | 128 | DR election priority (0: never DR) |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> hello-interval` | leaf | &lt;seconds&gt; 1..255 | 10 | Seconds between hellos |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> dead-interval` | leaf | &lt;seconds&gt; 2..65535 |  | Seconds without hellos until a neighbour is down (default 4 x hello) |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> retransmit-interval` | leaf | &lt;seconds&gt; 1..65535 | 5 | Seconds until an unacknowledged LSA is sent again |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> transit-delay` | leaf | &lt;seconds&gt; 1..65535 | 1 | Seconds added to LSA ages when flooding |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> authentication` | container |  |  | OSPF authentication |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> authentication simple-password` | leaf (excl. auth) | &lt;key&gt; |  | Plain-text password (8 characters at most) |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> authentication md5 <key-id>` | list (excl. auth) | &lt;key-id&gt; 0..255 |  | MD5 key (several: rollover) |
+| `routing-instances <instance-name> protocols ospf area <area-id> interface <unit-name> authentication md5 <key-id> key` | leaf | &lt;key&gt; |  | Shared secret |
+| `routing-instances <instance-name> protocols ospf export` | leaf-list | &lt;name&gt; |  | Policies redistributing routes into OSPF |
+| `routing-instances <instance-name> protocols ospf reference-bandwidth` | leaf | &lt;bandwidth&gt; | 100g | Bandwidth with cost 1 |
+| `routing-instances <instance-name> protocols ospf overload` | presence |  |  | Announce maximum metric (no transit traffic) |
+| `routing-instances <instance-name> protocols ospf overload timeout` | leaf | &lt;seconds&gt; 60..1800 |  | Seconds after every start (default: always) |
+| `routing-instances <instance-name> protocols ospf graceful-restart` | container |  |  | Graceful restart (RFC 3623) |
+| `routing-instances <instance-name> protocols ospf graceful-restart disable` | flag |  |  | No graceful restart |
+| `routing-instances <instance-name> protocols ospf graceful-restart restart-duration` | leaf | &lt;seconds&gt; 1..3600 | 120 | Seconds a restart may take |
+| `routing-instances <instance-name> protocols ospf disable` | flag |  |  | Configured but not running |
+| `routing-instances <instance-name> protocols ospf3` | presence |  |  | OSPFv3 (IPv6) |
+| `routing-instances <instance-name> protocols ospf3 area <area-id>` | list | &lt;area-id&gt; |  | OSPF area |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name>` | list | &lt;unit-name&gt; |  | Routed unit in this area |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> passive` | flag |  |  | Announce the subnets, form no neighbours |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> metric` | leaf | &lt;metric&gt; 1..65535 |  | Cost (default: reference-bandwidth / speed) |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> interface-type` | leaf | p2p |  | Network type |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> priority` | leaf | &lt;priority&gt; 0..255 | 128 | DR election priority (0: never DR) |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> hello-interval` | leaf | &lt;seconds&gt; 1..255 | 10 | Seconds between hellos |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> dead-interval` | leaf | &lt;seconds&gt; 2..65535 |  | Seconds without hellos until a neighbour is down (default 4 x hello) |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> retransmit-interval` | leaf | &lt;seconds&gt; 1..65535 | 5 | Seconds until an unacknowledged LSA is sent again |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> transit-delay` | leaf | &lt;seconds&gt; 1..65535 | 1 | Seconds added to LSA ages when flooding |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `routing-instances <instance-name> protocols ospf3 area <area-id> interface <unit-name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `routing-instances <instance-name> protocols ospf3 export` | leaf-list | &lt;name&gt; |  | Policies redistributing routes into OSPF |
+| `routing-instances <instance-name> protocols ospf3 reference-bandwidth` | leaf | &lt;bandwidth&gt; | 100g | Bandwidth with cost 1 |
+| `routing-instances <instance-name> protocols ospf3 overload` | presence |  |  | Announce maximum metric (no transit traffic) |
+| `routing-instances <instance-name> protocols ospf3 overload timeout` | leaf | &lt;seconds&gt; 60..1800 |  | Seconds after every start (default: always) |
+| `routing-instances <instance-name> protocols ospf3 graceful-restart` | container |  |  | Graceful restart (RFC 3623) |
+| `routing-instances <instance-name> protocols ospf3 graceful-restart disable` | flag |  |  | No graceful restart |
+| `routing-instances <instance-name> protocols ospf3 graceful-restart restart-duration` | leaf | &lt;seconds&gt; 1..3600 | 120 | Seconds a restart may take |
+| `routing-instances <instance-name> protocols ospf3 disable` | flag |  |  | Configured but not running |
+| `routing-instances <instance-name> protocols bgp` | presence |  |  | BGP-4 (IPv4 and IPv6 unicast) |
+| `routing-instances <instance-name> protocols bgp group <name>` | list | &lt;name&gt; |  | Neighbour group |
+| `routing-instances <instance-name> protocols bgp group <name> type` | leaf | internal \\| external |  | Internal or external BGP |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address>` | list | &lt;ip-address&gt; |  | Neighbour address |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> description` | leaf | &lt;text&gt; |  | Description |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> peer-as` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of the neighbour |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> local-address` | leaf | &lt;ip-address&gt; |  | Source address of the session |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> local-as` | leaf | &lt;asn&gt; 1..4294967295 |  | Local AS towards this neighbour (AS migration) |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> authentication-key` | leaf | &lt;secret&gt; |  | TCP MD5 signature secret |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> hold-time` | leaf | &lt;seconds&gt; 0..65535 |  | Hold time in seconds (0: no keepalives) |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> passive` | flag |  |  | Only accept connections, never connect |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> multihop` | presence |  |  | The neighbour is not directly connected |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> multihop ttl` | leaf | &lt;ttl&gt; 1..255 |  | TTL of the session's packets |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> family` | container |  |  | Address families |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> family inet` | container |  |  | IPv4 |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> family inet unicast` | flag |  |  | IPv4 unicast routes |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> family inet6` | container |  |  | IPv6 |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> family inet6 unicast` | flag |  |  | IPv6 unicast routes |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> import` | leaf-list | &lt;name&gt; |  | Import policies |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> export` | leaf-list | &lt;name&gt; |  | Export policies |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> remove-private` | flag |  |  | Remove private AS numbers towards external neighbours |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> graceful-restart` | container |  |  | Graceful restart (RFC 4724) |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> graceful-restart disable` | flag |  |  | No graceful restart |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> graceful-restart restart-time` | leaf | &lt;seconds&gt; 1..4095 | 120 | Seconds the neighbour keeps our routes |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> graceful-restart stale-routes-time` | leaf | &lt;seconds&gt; 1..3600 | 300 | Seconds we keep a restarting neighbour's routes |
+| `routing-instances <instance-name> protocols bgp group <name> neighbor <ip-address> disable` | flag |  |  | Configured, but no session |
+| `routing-instances <instance-name> protocols bgp group <name> multipath` | presence |  |  | Install equal BGP paths as ECMP |
+| `routing-instances <instance-name> protocols bgp group <name> multipath multiple-as` | flag |  |  | Also across neighbouring ASes |
+| `routing-instances <instance-name> protocols bgp group <name> cluster` | leaf | &lt;ipv4-address&gt; |  | Route reflector cluster id (the neighbours are clients) |
+| `routing-instances <instance-name> protocols bgp group <name> description` | leaf | &lt;text&gt; |  | Description |
+| `routing-instances <instance-name> protocols bgp group <name> peer-as` | leaf | &lt;asn&gt; 1..4294967295 |  | AS number of the neighbour |
+| `routing-instances <instance-name> protocols bgp group <name> local-address` | leaf | &lt;ip-address&gt; |  | Source address of the session |
+| `routing-instances <instance-name> protocols bgp group <name> local-as` | leaf | &lt;asn&gt; 1..4294967295 |  | Local AS towards this neighbour (AS migration) |
+| `routing-instances <instance-name> protocols bgp group <name> authentication-key` | leaf | &lt;secret&gt; |  | TCP MD5 signature secret |
+| `routing-instances <instance-name> protocols bgp group <name> hold-time` | leaf | &lt;seconds&gt; 0..65535 |  | Hold time in seconds (0: no keepalives) |
+| `routing-instances <instance-name> protocols bgp group <name> passive` | flag |  |  | Only accept connections, never connect |
+| `routing-instances <instance-name> protocols bgp group <name> multihop` | presence |  |  | The neighbour is not directly connected |
+| `routing-instances <instance-name> protocols bgp group <name> multihop ttl` | leaf | &lt;ttl&gt; 1..255 |  | TTL of the session's packets |
+| `routing-instances <instance-name> protocols bgp group <name> family` | container |  |  | Address families |
+| `routing-instances <instance-name> protocols bgp group <name> family inet` | container |  |  | IPv4 |
+| `routing-instances <instance-name> protocols bgp group <name> family inet unicast` | flag |  |  | IPv4 unicast routes |
+| `routing-instances <instance-name> protocols bgp group <name> family inet6` | container |  |  | IPv6 |
+| `routing-instances <instance-name> protocols bgp group <name> family inet6 unicast` | flag |  |  | IPv6 unicast routes |
+| `routing-instances <instance-name> protocols bgp group <name> import` | leaf-list | &lt;name&gt; |  | Import policies |
+| `routing-instances <instance-name> protocols bgp group <name> export` | leaf-list | &lt;name&gt; |  | Export policies |
+| `routing-instances <instance-name> protocols bgp group <name> remove-private` | flag |  |  | Remove private AS numbers towards external neighbours |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection` | container |  |  | BFD failure detection for the neighbours |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection minimum-interval` | leaf | &lt;ms&gt; 50..60000 | 300 | Transmit and receive interval in milliseconds |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection multiplier` | leaf | &lt;n&gt; 1..255 | 3 | Missed packets until the neighbour is down |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection authentication` | container |  |  | BFD authentication |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection authentication algorithm` | leaf | keyed-sha-1 \\| keyed-md5 |  | Authentication algorithm |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection authentication key` | leaf | &lt;secret&gt; |  | Shared secret |
+| `routing-instances <instance-name> protocols bgp group <name> bfd-liveness-detection authentication key-id` | leaf | &lt;key-id&gt; 0..255 | 1 | Key id |
+| `routing-instances <instance-name> protocols bgp group <name> graceful-restart` | container |  |  | Graceful restart (RFC 4724) |
+| `routing-instances <instance-name> protocols bgp group <name> graceful-restart disable` | flag |  |  | No graceful restart |
+| `routing-instances <instance-name> protocols bgp group <name> graceful-restart restart-time` | leaf | &lt;seconds&gt; 1..4095 | 120 | Seconds the neighbour keeps our routes |
+| `routing-instances <instance-name> protocols bgp group <name> graceful-restart stale-routes-time` | leaf | &lt;seconds&gt; 1..3600 | 300 | Seconds we keep a restarting neighbour's routes |
+| `routing-instances <instance-name> protocols bgp group <name> disable` | flag |  |  | Configured, but no session |
+| `routing-instances <instance-name> protocols bgp disable` | flag |  |  | Configured but not running |
 | `forwarding-options` | container |  |  | Forwarding options |
 | `forwarding-options analyzer <name>` | list | &lt;name&gt; |  | Port mirroring session |
 | `forwarding-options analyzer <name> input` | container |  |  | Traffic to mirror |
@@ -2102,4 +2644,49 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `forwarding-options analyzer <name> input egress interface` | leaf-list | &lt;interface-name&gt; |  | Source interfaces |
 | `forwarding-options analyzer <name> output` | container |  |  | Mirror destination |
 | `forwarding-options analyzer <name> output interface` | leaf | &lt;interface-name&gt; |  | Destination interface |
+| `policy-options` | container |  |  | Routing policies |
+| `policy-options prefix-list <name>` | list | &lt;name&gt; |  | List of prefixes |
+| `policy-options prefix-list <name> prefix` | leaf-list | &lt;prefix&gt; |  | Prefixes |
+| `policy-options community <name>` | list | &lt;name&gt; |  | Named community set |
+| `policy-options community <name> members` | leaf-list | &lt;community&gt; |  | Community members |
+| `policy-options as-path <name>` | list | &lt;name&gt; |  | Named AS path expression |
+| `policy-options as-path <name> path` | leaf | &lt;regex&gt; |  | Regular expression over AS numbers |
+| `policy-options policy-statement <name>` | list | &lt;name&gt; |  | Routing policy |
+| `policy-options policy-statement <name> term <name>` | list | &lt;name&gt; |  | Term (evaluated in order) |
+| `policy-options policy-statement <name> term <name> from` | container |  |  | Match conditions (all must match) |
+| `policy-options policy-statement <name> term <name> from protocol` | leaf-list | direct \\| local \\| static \\| ospf \\| ospf3 \\| bgp \\| aggregate |  | Route source |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix>` | list | &lt;prefix&gt; |  | Prefix match |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix> exact` | flag (excl. match) |  |  | Only this prefix |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix> orlonger` | flag (excl. match) |  |  | This prefix and more specific ones |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix> longer` | flag (excl. match) |  |  | Only more specific prefixes |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix> upto` | leaf (excl. match) | &lt;/n&gt; |  | Up to this prefix length (/n) |
+| `policy-options policy-statement <name> term <name> from route-filter <prefix> prefix-length-range` | leaf (excl. match) | &lt;/a-/b&gt; |  | Prefix lengths (/a-/b) |
+| `policy-options policy-statement <name> term <name> from prefix-list` | leaf-list | &lt;name&gt; |  | Exact prefixes of a prefix list |
+| `policy-options policy-statement <name> term <name> from prefix-list-filter <name>` | list | &lt;name&gt; |  | Prefix list with a match type |
+| `policy-options policy-statement <name> term <name> from prefix-list-filter <name> match` | leaf | exact \\| orlonger \\| longer |  | Match type |
+| `policy-options policy-statement <name> term <name> from community` | leaf-list | &lt;name&gt; |  | Communities (all members) |
+| `policy-options policy-statement <name> term <name> from as-path` | leaf-list | &lt;name&gt; |  | AS path expressions |
+| `policy-options policy-statement <name> term <name> from neighbor` | leaf-list | &lt;ip-address&gt; |  | BGP neighbour |
+| `policy-options policy-statement <name> term <name> from area` | leaf-list | &lt;area-id&gt; |  | OSPF area |
+| `policy-options policy-statement <name> term <name> from family` | leaf | inet \\| inet6 |  | Address family |
+| `policy-options policy-statement <name> term <name> from tag` | leaf | &lt;metric&gt; 0..4294967295 |  | OSPF external route tag |
+| `policy-options policy-statement <name> term <name> then` | container |  |  | Actions |
+| `policy-options policy-statement <name> term <name> then accept` | flag (excl. flow) |  |  | Accept (ends the evaluation) |
+| `policy-options policy-statement <name> term <name> then reject` | flag (excl. flow) |  |  | Reject (ends the evaluation) |
+| `policy-options policy-statement <name> term <name> then next` | leaf (excl. flow) | term \\| policy |  | Continue with the next term or policy |
+| `policy-options policy-statement <name> term <name> then metric` | leaf | &lt;metric&gt; 0..4294967295 |  | BGP MED / OSPF external metric |
+| `policy-options policy-statement <name> term <name> then metric-add` | leaf | &lt;metric&gt; 0..4294967295 |  | Add to the metric |
+| `policy-options policy-statement <name> term <name> then local-preference` | leaf | &lt;metric&gt; 0..4294967295 |  | BGP local preference |
+| `policy-options policy-statement <name> term <name> then preference` | leaf | &lt;preference&gt; 0..255 |  | Preference in this switch's RIB |
+| `policy-options policy-statement <name> term <name> then community` | container |  |  | Community changes |
+| `policy-options policy-statement <name> term <name> then community add` | leaf-list | &lt;name&gt; |  | Add the members of these communities |
+| `policy-options policy-statement <name> term <name> then community delete` | leaf-list | &lt;name&gt; |  | Remove the members of these communities |
+| `policy-options policy-statement <name> term <name> then community set` | leaf-list | &lt;name&gt; |  | Replace the communities |
+| `policy-options policy-statement <name> term <name> then as-path-prepend` | leaf | &lt;as-path&gt; |  | AS numbers to prepend ("65000 65000") |
+| `policy-options policy-statement <name> term <name> then next-hop` | leaf | self\|discard\|&lt;ip&gt; |  | Next hop |
+| `policy-options policy-statement <name> term <name> then external-type` | leaf | 1 \\| 2 |  | OSPF external type |
+| `policy-options policy-statement <name> term <name> then tag` | leaf | &lt;metric&gt; 0..4294967295 |  | OSPF external route tag |
+| `policy-options policy-statement <name> then` | container |  |  | Actions for routes no term terminated |
+| `policy-options policy-statement <name> then accept` | flag (excl. flow) |  |  | Accept |
+| `policy-options policy-statement <name> then reject` | flag (excl. flow) |  |  | Reject |
 <!-- END GENERATED STATEMENT INDEX -->
