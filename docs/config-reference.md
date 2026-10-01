@@ -1552,6 +1552,11 @@ already.
 * `show vxlan`: per VNI the VLAN, the VXLAN port, the remote VTEPs and the remote MACs learned.
 * `show vxlan remote-vtep`: per remote VTEP and member the route used to reach it (next hop and interface) or
   `no route`, and the frames sent and received.
+* **The stack tunnels' port**: the stack tunnels (5.2) use UDP 4789 inside the hidden stack instance. A port cannot be
+  used both there and in the default instance, so while VXLAN to remote VTEPs uses 4789 (`udp-port`, the default),
+  the stack tunnels use 4790. Switching VXLAN on or off re-creates the stack tunnels with the other port: traffic
+  between members pauses for a moment (well below a second) during that commit. E: a member whose version does not
+  know VXLAN (it would keep the old port; update it first).
 * Statements of earlier versions that no longer exist (`virtual-chassis member <id> vtep-address|underlay`,
   `switch-options vxlan mode|encryption`, `mclag … anycast-vtep`) are removed when a stored configuration is read,
   and logged. Encryption of the VXLAN underlay returns with Phase 10.

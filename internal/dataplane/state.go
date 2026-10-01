@@ -42,10 +42,14 @@ func (k Kind) String() string {
 // The stack tunnels and their hidden underlay instance (reference 5.2,
 // docs/stack-protocol.md "Stack tunnels").
 const (
-	StackVRF        = "swstack"
-	StackTable      = 999
-	StackUDPPort    = 4789
-	MaxStackPortMTU = model.MaxStackPortMTU
+	StackVRF     = "swstack"
+	StackTable   = 999
+	StackUDPPort = 4789
+	// StackUDPPortVXLAN is the stack tunnels' port while VXLAN to remote
+	// VTEPs uses 4789 (a socket in the default instance and one bound to
+	// the stack instance cannot share a port).
+	StackUDPPortVXLAN = 4790
+	MaxStackPortMTU   = model.MaxStackPortMTU
 )
 
 // StackAddr is the underlay address of a member.

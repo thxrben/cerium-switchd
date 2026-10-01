@@ -125,7 +125,11 @@ func createTunnel(name string, t TunnelOpts, mtu int) error {
 	data.AddRtAttr(nl.IFLA_VXLAN_GROUP, remote[:])
 	data.AddRtAttr(iflaVxlanTTL, nl.Uint8Attr(16))
 	data.AddRtAttr(nl.IFLA_VXLAN_LEARNING, nl.Uint8Attr(0))
-	data.AddRtAttr(nl.IFLA_VXLAN_PORT, htons16(StackUDPPort))
+	port := t.Port
+	if port == 0 {
+		port = StackUDPPort
+	}
+	data.AddRtAttr(nl.IFLA_VXLAN_PORT, htons16(uint16(port)))
 	data.AddRtAttr(iflaVxlanDF, nl.Uint8Attr(vxlanDFSet))
 	req.AddData(info)
 	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {

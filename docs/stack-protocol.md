@@ -128,7 +128,7 @@ on the stacking ports (config reference 5.2). All of it is fixed; nothing is con
   mesh topology; a route whose member becomes unreachable is removed. An `unreachable` default route (metric 1000000) makes lookups for an unreachable member fail inside the instance instead of falling through to the main
   table (which would send tunnel packets out of the management port).
 * **Tunnels**: per other switch member `m`, the VXLAN device `swvc<m>`: VNI `32 × min(self, m) + max(self, m)`,
-  local `169.254.64.<self>`, remote `169.254.64.<m>`, UDP 4789, lower device `swstack`, TTL 16, outer DF set,
+  local `169.254.64.<self>`, remote `169.254.64.<m>`, UDP 4789 (4790 while VXLAN to remote VTEPs uses 4789, reference 5.7), lower device `swstack`, TTL 16, outer DF set,
   no VXLAN learning, MTU = the stack MTU minus 58 (config reference 5.2). The device is a port of `swbr0`: `isolated`
   (never forwards to another tunnel), VLANs tagged, no PVID; learning on except towards the MC-LAG peer.
 * **Stacking port MTU**: the NIC maximum, at most 16044 (Linux MTU; frame 16058), set when the port is designated.

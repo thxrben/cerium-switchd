@@ -24,7 +24,10 @@ Or copy `switchd.lua` to Wireshark's personal plugin folder (`~/.local/lib/wires
 Capture on a switch (the frames are Ethernet frames on the stacking port):
 
 ```
-tcpdump -i <stacking-port> -w stk.pcap ether proto 0x88b5 or udp port 4789
+tcpdump -i <stacking-port> -w stk.pcap ether proto 0x88b5 or udp port 4789 or udp port 4790
+
+(The stack tunnels use UDP 4790 while VXLAN to remote VTEPs uses 4789. Wireshark takes 4790 for VXLAN-GPE: use
+*Decode As… → UDP port 4790 → VXLAN* for those captures.)
 ```
 
 Start the capture **before** the link comes up (restart switchd, or unplug and replug the cable): a stream that

@@ -265,7 +265,7 @@ func computeTunnels(cfg *model.Config, m int, s *State) {
 			VLANs:      map[uint16]VlanFlags{},
 			Isolated:   true,
 			NoLearning: x == peer,
-			Tunnel:     &TunnelOpts{VNI: TunnelVNI(m, x), Local: StackAddr(m), Remote: StackAddr(x)},
+			Tunnel:     &TunnelOpts{VNI: TunnelVNI(m, x), Local: StackAddr(m), Remote: StackAddr(x), Port: StackTunnelPort(cfg)},
 		}
 		for vid := range memberVLANs(cfg, x) {
 			if mine[vid] {
@@ -337,6 +337,20 @@ func computeVXLAN(cfg *model.Config, s *State) {
 			VLANs:  map[uint16]VlanFlags{uint16(v.ID): {PVID: true, Untagged: true}},
 			Tunnel: &TunnelOpts{VNI: v.VNI, Local: src, Port: cfg.Switch.VXLANPort}}
 	}
+}
+
+// StackTunnelPort is the UDP port of the stack tunnels (reference 5.2):
+// 4789, or 4790 while VXLAN to remote VTEPs uses 4789.
+func StackTunnelPort(cfg *model.Config) int {
+	if cfg.Switch.VTEPSource == "" || cfg.Switch.VXLANPort != StackUDPPort {
+		return StackUDPPort
+	}
+	for _, v := range cfg.VLANs {
+		if v.VNI != 0 {
+			return StackUDPPortVXLAN
+		}
+	}
+	return StackUDPPort
 }
 
 // VXLANRemotes returns the remote VTEPs of each VXLAN port (head-end

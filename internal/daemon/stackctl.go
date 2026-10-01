@@ -373,6 +373,13 @@ func (s *stackCtl) checkForMaster(from int, req json.RawMessage) (any, error) {
 	}
 	cfg, issues := model.Build(t, s.inv)
 	for _, u := range unknown {
+		if strings.HasPrefix(u, "switch-options vxlan") || strings.Contains(u, " vxlan") {
+			// VXLAN moves the stack tunnels to another port: a member that
+			// does not know it would keep the old one (reference 5.7).
+			issues = append(issues, model.Issue{Severity: model.Error, Path: u,
+				Msg: fmt.Sprintf("member %d (%s) does not support VXLAN; update it first", s.member, version.Version)})
+			continue
+		}
 		issues = append(issues, model.Issue{Severity: model.Warning, Path: u,
 			Msg: fmt.Sprintf("not supported by the version of member %d (%s); ignored there until it is updated", s.member, version.Version)})
 	}

@@ -97,7 +97,7 @@ func (k *Netlink) Read() (*State, error) {
 			ln.Kind = Other
 			if TunnelMember(a.Name) > 0 {
 				ln.Kind = Tunnel
-				ln.Tunnel = &TunnelOpts{VNI: v.VxlanId}
+				ln.Tunnel = &TunnelOpts{VNI: v.VxlanId, Port: v.Port}
 				ln.Tunnel.Local, _ = netip.AddrFromSlice(v.SrcAddr.To4())
 				ln.Tunnel.Remote, _ = netip.AddrFromSlice(v.Group.To4())
 			}
