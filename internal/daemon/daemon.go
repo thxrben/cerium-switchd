@@ -286,6 +286,10 @@ func Run(ctx context.Context, o Options) error {
 			mclag.setConfig(cfg)
 		}
 		go mclag.run(ctx)
+		if ctl != nil {
+			// Remote MACs of VXLAN learned by one member, for all (5.7).
+			go newVXLANSync(member, ctl, log).run(ctx)
+		}
 		var node *control.Node
 		if ctl != nil {
 			node = ctl.node

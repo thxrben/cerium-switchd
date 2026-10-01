@@ -79,10 +79,12 @@ func VXLANVNI(name string) int {
 // TunnelVNI is the VNI of the tunnel between two members.
 func TunnelVNI(a, b int) int { return 32*min(a, b) + max(a, b) }
 
-// TunnelOpts are the parameters of a stack tunnel.
+// TunnelOpts are the parameters of a stack tunnel, or of a VXLAN port to
+// the remote VTEPs (VXLANName: Remote unset, Port the UDP port).
 type TunnelOpts struct {
 	VNI           int
 	Local, Remote netip.Addr
+	Port          int // VXLAN ports only
 }
 
 // VlanFlags are the per-VLAN flags of a bridge port.
@@ -179,6 +181,12 @@ type L3 struct {
 	// ports and the stack tunnels. They never carry IP, not even an IPv6
 	// link-local address (reference 1.5).
 	NoIP []string
+	// VTEP is the stack's VXLAN source address on this member (reference
+	// 5.7; invalid: none), Remotes the remote VTEPs (accepted by the
+	// protection of the routed interfaces), VXLANPort their UDP port.
+	VTEP      netip.Addr
+	Remotes   []netip.Addr
+	VXLANPort int
 }
 
 // VRF is a routing instance in the kernel.

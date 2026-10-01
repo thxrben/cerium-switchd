@@ -20,7 +20,7 @@ const protectTable = "switchd_protect"
 // syncProtect installs the protection for the given interfaces (none:
 // removes it). The table is replaced atomically on every run, which also
 // repairs it if something else flushed the ruleset.
-func (k *Netlink) syncProtect(ifs []string) (bool, error) {
+func (k *Netlink) syncProtect(ifs []string, accept []string) (bool, error) {
 	slices.Sort(ifs)
 	var b strings.Builder
 	// Adding and then deleting makes the delete succeed whether or not the
@@ -37,10 +37,10 @@ func (k *Netlink) syncProtect(ifs []string) (bool, error) {
 		iifname != { %s } accept
 		ct state established,related accept
 		meta l4proto { icmp, ipv6-icmp } accept
-		counter drop
+%s		counter drop
 	}
 }
-`, protectTable, strings.Join(quoted, ", "))
+`, protectTable, strings.Join(quoted, ", "), acceptRules(accept))
 	}
 	rules := b.String()
 	k.protMu.Lock()
@@ -69,4 +69,12 @@ func (k *Netlink) syncProtect(ifs []string) (bool, error) {
 		k.protected = ""
 	}
 	return changed, nil
+}
+
+func acceptRules(rules []string) string {
+	var b strings.Builder
+	for _, r := range rules {
+		fmt.Fprintf(&b, "\t\t%s accept\n", r)
+	}
+	return b.String()
 }

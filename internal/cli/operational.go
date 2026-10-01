@@ -70,6 +70,8 @@ type Operational interface {
 	VLANMTUDrops() (map[int]uint64, error)
 	// Bottlenecks reports what limits this member's forwarding.
 	Bottlenecks() ([]diag.Finding, error)
+	// VXLAN reports the VXLAN ports and remote VTEPs (each member its own).
+	VXLAN() ([]VXLANStatus, error)
 	// Multicast reports IGMP/MLD snooping (each member its own).
 	Multicast() ([]McastStatus, error)
 	// DHCPBindings reports this member's DHCP clients.
@@ -1367,6 +1369,11 @@ func registerOperational() {
 				}},
 				stpCommand(),
 				lldpCommand(),
+				&command{name: "vxlan", help: "Show VXLAN ports and remote VTEPs", class: commit.ReadOnly,
+					run: func(sh *Shell, c *call) error { return sh.showVXLAN(c, false) }, sub: []*command{
+						{name: "remote-vtep", help: "How each member reaches the remote VTEPs", class: commit.ReadOnly,
+							run: func(sh *Shell, c *call) error { return sh.showVXLAN(c, true) }},
+					}},
 				snoopingCommand("igmp", "IGMP", false),
 				snoopingCommand("mld", "MLD", true),
 				&command{name: "dhcp", help: "Show DHCP information", class: commit.ReadOnly, sub: []*command{

@@ -72,6 +72,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.MCLAG()
 	case "multicast":
 		return o.Multicast()
+	case "vxlan":
+		return o.VXLAN()
 	case "stack-mtu":
 		return o.StackMTU()
 	}
@@ -294,6 +296,12 @@ func (s *stackOps) LACP() ([]lacp.BundleStatus, error) {
 		}
 	}
 	return out, err
+}
+
+// VXLAN collects every member's VXLAN state.
+func (s *stackOps) VXLAN() ([]cli.VXLANStatus, error) {
+	by, err := each[[]cli.VXLANStatus](s, opsRequest{Method: "vxlan"})
+	return rows(by), err
 }
 
 // Multicast collects every member's snooping state.

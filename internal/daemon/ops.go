@@ -229,14 +229,19 @@ func (o *ops) MACTable() ([]cli.MACEntry, error) {
 		names[v.ID] = v.Name
 	}
 	st, _ := o.kernel.Read()
+	vteps := vxlanVTEPs() // remote MACs: the VTEP they are behind
 	var out []cli.MACEntry
 	for _, e := range fdb {
 		kind := dataplane.Physical
 		if st != nil && st.Links[e.Port] != nil {
 			kind = st.Links[e.Port].Kind
 		}
+		iface := o.cfgName(e.Port, kind)
+		if vni := dataplane.VXLANVNI(e.Port); vni > 0 {
+			iface = "vtep " + orUnknown(vteps[fmt.Sprintf("%d %s", vni, e.MAC)])
+		}
 		out = append(out, cli.MACEntry{VLAN: e.VLAN, VLANName: names[e.VLAN], MAC: e.MAC,
-			Interface: o.cfgName(e.Port, kind), Static: e.Static, Age: e.AgeSeconds})
+			Interface: iface, Static: e.Static, Age: e.AgeSeconds})
 	}
 	return out, nil
 }
@@ -855,4 +860,90 @@ func (o *ops) Bottlenecks() ([]diag.Finding, error) {
 		ports = append(ports, diag.PortRef{Name: p.Name, Linux: p.Linux})
 	}
 	return diag.Analyze(o.diag.Collect(ports)), nil
+}
+
+// VXLAN is this member's VXLAN ports and how it reaches the remote VTEPs
+// (reference 5.7).
+func (o *ops) VXLAN() ([]cli.VXLANStatus, error) {
+	cfg := o.model()
+	st := cli.VXLANStatus{Member: o.member, Source: cfg.Switch.VTEPSource}
+	if st.Source == "" {
+		return []cli.VXLANStatus{st}, nil
+	}
+	remotes := dataplane.VXLANRemotes(cfg)
+	for _, name := range slices.Sorted(maps.Keys(cfg.VLANs)) {
+		v := cfg.VLANs[name]
+		if v.VNI == 0 {
+			continue
+		}
+		n := dataplane.VXLANName(v.VNI)
+		p := cli.VXLANPort{VNI: v.VNI, VLAN: v.ID, Port: n}
+		for _, r := range remotes[n] {
+			p.Remotes = append(p.Remotes, r.String())
+		}
+		if l, err := netlink.LinkByName(n); err == nil {
+			p.Up = l.Attrs().Flags&net.FlagUp != 0
+			if s := l.Attrs().Statistics; s != nil {
+				p.RxPackets, p.TxPackets = s.RxPackets, s.TxPackets
+			}
+			if ns, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE); err == nil {
+				for _, e := range ns {
+					if e.MasterIndex != 0 && e.Vlan != 0 && e.State&netlink.NUD_PERMANENT == 0 {
+						p.RemoteMACs++
+					}
+				}
+			}
+		}
+		st.Ports = append(st.Ports, p)
+	}
+	for _, r := range slices.Sorted(maps.Keys(cfg.Switch.RemoteVTEPs)) {
+		ip := net.ParseIP(r)
+		vr := cli.VTEPRoute{VTEP: r}
+		rs, err := netlink.RouteGet(ip)
+		if err != nil || len(rs) == 0 || rs[0].Type == unix.RTN_UNREACHABLE {
+			vr.NoRoute = true
+		} else {
+			if rs[0].Gw != nil {
+				vr.Via = rs[0].Gw.String()
+			}
+			if l, err := netlink.LinkByIndex(rs[0].LinkIndex); err == nil {
+				vr.Interface = l.Attrs().Name
+				if n, ok := o.names.Name(vr.Interface); ok {
+					vr.Interface = n
+				}
+			}
+		}
+		st.Routes = append(st.Routes, vr)
+	}
+	return []cli.VXLANStatus{st}, nil
+}
+
+// vxlanVTEPs maps "<vni> <mac>" to the remote VTEP of the VXLAN ports'
+// own tables.
+func vxlanVTEPs() map[string]string {
+	out := map[string]string{}
+	links, err := netlink.LinkList()
+	if err != nil {
+		return out
+	}
+	for _, l := range links {
+		vni := dataplane.VXLANVNI(l.Attrs().Name)
+		if vni == 0 {
+			continue
+		}
+		ns, _ := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+		for _, n := range ns {
+			if n.MasterIndex == 0 && n.IP != nil && len(n.HardwareAddr) == 6 {
+				out[fmt.Sprintf("%d %s", vni, n.HardwareAddr)] = n.IP.String()
+			}
+		}
+	}
+	return out
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "?"
+	}
+	return s
 }

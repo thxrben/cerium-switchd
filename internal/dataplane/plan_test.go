@@ -522,3 +522,36 @@ func TestComputeMulticast(t *testing.T) {
 		t.Errorf("snooping disabled but on: %+v", mc)
 	}
 }
+
+func TestComputeVXLAN(t *testing.T) {
+	cfg := &model.Config{
+		Members: map[int]*model.Member{1: {ID: 1}, 2: {ID: 2}},
+		Interfaces: map[string]*model.Interface{
+			"2/0/0": {Name: "2/0/0", Member: 2, MTU: 1514, Switching: true, Mode: "access", AccessVLAN: 20, VLANs: []int{20}},
+		},
+		VLANs:    map[string]*model.VLAN{"users": {Name: "users", ID: 10, VNI: 10010, MTU: 9014}, "other": {Name: "other", ID: 20}},
+		VLANByID: map[int]*model.VLAN{},
+		Switch: model.SwitchOptions{VTEPSource: "10.255.0.1", VXLANPort: 4789,
+			RemoteVTEPs: map[string][]int{"10.200.1.10": {10010}, "10.200.1.11": {10010}}},
+		IGMP: &model.Snooping{}, MLD: &model.Snooping{},
+	}
+	s, _ := Compute(cfg, 1, testNames)
+	vx := s.Links["swvx10010"]
+	if vx == nil || vx.Master != BridgeName || vx.MTU != 9000 || vx.VLANs[10] != (VlanFlags{PVID: true, Untagged: true}) ||
+		vx.Tunnel.Local.String() != "10.255.0.1" || vx.Tunnel.Port != 4789 {
+		t.Fatalf("vxlan port: %+v", vx)
+	}
+	// The VXLAN VLAN exists on every member, so the stack tunnel carries it.
+	if _, ok := s.Links["swvc2"].VLANs[10]; !ok {
+		t.Errorf("stack tunnel does not carry the VXLAN VLAN: %v", s.Links["swvc2"].VLANs)
+	}
+	if !s.L3.VTEP.IsValid() || len(s.L3.Remotes) != 2 {
+		t.Errorf("vtep: %v %v", s.L3.VTEP, s.L3.Remotes)
+	}
+	if r := VXLANRemotes(cfg)["swvx10010"]; len(r) != 2 {
+		t.Errorf("remotes: %v", r)
+	}
+	if mc := ComputeMulticast(cfg, s, testNames); !mc.Router["swvx10010"] {
+		t.Errorf("a VXLAN port is a multicast router port: %+v", mc.Router)
+	}
+}

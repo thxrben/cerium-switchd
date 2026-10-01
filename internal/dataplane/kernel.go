@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"reflect"
 	"slices"
 )
@@ -32,6 +33,8 @@ type Kernel interface {
 	SyncVLANMTU(mtus map[int]int) (bool, error)
 	// SyncMulticast converges IGMP/MLD snooping.
 	SyncMulticast(m *Multicast) (bool, error)
+	// SyncVXLAN converges the remote VTEPs of the VXLAN ports.
+	SyncVXLAN(remotes map[string][]netip.Addr) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -51,6 +54,7 @@ type Fake struct {
 	Mirrors   map[string]*MirrorPort
 	VLANMTU   map[int]int
 	Multicast *Multicast
+	Remotes   map[string][]netip.Addr
 }
 
 // NewFake returns a fake kernel holding a copy of s.
@@ -72,6 +76,12 @@ func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 }
 
 // SyncVLANMTU records the VLAN MTU filters.
+func (f *Fake) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
+	changed := !reflect.DeepEqual(f.Remotes, remotes)
+	f.Remotes = remotes
+	return changed, nil
+}
+
 func (f *Fake) SyncMulticast(m *Multicast) (bool, error) {
 	changed := !reflect.DeepEqual(f.Multicast, m)
 	f.Multicast = m

@@ -134,6 +134,33 @@ func createTunnel(name string, t TunnelOpts, mtu int) error {
 	return nil
 }
 
+// createVXLAN creates a VXLAN port towards the remote VTEPs (reference
+// 5.7): in the default instance, from the stack's VTEP address, learning
+// remote MACs from received frames (flood and learn).
+func createVXLAN(name string, t TunnelOpts, mtu int) error {
+	req := nl.NewNetlinkRequest(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK)
+	req.AddData(nl.NewIfInfomsg(unix.AF_UNSPEC))
+	req.AddData(nl.NewRtAttr(unix.IFLA_IFNAME, nl.ZeroTerminated(name)))
+	if mtu > 0 {
+		req.AddData(nl.NewRtAttr(unix.IFLA_MTU, nl.Uint32Attr(uint32(mtu))))
+	}
+	info := nl.NewRtAttr(unix.IFLA_LINKINFO, nil)
+	info.AddRtAttr(nl.IFLA_INFO_KIND, nl.NonZeroTerminated("vxlan"))
+	data := info.AddRtAttr(nl.IFLA_INFO_DATA, nil)
+	local := t.Local.As4()
+	data.AddRtAttr(nl.IFLA_VXLAN_ID, nl.Uint32Attr(uint32(t.VNI)))
+	data.AddRtAttr(nl.IFLA_VXLAN_LOCAL, local[:])
+	data.AddRtAttr(iflaVxlanTTL, nl.Uint8Attr(64))
+	data.AddRtAttr(nl.IFLA_VXLAN_LEARNING, nl.Uint8Attr(1))
+	data.AddRtAttr(nl.IFLA_VXLAN_PORT, htons16(uint16(t.Port)))
+	data.AddRtAttr(iflaVxlanDF, nl.Uint8Attr(vxlanDFSet))
+	req.AddData(info)
+	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {
+		return fmt.Errorf("%s: creating the VXLAN port: %w", name, err)
+	}
+	return nil
+}
+
 func htons16(v uint16) []byte { return []byte{byte(v >> 8), byte(v)} }
 
 // SyncStackUnderlay converges the underlay; it reports whether anything

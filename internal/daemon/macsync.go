@@ -235,9 +235,10 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 		delete(s.installed, key) // gone either way
 		return
 	}
-	if dataplane.TunnelMember(name) > 0 {
+	if dataplane.TunnelMember(name) > 0 || dataplane.VXLANVNI(name) > 0 {
 		// Learned from another member: each member learns those itself
-		// (the peer's tunnel does not learn).
+		// (the peer's tunnel does not learn). Remote VTEPs' addresses are
+		// distributed by vxlanSync.
 		return
 	}
 	origin := ""
@@ -477,8 +478,8 @@ func (s *macSync) rescan(v domainView) {
 			}
 			names[n.LinkIndex] = name
 		}
-		if name == "" || dataplane.TunnelMember(name) > 0 {
-			continue
+		if name == "" || dataplane.TunnelMember(name) > 0 || dataplane.VXLANVNI(name) > 0 {
+			continue // (VXLAN: every member installs those itself, vxlanSync)
 		}
 		origin := ""
 		if slices.Contains(v.bundles, name) {

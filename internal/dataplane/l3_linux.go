@@ -302,8 +302,23 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		note(true, netlink.LinkDel(ln))
 		delete(st.Tables, name)
 	}
-	c, err = k.syncProtect(protect)
+	// VXLAN from the remote VTEPs reaches the stack's VTEP address through
+	// the routed interfaces (reference 5.7).
+	var accept []string
+	if l.VTEP.IsValid() && len(l.Remotes) > 0 {
+		var rs []string
+		for _, r := range l.Remotes {
+			if r.Is4() {
+				rs = append(rs, r.String())
+			}
+		}
+		if len(rs) > 0 {
+			accept = append(accept, fmt.Sprintf("ip saddr { %s } ip daddr %s udp dport %d", strings.Join(rs, ", "), l.VTEP, l.VXLANPort))
+		}
+	}
+	c, err = k.syncProtect(protect, accept)
 	note(c, err)
+	note(syncVTEP(l.VTEP))
 	mgmtTable := 0
 	for _, v := range l.VRFs {
 		if v.Mgmt {

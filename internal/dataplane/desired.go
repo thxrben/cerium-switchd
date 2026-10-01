@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"mclag/internal/schema"
+	"net/netip"
 	"slices"
 
 	"mclag/internal/model"
@@ -106,6 +107,7 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 	}
 	computeTunnels(cfg, m, s)
 	s.L3 = computeL3(cfg, m, names, s)
+	computeVXLAN(cfg, s)
 	if mc := ComputeMulticast(cfg, s, names); !mc.Querier() {
 		s.L3.NoIP = []string{BridgeName} // (an MLD querier needs its link-local address)
 	}
@@ -294,6 +296,63 @@ func memberVLANs(cfg *model.Config, x int) map[int]bool {
 	for _, u := range cfg.L3 {
 		if u.IRB() && u.VLAN != 0 && len(u.AddrsOn(x)) > 0 {
 			out[u.VLAN] = true
+		}
+	}
+	// VXLAN VLANs are on every switch member: remote VTEPs may send to any
+	// of them (reference 5.7).
+	if cfg.Switch.VTEPSource != "" {
+		for _, v := range cfg.VLANs {
+			if v.VNI != 0 {
+				out[v.ID] = true
+			}
+		}
+	}
+	return out
+}
+
+// computeVXLAN adds the VXLAN ports of the member (reference 5.7): one per
+// VNI, untagged in its VLAN, from the stack's VTEP address.
+func computeVXLAN(cfg *model.Config, s *State) {
+	src, err := netip.ParseAddr(cfg.Switch.VTEPSource)
+	if err != nil || !src.Is4() {
+		return
+	}
+	s.L3.VTEP, s.L3.VXLANPort = src, cfg.Switch.VXLANPort
+	for _, r := range slices.Sorted(maps.Keys(cfg.Switch.RemoteVTEPs)) {
+		if a, err := netip.ParseAddr(r); err == nil {
+			s.L3.Remotes = append(s.L3.Remotes, a)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.VLANs)) {
+		v := cfg.VLANs[name]
+		if v.VNI == 0 {
+			continue
+		}
+		mtu := v.MTU
+		if mtu == 0 {
+			mtu = model.DefaultMTU
+		}
+		n := VXLANName(v.VNI)
+		s.Links[n] = &Link{Name: n, Kind: Tunnel, Up: true, MTU: model.LinuxMTU(mtu), Master: BridgeName,
+			VLANs:  map[uint16]VlanFlags{uint16(v.ID): {PVID: true, Untagged: true}},
+			Tunnel: &TunnelOpts{VNI: v.VNI, Local: src, Port: cfg.Switch.VXLANPort}}
+	}
+}
+
+// VXLANRemotes returns the remote VTEPs of each VXLAN port (head-end
+// replication of BUM traffic, reference 5.7).
+func VXLANRemotes(cfg *model.Config) map[string][]netip.Addr {
+	out := map[string][]netip.Addr{}
+	if cfg.Switch.VTEPSource == "" {
+		return out
+	}
+	for _, r := range slices.Sorted(maps.Keys(cfg.Switch.RemoteVTEPs)) {
+		a, err := netip.ParseAddr(r)
+		if err != nil {
+			continue
+		}
+		for _, vni := range cfg.Switch.RemoteVTEPs[r] {
+			out[VXLANName(vni)] = append(out[VXLANName(vni)], a)
 		}
 	}
 	return out

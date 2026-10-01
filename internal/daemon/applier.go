@@ -267,6 +267,12 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	} else if changed {
 		a.log.Log(context.Background(), level, "VLAN mtu filters updated", "reason", reason)
 	}
+	// VXLAN: the remote VTEPs of the VXLAN ports (reference 5.7).
+	if changed, err := a.kernel.SyncVXLAN(dataplane.VXLANRemotes(cfg)); err != nil {
+		a.log.Error("vxlan", "err", err)
+	} else if changed {
+		a.log.Log(context.Background(), level, "vxlan remote VTEPs updated", "reason", reason)
+	}
 	// IGMP/MLD snooping (reference 5.5): after the ports and VLANs exist.
 	if changed, err := a.kernel.SyncMulticast(dataplane.ComputeMulticast(cfg, desired, a.names.Linux)); err != nil {
 		a.log.Error("multicast snooping", "err", err)

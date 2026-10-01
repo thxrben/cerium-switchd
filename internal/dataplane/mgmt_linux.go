@@ -217,3 +217,44 @@ func Carrier(name string) bool {
 	ln, err := netlink.LinkByName(name)
 	return err == nil && ln.Attrs().RawFlags&unix.IFF_LOWER_UP != 0
 }
+
+// VTEPDevice holds the stack's VXLAN source address on every member
+// (reference 5.7).
+const VTEPDevice = "swvtep"
+
+// syncVTEP keeps the VTEP device with exactly addr (invalid: no device).
+func syncVTEP(addr netip.Addr) (bool, error) {
+	ln, _ := netlink.LinkByName(VTEPDevice)
+	if !addr.IsValid() {
+		if ln == nil {
+			return false, nil
+		}
+		return true, netlink.LinkDel(ln)
+	}
+	changed := false
+	if ln == nil {
+		if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: VTEPDevice}}); err != nil {
+			return false, fmt.Errorf("%s: %w", VTEPDevice, err)
+		}
+		var err error
+		if ln, err = netlink.LinkByName(VTEPDevice); err != nil {
+			return true, err
+		}
+		changed = true
+	}
+	if c, err := writeSysctl("/proc/sys/net/ipv6/conf/"+VTEPDevice+"/disable_ipv6", "1"); err == nil {
+		changed = changed || c
+	}
+	c, err := syncExactAddrs(ln, []netip.Prefix{netip.PrefixFrom(addr, addr.BitLen())})
+	changed = changed || c
+	if err != nil {
+		return changed, err
+	}
+	if ln.Attrs().Flags&net.FlagUp == 0 {
+		if err := netlink.LinkSetUp(ln); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}

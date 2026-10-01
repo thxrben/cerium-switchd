@@ -101,6 +101,11 @@ func (k *Netlink) Read() (*State, error) {
 				ln.Tunnel.Local, _ = netip.AddrFromSlice(v.SrcAddr.To4())
 				ln.Tunnel.Remote, _ = netip.AddrFromSlice(v.Group.To4())
 			}
+			if VXLANVNI(a.Name) > 0 {
+				ln.Kind = Tunnel
+				ln.Tunnel = &TunnelOpts{VNI: v.VxlanId, Port: v.Port}
+				ln.Tunnel.Local, _ = netip.AddrFromSlice(v.SrcAddr.To4())
+			}
 		case *netlink.Bond:
 			ln.Kind = Bond
 			ln.Bond = &BondOpts{
@@ -195,6 +200,9 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		return netlink.LinkModify(br)
 	case OpCreateTunnel:
+		if VXLANVNI(op.Link) > 0 {
+			return createVXLAN(op.Link, *op.Tunnel, op.MTU)
+		}
 		return createTunnel(op.Link, *op.Tunnel, op.MTU)
 	case OpCreateBond:
 		if op.Bond.Team() {

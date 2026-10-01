@@ -565,6 +565,12 @@ func (f *fakeOps) MCLAG() ([]MCLAGStatus, error) {
 	}, nil
 }
 
+func (f *fakeOps) VXLAN() ([]VXLANStatus, error) {
+	return []VXLANStatus{{Member: 1, Ports: []VXLANPort{{VNI: 10010, VLAN: 10, Port: "swvx10010", Up: true, Remotes: []string{"10.200.1.10"}, RemoteMACs: 3}},
+		Routes: []VTEPRoute{{VTEP: "10.200.1.10", Via: "10.99.0.0", Interface: "1/5/0"}}},
+		{Member: 2, Routes: []VTEPRoute{{VTEP: "10.200.1.10", NoRoute: true}}}}, nil
+}
+
 func (f *fakeOps) Bottlenecks() ([]diag.Finding, error) {
 	return []diag.Finding{{Severity: diag.Limit, Area: "PCIe", Subject: "card 1", Text: "the link carries 16 Gbit/s", Advice: "use another slot"}}, nil
 }
@@ -1047,4 +1053,17 @@ func TestShowBottlenecks(t *testing.T) {
 	su := newTester(t, e, "root", commit.SuperUser)
 	su.sh.env.Ops = &fakeOps{}
 	contains(t, su.ok("request system diagnose"), "card 1") // request: super-user (4.3)
+}
+
+func TestShowVXLAN(t *testing.T) {
+	e := newEngine(t)
+	ts := newTester(t, e, "alice", commit.SuperUser)
+	ts.ok("configure")
+	for _, l := range []string{"set vlans users vlan-id 10", "set vlans users vxlan vni 10010", "set switch-options vxlan source-address 10.255.0.1",
+		"set switch-options vxlan remote-vtep 10.200.1.10 vni 10010", "commit", "exit"} {
+		ts.ok(l)
+	}
+	ts.sh.env.Ops = &fakeOps{}
+	contains(t, ts.ok("show vxlan"), "Stack VTEP 10.255.0.1", "10010     users          swvx10010    1       up", "10.200.1.10 (3)")
+	contains(t, ts.ok("show vxlan remote-vtep"), "10.200.1.10      1       10.99.0.0, 1/5/0", "10.200.1.10      2       no route")
 }

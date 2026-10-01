@@ -171,3 +171,83 @@ func snoopingCommand(name, help string, ipv6 bool) *command {
 		}},
 	}}
 }
+
+// VXLANStatus is one member's VXLAN state (reference 5.7).
+type VXLANStatus struct {
+	Member int
+	Source string
+	Ports  []VXLANPort
+	Routes []VTEPRoute
+}
+
+// VXLANPort is one VNI's VXLAN port on a member.
+type VXLANPort struct {
+	VNI, VLAN  int
+	Port       string
+	Up         bool
+	Remotes    []string
+	RemoteMACs int
+	RxPackets  uint64
+	TxPackets  uint64
+}
+
+// VTEPRoute is how a member reaches a remote VTEP.
+type VTEPRoute struct {
+	VTEP, Via, Interface string // Via "": directly connected
+	NoRoute              bool
+}
+
+func (sh *Shell) showVXLAN(c *call, remotes bool) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	if sh.env.Ops == nil {
+		return errors.New("VXLAN information is not available")
+	}
+	sts, err := sh.env.Ops.VXLAN()
+	if err := partial(c, err); err != nil {
+		return err
+	}
+	cfg := sh.activeModel()
+	if cfg.Switch.VTEPSource == "" {
+		c.out.WriteString("VXLAN is not configured (switch-options vxlan source-address).\n")
+		return nil
+	}
+	slices.SortFunc(sts, func(a, b VXLANStatus) int { return a.Member - b.Member })
+	if remotes {
+		fmt.Fprintf(c.out, "%-16s %-7s %s\n", "Remote VTEP", "Member", "Reached via")
+		for _, st := range sts {
+			if c.only != nil && !slices.Contains(c.only, st.Member) {
+				continue
+			}
+			for _, r := range st.Routes {
+				via := "no route (cannot send to it)"
+				switch {
+				case r.NoRoute:
+				case r.Via == "":
+					via = "directly connected, " + r.Interface
+				default:
+					via = r.Via + ", " + r.Interface
+				}
+				fmt.Fprintf(c.out, "%-16s %-7d %s\n", r.VTEP, st.Member, via)
+			}
+		}
+		return nil
+	}
+	fmt.Fprintf(c.out, "Stack VTEP %s, UDP port %d\n\n", cfg.Switch.VTEPSource, cfg.Switch.VXLANPort)
+	fmt.Fprintf(c.out, "%-9s %-14s %-12s %-7s %-6s %-11s %-11s %s\n", "VNI", "VLAN", "Port", "Member", "Link", "Rx packets", "Tx packets", "Remote VTEPs (remote MACs)")
+	for _, st := range sts {
+		if c.only != nil && !slices.Contains(c.only, st.Member) {
+			continue
+		}
+		for _, p := range st.Ports {
+			vn := strconv.Itoa(p.VLAN)
+			if v := cfg.VLANByID[p.VLAN]; v != nil {
+				vn = v.Name
+			}
+			fmt.Fprintf(c.out, "%-9d %-14s %-12s %-7d %-6s %-11d %-11d %s (%d)\n", p.VNI, vn, p.Port, st.Member, upDown(p.Up),
+				p.RxPackets, p.TxPackets, orDash(strings.Join(p.Remotes, ", ")), p.RemoteMACs)
+		}
+	}
+	return nil
+}
