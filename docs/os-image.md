@@ -264,7 +264,7 @@ a **deadline** and the caller goes on with an error when it passes:
 | Calls | Deadline |
 |---|---|
 | file and disk access (configuration store, state files, bundles, the boot state) | 10 s per operation |
-| one read or write of a slot, a bundle or a USB stick (4 MiB; slots are synced every 64 MiB) | 60 s |
+| one read, write or sync of a slot, a bundle or a USB stick (4 MiB: slots are synced after every 4 MiB, bundles are written back to the disk 4 MiB at a time before they are renamed) | 60 s |
 | netlink requests, ethtool ioctls, `/sys` and `/proc` | 5 s |
 | system tools (`nft`, `ip`, `bridge`, `systemctl` …; killed with everything they started) | 10 s (account tools 1 min, `veritysetup` 1 min, a new image's configuration check 2 min) |
 | reading a slot's own headers for `show system software` / `show system version` | 5 s |

@@ -1,6 +1,7 @@
 package hwio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -123,5 +124,22 @@ func TestWatchResources(t *testing.T) {
 	close(release)
 	if e := <-evs; e != (ev{"/dev/sdz", false}) {
 		t.Fatalf("%+v", e)
+	}
+}
+
+func TestWriteBack(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "big")
+	data := make([]byte, 2*WriteBackChunk+123)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if err := os.WriteFile(name, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBackFile(name, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(name); !bytes.Equal(got, data) {
+		t.Fatal("contents changed")
 	}
 }

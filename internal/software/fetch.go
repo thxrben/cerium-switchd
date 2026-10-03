@@ -200,7 +200,7 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return err
 	}
-	if err := hwio.Sync(out); err != nil {
+	if err := hwio.WriteBack(out, SlotIODeadline); err != nil {
 		out.Close()
 		return err
 	}

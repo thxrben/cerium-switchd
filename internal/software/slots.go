@@ -255,12 +255,9 @@ func DetectSystem(cmdline, sysRoot, devRoot string) (*System, error) {
 	return sys, nil
 }
 
-// SlotIODeadline bounds one read, write or sync of a slot (4 MiB, or a
-// sync of syncEvery bytes on a slow USB stick).
+// SlotIODeadline bounds one read, write or sync of a slot or a bundle
+// (4 MiB on a slow disk or USB stick: at least ~70 KB/s).
 var SlotIODeadline = 60 * time.Second
-
-// syncEvery: the slot is synced after every so many bytes.
-const syncEvery = 64 << 20
 
 // Backup is the slot that is not running.
 func (s *System) Backup() string { return OtherSlot(s.Active) }
@@ -298,12 +295,13 @@ func (s *System) WriteSlot(slot string, img io.Reader, size int64, want string, 
 				return fmt.Errorf("writing slot %s: %w", slot, err)
 			}
 			n += int64(k)
-			// Synced as it goes, so no single sync has gigabytes to write.
-			if n%syncEvery < int64(k) {
-				if err := f.Sync(); err != nil {
-					f.Close()
-					return fmt.Errorf("writing slot %s: %w", slot, err)
-				}
+			// Every chunk is synced: no sync has more than 4 MiB to
+			// write (64 MiB took longer than the deadline on a slow
+			// disk), and the other partitions of the disk (/var) are
+			// not held back behind a long queue.
+			if err := f.Sync(); err != nil {
+				f.Close()
+				return fmt.Errorf("writing slot %s: %w", slot, err)
 			}
 			if progress != nil {
 				progress(n)

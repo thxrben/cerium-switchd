@@ -196,6 +196,11 @@ func (u *updater) receive(nc net.Conn) {
 		return
 	}
 	_, err = io.CopyN(hwio.Writer(f, software.SlotIODeadline), r, h.Size)
+	if err == nil {
+		// Written to the disk before the rename (which would otherwise
+		// write all of it at once).
+		err = hwio.WriteBack(f, software.SlotIODeadline)
+	}
 	f.Close()
 	if err == nil {
 		err = checkSum(tmp, h.SHA256)
@@ -552,6 +557,12 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 		if st.Daemon == "" {
 			return "", fmt.Errorf("member %d does not run the cerOS image (its update daemon does not answer)", id)
 		}
+	}
+	// The download is on the disk before the rename: replacing an
+	// existing bundle makes the rename write all of it at once (ext4),
+	// past its deadline on a slow disk.
+	if err := hwio.WriteBackFile(tmp, software.SlotIODeadline); err != nil {
+		return "", err
 	}
 	if err := hwio.Rename(tmp, u.pkgPath(v)); err != nil {
 		return "", err
