@@ -26,8 +26,13 @@ type SSH struct {
 	// removed.
 	LegacyDropIn string
 	ProcNet      string // /proc/net (listening sockets)
-	Log          *slog.Logger
-	Run          func(name string, args ...string) error
+	// PrivsepDir is sshd's privilege separation directory (/run/sshd). sshd
+	// refuses to run, and to check a configuration (sshd -t), without it;
+	// /run is empty at boot and the OS ssh.service that would create it is
+	// masked on the image. "": not created (tests).
+	PrivsepDir string
+	Log        *slog.Logger
+	Run        func(name string, args ...string) error
 }
 
 const sshUnit = "switchd-sshd.service"
@@ -184,6 +189,10 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 		if err := hwio.WriteFile(tmp, []byte(conf), 0o600); err != nil {
 			return err
 		}
+		if err := s.ensurePrivsepDir(); err != nil {
+			hwio.Remove(tmp)
+			return fmt.Errorf("ssh: %w", err)
+		}
 		if err := s.Run("sshd", "-t", "-f", tmp); err != nil {
 			hwio.Remove(tmp)
 			return fmt.Errorf("ssh: configuration rejected by sshd, previous one kept: %w", err)
@@ -226,6 +235,26 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 			return errors.Join(errors.New("ssh: CLI SSH server did not start"), err)
 		}
 		s.Log.Warn("ssh: CLI SSH server was not running; started")
+	}
+	return nil
+}
+
+// ensurePrivsepDir creates sshd's privilege separation directory: owned by
+// root and not writable by others, or sshd rejects it.
+func (s *SSH) ensurePrivsepDir() error {
+	if s.PrivsepDir == "" {
+		return nil
+	}
+	if err := hwio.MkdirAll(s.PrivsepDir, 0o755); err != nil {
+		return fmt.Errorf("privilege separation directory %s: %w", s.PrivsepDir, err)
+	}
+	if err := hwio.Chmod(s.PrivsepDir, 0o755); err != nil {
+		return fmt.Errorf("privilege separation directory %s: %w", s.PrivsepDir, err)
+	}
+	if os.Geteuid() == 0 {
+		if err := hwio.Chown(s.PrivsepDir, 0, 0); err != nil {
+			return fmt.Errorf("privilege separation directory %s: %w", s.PrivsepDir, err)
+		}
 	}
 	return nil
 }

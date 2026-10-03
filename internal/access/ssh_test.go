@@ -19,11 +19,19 @@ func TestCLISSH(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte("  sl  local_address rem_address   st\n   0: 00000000:0016 00000000:0000 0A\n"), 0o644)
 	var calls []string
 	failCheck, inactive := false, false
+	privsep := filepath.Join(dir, "run", "sshd")
 	s := &SSH{Dir: filepath.Join(dir, "etc"), UnitPath: filepath.Join(dir, "unit"), ProcNet: filepath.Join(dir, "net"),
-		LegacyDropIn: filepath.Join(dir, "legacy.conf"),
-		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LegacyDropIn: filepath.Join(dir, "legacy.conf"), PrivsepDir: privsep,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Run: func(n string, a ...string) error {
 			calls = append(calls, n+" "+strings.Join(a, " "))
+			// sshd -t fails without its privilege separation directory
+			// (on the image /run is empty at boot).
+			if n == "sshd" {
+				if st, err := os.Stat(privsep); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
+					return errors.New("Missing privilege separation directory: " + privsep)
+				}
+			}
 			if n == "sshd" && failCheck {
 				return errors.New("bad")
 			}
