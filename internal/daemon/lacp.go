@@ -2,12 +2,12 @@ package daemon
 
 import (
 	"crypto/sha256"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
@@ -79,9 +79,9 @@ func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool),
 type teamKernel struct{}
 
 func (teamKernel) SetPort(bundle, port string, on bool) error {
-	return dataplane.SetTeamPort(bundle, port, on)
+	return netdev.SetTeamPort(bundle, port, on)
 }
 
 func (teamKernel) PortsEnabled(bundle string) (map[string]bool, error) {
-	return dataplane.TeamPortsEnabled(bundle)
+	return netdev.TeamPortsEnabled(bundle)
 }

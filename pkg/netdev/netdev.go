@@ -1,6 +1,7 @@
-// Package netdev reads the state of network devices (link, carrier,
-// addresses) for the switch's programs. It only reads; switchd is the one
-// program that changes devices (reference 1.9).
+// Package netdev is the switch programs' access to network devices: their
+// state (link, carrier) and low-level operations (team devices). Which
+// program may change what follows the ownership table of reference 1.9:
+// switchd creates devices, cer-lacpd enables team ports.
 package netdev
 
 import (

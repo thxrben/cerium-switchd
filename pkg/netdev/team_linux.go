@@ -1,6 +1,6 @@
 //go:build linux
 
-package dataplane
+package netdev
 
 import (
 	"encoding/binary"
@@ -180,7 +180,7 @@ func trimNul(b []byte) []byte {
 }
 
 // createTeam creates an LACP bundle device.
-func createTeam(name, hashPolicy string) error {
+func CreateTeam(name, hashPolicy string) error {
 	if err := netlink.LinkAdd(&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{Name: name}, LinkType: "team"}); err != nil {
 		return fmt.Errorf("%s: creating team device: %w", name, err)
 	}
@@ -192,10 +192,10 @@ func createTeam(name, hashPolicy string) error {
 		netlink.LinkDel(l)
 		return err
 	}
-	return setTeamHash(l.Attrs().Index, hashPolicy)
+	return SetTeamHash(l.Attrs().Index, hashPolicy)
 }
 
-func setTeamHash(team int, policy string) error {
+func SetTeamHash(team int, policy string) error {
 	prog, err := hashProgramBytes(policy)
 	if err != nil {
 		return err
@@ -206,7 +206,7 @@ func setTeamHash(team int, policy string) error {
 }
 
 // teamHashPolicy reads the hash policy back ("" if it is not ours).
-func teamHashPolicy(team int) string {
+func TeamHashPolicy(team int) string {
 	opts, err := teamGetOptions(team)
 	if err != nil {
 		return ""
@@ -219,7 +219,7 @@ func teamHashPolicy(team int) string {
 
 // teamPortInit makes a port that was just added to a team carry nothing
 // until LACP says so (it is still down when this runs).
-func teamPortInit(team, port int) error {
+func TeamPortInit(team, port int) error {
 	return teamSetOptions(team,
 		teamOption{name: "enabled", port: port, typ: nlaFlag, data: flag(false)},
 		teamOption{name: "user_linkup_enabled", port: port, typ: nlaFlag, data: flag(true)},

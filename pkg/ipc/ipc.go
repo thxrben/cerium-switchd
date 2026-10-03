@@ -236,6 +236,10 @@ func Listen(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A listener that closes must not remove the path: a new instance of
+	// the program (or a test's next one) may already listen there. A stale
+	// socket file is replaced by the next Listen.
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
 	if err := os.Chmod(path, 0o600); err != nil {
 		l.Close()
 		return nil, err

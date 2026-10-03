@@ -4,6 +4,7 @@ package dataplane
 
 import (
 	"fmt"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"net"
 	"net/netip"
 	"os"
@@ -117,7 +118,7 @@ func (k *Netlink) Read() (*State, error) {
 		default:
 			if l.Type() == "team" {
 				ln.Kind = Bond
-				ln.Bond = &BondOpts{Mode: "lacp", HashPolicy: teamHashPolicy(a.Index)}
+				ln.Bond = &BondOpts{Mode: "lacp", HashPolicy: netdev.TeamHashPolicy(a.Index)}
 				break
 			}
 			if l.Type() == "device" && k.physical(a.Name) {
@@ -206,7 +207,7 @@ func (k *Netlink) Apply(op Op) error {
 		return createTunnel(op.Link, *op.Tunnel, op.MTU)
 	case OpCreateBond:
 		if op.Bond.Team() {
-			return createTeam(op.Link, op.Bond.HashPolicy)
+			return netdev.CreateTeam(op.Link, op.Bond.HashPolicy)
 		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link})
 		bondAttrs(b, op.Bond)
@@ -219,7 +220,7 @@ func (k *Netlink) Apply(op Op) error {
 	switch op.Kind {
 	case OpSetBond:
 		if l.Type() == "team" {
-			return setTeamHash(l.Attrs().Index, op.Bond.HashPolicy)
+			return netdev.SetTeamHash(l.Attrs().Index, op.Bond.HashPolicy)
 		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link, Index: l.Attrs().Index})
 		bondAttrs(b, op.Bond)
@@ -243,7 +244,7 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		if m.Type() == "team" {
 			// Carries nothing until LACP says so (the port is still down).
-			return teamPortInit(m.Attrs().Index, l.Attrs().Index)
+			return netdev.TeamPortInit(m.Attrs().Index, l.Attrs().Index)
 		}
 		return nil
 	case OpSetMTU:

@@ -1,4 +1,4 @@
-package dataplane
+package netdev
 
 import (
 	"encoding/binary"
