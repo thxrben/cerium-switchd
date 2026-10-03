@@ -159,12 +159,20 @@ func TestSession(t *testing.T) {
 		t.Errorf("help: %q %v", help, err)
 	}
 	srv.Notify(context.Background(), "automatic rollback: test")
-	exec("show") // round trip so the notification has arrived
-	h.mu.Lock()
-	if len(h.notes) != 1 {
-		t.Errorf("notifications: %v", h.notes)
+	// The notice travels on its own (it may arrive after the reply to a
+	// command sent meanwhile): wait for it.
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		h.mu.Lock()
+		n := len(h.notes)
+		h.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if n > 1 || time.Now().After(deadline) {
+			t.Fatalf("notifications: %d", n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	h.mu.Unlock()
 	if m := exec("exit configuration-mode"); m.Exit {
 		t.Error("leaving configuration mode ended the session")
 	}

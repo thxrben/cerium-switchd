@@ -49,7 +49,7 @@ type ops struct {
 	// svc reaches the cer- daemons (reference 1.9).
 	svc     *service
 	updater *updater
-	mclag   *mclagCtl
+	mclag   *mclagClient
 	maint   *maintCtl
 	stp     *rstpCtl
 	// sup starts and watches the cer- daemons (nil: not managed here).
@@ -774,7 +774,7 @@ func (o *ops) MCLAG() ([]cli.MCLAGStatus, error) {
 	if o.mclag == nil {
 		return nil, errors.New("MC-LAG is not running (dry-run mode?)")
 	}
-	return o.mclag.status()
+	return o.mclag.Status()
 }
 
 func (o *ops) SwitchMaster(to int, user string) error {

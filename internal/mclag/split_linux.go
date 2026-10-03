@@ -1,6 +1,6 @@
 //go:build linux
 
-package dataplane
+package mclag
 
 import (
 	"bytes"
@@ -10,9 +10,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
 
 // mclagTable holds the MC-LAG split horizon (reference 5.6): nothing that
@@ -94,33 +91,4 @@ func SyncSplitHorizon(sh SplitHorizon) error {
 	}
 	splitLast = text
 	return nil
-}
-
-// FlushLearned removes the MAC addresses the bridge learned on dev (not
-// static or externally installed ones). MC-LAG flushes the peer's tunnel when
-// a leg changes: addresses behind a leg that went away were learned there
-// and are found again by flooding.
-func FlushLearned(dev string) (int, error) {
-	l, err := netlink.LinkByName(dev)
-	if err != nil {
-		return 0, err
-	}
-	neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, e := range neighs {
-		// Bridge entries name the bridge as master (dumps carry no
-		// NTF_MASTER flag); learned ones are neither local, static nor
-		// installed from outside.
-		if e.MasterIndex == 0 || e.State&(unix.NUD_PERMANENT|unix.NUD_NOARP) != 0 || e.Flags&netlink.NTF_EXT_LEARNED != 0 {
-			continue
-		}
-		e.Flags |= netlink.NTF_MASTER // delete from the bridge's table
-		if err := netlink.NeighDel(&e); err == nil {
-			n++
-		}
-	}
-	return n, nil
 }

@@ -1,4 +1,4 @@
-package daemon
+package mclag
 
 import (
 	"context"
@@ -16,23 +16,22 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/thxrben/cerium-switchd/internal/cli"
-	"github.com/thxrben/cerium-switchd/internal/dataplane"
-	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/names"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 )
 
-// mclagCtl runs this member's side of its MC-LAG domain (reference 5.6):
+// Controller runs this member's side of its MC-LAG domain (reference 5.6):
 // it exchanges leg states with the peer over the stacking plane, holds
 // legs out of their bundles when needed and keeps the split horizon.
-type mclagCtl struct {
+type Controller struct {
 	member  int
-	lacp    lacpControl
-	stack   *stackCtl // nil: no stack control (no peer communication)
+	lacp    LACP
+	stack   Stack // nil: no stack (no peer communication)
 	sysRoot string
 	log     *slog.Logger
 
 	mu         sync.Mutex
-	cfg        *model.Config
+	cfg        *Config
 	peerLegs   map[string]bool
 	peerSeen   time.Time
 	peerKnown  bool
@@ -95,9 +94,10 @@ const mclagJoinTimeout = 300 * time.Millisecond
 // before the secondary holds it.
 const mclagInconsistentAfter = 10 * time.Second
 
-// mclagRejoinAfter: how long legs held for the minority rule wait after the
-// peer is reachable again (the MAC tables are exchanged at once).
-const mclagRejoinAfter = 2 * time.Second
+// RejoinAfter: how long legs held for the minority rule (or maintenance
+// mode) wait after the peer is reachable again (the MAC tables are
+// exchanged at once).
+const RejoinAfter = 2 * time.Second
 
 // legsMsg is the leg state a member sends its peer.
 type legsMsg struct {
@@ -133,43 +133,12 @@ type mcastKey struct {
 // (learned entries expire after the membership interval, 260 s).
 const mclagGroupRefresh = 60 * time.Second
 
-// bundleFacts is what both members must agree on for an MC-LAG bundle
-// (reference 5.6, consistency checks).
-func bundleFacts(cfg *model.Config, name string) string {
-	i := cfg.Interfaces[name]
-	if i == nil {
-		return ""
-	}
-	vlans := slices.Clone(i.VLANs)
-	slices.Sort(vlans)
-	mode := "static"
-	if i.LACP != nil {
-		mode = "passive"
-		if i.LACP.Active {
-			mode = "active"
-		}
-		if i.LACP.Fast {
-			mode += ",fast"
-		} else {
-			mode += ",slow"
-		}
-	}
-	sw := "no switching"
-	switch {
-	case i.Switching && i.Mode == "trunk":
-		sw = fmt.Sprintf("trunk vlans %v native %d", vlans, i.NativeVLAN)
-	case i.Switching:
-		sw = fmt.Sprintf("access vlan %d", i.AccessVLAN)
-	}
-	return fmt.Sprintf("%s, mtu %d, lacp %s", sw, i.MTU, mode)
-}
-
-func newMCLAG(member int, rt lacpControl, stack *stackCtl, log *slog.Logger) *mclagCtl {
-	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{},
+func New(member int, rt LACP, stack Stack, log *slog.Logger) *Controller {
+	m := &Controller{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{},
 		differs: map[string]time.Time{}, drainFrom: map[string]time.Time{}}
 	m.macs = newMACSync(m, log)
 	if stack != nil {
-		stack.node.Handle("mclag-legs", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("mclag-legs", func(from int, req json.RawMessage) (any, error) {
 			var l legsMsg
 			if err := json.Unmarshal(req, &l); err != nil {
 				return nil, err
@@ -188,7 +157,7 @@ func newMCLAG(member int, rt lacpControl, stack *stackCtl, log *slog.Logger) *mc
 			m.mu.Unlock()
 			return nil, nil
 		})
-		stack.node.Handle("mclag-leg-joining", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("mclag-leg-joining", func(from int, req json.RawMessage) (any, error) {
 			var j joiningMsg
 			if err := json.Unmarshal(req, &j); err != nil {
 				return nil, err
@@ -215,35 +184,35 @@ func newMCLAG(member int, rt lacpControl, stack *stackCtl, log *slog.Logger) *mc
 }
 
 // setConfig takes the applied configuration.
-func (m *mclagCtl) setConfig(cfg *model.Config) {
+func (m *Controller) SetConfig(cfg *Config) {
 	m.mu.Lock()
 	m.cfg = cfg
 	m.mu.Unlock()
 }
 
 // domainLocked returns this member's MC-LAG pair (nil: no MC-LAG bundle).
-func (m *mclagCtl) domainLocked() *model.Pair {
+func (m *Controller) domainLocked() *Pair {
 	if m.cfg == nil {
 		return nil
 	}
-	return m.cfg.PairOf(m.member)
+	return m.cfg.Pair
 }
 
-func (m *mclagCtl) peerOf(d *model.Pair) int { return d.Peer(m.member) }
+func (m *Controller) peerOf(d *Pair) int { return d.Peer(m.member) }
 
 // bundlesLocked lists the pair's MC-LAG bundles.
-func (m *mclagCtl) bundlesLocked(d *model.Pair) []string {
+func (m *Controller) bundlesLocked(d *Pair) []string {
 	out := slices.Clone(d.Bundles)
 	sort.Strings(out)
 	return out
 }
 
 // primary: the member with the higher mastership-priority, ties: lower id.
-func (m *mclagCtl) primaryLocked(d *model.Pair) bool {
+func (m *Controller) primaryLocked(d *Pair) bool {
 	peer := m.peerOf(d)
 	prio := func(id int) int {
-		if mem := m.cfg.Members[id]; mem != nil {
-			return mem.Priority
+		if p, ok := m.cfg.Priority[id]; ok {
+			return p
 		}
 		return 128
 	}
@@ -253,17 +222,17 @@ func (m *mclagCtl) primaryLocked(d *model.Pair) bool {
 
 // peerReachable: the peer is reachable over the stack (then its stack
 // tunnel works too: both run over the same stacking links).
-func (m *mclagCtl) peerReachable(peer int) bool {
-	return m.stack != nil && slices.Contains(m.stack.node.Mesh.Reachable(), peer)
+func (m *Controller) peerReachable(peer int) bool {
+	return m.stack != nil && slices.Contains(m.stack.Reachable(), peer)
 }
 
 // reachLocked counts the switch members this member reaches (itself
 // included) and the switch members of the stack.
-func (m *mclagCtl) reachLocked() (reach, total int) {
-	members := m.cfg.SwitchMembers()
+func (m *Controller) reachLocked() (reach, total int) {
+	members := m.cfg.SwitchMembers
 	var up []int
 	if m.stack != nil {
-		up = m.stack.node.Mesh.Reachable()
+		up = m.stack.Reachable()
 	}
 	for _, id := range members {
 		if id == m.member || slices.Contains(up, id) {
@@ -275,17 +244,17 @@ func (m *mclagCtl) reachLocked() (reach, total int) {
 
 // thirdsLocked returns the stack tunnels to the switch members outside the
 // domain.
-func (m *mclagCtl) thirdsLocked(d *model.Pair) []string {
+func (m *Controller) thirdsLocked(d *Pair) []string {
 	var out []string
-	for _, id := range m.cfg.SwitchMembers() {
+	for _, id := range m.cfg.SwitchMembers {
 		if !slices.Contains(d.Members[:], id) {
-			out = append(out, dataplane.TunnelName(id))
+			out = append(out, names.Tunnel(id))
 		}
 	}
 	return out
 }
 
-func (m *mclagCtl) run(ctx context.Context) {
+func (m *Controller) Run(ctx context.Context) {
 	go m.macs.run(ctx)
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
@@ -299,7 +268,7 @@ func (m *mclagCtl) run(ctx context.Context) {
 	}
 }
 
-func (m *mclagCtl) step(now time.Time) {
+func (m *Controller) step(now time.Time) {
 	m.mu.Lock()
 	d := m.domainLocked()
 	if d == nil {
@@ -310,7 +279,7 @@ func (m *mclagCtl) step(now time.Time) {
 		for b := range held {
 			m.lacp.SetHold(b, false)
 		}
-		if err := dataplane.SyncSplitHorizon(dataplane.SplitHorizon{}); err != nil {
+		if err := SyncSplitHorizon(SplitHorizon{}); err != nil {
 			m.log.Warn("mclag: split horizon", "err", err)
 		}
 		return
@@ -331,7 +300,7 @@ func (m *mclagCtl) step(now time.Time) {
 		for _, v := range legs {
 			up = up || v
 		}
-		if delay := m.cfg.MCLAG.DelayRestore; !up && delay > 0 {
+		if delay := m.cfg.DelayRestore; !up && delay > 0 {
 			m.restoreEnd = now.Add(time.Duration(delay) * time.Second)
 		}
 	}
@@ -351,7 +320,7 @@ func (m *mclagCtl) step(now time.Time) {
 		if m.backSince.IsZero() {
 			m.backSince = now
 		}
-		if now.Sub(m.backSince) < mclagRejoinAfter {
+		if now.Sub(m.backSince) < RejoinAfter {
 			reason = "rejoining (MAC tables are exchanged)"
 		} else {
 			m.minority = false
@@ -372,14 +341,14 @@ func (m *mclagCtl) step(now time.Time) {
 	newHolds := map[string]string{}
 	facts := map[string]string{}
 	for _, b := range bundles {
-		facts[b] = bundleFacts(m.cfg, b)
+		facts[b] = m.cfg.Facts[b]
 		switch pf, ok := m.peerFacts[b]; {
 		case reason == "maintenance mode" && legs[b] && reachable && m.peerLegs[b]:
 			// Planned: the peer hears first that this leg goes away, then
 			// it leaves the bundle.
 			if m.drainFrom[b].IsZero() {
 				m.drainFrom[b] = now
-				m.leaveTo.Store(b, dataplane.TunnelName(peer))
+				m.leaveTo.Store(b, names.Tunnel(peer))
 			}
 			if now.Sub(m.drainFrom[b]) >= mclagDrainNotice || m.holds[b] != "" {
 				newHolds[b] = reason
@@ -453,7 +422,7 @@ func (m *mclagCtl) step(now time.Time) {
 		}
 	}
 	domain := d.ID
-	peerTunnel := dataplane.TunnelName(peer)
+	peerTunnel := names.Tunnel(peer)
 	// Moved addresses stay while a leg drains or is held for maintenance
 	// and the peer is there to carry them.
 	maintHeld := (m.maint || now.Before(m.maintEnd) || len(m.drainFrom) > 0) && reachable
@@ -466,7 +435,7 @@ func (m *mclagCtl) step(now time.Time) {
 		if h {
 			// Maintenance: this member's traffic towards the partner takes
 			// the peer's leg before the partner stops collecting here.
-			m.beforeLeave(b)
+			m.BeforeLeave(b)
 		}
 		m.lacp.SetHold(b, h)
 		if h {
@@ -478,7 +447,7 @@ func (m *mclagCtl) step(now time.Time) {
 	m.installSplit(now)
 	m.releaseMoved(maintHeld)
 	if flush {
-		if n, err := dataplane.FlushLearned(peerTunnel); err == nil && n > 0 {
+		if n, err := netdev.FlushLearned(peerTunnel); err == nil && n > 0 {
 			m.log.Info("mclag: leg changed, addresses learned on the peer's tunnel flushed", "count", n)
 		}
 	}
@@ -496,7 +465,7 @@ func (m *mclagCtl) step(now time.Time) {
 	if send {
 		go func() {
 			groups := localGroups(bundles)
-			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready, Groups: groups, Draining: draining}, time.Second); err != nil {
+			if _, err := m.stack.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready, Groups: groups, Draining: draining}, time.Second); err != nil {
 				m.log.Debug("mclag: leg state to the peer", "err", err)
 			}
 		}()
@@ -507,7 +476,7 @@ func (m *mclagCtl) step(now time.Time) {
 // installs it. Computing and installing happen under shMu, so the last
 // installation always reflects the latest state (a joining announcement
 // cannot be overwritten by an older computation).
-func (m *mclagCtl) installSplit(now time.Time) {
+func (m *Controller) installSplit(now time.Time) {
 	m.shMu.Lock()
 	defer m.shMu.Unlock()
 	m.mu.Lock()
@@ -522,9 +491,9 @@ func (m *mclagCtl) installSplit(now time.Time) {
 		Draining: m.peerDraining, Primary: m.primaryLocked(d), Reachable: m.peerReachable(peer)}
 	split, drain, df := in.compute(now)
 	m.split = split
-	sh := dataplane.SplitHorizon{Peer: dataplane.TunnelName(peer), Bundles: split, Draining: drain, Thirds: m.thirdsLocked(d), DF: df}
+	sh := SplitHorizon{Peer: names.Tunnel(peer), Bundles: split, Draining: drain, Thirds: m.thirdsLocked(d), DF: df}
 	m.mu.Unlock()
-	if err := dataplane.SyncSplitHorizon(sh); err != nil {
+	if err := SyncSplitHorizon(sh); err != nil {
 		m.log.Warn("mclag: split horizon", "err", err)
 	}
 }
@@ -572,7 +541,7 @@ func (in splitInput) compute(now time.Time) (split, drain, df []string) {
 // (lacp.Runtime.BeforeJoin) and waits until the peer filters, at most
 // mclagJoinTimeout. Peers of earlier versions do not know the message;
 // they learn the leg state with the next regular message, as before.
-func (m *mclagCtl) beforeJoin(bundle string) {
+func (m *Controller) BeforeJoin(bundle string) {
 	m.mu.Lock()
 	d := m.domainLocked()
 	if d == nil || !slices.Contains(d.Bundles, bundle) || m.stack == nil {
@@ -585,7 +554,7 @@ func (m *mclagCtl) beforeJoin(bundle string) {
 	if !reachable {
 		return
 	}
-	if _, err := m.stack.node.Call(peer, "mclag-leg-joining", joiningMsg{Bundle: bundle}, mclagJoinTimeout); err != nil {
+	if _, err := m.stack.Call(peer, "mclag-leg-joining", joiningMsg{Bundle: bundle}, mclagJoinTimeout); err != nil {
 		m.log.Debug("mclag: joining leg announced without answer", "bundle", bundle, "err", err)
 	}
 }
@@ -607,7 +576,7 @@ func mapsEqualBool(a, b map[string]bool) bool {
 // (lacp.Runtime.BeforeLeave): traffic to those devices goes through the
 // peer's leg at once instead of being lost until the addresses are learned
 // again.
-func (m *mclagCtl) beforeLeave(bundle string) {
+func (m *Controller) BeforeLeave(bundle string) {
 	v, ok := m.leaveTo.Load(bundle)
 	if !ok {
 		return
@@ -645,7 +614,7 @@ func (m *mclagCtl) beforeLeave(bundle string) {
 // releaseMoved removes the addresses beforeLeave moved, once no leg of
 // this member drains and the peer's tunnel is no longer the way (the leg is
 // back, or the peer is gone): the bridge learns them again or floods.
-func (m *mclagCtl) releaseMoved(draining bool) {
+func (m *Controller) releaseMoved(draining bool) {
 	if draining {
 		return
 	}
@@ -673,18 +642,18 @@ func (m *mclagCtl) releaseMoved(draining bool) {
 	}
 }
 
-// setMaintenance holds (on) or, after mclagRejoinAfter, releases the legs.
-func (m *mclagCtl) setMaintenance(on bool, now time.Time) {
+// setMaintenance holds (on) or, after RejoinAfter, releases the legs.
+func (m *Controller) SetMaintenance(on bool, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.maint && !on {
-		m.maintEnd = now.Add(mclagRejoinAfter)
+		m.maintEnd = now.Add(RejoinAfter)
 	}
 	m.maint = on
 }
 
 // legsUp lists this member's MC-LAG legs that carry traffic.
-func (m *mclagCtl) legsUp() []string {
+func (m *Controller) LegsUp() []string {
 	m.mu.Lock()
 	d := m.domainLocked()
 	var bundles []string
@@ -704,8 +673,8 @@ func (m *mclagCtl) legsUp() []string {
 
 // drainBlockers explains why holding this member's legs would cut traffic:
 // a bundle whose leg on the peer is down, or a peer in maintenance mode.
-func (m *mclagCtl) drainBlockers(draining []int) []string {
-	up := m.legsUp()
+func (m *Controller) DrainBlockers(draining []int) []string {
+	up := m.LegsUp()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d := m.domainLocked()
@@ -729,7 +698,7 @@ func (m *mclagCtl) drainBlockers(draining []int) []string {
 }
 
 // status is "show mclag".
-func (m *mclagCtl) status() ([]cli.MCLAGStatus, error) {
+func (m *Controller) Status() ([]Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d := m.domainLocked()
@@ -737,17 +706,17 @@ func (m *mclagCtl) status() ([]cli.MCLAGStatus, error) {
 		return nil, nil
 	}
 	peer := m.peerOf(d)
-	st := cli.MCLAGStatus{Pair: d.ID, Member: m.member, Peer: peer, Primary: m.primaryLocked(d),
+	st := Status{Pair: d.ID, Member: m.member, Peer: peer, Primary: m.primaryLocked(d),
 		PeerReachable: m.peerReachable(peer), PeerKnown: m.peerKnown, PeerSeen: m.peerSeen}
 	st.Reach, st.Members = m.reachLocked()
 	legs := m.lacp.Legs()
 	for _, b := range m.bundlesLocked(d) {
 		pl, ok := m.peerLegs[b]
-		st.Bundles = append(st.Bundles, cli.MCLAGBundle{Name: b, LocalUp: legs[b], PeerUp: pl, PeerKnown: m.peerKnown && ok,
+		st.Bundles = append(st.Bundles, Bundle{Name: b, LocalUp: legs[b], PeerUp: pl, PeerKnown: m.peerKnown && ok,
 			SplitHorizon: slices.Contains(m.split, b), Hold: m.holds[b],
-			Facts: bundleFacts(m.cfg, b), PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
+			Facts: m.cfg.Facts[b], PeerFacts: m.peerFacts[b], DiffersSince: m.differs[b]})
 	}
-	return []cli.MCLAGStatus{st}, nil
+	return []Status{st}, nil
 }
 
 func groupsEqual(list []mcastKey, set map[mcastKey]bool) bool {
@@ -765,7 +734,7 @@ func groupsEqual(list []mcastKey, set map[mcastKey]bool) bool {
 // localGroups lists the groups this member learned on its MC-LAG bundles
 // (not those it installed for the peer: those are refreshed from the peer).
 func localGroups(bundles []string) []mcastKey {
-	es, _, err := dataplane.McastGroups()
+	es, _, err := netdev.McastGroups(names.Bridge)
 	if err != nil {
 		return nil
 	}
@@ -784,11 +753,11 @@ func localGroups(bundles []string) []mcastKey {
 // installGroups installs (refreshes) the peer's groups on this member's
 // legs (reference 5.5). Groups the peer no longer reports are left to
 // expire.
-func (m *mclagCtl) installGroups(keys []mcastKey) {
+func (m *Controller) installGroups(keys []mcastKey) {
 	defer m.groups.busy.Store(false)
 	applied := map[mcastKey]bool{}
 	for _, k := range keys {
-		if err := dataplane.McastRefresh(k.Bundle, k.VID, k.Group); err != nil {
+		if err := netdev.McastRefresh(names.Bridge, k.Bundle, k.VID, k.Group); err != nil {
 			m.log.Debug("mclag: multicast group of the peer", "bundle", k.Bundle, "group", k.Group, "err", err)
 		}
 		applied[k] = true // (a failure is retried with the next refresh)

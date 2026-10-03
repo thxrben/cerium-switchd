@@ -139,3 +139,14 @@ type LACPConfig struct {
 	// (switchd, or cer-mclagd).
 	Hooks string `json:"hooks,omitempty"`
 }
+
+// MC-LAG (cer-mclagd) for switchd: switchd publishes TopicMaintenance (key
+// "": whether this member is in maintenance mode, reference 5.2) and calls
+// MethodLegsUp (-> the bundles whose leg here carries traffic) and
+// MethodDrainBlockers (request: members in maintenance mode -> reasons why
+// draining would cut traffic).
+const (
+	TopicMaintenance    = "maintenance"
+	MethodLegsUp        = "mclag.legs-up"
+	MethodDrainBlockers = "mclag.drain-blockers"
+)

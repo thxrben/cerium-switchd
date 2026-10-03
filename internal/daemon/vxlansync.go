@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -245,3 +246,5 @@ func vxlanDel(m vxlanMAC) error {
 	}
 	return e2
 }
+
+func macOf(n *netlink.Neigh) string { return strings.ToLower(n.HardwareAddr.String()) }

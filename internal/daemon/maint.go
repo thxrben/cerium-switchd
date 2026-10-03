@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/mclag"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ type maintCtl struct {
 	file  string // present: in maintenance mode (survives a reboot)
 	mesh  *mesh.Mesh
 	node  *control.Node // nil: no stack control
-	mclag *mclagCtl
+	mclag mclagAPI
 	cfg   func() *model.Config
 	self  int
 	log   *slog.Logger
@@ -39,7 +40,7 @@ type maintCtl struct {
 	on bool
 }
 
-func newMaint(stateDir string, self int, m *mesh.Mesh, node *control.Node, mc *mclagCtl, cfg func() *model.Config, log *slog.Logger) *maintCtl {
+func newMaint(stateDir string, self int, m *mesh.Mesh, node *control.Node, mc mclagAPI, cfg func() *model.Config, log *slog.Logger) *maintCtl {
 	x := &maintCtl{file: filepath.Join(stateDir, "maintenance"), mesh: m, node: node, mclag: mc, cfg: cfg, self: self, log: log}
 	if node != nil {
 		node.Handle("drain", func(from int, req json.RawMessage) (any, error) {
@@ -64,7 +65,7 @@ func (x *maintCtl) set(on bool) {
 		x.mesh.SetDraining(on)
 	}
 	if x.mclag != nil {
-		x.mclag.setMaintenance(on, time.Now())
+		x.mclag.SetMaintenance(on, time.Now())
 	}
 }
 
@@ -80,7 +81,7 @@ func (x *maintCtl) enter(force, persist bool, user string) (string, error) {
 	if !force {
 		var blockers []string
 		if x.mclag != nil {
-			blockers = x.mclag.drainBlockers(x.draining())
+			blockers = x.mclag.DrainBlockers(x.draining())
 		}
 		if len(blockers) > 0 {
 			return "", errors.New(strings.Join(blockers, "; ") + " ('force' enters anyway)")
@@ -106,7 +107,7 @@ func (x *maintCtl) enter(force, persist bool, user string) (string, error) {
 	for {
 		up = nil
 		if x.mclag != nil {
-			up = x.mclag.legsUp()
+			up = x.mclag.LegsUp()
 		}
 		if len(up) == 0 || time.Now().After(deadline) {
 			break
@@ -139,7 +140,7 @@ func (x *maintCtl) exit(user string) (string, error) {
 	}
 	x.set(false)
 	x.log.Warn("maintenance mode exited", "facility", "change-log", "user", user)
-	return fmt.Sprintf("maintenance mode exited; MC-LAG legs rejoin in %s\n", mclagRejoinAfter), nil
+	return fmt.Sprintf("maintenance mode exited; MC-LAG legs rejoin in %s\n", mclag.RejoinAfter), nil
 }
 
 // drainForShutdown drains before a reboot, halt or power-off (best effort).
@@ -237,4 +238,11 @@ func (x *maintCtl) singleHomed() []string {
 func systemStopping() bool {
 	out, _ := exec.Command("systemctl", "is-system-running").Output()
 	return strings.TrimSpace(string(out)) == "stopping"
+}
+
+// mclagAPI is what maintenance mode needs from MC-LAG (cer-mclagd).
+type mclagAPI interface {
+	SetMaintenance(on bool, now time.Time)
+	DrainBlockers(draining []int) []string
+	LegsUp() []string
 }

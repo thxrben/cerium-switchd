@@ -38,7 +38,6 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/packaging"
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
-	"github.com/thxrben/cerium-switchd/pkg/ipc"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 )
 
@@ -183,28 +182,11 @@ func Run(ctx context.Context, o Options) error {
 		LegacyDropIn: "/etc/ssh/sshd_config.d/switchd.conf", ProcNet: "/proc/net", Log: log, Run: command}
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
-	var mclagRef atomic.Pointer[mclagCtl]
-	// LACP runs in cer-lacpd (reference 1.9); MC-LAG decides holds and is
-	// called before legs join or leave.
+	// LACP runs in cer-lacpd, MC-LAG in cer-mclagd (reference 1.9); switchd
+	// follows the legs (RSTP) and port states (LLDP).
 	lacpRT := newLACPLink(services)
-	services.ep.Handle(svc.MethodBeforeJoin, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var b string
-		json.Unmarshal(raw, &b)
-		if m := mclagRef.Load(); m != nil {
-			m.beforeJoin(b)
-		}
-		return nil, nil
-	})
-	services.ep.Handle(svc.MethodBeforeLeave, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var b string
-		json.Unmarshal(raw, &b)
-		if m := mclagRef.Load(); m != nil {
-			m.beforeLeave(b)
-		}
-		return nil, nil
-	})
+	mclag := mclagClient{services}
 	sysMAC := lacpSystemMAC(vc.StackID())
-	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	// Routing (reference 5.8): the RIB with connected and static routes, and
@@ -218,14 +200,14 @@ func Run(ctx context.Context, o Options) error {
 		rt.Apply(cfg)
 		// LACP bundles: after the data plane created their devices.
 		if !o.DryRun {
-			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, sysMAC), Hooks: svc.Switchd})
+			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, sysMAC), Hooks: "cer-mclagd"})
 		}
 		if !o.DryRun {
 			sys, ports := lldpConfig(cfg, member, names, chassisMAC, vc.IsPort)
 			services.setConfig("cer-lldpd", lldp.Config{System: sys, Ports: ports})
 		}
-		if mclag != nil {
-			mclag.setConfig(cfg)
+		if !o.DryRun {
+			services.setConfig("cer-mclagd", mclagConfig(cfg, member))
 		}
 		if stp != nil {
 			stp.setConfig(cfg)
@@ -333,12 +315,6 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 	if !o.DryRun {
-		mclag = newMCLAG(member, lacpRT, ctl, log)
-		mclagRef.Store(mclag)
-		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
-			mclag.setConfig(cfg)
-		}
-		go mclag.run(ctx)
 		if ctl != nil {
 			// Remote MACs of VXLAN learned by one member, for all (5.7).
 			go newVXLANSync(member, ctl, log).run(ctx)
@@ -390,7 +366,7 @@ func Run(ctx context.Context, o Options) error {
 	liveOps := &ops{restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
-		liveOps.mclag = mclag
+		liveOps.mclag = &mclag
 		liveOps.svc = services
 		var node *control.Node
 		if ctl != nil {

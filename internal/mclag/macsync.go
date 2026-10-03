@@ -1,4 +1,4 @@
-package daemon
+package mclag
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/names"
 )
 
 // MAC synchronisation between the two members of an MC-LAG pair
@@ -48,7 +48,7 @@ const (
 )
 
 type macSync struct {
-	m   *mclagCtl
+	m   *Controller
 	log *slog.Logger
 
 	mu        sync.Mutex
@@ -69,25 +69,25 @@ type forgetMsg struct {
 	Keys []macKey `json:"keys"`
 }
 
-func newMACSync(m *mclagCtl, log *slog.Logger) *macSync {
+func newMACSync(m *Controller, log *slog.Logger) *macSync {
 	s := &macSync{m: m, log: log, local: map[macKey]string{}, remote: map[macKey]string{}, installed: map[macKey]string{},
 		adds: map[macKey]string{}, dels: map[macKey]bool{}}
 	if m.stack != nil {
-		m.stack.node.Handle("macsync", func(from int, req json.RawMessage) (any, error) {
+		m.stack.Handle("macsync", func(from int, req json.RawMessage) (any, error) {
 			var msg macMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
 			}
 			return nil, s.receive(from, msg)
 		})
-		m.stack.node.Handle("mac-forget", func(from int, req json.RawMessage) (any, error) {
+		m.stack.Handle("mac-forget", func(from int, req json.RawMessage) (any, error) {
 			var msg forgetMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
 			}
 			n := 0
 			for _, k := range msg.Keys {
-				if forgetLearned(dataplane.TunnelName(from), k) == nil {
+				if forgetLearned(names.Tunnel(from), k) == nil {
 					n++
 				}
 			}
@@ -135,12 +135,12 @@ func (s *macSync) view() (domainView, bool) {
 		return domainView{}, false
 	}
 	v := domainView{domain: d.ID, peer: m.peerOf(d), bundles: m.bundlesLocked(d), legs: map[string]bool{}}
-	v.peerTunnel = dataplane.TunnelName(v.peer)
+	v.peerTunnel = names.Tunnel(v.peer)
 	for b, up := range m.curLegs {
 		v.legs[b] = up
 	}
 	v.reach = m.peerReachable(v.peer)
-	for _, id := range m.cfg.SwitchMembers() {
+	for _, id := range m.cfg.SwitchMembers {
 		if !slices.Contains(d.Members[:], id) {
 			v.thirds = append(v.thirds, id)
 		}
@@ -202,7 +202,7 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 	if n.Family != unix.AF_BRIDGE || n.Vlan == 0 || n.MasterIndex == 0 || len(n.HardwareAddr) != 6 {
 		return
 	}
-	if br, err := netlink.LinkByIndex(n.MasterIndex); err != nil || br.Attrs().Name != dataplane.BridgeName {
+	if br, err := netlink.LinkByIndex(n.MasterIndex); err != nil || br.Attrs().Name != names.Bridge {
 		return
 	}
 	if n.State&(unix.NUD_PERMANENT|unix.NUD_NOARP) != 0 {
@@ -235,7 +235,7 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 		delete(s.installed, key) // gone either way
 		return
 	}
-	if dataplane.TunnelMember(name) > 0 || dataplane.VXLANVNI(name) > 0 {
+	if names.TunnelMember(name) > 0 || names.VXLANVNI(name) > 0 {
 		// Learned from another member: each member learns those itself
 		// (the peer's tunnel does not learn). Remote VTEPs' addresses are
 		// distributed by vxlanSync.
@@ -389,7 +389,7 @@ func (s *macSync) tick(now time.Time) {
 	if len(forget) > 0 && s.m.stack != nil {
 		for _, id := range v.thirds {
 			go func() {
-				if _, err := s.m.stack.node.Call(id, "mac-forget", forgetMsg{Keys: forget}, 2*time.Second); err != nil {
+				if _, err := s.m.stack.Call(id, "mac-forget", forgetMsg{Keys: forget}, 2*time.Second); err != nil {
 					s.log.Debug("mclag: addresses to forget", "member", id, "err", err)
 				}
 			}()
@@ -397,7 +397,7 @@ func (s *macSync) tick(now time.Time) {
 	}
 	if msg.Domain != 0 {
 		go func() {
-			if _, err := s.m.stack.node.Call(v.peer, "macsync", msg, 2*time.Second); err != nil {
+			if _, err := s.m.stack.Call(v.peer, "macsync", msg, 2*time.Second); err != nil {
 				s.log.Debug("mclag: addresses to the peer", "err", err)
 				// Resend everything once the peer accepts it again.
 				s.mu.Lock()
@@ -456,7 +456,7 @@ func fdbDel(dev string, k macKey) error {
 
 // rescan rebuilds the table of locally learned addresses from the bridge.
 func (s *macSync) rescan(v domainView) {
-	br, err := netlink.LinkByName(dataplane.BridgeName)
+	br, err := netlink.LinkByName(names.Bridge)
 	if err != nil {
 		return
 	}
@@ -464,21 +464,21 @@ func (s *macSync) rescan(v domainView) {
 	if err != nil {
 		return
 	}
-	names := map[int]string{}
+	devs := map[int]string{}
 	local := map[macKey]string{}
 	for _, n := range neighs {
 		if n.MasterIndex != br.Attrs().Index || n.Vlan == 0 || len(n.HardwareAddr) != 6 ||
 			n.State&(unix.NUD_PERMANENT|unix.NUD_NOARP) != 0 || n.Flags&netlink.NTF_EXT_LEARNED != 0 {
 			continue
 		}
-		name, ok := names[n.LinkIndex]
+		name, ok := devs[n.LinkIndex]
 		if !ok {
 			if l, err := netlink.LinkByIndex(n.LinkIndex); err == nil {
 				name = l.Attrs().Name
 			}
-			names[n.LinkIndex] = name
+			devs[n.LinkIndex] = name
 		}
-		if name == "" || dataplane.TunnelMember(name) > 0 || dataplane.VXLANVNI(name) > 0 {
+		if name == "" || names.TunnelMember(name) > 0 || names.VXLANVNI(name) > 0 {
 			continue // (VXLAN: every member installs those itself, vxlanSync)
 		}
 		origin := ""

@@ -19,10 +19,11 @@ import (
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	devnames "github.com/thxrben/cerium-switchd/internal/names"
 )
 
 // BridgeName is the switch bridge owned by switchd.
-const BridgeName = "swbr0"
+const BridgeName = devnames.Bridge
 
 // Kind of a link.
 type Kind int
@@ -56,29 +57,17 @@ const (
 func StackAddr(member int) netip.Addr { return netip.AddrFrom4([4]byte{169, 254, 64, byte(member)}) }
 
 // TunnelName is the kernel name of the stack tunnel to a member.
-func TunnelName(member int) string { return fmt.Sprintf("swvc%d", member) }
+func TunnelName(member int) string { return devnames.Tunnel(member) }
 
 // TunnelMember returns the member a stack tunnel leads to (0: not a tunnel).
-func TunnelMember(name string) int {
-	var m int
-	if _, err := fmt.Sscanf(name, "swvc%d", &m); err != nil || TunnelName(m) != name {
-		return 0
-	}
-	return m
-}
+func TunnelMember(name string) int { return devnames.TunnelMember(name) }
 
 // VXLANName is the kernel name of a member's VXLAN port of a VNI towards
 // the remote VTEPs (reference 5.7).
-func VXLANName(vni int) string { return fmt.Sprintf("swvx%d", vni) }
+func VXLANName(vni int) string { return devnames.VXLAN(vni) }
 
 // VXLANVNI returns the VNI of a VXLAN port (0: not one).
-func VXLANVNI(name string) int {
-	var v int
-	if _, err := fmt.Sscanf(name, "swvx%d", &v); err != nil || VXLANName(v) != name {
-		return 0
-	}
-	return v
-}
+func VXLANVNI(name string) int { return devnames.VXLANVNI(name) }
 
 // TunnelVNI is the VNI of the tunnel between two members.
 func TunnelVNI(a, b int) int { return 32*min(a, b) + max(a, b) }

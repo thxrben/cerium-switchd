@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"maps"
 	"os/exec"
 	"slices"
@@ -178,107 +179,15 @@ func (k *Netlink) SyncMulticast(m *Multicast) (bool, error) {
 }
 
 // McastEntry is one group membership in the bridge (mdb).
-type McastEntry struct {
-	Port      string // kernel name
-	VID       int
-	Group     string
-	Permanent bool
-	Expires   float64  // seconds (learned entries)
-	Mode      string   // include|exclude (IGMPv3/MLDv2), "" for v2/v1
-	Sources   []string // source filter
-}
+type McastEntry = netdev.McastEntry
 
 // McastRouterPort is a multicast-router port of a VLAN.
-type McastRouterPort struct {
-	Port      string
-	VID       int
-	Permanent bool    // configured (or a tunnel); else learned from queries
-	Expires   float64 // learned ones
-}
+type McastRouterPort = netdev.McastRouterPort
 
-func parseTimer(s string) float64 {
-	v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	return v
-}
+// McastGroups reads the switch bridge's group memberships and router ports.
+func McastGroups() ([]McastEntry, []McastRouterPort, error) { return netdev.McastGroups(BridgeName) }
 
-// McastGroups reads the bridge's group memberships and router ports.
-func McastGroups() ([]McastEntry, []McastRouterPort, error) {
-	raw, err := runTool("bridge", "-j", "-d", "-s", "mdb", "show", "dev", BridgeName)
-	if err != nil {
-		return nil, nil, err
-	}
-	var out []struct {
-		MDB []struct {
-			Port    string `json:"port"`
-			Grp     string `json:"grp"`
-			VID     int    `json:"vid"`
-			State   string `json:"state"`
-			Timer   string `json:"timer"`
-			Mode    string `json:"filter_mode"`
-			Sources []struct {
-				Address string `json:"address"`
-			} `json:"source_list"`
-		} `json:"mdb"`
-		// iproute2 writes the router ports as an object (by bridge) or a
-		// list, depending on its version: walked generically.
-		Router json.RawMessage `json:"router"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, nil, fmt.Errorf("bridge mdb show: %w", err)
-	}
-	var es []McastEntry
-	var rs []McastRouterPort
-	for _, o := range out {
-		for _, e := range o.MDB {
-			if e.Port == BridgeName {
-				continue // the bridge itself (irb receivers)
-			}
-			me := McastEntry{Port: e.Port, VID: e.VID, Group: e.Grp, Permanent: e.State == "permanent", Expires: parseTimer(e.Timer), Mode: e.Mode}
-			for _, s := range e.Sources {
-				me.Sources = append(me.Sources, s.Address)
-			}
-			es = append(es, me)
-		}
-		var any interface{}
-		if len(o.Router) > 0 && json.Unmarshal(o.Router, &any) == nil {
-			walkRouters(any, &rs)
-		}
-	}
-	return es, rs, nil
-}
-
-// McastRefresh adds or refreshes a learned (temporary) membership of port
-// in group: MC-LAG, the peer's groups on this member's leg (reference 5.5).
-// It expires like a learned one when it is no longer refreshed, so a
-// receiver behind this member's own leg is never cut by its removal.
+// McastRefresh refreshes a learned membership (netdev.McastRefresh).
 func McastRefresh(port string, vid int, group string) error {
-	_, err := runTool("bridge", "mdb", "replace", "dev", BridgeName, "port", port, "grp", group, "temp", "vid", strconv.Itoa(vid))
-	return err
-}
-
-// walkRouters collects router port entries (objects with a "port") from
-// iproute2's JSON, whatever their nesting.
-func walkRouters(v interface{}, out *[]McastRouterPort) {
-	switch x := v.(type) {
-	case []interface{}:
-		for _, e := range x {
-			walkRouters(e, out)
-		}
-	case map[string]interface{}:
-		if port, ok := x["port"].(string); ok {
-			r := McastRouterPort{Port: port}
-			if vid, ok := x["vid"].(float64); ok {
-				r.VID = int(vid)
-			}
-			r.Permanent = x["type"] == "permanent"
-			if t, ok := x["timer"].(string); ok {
-				r.Expires = parseTimer(t)
-			}
-			*out = append(*out, r)
-			return
-		}
-		for _, e := range x {
-			walkRouters(e, out)
-		}
-	}
+	return netdev.McastRefresh(BridgeName, port, vid, group)
 }
