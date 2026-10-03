@@ -72,6 +72,9 @@ type relState struct {
 	lastTx   time.Time // last (re)transmission of pend
 	probeAt  time.Time
 	unreachT time.Time // when the member became unreachable (zero: reachable)
+	// dialing: tOpen2 sent and not answered yet (it is sent again, and
+	// no probe goes before it: the member does not know the stream yet).
+	dialing bool
 	// Receiving.
 	ooo      map[uint32]oooMsg
 	consumed uint64 // bytes read by the user in total
@@ -217,6 +220,18 @@ func (m *Mesh) retransmit(now time.Time) (more bool) {
 			delete(m.streams, k)
 			m.sendLocked(&msg{typ: tReset, hops: maxHops, src: byte(m.Self), dst: byte(k.member), stream: k.id})
 			s.fail(fail)
+			continue
+		}
+		if r.dialing {
+			reopen := reach && now.Sub(r.lastTx) >= r.rto
+			if reopen {
+				r.lastTx = now
+				r.rto = min(2*r.rto, rtoMax)
+			}
+			s.mu.Unlock()
+			if reopen {
+				m.sendLocked(&msg{typ: tOpen2, hops: maxHops, src: byte(m.Self), dst: byte(k.member), stream: k.id, payload: []byte(s.service)})
+			}
 			continue
 		}
 		var resend []pendingMsg

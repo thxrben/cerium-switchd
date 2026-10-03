@@ -227,7 +227,13 @@ func TestParallelLinks(t *testing.T) {
 	m := meshes(2)
 	cutA := link(m[1], m[2])
 	link(m[1], m[2])
-	waitFor(t, "1 reaches 2", reaches(m[1], 2))
+	waitFor(t, "both links up", func() bool {
+		m[1].mu.Lock()
+		defer m[1].mu.Unlock()
+		m[2].mu.Lock()
+		defer m[2].mu.Unlock()
+		return len(m[1].peers[2]) == 2 && len(m[2].peers[1]) == 2
+	})
 	echo(t, m[2], "echo")
 	cutA()
 	waitFor(t, "one link left", func() bool {

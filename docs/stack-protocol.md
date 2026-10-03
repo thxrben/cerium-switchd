@@ -104,7 +104,7 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
   the shortest in hops (ties: lower next-hop member id), recomputed on every change.
 * **Reliable streams** (OPEN2 …): a stream survives a change of its path (a stacking cable cut, a member taking
   another route), so a CLI session relayed to the master, Raft and stack RPC go on unchanged.
-  * OPEN2 carries the service name; the destination answers with CREDIT (seq = initial window, 256 KiB) or RESET.
+  * OPEN2 carries the service name; the destination answers with CREDIT (seq = initial window, 256 KiB) or RESET. The dialer sends OPEN2 again after the retransmission timeout until it is answered (an answered OPEN2 that arrives again is answered again), and sends no PROBE2 before that.
   * DATA2 and CLOSE2 are numbered per stream and direction (CLOSE2 takes a number too, so it never overtakes data).
     The sender keeps every message until it is acknowledged; it sends the unacknowledged ones again after a timeout
     (100 ms, doubling up to 2 s) and the first one at once after two duplicate acknowledgments.

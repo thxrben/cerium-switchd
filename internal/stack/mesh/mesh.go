@@ -662,6 +662,7 @@ func (m *Mesh) deliverLocked(x *msg) {
 		s.mu.Lock()
 		if s.reliable {
 			// The answer to tOpen2: the initial window.
+			s.rel.dialing, s.rel.rto = false, rtoMin
 			if uint64(x.seq) > s.rel.edge {
 				s.rel.edge = uint64(x.seq)
 			}
@@ -747,6 +748,7 @@ func (m *Mesh) dial(member int, service string, timeout time.Duration, reliable 
 	if reliable {
 		typ = tOpen2
 		s.rel.rto, s.rel.advEdge = rtoMin, Window
+		s.rel.dialing, s.rel.lastTx = true, time.Now()
 	}
 	m.streams[key] = s
 	if reliable {

@@ -37,6 +37,9 @@ mmdebstrap --variant=minbase --mode=root --components="main non-free-firmware" \
 
 # Our files.
 cp -a "$here/overlay/." "$root/"
+# The kernel runs /sbin/bridge-stp to hand STP to cer-rstpd; without it the
+# bridge floods BPDUs (a loop towards other switches' STP).
+[ -x "$root/sbin/bridge-stp" ] || { echo "build-rootfs: /sbin/bridge-stp missing in the image" >&2; exit 1; }
 mkdir -p "$root/config"
 # switchd, switchd-update and the cer- daemons (reference 1.9); swcli is the
 # login shell.
