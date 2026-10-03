@@ -64,6 +64,7 @@ var netCaps = []string{"CAP_NET_ADMIN", "CAP_NET_RAW"}
 var Daemons = []Daemon{
 	{Program: "switchd-update", Name: "update", Help: "update daemon", Always: true, External: true},
 	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps},
+	{Program: "cer-syslogd", Name: "syslog", Help: "remote syslog", Always: true, Nice: 10, IOIdle: true, Caps: netCaps},
 }
 
 // Find returns a daemon by restart name or program.

@@ -34,10 +34,13 @@ func port(a net.Addr) int {
 }
 
 func TestFormat(t *testing.T) {
-	m := Message{Time: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), Facility: "change-log", Severity: Notice, Text: "a\nb"}
-	got := Format(m, "sw1")
-	want := "<181>1 2026-09-29T12:00:00.000000Z sw1 switchd " + strconv.Itoa(os.Getpid()) + " - - a b"
-	if got != want {
+	m := Message{Time: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC), Facility: "change-log", Severity: Notice, Text: "a\nb", PID: 812}
+	if got, want := Format(m, "sw1"), "<181>1 2026-09-29T12:00:00.000000Z sw1 switchd 812 - - a b"; got != want {
+		t.Errorf("Format:\n%s\n%s", got, want)
+	}
+	// Messages of other programs (from the journal).
+	m = Message{Time: m.Time, Facility: "kernel", Severity: Warning, Text: "eth0: link down", App: "kernel"}
+	if got, want := Format(m, "sw1"), "<4>1 2026-09-29T12:00:00.000000Z sw1 kernel - - - eth0: link down"; got != want {
 		t.Errorf("Format:\n%s\n%s", got, want)
 	}
 }

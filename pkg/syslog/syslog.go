@@ -53,6 +53,10 @@ type Message struct {
 	// Host is the host name of the member the message comes from when it
 	// was relayed by another member ("" = this one).
 	Host string
+	// App is the program (APP-NAME: switchd, cer-lacpd, sshd, kernel; ""
+	// switchd) and PID its process id (0: none).
+	App string `json:",omitempty"`
+	PID int    `json:",omitempty"`
 }
 
 // Host is one remote server.
@@ -249,7 +253,7 @@ func severityOf(l slog.Level) int {
 }
 
 func (s *handler) Handle(ctx context.Context, r slog.Record) error {
-	m := Message{Time: r.Time, Facility: "daemon", Severity: severityOf(r.Level)}
+	m := Message{Time: r.Time, Facility: "daemon", Severity: severityOf(r.Level), PID: os.Getpid()}
 	var b strings.Builder
 	b.WriteString(r.Message)
 	add := func(a slog.Attr) bool {
@@ -357,8 +361,15 @@ func Format(m Message, host string) string {
 		host = "-"
 	}
 	text := strings.ReplaceAll(m.Text, "\n", " ")
-	return fmt.Sprintf("<%d>1 %s %s switchd %d - - %s", fac*8+m.Severity,
-		m.Time.UTC().Format("2006-01-02T15:04:05.000000Z"), host, os.Getpid(), text)
+	app, pid := m.App, "-"
+	if app == "" {
+		app = "switchd"
+	}
+	if m.PID > 0 {
+		pid = strconv.Itoa(m.PID)
+	}
+	return fmt.Sprintf("<%d>1 %s %s %s %s - - %s", fac*8+m.Severity,
+		m.Time.UTC().Format("2006-01-02T15:04:05.000000Z"), host, app, pid, text)
 }
 
 func (f *forwarder) dial() (net.Conn, error) {
@@ -486,3 +497,13 @@ func (h *Hub) name() string {
 
 // ErrNoHub is returned by show commands when logging is not wired up.
 var ErrNoHub = errors.New("logging not available")
+
+// Config is what a log forwarder runs (computed by switchd for
+// cer-syslogd): the servers, the buffer for show log, the routing instance
+// connections leave through and this member's host name.
+type Config struct {
+	Hosts    []Host `json:"hosts,omitempty"`
+	BufSize  int    `json:"buf_size,omitempty"`
+	VRF      string `json:"vrf,omitempty"`
+	HostName string `json:"host_name,omitempty"`
+}

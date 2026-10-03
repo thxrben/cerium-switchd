@@ -717,19 +717,21 @@ func TestOperationalCommands(t *testing.T) {
 
 type fakeLogs struct{}
 
-func (fakeLogs) Recent() []LogLine {
-	return []LogLine{{Time: time.Date(2026, 9, 29, 12, 0, 0, 0, time.Local), Facility: "change-log", Severity: "info", Text: "commit revision=2"}}
+func (fakeLogs) Recent() ([]LogLine, error) {
+	return []LogLine{{Time: time.Date(2026, 9, 29, 12, 0, 0, 0, time.Local), Facility: "change-log", Severity: "info", Text: "commit revision=2", App: "switchd", PID: 812},
+		{Time: time.Date(2026, 9, 29, 12, 0, 1, 0, time.Local), Facility: "kernel", Severity: "warning", Text: "eth2: NIC Link is Down", App: "kernel", Host: "sw2"}}, nil
 }
 
-func (fakeLogs) Forwarders() []ForwarderStatus {
-	return []ForwarderStatus{{Target: "10.0.0.5:6514/tls", Filter: "any/info", Sent: 3, Queued: 2, Dropped: 1, LastError: "connection refused"}}
+func (fakeLogs) Forwarders() ([]ForwarderStatus, error) {
+	return []ForwarderStatus{{Target: "10.0.0.5:6514/tls", Filter: "any/info", Sent: 3, Queued: 2, Dropped: 1, LastError: "connection refused"}}, nil
 }
 
 func TestShowLog(t *testing.T) {
 	ts := newTester(t, newEngine(t), "alice", commit.SuperUser)
 	contains(t, ts.run("show log"), "not available")
 	ts.sh.env.Logs = fakeLogs{}
-	contains(t, ts.ok("show log"), "2026-09-29 12:00:00 sw1 change-log.info: commit revision=2")
+	contains(t, ts.ok("show log"), "2026-09-29 12:00:00 sw1 change-log.info: switchd[812]: commit revision=2",
+		"2026-09-29 12:00:01 sw2 kernel.warning: kernel: eth2: NIC Link is Down")
 	out := ts.run("show system syslog")
 	contains(t, out, "10.0.0.5:6514/tls (any/info): not connected, sent 3, queued 2, dropped 1", "last error: connection refused")
 	contains(t, ts.ok("show log | match revision | count"), "Count: 1 lines")

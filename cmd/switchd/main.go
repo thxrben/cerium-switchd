@@ -19,6 +19,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/swcli"
 	"github.com/thxrben/cerium-switchd/internal/updated"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/journal"
 )
 
 func main() {
@@ -60,7 +61,9 @@ func main() {
 	if *debug {
 		level = slog.LevelDebug
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	// The journal (with facility and severity for cer-syslogd, reference
+	// 1.9); stderr when there is none.
+	log := slog.New(journal.NewHandler(journal.Options{Identifier: "switchd", Level: level}))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	if err := daemon.Run(ctx, daemon.Options{StateDir: *stateDir, Socket: *socket, DryRun: *dryRun, Log: log}); err != nil {

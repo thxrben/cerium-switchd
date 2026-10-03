@@ -93,3 +93,25 @@ func TestFacilityNames(t *testing.T) {
 		}
 	}
 }
+
+func TestParseEntry(t *testing.T) {
+	cases := []struct {
+		line string
+		want Entry
+	}{
+		{`{"__REALTIME_TIMESTAMP":"1790000000123456","PRIORITY":"4","SYSLOG_FACILITY":"3","CEROS_FACILITY":"change-log","SYSLOG_IDENTIFIER":"switchd","_PID":"812","MESSAGE":"commit by thorben","CEROS_MEMBER":"2"}`,
+			Entry{Time: time.UnixMicro(1790000000123456), Severity: 4, Facility: "change-log", App: "switchd", PID: 812, Message: "commit by thorben", Member: 2}},
+		{`{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"3","_TRANSPORT":"kernel","SYSLOG_IDENTIFIER":"kernel","MESSAGE":"ixgbe 0000:01:00.0 eth2: NIC Link is Down"}`,
+			Entry{Time: time.UnixMicro(1790000000000000), Severity: 3, Facility: "kernel", App: "kernel", Message: "ixgbe 0000:01:00.0 eth2: NIC Link is Down"}},
+		{`{"__REALTIME_TIMESTAMP":"1790000000000000","PRIORITY":"6","SYSLOG_FACILITY":"10","SYSLOG_IDENTIFIER":"sshd","SYSLOG_PID":"4242","_PID":"4242","MESSAGE":[65,10,66]}`,
+			Entry{Time: time.UnixMicro(1790000000000000), Severity: 6, Facility: "authorization", App: "sshd", PID: 4242, Message: "A\nB"}},
+		{`{"__REALTIME_TIMESTAMP":"1790000000000000","_COMM":"bash","MESSAGE":["one","two"]}`,
+			Entry{Time: time.UnixMicro(1790000000000000), Severity: 6, Facility: "daemon", App: "bash", Message: "one"}},
+	}
+	for _, c := range cases {
+		got, err := ParseEntry([]byte(c.line))
+		if err != nil || got != c.want {
+			t.Errorf("%s:\n got %+v %v\nwant %+v", c.line, got, err, c.want)
+		}
+	}
+}

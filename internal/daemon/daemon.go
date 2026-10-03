@@ -40,7 +40,6 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 	"github.com/thxrben/cerium-switchd/pkg/ntp"
-	"github.com/thxrben/cerium-switchd/pkg/syslog"
 )
 
 // Options configure the daemon.
@@ -74,11 +73,9 @@ func Run(ctx context.Context, o Options) error {
 		case <-ctx.Done():
 		}
 	}()
-	// Every record goes to the local buffer, the remote syslog servers and
-	// the journal (stderr).
-	hub := syslog.NewHub(o.Log.Handler(), 5000)
-	defer hub.Close()
-	log := slog.New(hub.Handler())
+	// Every record goes to the journal; cer-syslogd keeps the buffer for
+	// show log and forwards (reference 1.9).
+	log := o.Log
 	exe, _ := os.Executable()
 	if !o.DryRun {
 		// The operating system's network configuration is switchd's
@@ -217,14 +214,12 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 	// The management services run on the master (reference 1.8).
-	mgmt := &mgmtCtl{member: member, log: log, hub: hub, ntp: ntpClient, sshd: sshd, clock: ntp.SystemClock{}, dryRun: o.DryRun}
-	hub.Configure(nil, func() string {
-		if hostName != nil {
-			return hostName()
-		}
-		h, _ := os.Hostname()
-		return h
-	}, 0)
+	mgmt := &mgmtCtl{member: member, log: log, ntp: ntpClient, sshd: sshd, clock: ntp.SystemClock{}, dryRun: o.DryRun,
+		publish: func(daemon string, v any) {
+			if services != nil {
+				services.setConfig(daemon, v)
+			}
+		}}
 	applier.isMaster = mgmt.master
 	applier.stackPort = vc.IsPort
 	if !o.DryRun {
@@ -452,7 +447,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	srv.Env = func(name string, class commit.Class) cli.Env {
 		env := cli.Env{Engine: engine, User: name, Class: class, Version: version.Version, Built: version.Date,
-			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{hub}, Log: log}
+			HostName: hostName, Ports: ports, Ops: liveOps, Logs: logs{services}, Log: log}
 		if ctl != nil {
 			env.Role = ctl.role
 			env.Stack = sessionStack{s: ctl, user: name, class: class}

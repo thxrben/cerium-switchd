@@ -21,7 +21,6 @@ import (
 type mgmtCtl struct {
 	member int
 	log    *slog.Logger
-	hub    *syslog.Hub
 	ntp    *ntp.Client
 	sshd   *access.SSH
 	clock  ntp.Clock
@@ -29,10 +28,11 @@ type mgmtCtl struct {
 	ctl *stackCtl
 	// dryRun: services outside switchd are left alone.
 	dryRun bool
+	// publish hands a daemon its configuration (reference 1.9).
+	publish func(daemon string, v any)
 
-	mu     sync.Mutex
-	cfg    *model.Config
-	relayQ chan syslog.Message
+	mu  sync.Mutex
+	cfg *model.Config
 }
 
 // Relayed messages wait here while the master cannot be reached; the
@@ -47,25 +47,12 @@ func (m *mgmtCtl) master() bool { return m.ctl == nil || m.ctl.node.IsMaster() }
 // start registers the stacking protocol handlers and runs the relay and
 // time loops until ctx is done.
 func (m *mgmtCtl) start(ctx context.Context) {
-	m.relayQ = make(chan syslog.Message, relayQueue)
 	if m.ctl == nil {
 		return
 	}
-	m.ctl.node.Handle("log", func(_ int, req json.RawMessage) (any, error) {
-		var msgs []syslog.Message
-		if err := json.Unmarshal(req, &msgs); err != nil {
-			return nil, err
-		}
-		for _, msg := range msgs {
-			msg.Severity = min(max(msg.Severity, 0), 7) // a valid syslog PRI whatever the sender
-			m.hub.Log(msg)
-		}
-		return nil, nil
-	})
 	m.ctl.node.Handle("time", func(int, json.RawMessage) (any, error) {
 		return time.Now().UnixNano(), nil
 	})
-	go m.relayLoop(ctx)
 	go m.timeLoop(ctx)
 }
 
@@ -83,16 +70,11 @@ func (m *mgmtCtl) sync(cfg *model.Config) {
 	}
 	master := m.master()
 	mi := cfg.System.MgmtInstance
-	hosts := syslogHosts(cfg)
-	if !master {
-		hosts = nil
-	}
-	m.hub.SetVRF(mi)
-	m.hub.Configure(hosts, nil, cfg.System.LogBuffer)
-	if master || m.ctl == nil {
-		m.hub.SetRelay(nil)
-	} else {
-		m.hub.SetRelay(m.relay)
+	// cer-syslogd sends on the master and relays to it elsewhere (by its
+	// role); it gets the whole configuration on every member.
+	if m.publish != nil {
+		m.publish("cer-syslogd", syslog.Config{Hosts: syslogHosts(cfg), BufSize: cfg.System.LogBuffer, VRF: mi,
+			HostName: cfg.MemberHostName(m.member)})
 	}
 	if m.dryRun {
 		return
@@ -107,80 +89,6 @@ func (m *mgmtCtl) sync(cfg *model.Config) {
 	m.ntp.Configure(servers)
 	if err := m.sshd.Sync(cfg, master); err != nil {
 		m.log.Error("ssh", "err", err)
-	}
-}
-
-// relay queues a local message for the master (never blocks).
-func (m *mgmtCtl) relay(msg syslog.Message) {
-	msg.Host = m.hostName()
-	for {
-		select {
-		case m.relayQ <- msg:
-			return
-		default:
-			select {
-			case <-m.relayQ: // drop the oldest
-			default:
-			}
-		}
-	}
-}
-
-func (m *mgmtCtl) hostName() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.cfg == nil {
-		return ""
-	}
-	return m.cfg.MemberHostName(m.member)
-}
-
-// relayLoop sends queued messages to the master in batches.
-func (m *mgmtCtl) relayLoop(ctx context.Context) {
-	var batch []syslog.Message
-	for {
-		if len(batch) == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case msg := <-m.relayQ:
-				batch = append(batch, msg)
-			}
-		}
-	fill:
-		for len(batch) < 100 {
-			select {
-			case msg := <-m.relayQ:
-				batch = append(batch, msg)
-			default:
-				break fill
-			}
-		}
-		to := m.ctl.node.Master()
-		if to == 0 || to == m.member {
-			if to == m.member {
-				batch = nil // this member became master: its own forwarders have them
-				continue
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		if _, err := m.ctl.node.Call(to, "log", batch, 5*time.Second); err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			if len(batch) > relayQueue {
-				batch = batch[len(batch)-relayQueue:]
-			}
-			continue
-		}
-		batch = nil
 	}
 }
 

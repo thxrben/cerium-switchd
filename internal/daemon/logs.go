@@ -1,41 +1,62 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/ntp"
 	"github.com/thxrben/cerium-switchd/pkg/syslog"
 )
 
 var severityName = []string{"emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"}
 
-// logs adapts the syslog hub to the CLI.
-type logs struct{ hub *syslog.Hub }
+// logs gives the CLI the log buffer and the forwarders of cer-syslogd.
+type logs struct{ svc *service }
 
-func (l logs) Recent() []cli.LogLine {
+func (l logs) call(method string, resp any) error {
+	if l.svc == nil {
+		return errors.New("the log buffer is not available (no cer-syslogd in a dry run)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return l.svc.call(ctx, "cer-syslogd", method, nil, resp)
+}
+
+func (l logs) Recent() ([]cli.LogLine, error) {
+	var msgs []syslog.Message
+	if err := l.call("recent", &msgs); err != nil {
+		return nil, err
+	}
 	var out []cli.LogLine
-	for _, m := range l.hub.Recent() {
+	for _, m := range msgs {
 		sev := "unknown"
 		if m.Severity >= 0 && m.Severity < len(severityName) { // relayed messages come from other members
 			sev = severityName[m.Severity]
 		}
-		out = append(out, cli.LogLine{Time: m.Time, Facility: m.Facility, Severity: sev, Text: m.Text, Host: m.Host})
+		out = append(out, cli.LogLine{Time: m.Time, Facility: m.Facility, Severity: sev, Text: m.Text, Host: m.Host, App: m.App, PID: m.PID})
 	}
-	return out
+	return out, nil
 }
 
-func (l logs) Forwarders() []cli.ForwarderStatus {
+func (l logs) Forwarders() ([]cli.ForwarderStatus, error) {
+	var stats []syslog.Stats
+	if err := l.call(svc.MethodStatus, &stats); err != nil {
+		return nil, err
+	}
 	var out []cli.ForwarderStatus
-	for _, s := range l.hub.Stats() {
+	for _, s := range stats {
 		out = append(out, cli.ForwarderStatus{
 			Target:    fmt.Sprintf("%s:%d/%s", s.Host.Host, s.Host.Port, s.Host.Transport),
 			Filter:    s.Host.Facility + "/" + s.Host.Severity,
 			Connected: s.Connected, Sent: s.Sent, Dropped: s.Dropped, Queued: s.Queued, LastError: s.LastError,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // syslogHosts converts the model's syslog configuration.

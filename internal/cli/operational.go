@@ -279,8 +279,8 @@ type MACEntry struct {
 
 // Logs supplies the local log buffer and the syslog forwarders.
 type Logs interface {
-	Recent() []LogLine
-	Forwarders() []ForwarderStatus
+	Recent() ([]LogLine, error)
+	Forwarders() ([]ForwarderStatus, error)
 }
 
 // LogLine is one buffered log message.
@@ -291,6 +291,9 @@ type LogLine struct {
 	Text     string
 	// Host: the member the message comes from ("": this one).
 	Host string
+	// App is the program (and PID its process id, 0: none).
+	App string
+	PID int
 }
 
 // ForwarderStatus describes one remote syslog server.
@@ -312,12 +315,23 @@ func (sh *Shell) showLog(c *call) error {
 		return errors.New("log buffer not available")
 	}
 	local := sh.env.HostName()
-	for _, l := range sh.env.Logs.Recent() {
+	lines, err := sh.env.Logs.Recent()
+	if err != nil {
+		return err
+	}
+	for _, l := range lines {
 		host := l.Host // relayed from another member (reference 1.8)
 		if host == "" {
 			host = local
 		}
-		fmt.Fprintf(c.out, "%s %s %s.%s: %s\n", l.Time.Local().Format("2006-01-02 15:04:05"), host, l.Facility, l.Severity, l.Text)
+		app := ""
+		switch {
+		case l.App != "" && l.PID > 0:
+			app = fmt.Sprintf("%s[%d]: ", l.App, l.PID)
+		case l.App != "":
+			app = l.App + ": "
+		}
+		fmt.Fprintf(c.out, "%s %s %s.%s: %s%s\n", l.Time.Local().Format("2006-01-02 15:04:05"), host, l.Facility, l.Severity, app, l.Text)
 	}
 	return nil
 }
@@ -329,7 +343,10 @@ func (sh *Shell) showSyslog(c *call) error {
 	if sh.env.Logs == nil {
 		return errors.New("syslog not available")
 	}
-	fs := sh.env.Logs.Forwarders()
+	fs, err := sh.env.Logs.Forwarders()
+	if err != nil {
+		return err
+	}
 	if len(fs) == 0 {
 		c.out.WriteString("No remote syslog servers configured.\n")
 		return nil
