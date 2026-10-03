@@ -190,13 +190,9 @@ func Run(ctx context.Context, o Options) error {
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
-	lldpAgent := &lldp.Agent{Log: log, Carrier: dataplane.Carrier, Aggregated: func(linux string) bool {
-		// LACP bundles: LACP has the port in; static bundles: it has a link.
-		if on, known := lacpRT.PortEnabled(linux); known {
-			return on
-		}
-		return dataplane.Carrier(linux)
-	}}
+	// The daemons' configuration goes through switchd's service socket
+	// (reference 1.9); it exists once the stack control runs.
+	var services *service
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	// Routing (reference 5.8): the RIB with connected and static routes, and
 	// the routing protocols; their active routes go into the kernel with
@@ -209,8 +205,9 @@ func Run(ctx context.Context, o Options) error {
 		rt.Apply(cfg)
 		// LACP bundles: after the data plane created their devices.
 		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
-		if !o.DryRun {
-			lldpAgent.Sync(lldpConfig(cfg, member, names, chassisMAC, vc.IsPort))
+		if !o.DryRun && services != nil {
+			sys, ports := lldpConfig(cfg, member, names, chassisMAC, vc.IsPort)
+			services.setConfig("cer-lldpd", lldp.Config{System: sys, Ports: ports})
 		}
 		if mclag != nil {
 			mclag.setConfig(cfg)
@@ -306,7 +303,7 @@ func Run(ctx context.Context, o Options) error {
 	// The cer- daemons (reference 1.9): switchd's service socket, and the
 	// supervisor that starts and watches them (only for a switchd that
 	// systemd runs: a program started by hand leaves the system alone).
-	services := newService(member, ctl, notifyStack, func() svc.Role {
+	services = newService(member, ctl, notifyStack, func() svc.Role {
 		return roleOf(member, ctl, func() *model.Config {
 			cfg, _ := model.Build(engine.Active().Active(), nil)
 			return cfg
@@ -317,6 +314,19 @@ func Run(ctx context.Context, o Options) error {
 		if err := services.start(ctx, ""); err != nil {
 			log.Error("service socket", "err", err)
 		}
+		// LACP's port states for the daemons that report them (LLDP).
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				services.ep.Publish(svc.TopicLACPPorts, "", lacpRT.EnabledPorts())
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
 		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
@@ -350,7 +360,6 @@ func Run(ctx context.Context, o Options) error {
 	go applier.watch(ctx)
 	if !o.DryRun {
 		go lacpRT.Run(ctx)
-		go lldpAgent.Run(ctx)
 	}
 	if !o.DryRun {
 		go kernel.EnforceMACLimits(ctx, log)
@@ -385,7 +394,7 @@ func Run(ctx context.Context, o Options) error {
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
 		liveOps.lacp, liveOps.mclag = lacpRT, mclag
-		liveOps.lldp = lldpAgent
+		liveOps.svc = services
 		liveOps.ntp = ntpClient
 		var node *control.Node
 		if ctl != nil {

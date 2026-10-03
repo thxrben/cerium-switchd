@@ -342,6 +342,20 @@ func (r *Runtime) PortEnabled(linux string) (enabled, known bool) {
 	return false, false
 }
 
+// EnabledPorts reports every member port of an LACP bundle (kernel name)
+// and whether it carries traffic.
+func (r *Runtime) EnabledPorts() map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]bool{}
+	for _, rb := range r.bundles {
+		for p, on := range rb.enabled {
+			out[p] = on
+		}
+	}
+	return out
+}
+
 // Ready reports per bundle how many ports LACP has collecting and
 // distributing (before minimum-links).
 func (r *Runtime) Ready() map[string]int {

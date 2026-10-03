@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
+	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 	"github.com/vishvananda/netlink"
@@ -45,7 +47,8 @@ type ops struct {
 	log     *slog.Logger
 	dryRun  bool
 	lacp    *lacp.Runtime
-	lldp    *lldp.Agent
+	// svc reaches the cer- daemons (reference 1.9).
+	svc     *service
 	updater *updater
 	mclag   *mclagCtl
 	ntp     *ntp.Client
@@ -734,11 +737,16 @@ func (o *ops) Software() (cli.SoftwareStatus, error) {
 }
 
 func (o *ops) LLDP() (cli.LLDPStatus, error) {
-	if o.lldp == nil {
+	if o.svc == nil {
 		return cli.LLDPStatus{}, nil
 	}
-	sys, ports, stats := o.lldp.Status()
-	return cli.LLDPStatus{Running: len(ports) > 0, System: sys, Ports: ports, Stats: stats, Neighbors: o.lldp.Neighbors()}, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st lldp.Status
+	if err := o.svc.call(ctx, "cer-lldpd", svc.MethodStatus, nil, &st); err != nil {
+		return cli.LLDPStatus{}, err
+	}
+	return cli.LLDPStatus{Running: len(st.Ports) > 0, System: st.System, Ports: st.Ports, Stats: st.Stats, Neighbors: st.Neighbors}, nil
 }
 
 func (o *ops) LACP() ([]lacp.BundleStatus, error) {

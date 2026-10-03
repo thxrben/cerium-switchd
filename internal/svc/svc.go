@@ -89,3 +89,8 @@ type StackIn struct {
 type Notice struct {
 	Text string `json:"text"`
 }
+
+// TopicLACPPorts (key "": map of kernel port name to whether LACP has the
+// port carrying traffic in its bundle) is served by the program that runs
+// LACP: LLDP reports bundle membership with it (reference 5.5).
+const TopicLACPPorts = "lacp-ports"

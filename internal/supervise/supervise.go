@@ -63,6 +63,7 @@ var netCaps = []string{"CAP_NET_ADMIN", "CAP_NET_RAW"}
 // its program exists (PLAN.md Phase 9a stages).
 var Daemons = []Daemon{
 	{Program: "switchd-update", Name: "update", Help: "update daemon", Always: true, External: true},
+	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps},
 }
 
 // Find returns a daemon by restart name or program.

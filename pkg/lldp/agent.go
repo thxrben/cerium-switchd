@@ -168,3 +168,17 @@ func (t *table) list() []Neighbor {
 	})
 	return out
 }
+
+// Config is what an agent runs (computed by switchd for cer-lldpd).
+type Config struct {
+	System System     `json:"system"`
+	Ports  []PortSpec `json:"ports,omitempty"`
+}
+
+// Status is an agent's state for the show lldp commands.
+type Status struct {
+	System    System     `json:"system"`
+	Ports     []PortSpec `json:"ports,omitempty"`
+	Stats     []Stats    `json:"stats,omitempty"`
+	Neighbors []Neighbor `json:"neighbors,omitempty"`
+}

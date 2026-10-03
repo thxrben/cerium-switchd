@@ -281,3 +281,9 @@ func (a *Agent) Status() (System, []PortSpec, []Stats) {
 }
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
+
+// Snapshot returns the agent's state.
+func (a *Agent) Snapshot() Status {
+	sys, ports, stats := a.Status()
+	return Status{System: sys, Ports: ports, Stats: stats, Neighbors: a.Neighbors()}
+}

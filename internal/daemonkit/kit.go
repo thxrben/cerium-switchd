@@ -55,8 +55,8 @@ type Kit struct {
 	role   svc.Role
 	roleOK bool
 	onRole []func(svc.Role)
-	// config subscriptions registered before Start.
-	pendingConfig []func(ipc.Event)
+	// subscriptions to switchd registered before Start.
+	pending []pendingSub
 }
 
 // New returns a kit; Start connects it.
@@ -100,13 +100,16 @@ func (k *Kit) Start() error {
 		return fmt.Errorf("socket: %w", err)
 	}
 	go k.Endpoint.Serve(k.Ctx, l)
-	k.Switchd = k.Endpoint.Dial(k.Ctx, svc.Socket(k.SocketDir, svc.Switchd))
+	sw := k.Endpoint.Dial(k.Ctx, svc.Socket(k.SocketDir, svc.Switchd))
 	k.mu.Lock()
-	pending := k.pendingConfig
-	k.pendingConfig = nil
+	k.Switchd = sw
 	k.mu.Unlock()
-	for _, f := range pending {
-		k.Switchd.Subscribe(svc.TopicConfig, k.Name, f)
+	k.mu.Lock()
+	pending := k.pending
+	k.pending = nil
+	k.mu.Unlock()
+	for _, p := range pending {
+		k.Switchd.Subscribe(p.topic, p.key, p.f)
 	}
 	k.Switchd.Subscribe(svc.TopicRole, "", func(ev ipc.Event) {
 		if ev.Sync || ev.Deleted {
@@ -145,13 +148,25 @@ func (k *Kit) OnConfig(f func(raw json.RawMessage)) {
 		last = string(ev.Value)
 		f(ev.Value)
 	}
+	k.Subscribe(svc.TopicConfig, k.Name, sub)
+}
+
+type pendingSub struct {
+	topic, key string
+	f          func(ipc.Event)
+}
+
+// Subscribe follows a topic of switchd (before or after Start).
+func (k *Kit) Subscribe(topic, key string, f func(ipc.Event)) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.Switchd != nil {
-		k.Switchd.Subscribe(svc.TopicConfig, k.Name, sub)
-		return
+	sw := k.Switchd
+	if sw == nil {
+		k.pending = append(k.pending, pendingSub{topic, key, f})
 	}
-	k.pendingConfig = append(k.pendingConfig, sub)
+	k.mu.Unlock()
+	if sw != nil {
+		sw.Subscribe(topic, key, f)
+	}
 }
 
 // OnRole calls f with every new role (and at once if one is known).
