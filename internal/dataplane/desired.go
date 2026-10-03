@@ -254,6 +254,27 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Instances)) {
 		l.VRFs = append(l.VRFs, VRF{Name: name, Mgmt: name == cfg.System.MgmtInstance})
 	}
+	// OSPF packets reach the switch on its OSPF interfaces only (reference
+	// 5.13, 1.5).
+	devs := map[string]bool{}
+	for _, r := range cfg.AllRouting() {
+		for _, o := range []*model.OSPF{r.OSPF, r.OSPF3} {
+			if o == nil || o.Disabled {
+				continue
+			}
+			for _, a := range o.Areas {
+				for unit, oi := range a.Interfaces {
+					if oi.Passive {
+						continue
+					}
+					if dev, here := UnitDevice(cfg, unit, names); here {
+						devs[dev] = true
+					}
+				}
+			}
+		}
+	}
+	l.OSPFDevs = slices.Sorted(maps.Keys(devs))
 	return l
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/ospfd"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/stp"
@@ -23,6 +25,7 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 	"github.com/thxrben/cerium-switchd/pkg/nlx"
+	"github.com/thxrben/cerium-switchd/pkg/ospf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -982,4 +985,31 @@ func orUnknown(s string) string {
 		return "?"
 	}
 	return s
+}
+
+// OSPFStatus is show ospf|ospf3 … (cer-ospfd on this member, the master).
+func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.OSPFInstance, error) {
+	if o.svc == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st []cli.OSPFInstance
+	err := o.svc.call(ctx, "cer-ospfd", ospfd.MethodStatus, ospfd.StatusRequest{Version: v, Instance: instance, Detail: detail}, &st)
+	if err != nil && strings.Contains(err.Error(), "not running") {
+		return nil, nil // not configured
+	}
+	return st, err
+}
+
+// ClearOSPF is clear ospf|ospf3 neighbor.
+func (o *ops) ClearOSPF(v ospf.Version, instance string, nbr netip.Addr) (int, error) {
+	if o.svc == nil {
+		return 0, errors.New("OSPF is not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var n int
+	err := o.svc.call(ctx, "cer-ospfd", ospfd.MethodClear, ospfd.ClearRequest{Version: v, Instance: instance, Neighbor: nbr}, &n)
+	return n, err
 }

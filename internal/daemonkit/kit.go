@@ -190,6 +190,10 @@ func (k *Kit) Start() error {
 	return nil
 }
 
+// SocketOf returns the socket of another program (direct calls between
+// daemons, reference 1.9).
+func (k *Kit) SocketOf(program string) string { return svc.Socket(k.socketDir(), program) }
+
 func (k *Kit) socketDir() string {
 	if k.SocketDir == "" {
 		return svc.SocketDir

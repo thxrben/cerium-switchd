@@ -243,6 +243,11 @@ func Run(ctx context.Context, o Options) error {
 		if !o.DryRun {
 			services.setConfig("cer-rstpd", stpConfig(cfg, member, names.Linux, vc.StackID()))
 		}
+		// OSPF and OSPFv3 (reference 5.13): cer-ospfd runs where configured
+		// (the protocol itself on the master only).
+		if !o.DryRun {
+			services.setConfig("cer-ospfd", ospfConfig(cfg, names.Linux))
+		}
 	}
 	// The management services run on the master (reference 1.8).
 	mgmt := &mgmtCtl{member: member, log: log, sshd: sshd, dryRun: o.DryRun,

@@ -179,6 +179,9 @@ type L3 struct {
 	VTEP      netip.Addr
 	Remotes   []netip.Addr
 	VXLANPort int
+	// OSPFDevs are the devices with OSPF neighbours: the protection of the
+	// routed interfaces lets OSPF in there (reference 5.13).
+	OSPFDevs []string
 }
 
 // VRF is a routing instance in the kernel.

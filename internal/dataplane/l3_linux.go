@@ -311,6 +311,13 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 			accept = append(accept, fmt.Sprintf("ip saddr { %s } ip daddr %s udp dport %d", strings.Join(rs, ", "), l.VTEP, l.VXLANPort))
 		}
 	}
+	if len(l.OSPFDevs) > 0 {
+		q := make([]string, len(l.OSPFDevs))
+		for i, d := range l.OSPFDevs {
+			q[i] = `"` + d + `"`
+		}
+		accept = append(accept, fmt.Sprintf("iifname { %s } meta l4proto 89", strings.Join(q, ", "))) // OSPF
+	}
 	c, err := k.syncProtect(protect, accept)
 	note(c, err)
 	note(syncVTEP(l.VTEP))

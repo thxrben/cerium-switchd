@@ -17,6 +17,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
+	"github.com/thxrben/cerium-switchd/pkg/ospf"
 )
 
 // Operational supplies live data for show and clear commands.
@@ -1392,6 +1393,8 @@ func registerOperational() {
 				}},
 				stpCommand(),
 				lldpCommand(),
+				ospfCommand(ospf.V2),
+				ospfCommand(ospf.V3),
 				&command{name: "vxlan", help: "Show VXLAN ports and remote VTEPs", class: commit.ReadOnly,
 					run: func(sh *Shell, c *call) error { return sh.showVXLAN(c, false) }, sub: []*command{
 						{name: "remote-vtep", help: "How each member reaches the remote VTEPs", class: commit.ReadOnly,
@@ -1427,6 +1430,8 @@ func registerOperational() {
 		{name: "system", help: "Clear system state", class: commit.SuperUser, sub: []*command{
 			{name: "reboot", help: "Cancel a scheduled reboot, halt or power-off", class: commit.SuperUser, run: (*Shell).cancelPower},
 		}},
+		clearOSPFCommand(ospf.V2),
+		clearOSPFCommand(ospf.V3),
 	}})
 	power := func(action, help string) *command {
 		return &command{name: action, help: help, class: commit.SuperUser, run: func(sh *Shell, c *call) error { return sh.power(c, action) },

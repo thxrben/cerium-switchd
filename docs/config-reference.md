@@ -1948,7 +1948,8 @@ routing instances (`routing-instances <name> protocols ospf`). OSPFv3 has the sa
   whole stack, on the master's irb). OSPF on a management interface (`cme.0`) is an error.
   * `passive`: the interface's subnets are announced, but no hellos are sent and no neighbours are formed.
   * `metric <1-65535>`: the cost. Default: `reference-bandwidth` / interface speed, at least 1 (an irb counts as
-    the speed of the fastest port in its VLAN on the master; an `ae` as the sum of its active ports).
+    the speed of the fastest port in its VLAN on the master; an `ae` as the sum of its active ports). An interface
+    whose speed is unknown (a virtual NIC, a unit without ports) costs 1.
   * `interface-type p2p`: point-to-point (no DR election; recommended for routed links between two routers).
     Default: broadcast (DR/BDR election).
   * `priority <0-255>`: DR election priority (default 128; 0: never DR or BDR).

@@ -77,6 +77,10 @@ var netCaps = []string{"CAP_NET_ADMIN", "CAP_NET_RAW"}
 // its program exists (PLAN.md Phase 9a stages).
 var Daemons = []Daemon{
 	{Program: "switchd-update", Name: "update", Help: "update daemon", Always: true, External: true},
+	// Stop stage 0: the routing protocols end their adjacencies and
+	// sessions (the neighbours notice at once).
+	{Program: "cer-ospfd", Name: "ospf", Help: "OSPF and OSPFv3", Nice: -5, OOM: -500, Caps: netCaps, StopStage: 0,
+		StopTimeout: 5 * time.Second},
 	// Stop stage 1 (after the routing protocols, stage 0: cer-ospfd 5 s,
 	// cer-bgpd 10 s, which close their sessions): BFD tells its neighbours
 	// AdminDown.

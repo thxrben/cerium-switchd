@@ -438,3 +438,37 @@ func (r *Router) maxAgeBusy(s *scope, ref LSRef) bool {
 	}
 	return false
 }
+
+// Overloaded reports whether the router announces overload.
+func (r *Router) Overloaded() bool { return r.cfg.Overload }
+
+// Exchanging reports whether a neighbour is still exchanging databases
+// (ExStart, Exchange or Loading).
+func (r *Router) Exchanging() bool {
+	for _, i := range r.ifaces {
+		for _, n := range i.nbrs {
+			if n.state >= NbrExStart && n.state < NbrFull {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Shutdown sends hellos without neighbours on every interface, so the
+// neighbours drop their adjacencies at once (1-Way), and stops the router
+// sending.
+func (r *Router) Shutdown(now time.Time) {
+	r.now = now
+	for _, i := range r.sortedIfaces() {
+		if i.state == IfDown || i.state == IfPassive {
+			continue
+		}
+		h := &Hello{MaskBits: i.prefixBits(), InterfaceID: i.cfg.ID, Interval: i.cfg.Hello, Options: r.options(),
+			Priority: i.cfg.Priority, Dead: i.cfg.Dead}
+		r.send(i, r.v.AllSPF(), &Packet{Type: TypeHello, Hello: h})
+	}
+	for _, i := range r.sortedIfaces() {
+		i.down()
+	}
+}
