@@ -921,8 +921,8 @@ working path, so a ring survives one broken cable.
      through it wherever another path exists (a ring routes around it; in a chain it still carries transit, and the
      command says so), and it is never chosen as master.
   2. If it is master, mastership moves to the reachable voter with the highest priority (it keeps its vote).
-  3. Its MC-LAG legs are held out of their bundles. The peer hears first that the leg goes away (it lets traffic from
-     the stack out on its own leg), 300 ms later this member sends its traffic for the bundle through the peer, and
+  3. Its MC-LAG legs are held out of their bundles. The peer hears first that the leg goes away (it lets unicast from
+     the stack out on its own leg; broadcast and multicast stay filtered while the leg drains, 5.6), 300 ms later this member sends its traffic for the bundle through the peer, and
      LACP tells each partner "not in sync". A port leaves the bundle only once the partner has stopped sending on it
      (at most 2 s), so frames already on the way still arrive.
   4. The command waits (at most 30 s) and then reports `drained`, or what is still carrying traffic. Ports that only
@@ -1491,6 +1491,16 @@ the peer is not delayed (see failure handling). It applies to every MC-LAG of th
     synchronisation known unicast for a dual-homed device only crosses to the peer while the sending member's leg is
     down. When a member's leg of a bundle fails, the peer lifts this filter for that bundle, and the traffic reaches the
     device via the peer. Leg changes reach the peer within 50 ms.
+  * A leg never forwards while its peer lets tunnel traffic out on its own leg, or the partner's flooded frames
+    (BPDUs among them, which the stack floods when RSTP is off) would come back to the partner on the same bundle,
+    and the partner's spanning tree would block or shut down its ports. So a leg that comes up (after
+    `delay-restore`, a link or LACP flap, a hold) is announced to the peer first; the peer installs the filter and
+    answers, then LACP lets the first port carry traffic (without an answer within 300 ms, e.g. from an earlier
+    software version, the leg forwards anyway). A leg going down is reported after it stopped forwarding.
+  * While a leg drains for maintenance mode (below) the peer lets the member's unicast for the bundle out on its leg,
+    but still drops broadcast and multicast from the tunnel towards it: the draining leg receives until the partner
+    stops sending on it. (Unknown unicast the partner sends to the draining leg in that window, at most about 2 s,
+    can reach the partner once more through the peer.)
 * **Traffic from other members** (stacks with more than two members): flooded traffic from a third member reaches
   both members of the pair on their own tunnels. For every MC-LAG bundle only one of them delivers broadcast and
   multicast: the primary while its leg is up, otherwise the secondary. Known unicast is delivered by the member it
@@ -1652,9 +1662,24 @@ As in a Junos Virtual Chassis, the routing protocols run **on the master** (the 
 * Protocol packets on an interface that lives on another member (a routed port or subinterface of member 2) are
   passed between that member and the master over the stacking protocol: OSPF and BFD packets are received on the
   member and handed to the master, and sent by the member on the master's behalf; a BGP session to an address of
-  that interface is relayed as a TCP stream. irb interfaces exist on every member: the master uses its own.
-* **BFD** sessions run on the member that owns the interface (an irb's on the master), so failure detection does not
-  depend on the stacking links; state changes go to the master.
+  that interface is relayed as a TCP stream.
+* **irb interfaces and MC-LAG bundles.** An irb exists on every member with the same address and MAC, and a
+  neighbour behind an MC-LAG (or any port of another member) reaches whichever member its frame arrives on.
+  Multicast protocol packets (OSPF hellos, flooded updates) reach the master anyway (the VLAN floods them through the
+  stack). Unicast protocol packets to the irb's address (OSPF to the neighbour's address, BFD, BGP) are consumed by the
+  member they arrive on, so every member that is not the master passes them to the master **as frames**: they enter
+  the stack tunnel to the master in their VLAN and the master's irb receives them as if they had arrived there (the
+  TCP session of BGP ends on the master, so TCP MD5 and TTL checks work unchanged). The same holds for a routed MC-LAG
+  bundle (`ae1.0` with legs on two members). Every routing protocol works over MC-LAG bundles: one neighbour, one
+  adjacency or session, whatever leg its packets take, and a leg failing is no event for the protocol.
+* **BFD** sessions run on the member that owns the interface, so failure detection does not depend on the stacking
+  links; state changes go to the master. A session over an irb or an MC-LAG bundle (no single owner) runs on the
+  master like the protocol it serves; its packets reach the master as above (milliseconds over the stacking links,
+  well within the detection time).
+* **ECMP**: equal-cost paths (OSPF, static routes with several next hops, BGP with `multipath`) are all installed, up
+  to 16 next hops per route; flows are spread by a hash over addresses and ports (layer 3+4, the kernel's
+  `fib_multipath_hash_policy` 1 for IPv4 and IPv6), so one flow always takes the same path. Unlike Junos, no
+  `load-balance per-packet` export policy is needed.
 * **Mastership change**: the members keep the installed protocol routes, marked stale, while the new master brings
   the sessions up again (at most the `graceful-restart` restart time, default 120 s). With graceful restart (on by
   default for OSPF, OSPFv3 and BGP) the neighbours keep forwarding to the switch meanwhile. Routes that are not

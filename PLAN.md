@@ -295,6 +295,12 @@ encryption is a per-link toggle. Leave it off on physically trusted direct cable
 by default would cap throughput at software-crypto speed on most hardware.
 
 ## 7. Code layout
+
+Target (requested 2026-10-03, STATUS.md): libraries under `lib/` as modules of their own (netdev, nft, hw,
+svc for process/service supervision, and the protocol cores lacp, rstp, lldp, bfd, ospf, rib, policy); programs
+`cmd/switchd`, `cmd/swcli`, `cmd/switchd-update`, `cmd/rtest` as separate modules; a go.work joins them. Each
+program builds alone. The layout below is the original one.
+
 ```
 cmd/switchd/        daemon
 cmd/swcli/          CLI client / login shell

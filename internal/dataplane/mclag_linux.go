@@ -36,6 +36,12 @@ type SplitHorizon struct {
 	Bundles []string // bundles whose peer leg is up
 	Thirds  []string // stack tunnels to members outside the domain
 	DF      []string // bundles whose broadcast/multicast from Thirds the primary delivers
+	// Draining: bundles whose peer leg leaves for maintenance mode. The
+	// peer sends its unicast for them through this member already, but its
+	// leg still receives until the partner stops sending, so broadcast and
+	// multicast from the peer (flooded frames the partner sent there, BPDUs
+	// among them) must not go back to the partner on this leg.
+	Draining []string
 }
 
 func quoteSet(names []string) string {
@@ -53,6 +59,9 @@ func SyncSplitHorizon(sh SplitHorizon) error {
 	var rules []string
 	if sh.Peer != "" && len(sh.Bundles) > 0 {
 		rules = append(rules, fmt.Sprintf("iifname %q oifname %s counter drop", sh.Peer, quoteSet(sh.Bundles)))
+	}
+	if sh.Peer != "" && len(sh.Draining) > 0 {
+		rules = append(rules, fmt.Sprintf("iifname %q oifname %s meta pkttype { broadcast, multicast } counter drop", sh.Peer, quoteSet(sh.Draining)))
 	}
 	if len(sh.Thirds) > 0 && len(sh.DF) > 0 {
 		rules = append(rules, fmt.Sprintf("iifname %s oifname %s meta pkttype { broadcast, multicast } counter drop", quoteSet(sh.Thirds), quoteSet(sh.DF)))

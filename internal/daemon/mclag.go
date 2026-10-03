@@ -53,7 +53,15 @@ type mclagCtl struct {
 	peerFacts  map[string]string // the peer's bundle facts (nil: not sent)
 	peerReady  map[string]int    // the peer's LACP-ready ports per bundle (minimum-links)
 	peerGroups []mcastKey        // the peer's multicast groups on MC-LAG bundles
-	groups     struct {
+	// peerJoining: the peer announced that its leg is about to forward
+	// (before its LACP enables the first port); filtered as up meanwhile.
+	peerJoining map[string]time.Time
+	// peerDraining: the peer's legs that leave for maintenance mode.
+	peerDraining map[string]bool
+	// shMu serialises computing and installing the split horizon (never
+	// held while the LACP runtime is called).
+	shMu   sync.Mutex
+	groups struct {
 		applied   map[mcastKey]bool
 		refreshed time.Time
 		busy      atomic.Bool
@@ -74,6 +82,15 @@ type mclagCtl struct {
 // this long before it leaves its bundle (the peer lets traffic from the
 // tunnel out on its own leg by then).
 const mclagDrainNotice = 300 * time.Millisecond
+
+// mclagJoinGrace: a leg the peer announced as joining counts as up this
+// long (its regular leg state reports it within a second).
+const mclagJoinGrace = 3 * time.Second
+
+// mclagJoinTimeout bounds the announcement of a joining leg: the peer
+// filters first, then the leg forwards (or after this, when the peer does
+// not answer).
+const mclagJoinTimeout = 300 * time.Millisecond
 
 // mclagInconsistentAfter: how long a bundle may differ from the peer's
 // before the secondary holds it.
@@ -96,6 +113,14 @@ type legsMsg struct {
 	// Groups: the multicast groups this member learned on its MC-LAG legs
 	// (installed on the peer's legs too, reference 5.5).
 	Groups []mcastKey `json:"groups,omitempty"`
+	// Draining: legs that leave for maintenance mode (reported down, but
+	// still receiving until the partner stops sending on them).
+	Draining []string `json:"draining,omitempty"`
+}
+
+// joiningMsg announces that a leg is about to forward.
+type joiningMsg struct {
+	Bundle string `json:"bundle"`
 }
 
 // mcastKey is a group membership of an MC-LAG bundle.
@@ -156,8 +181,34 @@ func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *
 			if d := m.domainLocked(); d != nil && m.peerOf(d) == from {
 				m.peerLegs, m.peerSeen, m.peerKnown = l.Legs, time.Now(), true
 				m.peerFacts, m.peerReady, m.peerGroups = l.Facts, l.Ready, l.Groups
+				m.peerDraining = map[string]bool{}
+				for _, b := range l.Draining {
+					m.peerDraining[b] = true
+				}
 			}
 			m.mu.Unlock()
+			return nil, nil
+		})
+		stack.node.Handle("mclag-leg-joining", func(from int, req json.RawMessage) (any, error) {
+			var j joiningMsg
+			if err := json.Unmarshal(req, &j); err != nil {
+				return nil, err
+			}
+			m.mu.Lock()
+			d := m.domainLocked()
+			ok := d != nil && m.peerOf(d) == from
+			if ok {
+				if m.peerJoining == nil {
+					m.peerJoining = map[string]time.Time{}
+				}
+				m.peerJoining[j.Bundle] = time.Now()
+			}
+			m.mu.Unlock()
+			if ok {
+				// Filter before answering: the peer's leg forwards after the
+				// answer.
+				m.installSplit(time.Now())
+			}
 			return nil, nil
 		})
 	}
@@ -370,27 +421,6 @@ func (m *mclagCtl) step(now time.Time) {
 	}
 	m.holds = newHolds
 
-	// Split horizon: while the peer's leg is up (unknown counts as up).
-	var split []string
-	for _, b := range bundles {
-		if up, ok := m.peerLegs[b]; !m.peerKnown || !ok || up {
-			split = append(split, b)
-		}
-	}
-	m.split = split
-
-	// Broadcast and multicast from third members: the secondary leaves
-	// bundles to the primary while the primary's leg is up.
-	var df []string
-	if !primary {
-		for _, b := range bundles {
-			if up, ok := m.peerLegs[b]; m.peerKnown && ok && up && reachable {
-				df = append(df, b)
-			}
-		}
-	}
-	sh := dataplane.SplitHorizon{Peer: dataplane.TunnelName(peer), Bundles: split, Thirds: m.thirdsLocked(d), DF: df}
-
 	// A leg changed (here or on the peer): addresses learned on the
 	// peer's tunnel may be behind a leg that went away; flush them.
 	state := fmt.Sprint(legs, m.peerLegs)
@@ -403,9 +433,12 @@ func (m *mclagCtl) step(now time.Time) {
 		}
 		m.drainFrom = map[string]time.Time{}
 	}
+	var draining []string
 	for b := range m.drainFrom {
 		legs[b] = false // reported down while it drains
+		draining = append(draining, b)
 	}
+	slices.Sort(draining)
 
 	// Tell the peer about our legs: on change and every second.
 	send := reachable && m.stack != nil && (!mapsEqualBool(legs, m.lastLegs) || !maps.Equal(ready, m.lastReady) ||
@@ -443,9 +476,7 @@ func (m *mclagCtl) step(now time.Time) {
 			m.log.Info("mclag: leg released", "bundle", b)
 		}
 	}
-	if err := dataplane.SyncSplitHorizon(sh); err != nil {
-		m.log.Warn("mclag: split horizon", "err", err)
-	}
+	m.installSplit(now)
 	m.releaseMoved(maintHeld)
 	if flush {
 		if n, err := dataplane.FlushLearned(peerTunnel); err == nil && n > 0 {
@@ -466,10 +497,97 @@ func (m *mclagCtl) step(now time.Time) {
 	if send {
 		go func() {
 			groups := localGroups(bundles)
-			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready, Groups: groups}, time.Second); err != nil {
+			if _, err := m.stack.node.Call(peer, "mclag-legs", legsMsg{Domain: domain, Legs: legs, Facts: facts, Ready: ready, Groups: groups, Draining: draining}, time.Second); err != nil {
 				m.log.Debug("mclag: leg state to the peer", "err", err)
 			}
 		}()
+	}
+}
+
+// installSplit computes the split horizon from the current state and
+// installs it. Computing and installing happen under shMu, so the last
+// installation always reflects the latest state (a joining announcement
+// cannot be overwritten by an older computation).
+func (m *mclagCtl) installSplit(now time.Time) {
+	m.shMu.Lock()
+	defer m.shMu.Unlock()
+	m.mu.Lock()
+	d := m.domainLocked()
+	if d == nil {
+		m.mu.Unlock()
+		return
+	}
+	peer := m.peerOf(d)
+	bundles := m.bundlesLocked(d)
+	in := splitInput{Bundles: bundles, PeerKnown: m.peerKnown, PeerLegs: m.peerLegs, Joining: m.peerJoining,
+		Draining: m.peerDraining, Primary: m.primaryLocked(d), Reachable: m.peerReachable(peer)}
+	split, drain, df := in.compute(now)
+	m.split = split
+	sh := dataplane.SplitHorizon{Peer: dataplane.TunnelName(peer), Bundles: split, Draining: drain, Thirds: m.thirdsLocked(d), DF: df}
+	m.mu.Unlock()
+	if err := dataplane.SyncSplitHorizon(sh); err != nil {
+		m.log.Warn("mclag: split horizon", "err", err)
+	}
+}
+
+// splitInput is what the split horizon depends on (reference 5.6).
+type splitInput struct {
+	Bundles   []string
+	PeerKnown bool
+	PeerLegs  map[string]bool
+	Joining   map[string]time.Time
+	Draining  map[string]bool
+	Primary   bool
+	Reachable bool
+}
+
+// compute returns the bundles whose traffic from the peer's tunnel is
+// dropped (split), those where only its broadcast and multicast is dropped
+// (drain: the peer's leg leaves for maintenance), and the bundles whose
+// broadcast and multicast from third members the primary delivers (df).
+//
+// The peer's leg counts as up while unknown, while it is up, and while the
+// peer announced it as joining: a leg must never forward while this member
+// lets the peer's traffic out on its own leg, or the partner's flooded
+// frames (BPDUs among them) come back to it through the stack.
+func (in splitInput) compute(now time.Time) (split, drain, df []string) {
+	for _, b := range in.Bundles {
+		up, ok := in.PeerLegs[b]
+		joining := !in.Joining[b].IsZero() && now.Sub(in.Joining[b]) < mclagJoinGrace
+		switch {
+		case !in.PeerKnown || !ok || up || joining:
+			split = append(split, b)
+		case in.Draining[b]:
+			drain = append(drain, b)
+		}
+		// Broadcast and multicast from third members: the secondary leaves
+		// bundles to the primary while the primary's leg is up.
+		if !in.Primary && in.PeerKnown && ok && up && in.Reachable {
+			df = append(df, b)
+		}
+	}
+	return split, drain, df
+}
+
+// beforeJoin announces to the peer that a leg is about to forward
+// (lacp.Runtime.BeforeJoin) and waits until the peer filters, at most
+// mclagJoinTimeout. Peers of earlier versions do not know the message;
+// they learn the leg state with the next regular message, as before.
+func (m *mclagCtl) beforeJoin(bundle string) {
+	m.mu.Lock()
+	d := m.domainLocked()
+	if d == nil || !slices.Contains(d.Bundles, bundle) || m.stack == nil {
+		m.mu.Unlock()
+		return
+	}
+	peer := m.peerOf(d)
+	reachable := m.peerReachable(peer)
+	m.mu.Unlock()
+	if !reachable {
+		return
+	}
+	if _, err := m.stack.node.Call(peer, "mclag-leg-joining", joiningMsg{Bundle: bundle}, mclagJoinTimeout); err != nil {
+		m.log.Debug("mclag: joining leg announced without answer", "bundle", bundle, "err", err)
 	}
 }
 

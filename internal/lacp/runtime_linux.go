@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,6 +51,12 @@ type Runtime struct {
 	// towards the partner can be moved elsewhere first. Called with the
 	// runtime locked; it must not call back.
 	BeforeLeave func(bundle string)
+	// BeforeJoin runs when a bundle is about to carry traffic again (its
+	// first port is enabled): the MC-LAG peer must filter traffic from the
+	// stack towards its own leg before this leg forwards, or the partner's
+	// frames come back to it through the stack. Called with the runtime
+	// locked; it must not call back, and it should return quickly.
+	BeforeJoin func(bundle string)
 
 	mu       sync.Mutex
 	bundles  map[string]*rtBundle
@@ -253,6 +260,9 @@ func (r *Runtime) enforce(rb *rtBundle) {
 				break
 			}
 		}
+	}
+	if len(dist) > 0 && r.BeforeJoin != nil && !slices.Contains(slices.Collect(maps.Values(rb.enabled)), true) {
+		r.BeforeJoin(rb.spec.Name)
 	}
 	for _, p := range rb.b.Ports() {
 		on := slices.Contains(dist, p)

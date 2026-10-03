@@ -178,6 +178,11 @@ func Run(ctx context.Context, o Options) error {
 			if m := mclagRef.Load(); m != nil {
 				m.beforeLeave(b)
 			}
+		},
+		BeforeJoin: func(b string) {
+			if m := mclagRef.Load(); m != nil {
+				m.beforeJoin(b)
+			}
 		}}
 	sysMAC := lacpSystemMAC(vc.StackID())
 	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}

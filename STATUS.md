@@ -183,6 +183,42 @@ Last updated: 2026-10-01 (evening).
 - VC guide review (docs/VC-Bestpractice-guide.pdf, read in full): docs/vc-guide-review.md lists the deviations and
   the questions for the user.
 
+## Requested 2026-10-03 (added to the routing plan of 2026-10-01)
+- **Modular code base.** Reusable libraries, and separate modules for the programs, so each one builds on its own:
+  - Libraries (pure, documented APIs, no switchd types): network devices through netlink (links, bonds/teams,
+    bridge ports and VLANs, VRFs, routes with protocol ids, FDB, neighbours), nftables tables, hardware state
+    (ethtool features, speeds, PCIe, sysfs inventory), process and service supervision (start, stop, watch,
+    restart external daemons and systemd units: sshd instance, getty, an out-of-process routing daemon if one is
+    ever needed), and the protocol cores (LACP, RSTP, LLDP, BFD, OSPF, RIB, policy, MKA later).
+  - Programs as separate modules: switchd, swcli (a binary of its own instead of the symlink; it needs only the RPC
+    client and the line editor, no netlink), the update daemon, rtest. A Go workspace (go.work) ties them together
+    while they live in one repository; later they can move into repositories of their own without code changes.
+  - Steps: (1) module path `mclag` -> the repository path; (2) move the libraries into `lib/...` with their own
+    go.mod, keeping internal/ for switchd-only code; (3) cmd/swcli and cmd/switchd-update as programs; (4) Makefile
+    targets per program (`make switchd`, `make swcli`, `make update`) and CI building each module alone;
+    (5) docs (README: the module map). Done between protocol steps, as one mechanical change with no behaviour
+    change (all tests green before and after).
+- **OSPFv3 with full IPv6** is part of the first version (as agreed): the OSPF core is written for both versions
+  from the start (address family per interface, link-local next hops, LSA types as 16-bit codes, instance ids),
+  OSPFv2 packet codec first, the OSPFv3 codec and LSAs right after.
+- **MC-LAG for every protocol** (reference 5.8 "Routing in a virtual chassis", corrected): OSPF/OSPFv3, BGP and BFD
+  over irb interfaces whose VLANs ride MC-LAG bundles, and over routed MC-LAG bundles: unicast protocol frames that
+  arrive on a member that is not the master are passed to the master through the stack tunnel (nft netdev
+  ingress, VLAN kept), so sessions end on the master and a leg failure is no protocol event. Tests: in-process
+  (two receive paths), docker interop with a partner bonded to two "members", lab with srv1 on an MC-LAG.
+  LACP already handles MC-LAG (5.6).
+- **ECMP** everywhere: the RIB keeps up to 16 equal-cost next hops (done), the kernel gets multipath routes (done),
+  OSPF SPF computes all equal-cost paths, BGP `multipath`/`multiple-as`, and switchd sets
+  `fib_multipath_hash_policy` = 1 (layer 3+4) for IPv4 and IPv6 (reference 5.8).
+- **MC-LAG loop (user report: an upstream switch shut ports for STP reasons).** Found and fixed 2026-10-03: a
+  joining leg forwarded before its peer filtered traffic from the stack towards its own leg (up to one 50 ms step
+  plus message time), and a draining leg (maintenance mode) kept receiving while the peer had lifted the filter. In
+  both windows the partner's flooded frames came back to it on the same bundle; with RSTP off the stack floods BPDUs,
+  so the partner saw its own BPDU and blocked the port. Now a joining leg is announced to the peer first
+  (lacp.Runtime.BeforeJoin -> RPC mclag-leg-joining, the peer installs the filter before answering, 300 ms
+  timeout), and a draining leg keeps broadcast/multicast filtered on the peer (legsMsg.Draining). Unit-tested;
+  to be checked in the lab with an external RSTP/STP switch on an MC-LAG (mstpd on srv1) once the harness works.
+
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in
   the mesh LSAs (0 byte; transit avoided where another path exists, never master), mastership handed on, MC-LAG legs
