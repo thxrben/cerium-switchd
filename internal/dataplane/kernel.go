@@ -35,6 +35,9 @@ type Kernel interface {
 	SyncMulticast(m *Multicast) (bool, error)
 	// SyncVXLAN converges the remote VTEPs of the VXLAN ports.
 	SyncVXLAN(remotes map[string][]netip.Addr) (bool, error)
+	// SyncPunt converges the redirection of protocol frames to the master
+	// (nil: none).
+	SyncPunt(p *Punt) (bool, error)
 }
 
 // Execute applies ops in order and stops at the first error.
@@ -55,6 +58,7 @@ type Fake struct {
 	VLANMTU   map[int]int
 	Multicast *Multicast
 	Remotes   map[string][]netip.Addr
+	Punt      *Punt
 }
 
 // NewFake returns a fake kernel holding a copy of s.
@@ -79,6 +83,12 @@ func (f *Fake) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 func (f *Fake) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 	changed := !reflect.DeepEqual(f.Remotes, remotes)
 	f.Remotes = remotes
+	return changed, nil
+}
+
+func (f *Fake) SyncPunt(p *Punt) (bool, error) {
+	changed := !reflect.DeepEqual(f.Punt, p)
+	f.Punt = p
 	return changed, nil
 }
 

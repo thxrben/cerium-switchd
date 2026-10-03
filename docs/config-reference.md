@@ -1774,6 +1774,14 @@ As in a Junos Virtual Chassis, the routing protocols run **on the master** (the 
   TCP session of BGP ends on the master, so TCP MD5 and TTL checks work unchanged). The same holds for a routed MC-LAG
   bundle (`ae1.0` with legs on two members). Every routing protocol works over MC-LAG bundles: one neighbour, one
   adjacency or session, whatever leg its packets take, and a leg failing is no event for the protocol.
+  * What is passed: OSPF (IP protocol 89), BFD (UDP 3784 and 4784) and BGP (TCP to or from port 179), IPv4 and IPv6,
+    in frames to the irb MAC on a VLAN that has an irb and that the port carries (a frame with another VLAN's tag is
+    not passed, so no client reaches another VLAN's irb). Everything else to the irb (routed traffic, ARP, ping) is
+    handled by the member it arrives on.
+  * The frame is not changed: source MAC (the neighbour's), destination MAC, IP packet and VLAN stay as they were;
+    an untagged frame of an access port or native VLAN carries its VLAN's tag in the tunnel, which the master's bridge
+    removes again. Mirroring still sees these frames on their port; storm control never limits them.
+  * A new master is used at once by every member (within a second of the election).
 * **BFD** sessions run on the member that owns the interface, so failure detection does not depend on the stacking
   links; state changes go to the master. A session over an irb or an MC-LAG bundle (no single owner) runs on the
   master like the protocol it serves; its packets reach the master as above (milliseconds over the stacking links,

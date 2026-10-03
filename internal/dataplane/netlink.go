@@ -40,6 +40,8 @@ type Netlink struct {
 	// L3Changes names the steps of the last SyncL3 that changed something.
 	L3Changes []string
 
+	puntMu    sync.Mutex
+	punted    map[string]string // port -> redirection installed (punt_linux.go)
 	protMu    sync.Mutex
 	protected string // nftables rules last installed by syncProtect
 	protInit  bool

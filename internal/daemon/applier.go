@@ -48,6 +48,10 @@ type kernelApplier struct {
 	// isMaster reports whether this member is the master (nil: standalone,
 	// always master); the management address lives there (reference 1.8).
 	isMaster func() bool
+	// masterID returns the master's member id (0: none or standalone);
+	// gatewayMAC is the stack's irb MAC (protocol redirection).
+	masterID   func() int
+	gatewayMAC net.HardwareAddr
 	// live is fed by the watch loop (nil: not watched).
 	live *sdnotify.Liveness
 	// cmeMAC is the stack-wide MAC address of cme.
@@ -288,6 +292,18 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		a.log.Error("multicast snooping", "err", err)
 	} else if changed {
 		a.log.Log(context.Background(), level, "multicast snooping updated", "reason", reason)
+	}
+	// Routing protocol frames for the irbs go to the master unchanged
+	// (reference 5.8): on the other members, after the ports and tunnels
+	// exist.
+	master := 0
+	if a.masterID != nil {
+		master = a.masterID()
+	}
+	if changed, err := a.kernel.SyncPunt(dataplane.ComputePunt(cfg, desired, a.member, master, a.gatewayMAC)); err != nil {
+		a.log.Error("protocol redirection to the master", "err", err)
+	} else if changed {
+		a.log.Log(context.Background(), level, "protocol redirection to the master updated", "reason", reason, "master", master)
 	}
 	// Port mirroring (forwarding-options analyzer): after the devices exist.
 	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, a.names.Linux)); err != nil {

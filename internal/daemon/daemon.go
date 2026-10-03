@@ -255,6 +255,7 @@ func Run(ctx context.Context, o Options) error {
 			services.setConfig(daemon, v)
 		}}
 	applier.isMaster = mgmt.master
+	applier.gatewayMAC = kernel.GatewayMAC
 	applier.stackPort = vc.IsPort
 	if !o.DryRun {
 		applier.cmeMAC = dataplane.CMEMAC(vc.StackID())
@@ -305,7 +306,26 @@ func Run(ctx context.Context, o Options) error {
 			}()
 		}
 		ctl.live = live
+		applier.masterID = ctl.node.Master
 		go ctl.run(ctx)
+		// A new master: the protocol frames for the irbs go to it at once
+		// (every member, not only the old and the new master).
+		go func() {
+			t := time.NewTicker(500 * time.Millisecond)
+			defer t.Stop()
+			last := ctl.node.Master()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				if m := ctl.node.Master(); m != last {
+					last = m
+					applier.reconcile("master changed")
+				}
+			}
+		}()
 	}
 	// Notices for the CLI sessions of the whole stack: the sessions run on
 	// the master (reference 1.8).
