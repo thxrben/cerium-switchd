@@ -546,17 +546,41 @@ func replaceConfigAs(stateDir, backup, comment string, cfg json.RawMessage) erro
 // wantedDaemons reports which daemons that do not always run are needed by
 // the active configuration (reference 1.9).
 func wantedDaemons(engine *commit.Engine) map[string]bool {
-	out := map[string]bool{}
 	cfg, _ := model.Build(engine.Active().Active(), nil)
+	return wantedBy(cfg)
+}
+
+// wantedBy reports the daemons a configuration needs that do not always
+// run: the routing protocols that are configured, BFD when one of them
+// uses it.
+func wantedBy(cfg *model.Config) map[string]bool {
+	out := map[string]bool{}
 	if cfg == nil {
 		return out
 	}
 	for _, r := range cfg.AllRouting() {
-		if r.OSPF != nil && !r.OSPF.Disabled || r.OSPF3 != nil && !r.OSPF3.Disabled {
+		for _, o := range []*model.OSPF{r.OSPF, r.OSPF3} {
+			if o == nil || o.Disabled {
+				continue
+			}
 			out["cer-ospfd"] = true
+			for _, a := range o.Areas {
+				for _, i := range a.Interfaces {
+					if i.BFD != nil {
+						out["cer-bfdd"] = true
+					}
+				}
+			}
 		}
 		if r.BGP != nil && !r.BGP.Disabled {
 			out["cer-bgpd"] = true
+			for _, g := range r.BGP.Groups {
+				for _, n := range g.Neighbors {
+					if n.BFD != nil && !n.Disabled {
+						out["cer-bfdd"] = true
+					}
+				}
+			}
 		}
 	}
 	return out
