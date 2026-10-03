@@ -48,6 +48,8 @@ type kernelApplier struct {
 	// isMaster reports whether this member is the master (nil: standalone,
 	// always master); the management address lives there (reference 1.8).
 	isMaster func() bool
+	// blocked returns the interfaces bpdu-block shut down (nil: none).
+	blocked func() map[string]bool
 	// masterID returns the master's member id (0: none or standalone);
 	// gatewayMAC is the stack's irb MAC (protocol redirection).
 	masterID   func() int
@@ -220,6 +222,18 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	desired, notes := dataplane.Compute(cfg, a.member, a.names.Linux)
 	for _, n := range notes {
 		a.log.Warn("data plane", "note", n)
+	}
+	// Ports shut down by bpdu-block stay down until cleared.
+	if a.blocked != nil {
+		for n := range a.blocked() {
+			dev := n
+			if l, ok := a.names.Linux(n); ok {
+				dev = l
+			}
+			if l := desired.Links[dev]; l != nil {
+				l.Up = false
+			}
+		}
 	}
 	owned := a.loadOwned()
 	var unconf []string

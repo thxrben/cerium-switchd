@@ -160,7 +160,7 @@ func TestWarnings(t *testing.T) {
 		{"set interfaces 1/0/3 mtu 1500\nset vlans storage mtu 9000", "larger frames are dropped"},
 		{"set interfaces ae1 aggregated-ether-options minimum-links 4", "can never come up"},
 		{"set system login user bob class operator", "cannot log in"},
-		{"set protocols layer2-control bpdu-block interface 1/0/3", "bpdu-block is not implemented yet"},
+		{"set protocols layer2-control bpdu-block interface 1/0/3\nset protocols rstp interface 1/0/3", "runs RSTP as a non-edge port"},
 		{"set system services web-management port 8443", "web-management is not implemented yet"},
 		{"set switch-options vxlan remote-vtep 10.9.9.9", "no vni listed"},
 		{"set interfaces 1/0/8", "1/0/8 is a plain port"},

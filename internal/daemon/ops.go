@@ -1013,3 +1013,26 @@ func (o *ops) ClearOSPF(v ospf.Version, instance string, nbr netip.Addr) (int, e
 	err := o.svc.call(ctx, "cer-ospfd", ospfd.MethodClear, ospfd.ClearRequest{Version: v, Instance: instance, Neighbor: nbr}, &n)
 	return n, err
 }
+
+// ClearBPDU re-enables a port of this member shut down by bpdu-block.
+func (o *ops) ClearBPDU(iface string) (int, error) {
+	if o.svc == nil {
+		return 0, errors.New("not available (dry-run mode?)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var n int
+	err := o.svc.call(ctx, "cer-rstpd", stp.MethodClearBPDU, iface, &n)
+	return n, err
+}
+
+// ClearSTP is clear spanning-tree protocol-migration|statistics (cer-rstpd
+// passes it to the RSTP owner).
+func (o *ops) ClearSTP(migration bool, port string) error {
+	if o.svc == nil {
+		return errors.New("not available (dry-run mode?)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return o.svc.call(ctx, "cer-rstpd", stp.MethodClear, stp.ClearRequest{Migration: migration, Port: port}, nil)
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -186,6 +187,13 @@ func New(member int, stack Stack, stateDir string, log *slog.Logger) *Controller
 		})
 		stack.Handle("rstp-status", func(from int, req json.RawMessage) (any, error) {
 			return r.localStatus(), nil
+		})
+		stack.Handle("rstp-clear", func(from int, req json.RawMessage) (any, error) {
+			var c ClearRequest
+			if err := json.Unmarshal(req, &c); err != nil {
+				return nil, err
+			}
+			return nil, r.clearLocal(c)
 		})
 	}
 	return r
@@ -945,4 +953,51 @@ func (r *Controller) Status() (Status, error) {
 	}
 	var st Status
 	return st, json.Unmarshal(raw, &st)
+}
+
+// MethodClear (ClearRequest) is served by cer-rstpd.
+const MethodClear = "stp.clear"
+
+// ClearRequest is clear spanning-tree protocol-migration|statistics.
+type ClearRequest struct {
+	Migration bool   `json:"migration,omitempty"` // false: statistics
+	Port      string `json:"port,omitempty"`      // "": every port
+}
+
+// Clear runs a clear command on the owner (the state machines are there).
+func (r *Controller) Clear(c ClearRequest) error {
+	r.mu.Lock()
+	owner := r.ownerLocked()
+	r.mu.Unlock()
+	if owner == r.member || r.stack == nil {
+		return r.clearLocal(c)
+	}
+	_, err := r.stack.Call(owner, "rstp-clear", c, 2*time.Second)
+	return err
+}
+
+func (r *Controller) clearLocal(c ClearRequest) error {
+	r.mu.Lock()
+	if r.br == nil {
+		r.mu.Unlock()
+		return errors.New("RSTP is not running")
+	}
+	if !c.Migration {
+		r.br.ClearStatistics()
+		r.mu.Unlock()
+		return nil
+	}
+	num := uint16(0)
+	if c.Port != "" {
+		n, ok := r.numbers[c.Port]
+		if !ok {
+			r.mu.Unlock()
+			return fmt.Errorf("%s is not an RSTP port", c.Port)
+		}
+		num = n
+	}
+	r.br.Mcheck(num)
+	r.mu.Unlock()
+	r.dispatch() // the BPDUs it sends go out through the members
+	return nil
 }

@@ -19,6 +19,11 @@ type Config struct {
 	Bridge        BridgeConfig    `json:"bridge"`
 	Ports         map[string]Port `json:"ports,omitempty"`
 	SwitchMembers []int           `json:"switch_members,omitempty"`
+	// BPDUBlock: protocols layer2-control bpdu-block, the listed
+	// interfaces of this member with their devices; BPDUTimeout its
+	// disable-timeout in seconds (0: until cleared).
+	BPDUBlock   map[string]string `json:"bpdu_block,omitempty"`
+	BPDUTimeout int               `json:"bpdu_timeout,omitempty"`
 }
 
 // BridgeConfig is protocols rstp's bridge settings.

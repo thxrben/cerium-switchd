@@ -1430,6 +1430,8 @@ func registerOperational() {
 		{name: "system", help: "Clear system state", class: commit.SuperUser, sub: []*command{
 			{name: "reboot", help: "Cancel a scheduled reboot, halt or power-off", class: commit.SuperUser, run: (*Shell).cancelPower},
 		}},
+		clearErrorCommand(),
+		clearSTPCommand(),
 		clearOSPFCommand(ospf.V2),
 		clearOSPFCommand(ospf.V3),
 	}})

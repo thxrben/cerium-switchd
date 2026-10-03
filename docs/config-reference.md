@@ -1540,10 +1540,11 @@ protocols igmp-snooping {
   another address, or none: flooding) and the multicast-router ports.
 
 #### `protocols layer2-control bpdu-block { interface [ <if> … ]; disable-timeout <s>; }`
-*Not implemented yet* (W at commit: the listed ports are not protected yet).
 BPDU protection. It works with or without RSTP. A listed port that receives any BPDU (STP/RSTP/MSTP, or Cisco PVST+
 `01:00:0c:cc:cc:cd`) is **shut down immediately**, an alarm is raised, and a syslog `error` is sent.
 * The port stays down until `clear error bpdu interface <if>`, or until `disable-timeout` seconds have passed (if set).
+  The shutdown survives restarts of the daemons and of the switch software. The member the port belongs to watches
+  it (cer-rstpd, also without RSTP); `clear error bpdu` runs there by itself.
 * On an `ae`, the whole bundle is shut down.
 * E: the interface is not configured or is a bundle member.
 * W: the port runs RSTP as a non-edge port (any neighbouring switch would shut it down).
@@ -2281,7 +2282,6 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `system login`, `system services ssh`, `system ports`, host names, resolver, NTP, syslog | implemented and lab tested; kernel messages not yet forwarded to syslog; `system login message` not yet on serial consoles |
 | Stacking (transport, TLS, relay, BFD, stack tunnels, join/remove, force-master, maintenance mode, software updates) | implemented, lab tested |
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
-| `protocols layer2-control bpdu-block` | not implemented (W at commit) |
 | `system services web-management` | not implemented (W at commit) |
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |

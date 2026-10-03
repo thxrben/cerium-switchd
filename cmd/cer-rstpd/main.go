@@ -18,6 +18,9 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
 )
 
+// MethodClearSTP is clear spanning-tree protocol-migration|statistics.
+const MethodClearSTP = stp.MethodClear
+
 func main() { daemonkit.Main("cer-rstpd", setup) }
 
 // kitStack is stp.Stack over switchd's relay.
@@ -82,16 +85,54 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return out
 	}
+	// bpdu-block (reference 5.5): switchd follows the blocked ports.
+	guard := stp.NewGuard(stp.LinuxGuardIO{}, stp.GuardStateFile(k.StateDir), k.Log)
+	guard.Publish = func(m map[string]stp.Blocked) {
+		v := map[string]any{}
+		for n, b := range m {
+			v[n] = b
+		}
+		k.Endpoint.Replace(stp.TopicBPDUBlocked, v)
+	}
+	guard.Alarm = func(text string) { go k.Notify(fmt.Sprintf("member %d: %s", k.Member, text)) }
+	guard.Publish(guard.Blocked())
+	k.Endpoint.Handle(stp.MethodClearBPDU, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var name string
+		if err := json.Unmarshal(raw, &name); err != nil {
+			return nil, err
+		}
+		return guard.Clear(name), nil
+	})
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-k.Ctx.Done():
+				return
+			case <-t.C:
+				guard.Tick()
+			}
+		}
+	}()
 	k.OnConfig(func(raw json.RawMessage) {
 		var c stp.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return
 		}
+		guard.SetConfig(c.BPDUBlock, time.Duration(c.BPDUTimeout)*time.Second)
 		ctl.SetConfig(&c)
 	})
 	k.Endpoint.Handle(svc.MethodStatus, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
 		return ctl.Status()
+	})
+	k.Endpoint.Handle(MethodClearSTP, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var c stp.ClearRequest
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return nil, err
+		}
+		return nil, ctl.Clear(c)
 	})
 	go ctl.Run(k.Ctx)
 	return nil

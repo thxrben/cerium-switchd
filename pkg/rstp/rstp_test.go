@@ -348,3 +348,37 @@ func TestRingFailure(t *testing.T) {
 		t.Errorf("B's root port is %v", n.port("B", 2).Role)
 	}
 }
+
+// The 802.1D neighbour was replaced by an RSTP bridge: protocol migration
+// (mcheck) makes the port send RSTP BPDUs again; statistics clear.
+func TestMcheck(t *testing.T) {
+	n := newNet(t)
+	a := n.add("A", 32768, 1)
+	a.AddPort(1, p2p())
+	a.SetEnabled(1, true)
+	stp := &BPDU{Type: TypeConfig, Priority: Vector{Root: MakeBridgeID(61440, [6]byte{9}), Bridge: MakeBridgeID(61440, [6]byte{9}), Port: MakePortID(128, 1)},
+		Times: Times{MaxAge: 20, HelloTime: 2, ForwardDelay: 15}}
+	var sent []*BPDU
+	a.cb.Send = func(port uint16, b *BPDU) { sent = append(sent, b) }
+	for i := 0; i < 10; i++ {
+		b, _ := ParseFrame(stp.Frame([6]byte{9}))
+		a.Receive(1, b)
+		a.Tick()
+	}
+	if a.ports[1].SendRSTP {
+		t.Fatal("did not fall back to STP")
+	}
+	// The STP neighbour is gone; mcheck.
+	a.Mcheck(1)
+	sent = nil
+	for i := 0; i < 3; i++ {
+		a.Tick()
+	}
+	if !a.ports[1].SendRSTP || len(sent) == 0 || sent[len(sent)-1].Type != TypeRST {
+		t.Fatalf("after mcheck: SendRSTP %v, sent %d", a.ports[1].SendRSTP, len(sent))
+	}
+	a.ClearStatistics()
+	if a.ports[1].RxBPDUs != 0 || a.ports[1].TxBPDUs != 0 {
+		t.Fatal("counters not cleared")
+	}
+}

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"slices"
+
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/stp"
 )
@@ -10,6 +12,22 @@ import (
 // aggregated interfaces), with this member's devices.
 func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool), stackID string) stp.Config {
 	c := stp.Config{Member: member, StackID: stackID, SwitchMembers: cfg.SwitchMembers(), Ports: map[string]stp.Port{}}
+	// bpdu-block works with and without RSTP.
+	for _, n := range cfg.BPDUBlock.Interfaces {
+		i := cfg.Interfaces[n]
+		if i == nil {
+			continue
+		}
+		switch {
+		case i.AE && slices.Contains(i.MemberIDs, member):
+			c.BPDUBlock = setKey(c.BPDUBlock, n, n)
+		case !i.AE && i.Member == member:
+			if dev, ok := linux(n); ok {
+				c.BPDUBlock = setKey(c.BPDUBlock, n, dev)
+			}
+		}
+	}
+	c.BPDUTimeout = cfg.BPDUBlock.DisableTimeout
 	if cfg.RSTP == nil {
 		return c
 	}
@@ -54,4 +72,12 @@ func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool),
 		c.Ports[n] = p
 	}
 	return c
+}
+
+func setKey(m map[string]string, k, v string) map[string]string {
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[k] = v
+	return m
 }

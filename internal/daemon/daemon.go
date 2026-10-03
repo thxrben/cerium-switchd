@@ -22,6 +22,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
+	"github.com/thxrben/cerium-switchd/internal/stp"
 
 	"golang.org/x/sys/unix"
 
@@ -184,6 +185,18 @@ func Run(ctx context.Context, o Options) error {
 	dhcpLeases := services.follow("cer-dhcpcd", svc.TopicLeases, func(map[string]json.RawMessage) {
 		go applier.reconcile("dhcp lease")
 	})
+	// bpdu-block (reference 5.5): cer-rstpd decides, switchd keeps the
+	// blocked ports down.
+	bpduBlocked := services.follow("cer-rstpd", stp.TopicBPDUBlocked, func(map[string]json.RawMessage) {
+		go applier.reconcile("bpdu-block")
+	})
+	applier.blocked = func() map[string]bool {
+		out := map[string]bool{}
+		for n := range bpduBlocked.State() {
+			out[n] = true
+		}
+		return out
+	}
 	started := time.Now()
 	if !o.DryRun {
 		kernel.DHCP = func(ifs []dataplane.DHCPIf) map[string]dataplane.DHCPLease {

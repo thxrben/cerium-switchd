@@ -622,9 +622,6 @@ func speedName(mbps int) string {
 // effect yet (reference 8).
 func (b *builder) notImplemented() {
 	r := b.root
-	if len(b.cfg.BPDUBlock.Interfaces) > 0 {
-		b.warnf("protocols layer2-control bpdu-block", "bpdu-block is not implemented yet: the listed ports are not protected")
-	}
 	if r.Get("system", "services", "web-management") != nil {
 		b.warnf("system services web-management", "web-management is not implemented yet: the statement has no effect")
 	}

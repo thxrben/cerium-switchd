@@ -1277,3 +1277,22 @@ func (b *Bridge) Numbers() []uint16 {
 	slices.Sort(out)
 	return out
 }
+
+// Mcheck makes a port send RSTP BPDUs again after it fell back to 802.1D
+// (the neighbour was replaced; protocol migration, IEEE 802.1D-2004
+// 17.19.13). 0: every port.
+func (b *Bridge) Mcheck(number uint16) {
+	for _, p := range b.sorted() {
+		if number == 0 || p.Number == number {
+			p.Mcheck = true
+		}
+	}
+	b.run()
+}
+
+// ClearStatistics zeroes the BPDU counters of every port.
+func (b *Bridge) ClearStatistics() {
+	for _, p := range b.sorted() {
+		p.RxBPDUs, p.TxBPDUs = 0, 0
+	}
+}

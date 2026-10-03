@@ -367,3 +367,45 @@ func (sh *Shell) chassisCard(c *call) error {
 	c.out.WriteString("done\n")
 	return nil
 }
+
+// STPClearer is implemented by members running cer-rstpd.
+type STPClearer interface {
+	// ClearSTP is clear spanning-tree protocol-migration (port "": all)
+	// or statistics.
+	ClearSTP(migration bool, port string) error
+}
+
+// clearSTPCommand is "clear spanning-tree protocol-migration [interface
+// <if>]" and "clear spanning-tree statistics" (reference 5.5).
+func clearSTPCommand() *command {
+	run := func(migration bool) func(*Shell, *call) error {
+		return func(sh *Shell, c *call) error {
+			o, ok := sh.env.Ops.(STPClearer)
+			if sh.env.Ops == nil || !ok {
+				return errors.New("RSTP is not available")
+			}
+			port := ""
+			switch {
+			case len(c.args) == 0:
+			case migration && len(c.args) == 2 && prefixOf(c.args[0].Text, "interface"):
+				port = c.args[1].Text
+			default:
+				return &posError{pos: c.argPos(0), msg: "syntax error"}
+			}
+			if err := o.ClearSTP(migration, port); err != nil {
+				return err
+			}
+			if migration {
+				c.out.WriteString("RSTP BPDUs are sent again\n")
+			} else {
+				c.out.WriteString("RSTP statistics cleared\n")
+			}
+			return nil
+		}
+	}
+	return &command{name: "spanning-tree", help: "Clear spanning tree (RSTP) state", class: commit.Operator, sub: []*command{
+		{name: "protocol-migration", help: "Send RSTP BPDUs again on ports that fell back to 802.1D", class: commit.Operator,
+			run: run(true), complete: words(Completion{Text: "interface", Help: "One port"})},
+		{name: "statistics", help: "Zero the BPDU counters", class: commit.Operator, run: run(false)},
+	}}
+}
