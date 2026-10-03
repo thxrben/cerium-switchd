@@ -14,6 +14,9 @@ const (
 	LongTimeout   = 90 * time.Second
 	AggregateWait = 2 * time.Second
 	maxTxPerFast  = 3 // LACPDUs per FastPeriodic interval
+	// deafAfter: our LACPDUs sent before a partner that does not name us
+	// counts as not receiving them.
+	deafAfter = 3
 )
 
 // Config is the actor configuration of one bundle.
@@ -75,6 +78,11 @@ type Port struct {
 	// than ShortTimeout apart (it ignores the request to send every
 	// second), so this side keeps timing out.
 	slowPartner bool
+	// deafPartner: the partner's LACPDUs do not name this port although
+	// we sent it several: ours do not reach it (cable, transmit path or
+	// the partner's port). txSinceUp counts our LACPDUs since link up.
+	deafPartner bool
+	txSinceUp   int
 }
 
 // Stats counts LACPDUs of a port.
@@ -94,6 +102,8 @@ type PortStatus struct {
 	// SlowPartner: the partner sends less often than `periodic fast`
 	// needs (configure `periodic slow`).
 	SlowPartner bool
+	// PartnerDeaf: the partner does not receive this side's LACPDUs.
+	PartnerDeaf bool
 }
 
 // BundleStatus is a bundle for "show lacp".
@@ -181,7 +191,20 @@ func (b *Bundle) actorInfo(p *Port) Info {
 func (b *Bundle) SlowPartners() []string {
 	var out []string
 	for _, n := range b.Ports() {
-		if p := b.ports[n]; p.slowPartner && b.cfg.Fast {
+		// A deaf partner sends slowly because it never got our request.
+		if p := b.ports[n]; p.slowPartner && b.cfg.Fast && !p.deafPartner {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// DeafPartners lists the ports whose partner does not receive our
+// LACPDUs.
+func (b *Bundle) DeafPartners() []string {
+	var out []string
+	for _, n := range b.Ports() {
+		if b.ports[n].deafPartner {
 			out = append(out, n)
 		}
 	}
@@ -195,6 +218,7 @@ func (b *Bundle) SetLink(name string, up bool, now time.Time) {
 		return
 	}
 	p.up = up
+	p.deafPartner, p.txSinceUp = false, 0
 	if !up {
 		p.lastRx = time.Time{}
 		p.rx = RxPortDisabled
@@ -243,6 +267,12 @@ func (b *Bundle) Receive(name string, pdu *PDU, now time.Time) {
 	}
 	p.lastRx = now
 	actor := b.actorInfo(p)
+	switch pp := pdu.Partner; {
+	case pp.System == actor.System && pp.Port == actor.Port && pp.Key == actor.Key:
+		p.deafPartner = false
+	case p.txSinceUp >= deafAfter:
+		p.deafPartner = true
+	}
 	// updateNTT: the partner's view of us is outdated.
 	pp := pdu.Partner
 	const mask = Activity | Timeout | Sync | Aggregation
@@ -449,6 +479,7 @@ func (b *Bundle) transmit(p *Port, now time.Time) {
 	p.txTimes = append(p.txTimes, now)
 	p.ntt = false
 	p.stats.TxPDUs++
+	p.txSinceUp++
 	b.send(p.Name, &PDU{Actor: b.actorInfo(p), Partner: p.partner})
 }
 
@@ -470,7 +501,7 @@ func (b *Bundle) Status() []PortStatus {
 	for _, n := range b.Ports() {
 		p := b.ports[n]
 		out = append(out, PortStatus{Name: n, Actor: b.actorInfo(p), Partner: p.partner, Rx: p.rx, Mux: p.mux, Selected: p.selected, Stats: p.stats,
-			SlowPartner: p.slowPartner && b.cfg.Fast})
+			SlowPartner: p.slowPartner && b.cfg.Fast && !p.deafPartner, PartnerDeaf: p.deafPartner})
 	}
 	return out
 }

@@ -78,6 +78,7 @@ type rtBundle struct {
 	// both members' ports).
 	peerReady  int
 	slowWarned map[string]bool
+	deafWarned map[string]bool
 }
 
 type rtSock struct {
@@ -254,6 +255,23 @@ func (r *Runtime) enforce(rb *rtBundle) {
 			}
 			rb.slowWarned[p] = true
 			r.Log.Warn("lacp: the partner sends LACPDUs less often than 'periodic fast' needs; this side times out and the port cannot stay in the bundle. Configure 'aggregated-ether-options lacp periodic slow'",
+				"bundle", rb.spec.Name, "port", r.portName(rb, p))
+		}
+	}
+	deaf := rb.b.DeafPartners()
+	for p := range rb.deafWarned {
+		if !slices.Contains(deaf, p) {
+			delete(rb.deafWarned, p)
+			r.Log.Info("lacp: the partner receives our LACPDUs again", "bundle", rb.spec.Name, "port", r.portName(rb, p))
+		}
+	}
+	for _, p := range deaf {
+		if !rb.deafWarned[p] {
+			if rb.deafWarned == nil {
+				rb.deafWarned = map[string]bool{}
+			}
+			rb.deafWarned[p] = true
+			r.Log.Warn("lacp: the partner does not receive our LACPDUs (its LACPDUs do not name this port): check the cable, this port's transmit path and the partner's port",
 				"bundle", rb.spec.Name, "port", r.portName(rb, p))
 		}
 	}

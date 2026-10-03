@@ -383,3 +383,35 @@ func TestPartnerIgnoresFast(t *testing.T) {
 		t.Errorf("still slow: %v", got)
 	}
 }
+
+// TestDeafPartner: our LACPDUs do not reach the partner (one direction of
+// the cable broken, physw4 1/0/2): reported as such, not as a slow
+// partner, and repaired once they arrive.
+func TestDeafPartner(t *testing.T) {
+	s := newSim()
+	a := s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1")
+	b := s.add("B", Config{System: sys(2), Key: 66, Active: true, Fast: false}, "p1")
+	s.cut["A/p1"] = true // A -> B lost, B -> A works
+	s.connect("A/p1", "B/p1")
+	s.run(120 * time.Second)
+	if got := a.DeafPartners(); len(got) != 1 {
+		t.Fatalf("deaf partner not reported: %v %+v", got, a.Status())
+	}
+	if got := a.SlowPartners(); len(got) != 0 {
+		t.Errorf("a deaf partner reported as slow: %v", got)
+	}
+	if st := a.Status()[0]; !st.PartnerDeaf || st.SlowPartner {
+		t.Errorf("status: %+v", st)
+	}
+	if len(dist(a)) != 0 || len(dist(b)) != 0 {
+		t.Errorf("distributing with one direction broken")
+	}
+	delete(s.cut, "A/p1")
+	s.run(70 * time.Second)
+	if got := a.DeafPartners(); len(got) != 0 {
+		t.Errorf("still deaf after repair: %v", got)
+	}
+	if len(dist(a)) != 1 || len(dist(b)) != 1 {
+		t.Errorf("not distributing after repair: %+v", a.Status())
+	}
+}

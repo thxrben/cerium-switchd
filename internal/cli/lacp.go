@@ -111,6 +111,9 @@ func (sh *Shell) showLACP(c *call) error {
 			}
 		}
 		for _, p := range b.Ports {
+			if p.PartnerDeaf {
+				fmt.Fprintf(c.out, "    Warning: the partner of %s does not receive our LACPDUs (its LACPDUs do not name this port); check the cable, this port's transmit path and the partner's port\n", b.PortNames[p.Name])
+			}
 			if p.SlowPartner {
 				fmt.Fprintf(c.out, "    Warning: the partner of %s sends LACPDUs less often than 'periodic fast' needs; configure 'lacp periodic slow'\n", b.PortNames[p.Name])
 			}
