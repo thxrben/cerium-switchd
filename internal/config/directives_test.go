@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 func resolve(t *testing.T, mode ResolveMode, path string) []Step {

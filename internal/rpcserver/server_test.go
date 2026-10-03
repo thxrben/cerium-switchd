@@ -1,8 +1,9 @@
-package rpc
+package rpcserver
 
 import (
 	"context"
 	"errors"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"io"
 	"log/slog"
 	"net"
@@ -13,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"mclag/internal/cli"
-	"mclag/internal/commit"
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 type nopApplier struct{}
@@ -33,7 +34,7 @@ type handler struct {
 	lost    chan struct{}
 }
 
-func (h *handler) Disconnected(*Client) {
+func (h *handler) Disconnected(*rpc.Client) {
 	if h.lost != nil {
 		close(h.lost)
 	}
@@ -109,7 +110,7 @@ func allow(uid int, name string) (commit.Class, error) {
 func TestSession(t *testing.T) {
 	path, srv := startServer(t, allow)
 	h := &handler{files: map[string][]byte{"in.conf": []byte("set vlans v vlan-id 5\n")}}
-	c, err := Dial(path, h)
+	c, err := rpc.Dial(path, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestSession(t *testing.T) {
 	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1> ") || c.Class != "super-user" {
 		t.Errorf("prompt %q class %q", p, c.Class)
 	}
-	exec := func(line string) Msg {
+	exec := func(line string) rpc.Msg {
 		t.Helper()
 		m, err := c.Exec(line)
 		if err != nil {
@@ -176,8 +177,8 @@ func TestRejected(t *testing.T) {
 	path, _ := startServer(t, func(int, string) (commit.Class, error) {
 		return 0, errors.New("user nobody is not configured")
 	})
-	_, err := Dial(path, &handler{})
-	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "not configured") {
+	_, err := rpc.Dial(path, &handler{})
+	if !errors.Is(err, rpc.ErrRejected) || !strings.Contains(err.Error(), "not configured") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -186,7 +187,7 @@ func TestDisconnectDuringQuestion(t *testing.T) {
 	path, _ := startServer(t, allow)
 	blocked := make(chan struct{})
 	h := &blockingHandler{handler: handler{files: map[string][]byte{}}, blocked: blocked}
-	c, err := Dial(path, h)
+	c, err := rpc.Dial(path, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,7 @@ func TestDisconnectDuringQuestion(t *testing.T) {
 		t.Fatal("question not asked")
 	}
 	c.Close() // the server must clean up the session
-	c2, err := Dial(path, &handler{files: map[string][]byte{}})
+	c2, err := rpc.Dial(path, &handler{files: map[string][]byte{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,12 +225,12 @@ func (h *blockingHandler) Ask(string, bool) (string, error) {
 func TestMultiUserNotices(t *testing.T) {
 	path, _ := startServer(t, allow)
 	ha, hb := &handler{}, &handler{}
-	a, err := Dial(path, ha)
+	a, err := rpc.Dial(path, ha)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	b, err := Dial(path, hb)
+	b, err := rpc.Dial(path, hb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +282,7 @@ func TestMultiUserNotices(t *testing.T) {
 func TestDisconnected(t *testing.T) {
 	path, srv := startServer(t, allow)
 	h := &handler{lost: make(chan struct{})}
-	c, err := Dial(path, h)
+	c, err := rpc.Dial(path, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,14 +300,14 @@ func TestDisconnected(t *testing.T) {
 	}
 	// Close does not report a disconnect.
 	h2 := &handler{lost: make(chan struct{})}
-	c2, _ := Dial(path, h2)
+	c2, _ := rpc.Dial(path, h2)
 	c2.Close()
 	select {
 	case <-h2.lost:
 		t.Error("Disconnected after Close")
 	case <-time.After(100 * time.Millisecond):
 	}
-	if _, err := Offline("x> ").Exec("show"); !errors.Is(err, ErrOffline) {
+	if _, err := rpc.Offline("x> ").Exec("show"); !errors.Is(err, rpc.ErrOffline) {
 		t.Errorf("offline: %v", err)
 	}
 }
@@ -354,7 +355,7 @@ func TestRelayToMaster(t *testing.T) {
 		member.Synced = func(rev uint64) { mu.Lock(); synced = rev; mu.Unlock() }
 	})
 	h := &handler{files: map[string][]byte{}}
-	c, err := Dial(path, h)
+	c, err := rpc.Dial(path, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +363,7 @@ func TestRelayToMaster(t *testing.T) {
 	if p, _ := c.State(); !strings.HasSuffix(p, "@sw1> ") {
 		t.Fatalf("session not on the master from the start: prompt %q", p)
 	}
-	exec := func(line string) Msg {
+	exec := func(line string) rpc.Msg {
 		t.Helper()
 		m, err := c.Exec(line)
 		if err != nil {

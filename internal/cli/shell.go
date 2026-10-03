@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // MaxLineLength bounds a single command line.

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Diff renders the differences from a to b in Junos "show | compare"

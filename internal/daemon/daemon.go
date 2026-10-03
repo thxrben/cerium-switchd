@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/osconf"
+	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/stack/control"
+	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 	"log/slog"
-	"mclag/internal/config"
-	"mclag/internal/osconf"
-	"mclag/internal/stack"
-	"mclag/internal/stack/control"
-	"mclag/internal/stack/pki"
 	"net"
 	"os"
 	"os/exec"
@@ -24,21 +24,21 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/access"
-	"mclag/internal/cli"
-	"mclag/internal/commit"
-	"mclag/internal/dataplane"
-	"mclag/internal/dhcp"
-	"mclag/internal/inventory"
-	"mclag/internal/lacp"
-	"mclag/internal/lldp"
-	"mclag/internal/model"
-	"mclag/internal/ntp"
-	"mclag/internal/routing"
-	"mclag/internal/rpc"
-	"mclag/internal/syslog"
-	"mclag/internal/version"
-	"mclag/packaging"
+	"github.com/thxrben/cerium-switchd/internal/access"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/dhcp"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/lldp"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/ntp"
+	"github.com/thxrben/cerium-switchd/internal/routing"
+	"github.com/thxrben/cerium-switchd/internal/rpcserver"
+	"github.com/thxrben/cerium-switchd/internal/syslog"
+	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/packaging"
 )
 
 // Options configure the daemon.
@@ -87,7 +87,7 @@ func Run(ctx context.Context, o Options) error {
 			reload := func() error { return command("systemctl", "daemon-reload") }
 			ensureUnit(unitPath, packaging.Unit, exe, reload, log)
 			// The update daemon (reference 3.6) runs beside switchd.
-			ensureUnit(updateUnitPath, packaging.UpdateUnit, exe, reload, log)
+			ensureUnit(updateUnitPath, updateUnit(exe), exe, reload, log)
 			if state, _ := systemctlOutput("is-active", "switchd-update.service"); strings.TrimSpace(state) != "active" {
 				if err := command("systemctl", "enable", "--now", "switchd-update.service"); err != nil {
 					log.Warn("update daemon: not started", "err", err)
@@ -100,7 +100,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("state: %w", err)
 	}
-	srv := &rpc.Server{Log: log}
+	srv := &rpcserver.Server{Log: log}
 	kernel := &dataplane.Netlink{StateDir: o.StateDir}
 	// The stack identity decides this switch's member id (interface names
 	// <member>/<card>/<port>).

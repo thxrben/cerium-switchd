@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 func TestStandaloneRewrite(t *testing.T) {

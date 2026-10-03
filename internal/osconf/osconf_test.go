@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 func newHost(t *testing.T) (*Host, *string) {

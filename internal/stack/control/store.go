@@ -3,8 +3,8 @@ package control
 import (
 	"encoding/json"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // Store is the configuration store of the commit engine in a stack: reads

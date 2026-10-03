@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"log/slog"
-	"mclag/internal/inventory"
 	"net"
 	"net/netip"
 	"os"
@@ -18,11 +18,11 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
-	"mclag/internal/dataplane"
-	"mclag/internal/model"
-	"mclag/internal/routing"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/routing"
 )
 
 // addProtoRoutes adds the routing protocols' active routes to the desired

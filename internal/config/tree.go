@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Node is an instance of a schema node in a configuration tree.

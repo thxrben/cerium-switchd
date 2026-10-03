@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/schema"
-	"mclag/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/version"
 )
 
 // legacyName is the interface name form before reference 1.6:

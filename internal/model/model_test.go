@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 const valid = `

@@ -15,10 +15,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/commit"
-	"mclag/internal/rpc"
-	"mclag/internal/rshell"
-	"mclag/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/rpcserver"
+	"github.com/thxrben/cerium-switchd/internal/rshell"
+	"github.com/thxrben/cerium-switchd/internal/stack"
 )
 
 // shells serves "start shell" on another member (reference 1.8): swcli
@@ -28,7 +28,7 @@ import (
 type shells struct {
 	member    int
 	vc        *stack.Manager
-	authorize rpc.Authorizer
+	authorize rpcserver.Authorizer
 	log       *slog.Logger
 }
 

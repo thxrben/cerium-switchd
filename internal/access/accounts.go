@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Shell is the login shell of managed accounts.

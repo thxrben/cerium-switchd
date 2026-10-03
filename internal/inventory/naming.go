@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/config"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Port is a physical port of this member with its Junos-style name

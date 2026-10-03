@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"mclag/internal/config"
-	"mclag/internal/lacp"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // completeAE offers the configured aggregated interfaces.

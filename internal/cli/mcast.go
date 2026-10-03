@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // McastStatus is what the snooping show commands need from one member

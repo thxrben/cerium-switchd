@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 func TestBundleFacts(t *testing.T) {

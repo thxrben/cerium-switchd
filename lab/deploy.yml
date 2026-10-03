@@ -1,24 +1,48 @@
-# Deploy the locally built switchd (make cross) to the switch VMs.
+# Deploy the locally built programs (make cross) to the switch VMs.
 #   ansible-playbook deploy.yml -u root [-e switchd_args=--dry-run]
 - hosts: switches
   become: false
   vars:
     switchd_args: --dry-run
     arch_map: {x86_64: amd64, aarch64: arm64, armv7l: arm}
+    # Every program of the switch except swcli (make cross builds them).
+    programs: "{{ lookup('ansible.builtin.fileglob', '../dist/*-linux-amd64', wantlist=True)
+                  | map('basename') | map('regex_replace', '-linux-amd64$', '')
+                  | reject('equalto', 'swcli') | list }}"
   tasks:
-    - name: Install the binary
+    - name: Install the programs (reference 1.9)
       ansible.builtin.copy:
-        src: "../dist/switchd-linux-{{ arch_map[ansible_architecture] }}"
-        dest: /usr/local/sbin/switchd
+        src: "../dist/{{ item }}-linux-{{ arch_map[ansible_architecture] }}"
+        dest: "/usr/local/sbin/{{ item }}"
         mode: "0755"
+      loop: "{{ programs }}"
       notify: restart switchd
 
-    - name: swcli and cli are the same binary
+    # Earlier versions linked swcli and cli to switchd: a copy onto the link
+    # would overwrite switchd.
+    - name: Earlier swcli link
+      ansible.builtin.stat:
+        path: /usr/local/bin/swcli
+      register: swcli_link
+
+    - name: Remove the earlier swcli link
       ansible.builtin.file:
-        src: /usr/local/sbin/switchd
-        dest: "/usr/local/bin/{{ item }}"
+        path: /usr/local/bin/swcli
+        state: absent
+      when: swcli_link.stat.islnk is defined and swcli_link.stat.islnk
+
+    - name: Install swcli
+      ansible.builtin.copy:
+        src: "../dist/swcli-linux-{{ arch_map[ansible_architecture] }}"
+        dest: /usr/local/bin/swcli
+        mode: "0755"
+
+    - name: cli is swcli
+      ansible.builtin.file:
+        src: swcli
+        dest: /usr/local/bin/cli
         state: link
-      loop: [swcli, cli]
+        force: true
 
     - name: Allow swcli as a login shell
       ansible.builtin.lineinfile:

@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/cli"
-	"mclag/internal/commit"
-	"mclag/internal/config"
-	"mclag/internal/model"
-	"mclag/internal/stack"
-	"mclag/internal/stack/control"
-	"mclag/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/stack/control"
+	"github.com/thxrben/cerium-switchd/internal/version"
 )
 
 // Stack apply timeouts (docs/stack-protocol.md, "Commits in a stack").

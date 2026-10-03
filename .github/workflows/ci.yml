@@ -18,5 +18,7 @@ jobs:
         run: go vet ./...
       - name: unit tests
         run: go test ./...
+      - name: build each program on its own
+        run: for p in $(ls cmd); do go build -o /dev/null ./cmd/$p || exit 1; done
       - name: build (all architectures)
         run: make cross

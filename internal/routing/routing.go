@@ -16,8 +16,8 @@ import (
 	"slices"
 	"sync"
 
-	"mclag/internal/model"
-	"mclag/internal/rib"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/rib"
 )
 
 // FIBRoute is an active protocol route for the kernel.

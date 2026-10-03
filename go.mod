@@ -1,4 +1,4 @@
-module mclag
+module github.com/thxrben/cerium-switchd
 
 go 1.27.1
 

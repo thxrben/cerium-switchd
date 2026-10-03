@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strconv"
 
-	"mclag/internal/config"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // L3Unit is a routed interface of the default instance: an irb unit, a

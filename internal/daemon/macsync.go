@@ -14,7 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
 )
 
 // MAC synchronisation between the two members of an MC-LAG pair

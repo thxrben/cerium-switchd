@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	"mclag/internal/inventory"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // PortRef names a port of this member.

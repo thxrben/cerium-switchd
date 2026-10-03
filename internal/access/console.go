@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Consoles runs the CLI on the local consoles (reference 5.1 system

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"slices"
 
-	"mclag/internal/config"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // effectiveInterfaces returns one node per interface: explicit entries

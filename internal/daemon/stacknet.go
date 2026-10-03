@@ -7,9 +7,9 @@ import (
 	"slices"
 	"time"
 
-	"mclag/internal/dataplane"
-	"mclag/internal/model"
-	"mclag/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/stack"
 )
 
 // runStackNet keeps the underlay of the stack tunnels (reference 5.2) in

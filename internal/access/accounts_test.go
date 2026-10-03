@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 type fakeSys struct {

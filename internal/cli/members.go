@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // Stack targets of operational commands (reference 5.2): member <id>,

@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/dataplane"
-	"mclag/internal/lacp"
-	"mclag/internal/model"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // lacpSystemMAC is the stack's LACP system id (reference 5.3.2): one for

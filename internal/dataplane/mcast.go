@@ -4,7 +4,7 @@ import (
 	"maps"
 	"slices"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Multicast is the desired IGMP/MLD snooping of a member's bridge

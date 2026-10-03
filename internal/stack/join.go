@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"mclag/internal/stack/pki"
+	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 )
 
 // JoinTimeout bounds a join attempt.

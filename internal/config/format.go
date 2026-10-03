@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // FormatCurly renders the children of n in curly-brace notation.

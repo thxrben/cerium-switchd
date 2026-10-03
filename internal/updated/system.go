@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/software"
+	"github.com/thxrben/cerium-switchd/internal/software"
 )
 
 // Paths of the image (docs/os-image.md §3).

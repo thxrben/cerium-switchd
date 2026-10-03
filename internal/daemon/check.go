@@ -1,8 +1,8 @@
 package daemon
 
 import (
-	"mclag/internal/config"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // CheckConfig reads a stored configuration (JSON) the way this version

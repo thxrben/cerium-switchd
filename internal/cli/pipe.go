@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // pipeline holds the parsed "| …" modifiers of a command line.

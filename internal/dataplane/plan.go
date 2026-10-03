@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // OpKind is the type of a kernel operation.

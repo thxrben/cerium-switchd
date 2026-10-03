@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // fakeClock fires timers only when advanced.

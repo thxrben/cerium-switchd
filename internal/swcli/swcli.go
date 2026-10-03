@@ -25,8 +25,8 @@ import (
 
 	"golang.org/x/term"
 
-	"mclag/internal/rpc"
-	"mclag/internal/rshell"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
+	"github.com/thxrben/cerium-switchd/internal/rshell"
 )
 
 // DefaultSocket is where switchd listens for CLI sessions.

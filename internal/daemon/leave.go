@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // standalone rewrites the configuration of a member that was removed from

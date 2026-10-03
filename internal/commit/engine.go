@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/config"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Class is a user's permission class (reference 4.3).

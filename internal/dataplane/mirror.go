@@ -4,7 +4,7 @@ import (
 	"maps"
 	"slices"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // MirrorPort is what one device of this member mirrors, and where to

@@ -5,8 +5,8 @@ import (
 	"net/netip"
 	"slices"
 
-	"mclag/internal/model"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // CMEName is the kernel name of the chassis management interface.

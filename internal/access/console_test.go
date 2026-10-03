@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 func fakeTTYs(t *testing.T, root string, ttys map[string]string, console string) {

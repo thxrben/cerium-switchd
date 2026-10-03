@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // CLIGroup is the group of managed users; only it (and root, by policy)

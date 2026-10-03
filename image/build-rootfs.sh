@@ -2,14 +2,14 @@
 # Builds the cerOS slot image (docs/os-image.md §5): runs inside the
 # ceros-build container (image/Dockerfile), privileged.
 #
-#   build-rootfs.sh <out-dir> <version> <switchd-binary> <keys-dir>
+#   build-rootfs.sh <out-dir> <version> <programs-dir> <keys-dir>
 #
 # Writes <out-dir>/rootfs.img (squashfs + verity hash tree),
 # <out-dir>/verity.json (root hash, hash offset, data size),
 # <out-dir>/BOOTX64.EFI and <out-dir>/grub.cfg.
 set -euo pipefail
 
-out=$1 version=$2 switchd=$3 keys=$4
+out=$1 version=$2 bin=$3 keys=$4
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(mktemp -d /var/tmp/ceros-root.XXXXXX)
 trap 'rm -rf "$root"' EXIT
@@ -38,9 +38,15 @@ mmdebstrap --variant=minbase --mode=root --components="main non-free-firmware" \
 # Our files.
 cp -a "$here/overlay/." "$root/"
 mkdir -p "$root/config"
-install -D -m 0755 "$switchd" "$root/usr/local/sbin/switchd"
-ln -sf /usr/local/sbin/switchd "$root/usr/local/bin/swcli"
-ln -sf /usr/local/sbin/switchd "$root/usr/local/bin/cli"
+# switchd, switchd-update and the cer- daemons (reference 1.9); swcli is the
+# login shell.
+for p in "$bin"/*; do
+  case $(basename "$p") in
+    swcli) install -D -m 0755 "$p" "$root/usr/local/bin/swcli" ;;
+    *) install -D -m 0755 "$p" "$root/usr/local/sbin/$(basename "$p")" ;;
+  esac
+done
+ln -sf swcli "$root/usr/local/bin/cli"
 echo /usr/local/bin/swcli >> "$root/etc/shells"
 install -D -m 0644 "$here/../packaging/switchd.service" "$root/etc/systemd/system/switchd.service"
 install -D -m 0644 "$here/../packaging/switchd-update.service" "$root/etc/systemd/system/switchd-update.service"

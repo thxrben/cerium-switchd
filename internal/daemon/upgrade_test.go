@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 type fakeNames map[string]string // linux -> name

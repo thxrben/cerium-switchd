@@ -2,14 +2,14 @@ package dataplane
 
 import (
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 	"math/rand/v2"
-	"mclag/internal/schema"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // effective returns what a link lets through: VLAN membership, PVID,

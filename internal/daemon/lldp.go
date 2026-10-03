@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/inventory"
-	"mclag/internal/lldp"
-	"mclag/internal/model"
-	"mclag/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/lldp"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/version"
 )
 
 // lldpConfig returns what LLDP announces and the ports it runs on for

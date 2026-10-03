@@ -3,7 +3,7 @@ package control
 import (
 	"encoding/json"
 	"fmt"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,8 +13,8 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"mclag/internal/commit"
-	"mclag/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
 )
 
 type testMember struct {

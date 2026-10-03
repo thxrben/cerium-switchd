@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/software"
+	"github.com/thxrben/cerium-switchd/internal/software"
 )
 
 // DefaultSocket is where the daemon listens.

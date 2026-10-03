@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 func TestComputeMirrors(t *testing.T) {

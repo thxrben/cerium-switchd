@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
-	"mclag/internal/diag"
-	"mclag/internal/lacp"
-	"mclag/internal/lldp"
-	"mclag/internal/model"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/diag"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/lldp"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Operational supplies live data for show and clear commands.

@@ -1,11 +1,11 @@
 package daemon
 
 import (
-	"mclag/internal/inventory"
-	"mclag/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/stack"
 
-	"mclag/internal/dataplane"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // kernelInventory reports this member's ports from the kernel. Other

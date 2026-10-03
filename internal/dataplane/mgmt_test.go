@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/config"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 const mgmtConfig = `

@@ -16,10 +16,10 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/cli"
-	"mclag/internal/dataplane"
-	"mclag/internal/lacp"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // mclagCtl runs this member's side of its MC-LAG domain (reference 5.6):

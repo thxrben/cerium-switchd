@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/cli"
-	"mclag/internal/commit"
-	"mclag/internal/software"
-	"mclag/internal/stack"
-	"mclag/internal/updated"
-	"mclag/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/software"
+	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/updated"
+	"github.com/thxrben/cerium-switchd/internal/version"
 )
 
 // updater updates the stack's software (reference 3.6): the master fetches

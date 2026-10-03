@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/model"
-	"mclag/internal/stack/control"
-	"mclag/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/stack/control"
+	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
 )
 
 // maintDrainWait bounds how long entering maintenance mode waits for the

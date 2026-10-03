@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // Revision is one committed configuration.

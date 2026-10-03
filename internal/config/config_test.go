@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 func mustLex(t *testing.T, s string) []Token {

@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"mclag/internal/access"
-	"mclag/internal/commit"
-	"mclag/internal/config"
-	"mclag/internal/diag"
-	"mclag/internal/lacp"
-	"mclag/internal/lldp"
+	"github.com/thxrben/cerium-switchd/internal/access"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/diag"
+	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/internal/lldp"
 )
 
 type nopApplier struct{}

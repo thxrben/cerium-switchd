@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"mclag/internal/access"
-	"mclag/internal/model"
-	"mclag/internal/ntp"
-	"mclag/internal/syslog"
+	"github.com/thxrben/cerium-switchd/internal/access"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/ntp"
+	"github.com/thxrben/cerium-switchd/internal/syslog"
 )
 
 // mgmtCtl runs the management services where they belong (reference 1.8):

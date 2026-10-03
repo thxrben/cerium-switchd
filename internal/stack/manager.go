@@ -27,12 +27,12 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"mclag/internal/config"
-	"mclag/internal/dataplane"
-	"mclag/internal/stack/control"
-	"mclag/internal/stack/link"
-	"mclag/internal/stack/mesh"
-	"mclag/internal/stack/pki"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/internal/stack/control"
+	"github.com/thxrben/cerium-switchd/internal/stack/link"
+	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 )
 
 // Manager owns the stack identity and the VC ports of this switch.

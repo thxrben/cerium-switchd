@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/packaging"
+	"github.com/thxrben/cerium-switchd/packaging"
 )
 
 func TestEnsureUnit(t *testing.T) {

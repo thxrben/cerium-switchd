@@ -62,7 +62,8 @@ one by itself.
 ## Building
 
 ```
-make            # go vet, gofmt check, unit tests, bin/switchd (bin/swcli is a link to it)
+make            # go vet, gofmt check, unit tests, every program into bin/
+make swcli      # one program only (switchd, swcli, switchd-update, cer-<daemon>)
 make image      # dist/ceros-<version>-amd64.bundle (signed update) and dist/ceros-<version>-amd64.img (disk, DISK=8 GiB)
 ```
 
@@ -98,10 +99,14 @@ servers described in `lab/README.md`.
 
 | Path | Contents |
 |---|---|
-| `cmd/switchd` | the program: daemon, CLI (`swcli`), `check-config`, `bundle`, `keygen`, `verify-bundle`, `update-daemon` |
+| `cmd/switchd` | the switch daemon, and the tools `check-config`, `bundle`, `keygen`, `verify-bundle` |
+| `cmd/swcli`, `cmd/switchd-update` | the CLI client (login shell); the update daemon |
+| `cmd/cer-*` | the protocol and service daemons (reference 1.9), each built on its own |
+| `cmd/rtest` | runs the routing protocols without a switch (test/interop) |
+| `pkg/` | reusable libraries: no imports from `internal/` (checked by `test/layout`) |
 | `internal/schema`, `internal/config`, `internal/model` | configuration schema, parser/formats, typed model and commit checks |
 | `internal/commit` | candidates, commit, confirmation, rollback |
-| `internal/cli`, `internal/swcli`, `internal/rpc` | the CLI, its client and the session protocol |
+| `internal/cli`, `internal/swcli`, `internal/rpc`, `internal/rpcserver` | the CLI, its client, the session protocol and its server |
 | `internal/dataplane` | kernel state: bridge, bonds, VLANs, L3, filters, tunnels, multicast, VXLAN |
 | `internal/daemon` | switchd itself: wiring, stack control, MC-LAG, LACP/LLDP/RSTP glue, software updates |
 | `internal/stack` | stacking: links, mesh routing, Raft control, PKI and joining |

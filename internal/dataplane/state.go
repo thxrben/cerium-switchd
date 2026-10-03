@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strings"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // BridgeName is the switch bridge owned by switchd.

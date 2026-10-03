@@ -5,9 +5,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"mclag/internal/config"
-	"mclag/internal/model"
-	"mclag/internal/rib"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/rib"
 )
 
 func cfg(t *testing.T, s string) *model.Config {

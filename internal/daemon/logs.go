@@ -3,10 +3,10 @@ package daemon
 import (
 	"fmt"
 
-	"mclag/internal/cli"
-	"mclag/internal/model"
-	"mclag/internal/ntp"
-	"mclag/internal/syslog"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/ntp"
+	"github.com/thxrben/cerium-switchd/internal/syslog"
 )
 
 var severityName = []string{"emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"}

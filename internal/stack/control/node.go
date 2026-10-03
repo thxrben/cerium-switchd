@@ -24,8 +24,8 @@ import (
 	"github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 
-	"mclag/internal/commit"
-	"mclag/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
 )
 
 // MaxVoters is the largest number of voting members.

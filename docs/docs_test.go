@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"mclag/internal/config"
-	"mclag/internal/model"
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 var update = flag.Bool("update", false, "rewrite generated documentation sections")

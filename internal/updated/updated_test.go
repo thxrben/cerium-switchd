@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"mclag/internal/software"
+	"github.com/thxrben/cerium-switchd/internal/software"
 )
 
 // fakeMachine is a machine with two slots, a boot loader that follows the

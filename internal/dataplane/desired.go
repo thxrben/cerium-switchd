@@ -2,12 +2,12 @@ package dataplane
 
 import (
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 	"maps"
-	"mclag/internal/schema"
 	"net/netip"
 	"slices"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // PortNames maps an interface name ("1/0/3") of this member to its Linux

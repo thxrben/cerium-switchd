@@ -5,7 +5,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=exec
-ExecStart=/usr/local/sbin/switchd update-daemon
+ExecStart=/usr/local/sbin/switchd-update
 Restart=always
 RestartSec=2
 RuntimeDirectory=switchd-update

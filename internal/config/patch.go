@@ -4,7 +4,7 @@ import (
 	"slices"
 	"strings"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Patch returns set-format commands that turn a into b when applied with

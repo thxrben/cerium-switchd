@@ -1,4 +1,4 @@
-package rpc
+package rpcserver
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"io"
 	"log/slog"
 	"net"
@@ -17,8 +18,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"mclag/internal/cli"
-	"mclag/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/internal/commit"
 )
 
 // Authorizer maps a connecting local user to a permission class. An error
@@ -117,7 +118,7 @@ type conn struct {
 	c       io.ReadWriteCloser
 	wmu     sync.Mutex
 	enc     *json.Encoder
-	replies chan Msg
+	replies chan rpc.Msg
 	done    chan struct{}
 	notes   chan string
 	// shMu is held while the shell executes a command and while its state
@@ -125,14 +126,14 @@ type conn struct {
 	shMu sync.Mutex
 }
 
-func (c *conn) send(m Msg) error {
+func (c *conn) send(m rpc.Msg) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	return c.enc.Encode(m)
 }
 
 // wait blocks for the client's reply to a question.
-func (c *conn) wait(ctx context.Context) (Msg, error) {
+func (c *conn) wait(ctx context.Context) (rpc.Msg, error) {
 	select {
 	case m := <-c.replies:
 		if m.Err != "" {
@@ -140,9 +141,9 @@ func (c *conn) wait(ctx context.Context) (Msg, error) {
 		}
 		return m, nil
 	case <-c.done:
-		return Msg{}, io.EOF
+		return rpc.Msg{}, io.EOF
 	case <-ctx.Done():
-		return Msg{}, ctx.Err()
+		return rpc.Msg{}, ctx.Err()
 	}
 }
 
@@ -153,7 +154,7 @@ type term struct {
 }
 
 func (t *term) Ask(prompt string, echo bool) (string, error) {
-	if err := t.c.send(Msg{T: "ask", Prompt: prompt, Echo: echo}); err != nil {
+	if err := t.c.send(rpc.Msg{T: "ask", Prompt: prompt, Echo: echo}); err != nil {
 		return "", err
 	}
 	m, err := t.c.wait(t.ctx)
@@ -162,11 +163,11 @@ func (t *term) Ask(prompt string, echo bool) (string, error) {
 
 // Print shows output of a command that is still running.
 func (t *term) Print(text string) error {
-	return t.c.send(Msg{T: "print", Text: text})
+	return t.c.send(rpc.Msg{T: "print", Text: text})
 }
 
 func (t *term) ReadText(prompt string) (string, error) {
-	if err := t.c.send(Msg{T: "readtext", Prompt: prompt}); err != nil {
+	if err := t.c.send(rpc.Msg{T: "readtext", Prompt: prompt}); err != nil {
 		return "", err
 	}
 	m, err := t.c.wait(t.ctx)
@@ -174,7 +175,7 @@ func (t *term) ReadText(prompt string) (string, error) {
 }
 
 func (t *term) ReadFile(name string) ([]byte, error) {
-	if err := t.c.send(Msg{T: "readfile", Name: name}); err != nil {
+	if err := t.c.send(rpc.Msg{T: "readfile", Name: name}); err != nil {
 		return nil, err
 	}
 	m, err := t.c.wait(t.ctx)
@@ -182,7 +183,7 @@ func (t *term) ReadFile(name string) ([]byte, error) {
 }
 
 func (t *term) WriteFile(name string, data []byte) error {
-	if err := t.c.send(Msg{T: "writefile", Name: name, Data: data}); err != nil {
+	if err := t.c.send(rpc.Msg{T: "writefile", Name: name, Data: data}); err != nil {
 		return err
 	}
 	_, err := t.c.wait(t.ctx)
@@ -190,7 +191,7 @@ func (t *term) WriteFile(name string, data []byte) error {
 }
 
 func newConn(rw io.ReadWriteCloser) *conn {
-	return &conn{c: rw, enc: json.NewEncoder(rw), replies: make(chan Msg, 1), done: make(chan struct{}), notes: make(chan string, 32)}
+	return &conn{c: rw, enc: json.NewEncoder(rw), replies: make(chan rpc.Msg, 1), done: make(chan struct{}), notes: make(chan string, 32)}
 }
 
 func (s *Server) handle(uc *net.UnixConn) {
@@ -208,7 +209,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 	class, err := s.Authorize(uid, name)
 	if err != nil {
 		s.Log.Warn("cli: login rejected", "facility", "authorization", "user", name, "uid", uid, "err", err)
-		_ = c.send(Msg{T: "done", Text: fmt.Sprintf("error: %v\n", err), Exit: true})
+		_ = c.send(rpc.Msg{T: "done", Text: fmt.Sprintf("error: %v\n", err), Exit: true})
 		return
 	}
 	s.Log.Info("cli: login", "facility", "authorization", "user", name, "class", class)
@@ -280,7 +281,7 @@ type relay struct {
 	ended          bool
 }
 
-func (r *relay) forward(m Msg) error {
+func (r *relay) forward(m rpc.Msg) error {
 	if m.T == "exec" || m.T == "complete" || m.T == "help" {
 		r.mu.Lock()
 		r.busy = true
@@ -340,7 +341,7 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 		}
 		return s.startRelay(nc, name, class)
 	}
-	hello := Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}
+	hello := rpc.Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}
 	if local && s.Relay != nil {
 		r, err := connect()
 		switch {
@@ -370,10 +371,10 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 				c.shMu.Lock()
 				if r := current(); r != nil {
 					r.mu.Lock()
-					_ = c.send(Msg{T: "notify", Text: text, Prompt: r.prompt, Banner: r.banner, Cfg: true})
+					_ = c.send(rpc.Msg{T: "notify", Text: text, Prompt: r.prompt, Banner: r.banner, Cfg: true})
 					r.mu.Unlock()
 				} else {
-					_ = c.send(Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()})
+					_ = c.send(rpc.Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()})
 				}
 				c.shMu.Unlock()
 			case <-c.done:
@@ -383,15 +384,15 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 	}()
 
 	// The reader routes replies to the running command and queues requests.
-	reqs := make(chan Msg)
+	reqs := make(chan rpc.Msg)
 	var mu sync.Mutex
 	cancel := context.CancelFunc(func() {})
 	go func() {
 		defer close(c.done)
 		sc := bufio.NewScanner(c.c)
-		sc.Buffer(make([]byte, 64<<10), MaxMsg)
+		sc.Buffer(make([]byte, 64<<10), rpc.MaxMsg)
 		for sc.Scan() {
-			var m Msg
+			var m rpc.Msg
 			if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 				s.Log.Warn("cli: bad message", "user", name, "err", err)
 				return
@@ -421,7 +422,7 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 	}()
 
 	for {
-		var m Msg
+		var m rpc.Msg
 		select {
 		case m = <-reqs:
 		case <-c.done:
@@ -443,7 +444,7 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 				lost = time.Now()
 				if needs {
 					c.shMu.Lock()
-					err = c.send(Msg{T: "done", Text: fmt.Sprintf("error: configuration unavailable: %v\n", err), Prompt: sh.Prompt(), Banner: s.lostBanner(err) + sh.Banner()})
+					err = c.send(rpc.Msg{T: "done", Text: fmt.Sprintf("error: configuration unavailable: %v\n", err), Prompt: sh.Prompt(), Banner: s.lostBanner(err) + sh.Banner()})
 					c.shMu.Unlock()
 					if err != nil {
 						return
@@ -452,7 +453,7 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 				}
 				if !wasLost {
 					c.shMu.Lock()
-					_ = c.send(Msg{T: "notify", Text: strings.TrimSuffix(strings.TrimPrefix(s.lostBanner(err), "*** "), " ***\n"), Prompt: sh.Prompt(), Banner: sh.Banner()})
+					_ = c.send(rpc.Msg{T: "notify", Text: strings.TrimSuffix(strings.TrimPrefix(s.lostBanner(err), "*** "), " ***\n"), Prompt: sh.Prompt(), Banner: sh.Banner()})
 					c.shMu.Unlock()
 				}
 			}
@@ -468,7 +469,7 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 				continue
 			}
 		}
-		var reply Msg
+		var reply rpc.Msg
 		c.shMu.Lock()
 		switch m.T {
 		case "exec":
@@ -481,17 +482,17 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 			mu.Unlock()
 			rep := sh.Execute(ctx, m.Line, &term{c: c, ctx: ctx})
 			cf()
-			reply = Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Member: rep.ShellMember,
+			reply = rpc.Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Member: rep.ShellMember,
 				Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()}
 			if !local {
 				reply.Rev = sh.ActiveSeq()
 			}
 		case "complete":
-			reply = Msg{T: "completions", Items: items(sh.Complete(m.Line))}
+			reply = rpc.Msg{T: "completions", Items: items(sh.Complete(m.Line))}
 		case "help":
-			reply = Msg{T: "completions", Text: sh.Help(m.Line), Items: items(sh.Complete(m.Line))}
+			reply = rpc.Msg{T: "completions", Text: sh.Help(m.Line), Items: items(sh.Complete(m.Line))}
 		default:
-			reply = Msg{T: "done", Text: fmt.Sprintf("error: unknown request %q\n", m.T), Prompt: sh.Prompt(), Banner: sh.Banner()}
+			reply = rpc.Msg{T: "done", Text: fmt.Sprintf("error: unknown request %q\n", m.T), Prompt: sh.Prompt(), Banner: sh.Banner()}
 		}
 		err := c.send(reply)
 		c.shMu.Unlock()
@@ -520,7 +521,7 @@ func (s *Server) startRelay(nc net.Conn, name string, class commit.Class) (*rela
 	}
 	r := &relay{nc: nc, rd: bufio.NewReaderSize(nc, 64<<10), enc: json.NewEncoder(nc)}
 	line, err := r.rd.ReadBytes('\n')
-	var m Msg
+	var m rpc.Msg
 	if err == nil && (json.Unmarshal(line, &m) != nil || m.T != "hello") {
 		err = errors.New("unexpected answer")
 	}
@@ -537,9 +538,9 @@ func (s *Server) startRelay(nc net.Conn, name string, class commit.Class) (*rela
 // or the master is lost.
 func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **relay) {
 	sc := bufio.NewScanner(r.rd)
-	sc.Buffer(make([]byte, 64<<10), MaxMsg)
+	sc.Buffer(make([]byte, 64<<10), rpc.MaxMsg)
 	for sc.Scan() {
-		var m Msg
+		var m rpc.Msg
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
 			break
 		}
@@ -598,16 +599,16 @@ func (s *Server) endRelay(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl
 	c.shMu.Lock()
 	defer c.shMu.Unlock()
 	if busy {
-		c.send(Msg{T: "done", Text: "error: " + text + "\n", Prompt: sh.Prompt(), Banner: sh.Banner()})
+		c.send(rpc.Msg{T: "done", Text: "error: " + text + "\n", Prompt: sh.Prompt(), Banner: sh.Banner()})
 	} else {
-		c.send(Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner()})
+		c.send(rpc.Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner()})
 	}
 }
 
-func items(cs []cli.Completion) []Item {
-	out := make([]Item, len(cs))
+func items(cs []cli.Completion) []rpc.Item {
+	out := make([]rpc.Item, len(cs))
 	for i, c := range cs {
-		out[i] = Item{Text: c.Text, Help: c.Help, Placeholder: c.Placeholder}
+		out[i] = rpc.Item{Text: c.Text, Help: c.Help, Placeholder: c.Placeholder}
 	}
 	return out
 }

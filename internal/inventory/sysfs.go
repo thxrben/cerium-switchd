@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // PhysicalPorts lists physical network interfaces from sysfs (those with a

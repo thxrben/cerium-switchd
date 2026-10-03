@@ -17,7 +17,7 @@ import (
 
 	"github.com/hashicorp/raft"
 
-	"mclag/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/commit"
 )
 
 // MemberInfo is one entry of the member list.

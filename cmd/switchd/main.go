@@ -11,16 +11,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
-	"mclag/internal/daemon"
-	"mclag/internal/software"
-	"mclag/internal/swcli"
-	"mclag/internal/updated"
-	"mclag/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/daemon"
+	"github.com/thxrben/cerium-switchd/internal/software"
+	"github.com/thxrben/cerium-switchd/internal/swcli"
+	"github.com/thxrben/cerium-switchd/internal/updated"
+	"github.com/thxrben/cerium-switchd/internal/version"
 )
 
 func main() {
@@ -187,43 +185,6 @@ func verifyBundle(args []string) int {
 	return 0
 }
 
-// updateDaemon is "switchd update-daemon", the update daemon switchd-update
-// (reference 3.6, docs/os-image.md §4).
-func updateDaemon() int {
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	sys, err := updated.NewSystem()
-	if err != nil {
-		log.Error("switchd-update", "err", err)
-		return 1
-	}
-	switchdDir := filepath.Join(updated.ConfigRoot, "switchd")
-	sys.Check = updated.RunCheck
-	sys.ActiveConfig = func() ([]byte, error) { return updated.ConfigFromStore(switchdDir) }
-	// ceros.healthtimeout=<seconds> on the kernel command line shortens the
-	// health timeout (image tests).
-	var timeout time.Duration
-	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
-		for _, f := range strings.Fields(string(cmdline)) {
-			if v, ok := strings.CutPrefix(f, "ceros.healthtimeout="); ok {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					timeout = time.Duration(n) * time.Second
-				}
-			}
-		}
-	}
-	d := &updated.Daemon{
-		P:           sys,
-		Timeout:     timeout,
-		ConfigDir:   filepath.Join(updated.ConfigRoot, "update"),
-		SwitchdDir:  switchdDir,
-		BackupDir:   filepath.Join(updated.ConfigRoot, "backup"),
-		Socket:      updated.DefaultSocket,
-		Log:         log,
-		RebootDelay: 2 * time.Second,
-	}
-	if err := d.Run(context.Background()); err != nil {
-		log.Error("switchd-update", "err", err)
-		return 1
-	}
-	return 0
-}
+// updateDaemon is "switchd update-daemon", the update daemon of earlier
+// versions' units (now its own program, cmd/switchd-update).
+func updateDaemon() int { return updated.Main() }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"mclag/internal/schema"
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Directive words that may prefix a statement in hierarchical text.

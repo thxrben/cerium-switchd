@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"mclag/internal/config"
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 func engine(t *testing.T, conf string) *Engine {

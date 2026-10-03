@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Route is what a policy sees of a route and may change.

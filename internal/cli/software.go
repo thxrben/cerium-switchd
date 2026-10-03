@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"mclag/internal/commit"
-	"mclag/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
 )
 
 // SoftwareRequest is "request system software add|rollback" (reference 3.6).

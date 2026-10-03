@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"mclag/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // Host keeps the OS files in line with the configuration.
