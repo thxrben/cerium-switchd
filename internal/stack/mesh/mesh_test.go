@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	mrand "math/rand"
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -183,17 +185,8 @@ func TestRingCut(t *testing.T) {
 	}
 	waitFor(t, "1 -> 2 via 4", func() bool { return m[1].NextHop(2) == 4 })
 	waitFor(t, "2 -> 1 via 3", func() bool { return m[2].NextHop(1) == 3 })
-	// The path changed: the stream is reset (data may have been lost), a
-	// new one works over the new path.
+	// The path changed: the same stream goes on over the new path.
 	buf := make([]byte, 5)
-	s.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := s.Read(buf); err == nil || !strings.Contains(err.Error(), "path to member 2 changed") {
-		t.Fatalf("stream after reroute: %v", err)
-	}
-	s, err = m[1].Dial(2, "echo", time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
 	s.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := s.Write([]byte("hello")); err != nil {
 		t.Fatal(err)
@@ -202,8 +195,10 @@ func TestRingCut(t *testing.T) {
 		t.Fatalf("after reroute: %q %v", buf, err)
 	}
 
-	// Cut the other side too: 1 is alone, the stream fails.
-	defer s.Close()
+	// Cut the other side too: 1 is alone, the stream fails (after GiveUp).
+	m[1].mu.Lock()
+	m[1].GiveUp = 500 * time.Millisecond
+	m[1].mu.Unlock()
 	cut41()
 	waitFor(t, "1 isolated", reaches(m[1]))
 	waitFor(t, "3 lost 1", reaches(m[3], 2, 4))
@@ -322,4 +317,129 @@ func TestDrainingMember(t *testing.T) {
 	}
 	m[2].SetDraining(false)
 	waitFor(t, "equal-cost again", func() bool { return len(m[1].FirstHops()[3]) == 2 })
+}
+
+// lossy drops a share of the stream messages (never announcements) that a
+// session writes.
+type lossy struct {
+	net.Conn
+	mu   sync.Mutex
+	rng  *mrand.Rand
+	drop float64
+}
+
+func (l *lossy) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	drop := len(b) > 4 && b[4] != tLSA && l.rng.Float64() < l.drop
+	l.mu.Unlock()
+	if drop {
+		return len(b), nil
+	}
+	return l.Conn.Write(b)
+}
+
+func lossyLink(a, b *Mesh, drop float64, seed int64) func() {
+	ca, cb := net.Pipe()
+	la := &lossy{Conn: ca, rng: mrand.New(mrand.NewSource(seed)), drop: drop}
+	lb := &lossy{Conn: cb, rng: mrand.New(mrand.NewSource(seed + 1)), drop: drop}
+	go a.AddPeer(b.Self, la)
+	go b.AddPeer(a.Self, lb)
+	return func() { ca.Close(); cb.Close() }
+}
+
+func transfer(t *testing.T, s *Stream, n int, during func()) {
+	t.Helper()
+	data := make([]byte, n)
+	rand.Read(data)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := s.Write(data)
+		errc <- err
+	}()
+	got := make([]byte, len(data))
+	s.SetReadDeadline(time.Now().Add(20 * time.Second))
+	half := len(data) / 3
+	if _, err := io.ReadFull(s, got[:half]); err != nil {
+		t.Fatal(err)
+	}
+	if during != nil {
+		during()
+	}
+	if _, err := io.ReadFull(s, got[half:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("data corrupted")
+	}
+}
+
+// A stacking cable is cut in the middle of a transfer: the data arrives
+// complete and in order over the other way round the ring.
+func TestTransferAcrossPathChange(t *testing.T) {
+	m := meshes(4)
+	cut12 := link(m[1], m[2])
+	link(m[2], m[3])
+	link(m[3], m[4])
+	link(m[4], m[1])
+	waitFor(t, "ring", reaches(m[1], 2, 3, 4))
+	echo(t, m[2], "echo")
+	s, err := m[1].Dial(2, "echo", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !s.reliable {
+		t.Fatal("not a reliable stream")
+	}
+	transfer(t, s, 5*Window+777, cut12)
+}
+
+// Links that lose a tenth of the messages: the stream still carries
+// everything.
+func TestLossyStream(t *testing.T) {
+	m := meshes(3)
+	lossyLink(m[1], m[2], 0.1, 1)
+	lossyLink(m[2], m[3], 0.1, 7)
+	waitFor(t, "chain", reaches(m[1], 2, 3))
+	echo(t, m[3], "echo")
+	var s *Stream
+	var err error
+	for range 5 { // the open itself may be lost
+		if s, err = m[1].Dial(3, "echo", 2*time.Second); err == nil && s.reliable {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	transfer(t, s, 3*Window+5, nil)
+}
+
+// A member of an older release ignores the new stream messages: the dialer
+// falls back to the streams of before (and remembers it).
+func TestOlderRelease(t *testing.T) {
+	m := meshes(2)
+	m[2].oldRelease = true
+	link(m[1], m[2])
+	waitFor(t, "pair", reaches(m[1], 2))
+	echo(t, m[2], "echo")
+	start := time.Now()
+	s, err := m[1].Dial(2, "echo", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.reliable || time.Since(start) < legacyProbe {
+		t.Fatalf("reliable %v after %v", s.reliable, time.Since(start))
+	}
+	transfer(t, s, Window+3, nil)
+	s.Close()
+	start = time.Now()
+	if s, err = m[1].Dial(2, "echo", 3*time.Second); err != nil || s.reliable || time.Since(start) > legacyProbe/2 {
+		t.Fatalf("second dial: %v reliable %v after %v", err, s != nil && s.reliable, time.Since(start))
+	}
+	s.Close()
 }

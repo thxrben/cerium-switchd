@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-10-01 (evening).
+Last updated: 2026-10-03 (evening).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -236,6 +236,51 @@ Last updated: 2026-10-01 (evening).
   (lacp.Runtime.BeforeJoin -> RPC mclag-leg-joining, the peer installs the filter before answering, 300 ms
   timeout), and a draining leg keeps broadcast/multicast filtered on the peer (legsMsg.Draining). Unit-tested;
   to be checked in the lab with an external RSTP/STP switch on an MC-LAG (mstpd on srv1) once the harness works.
+
+## Done 2026-10-03 (later; unit-tested, NOT yet on the lab switches)
+- Graceful shutdown of the cer- daemons (stop stages with budgets and kills).
+- Deadlines on every kernel, disk and tool call (pkg/hwio, pkg/sysexec, pkg/nlx), alarms for hanging devices,
+  switchd watchdog fed by its loops; slots read from the disks with errors (show system software/version); /var
+  noexec; docs/os-image.md: what is signed and checked (§4.1) and hanging devices (§7).
+- sshd's /run/sshd on the image (switchd creates it before `sshd -t`; tmpfiles entry).
+- **OSPF and OSPFv3** (PLAN Phase 9c): one core for both versions (pkg/ospf: codecs, state machines, flooding,
+  origination with throttling, SPF with ECMP, areas, externals, overload), cer-ospfd (Linux raw sockets, routes to
+  cer-ribd, replicated to the members, export policies, show/clear commands), the protection filter lets OSPF in on
+  OSPF interfaces. Tests: simulated networks for both versions; real sockets in network namespaces (OSPFv2 here,
+  OSPFv3 needs IPv6, which this sandbox lacks).
+- **MC-LAG for protocols**: protocol frames for irbs (OSPF, BFD, BGP) go from every non-master member to the master
+  unchanged (tc redirect into the stack tunnel; MACs, VLAN and packet kept; an untagged frame gets its port VLAN's
+  tag for the tunnel); routed interfaces of other members and routed MC-LAG bundles relay OSPF over the stacking
+  protocol (ospf-rx/tx/link). The tc frame test skips here (no tc classifiers in this kernel): run it in the lab.
+- **RSTP**: the image ships /sbin/bridge-stp (RSTP did not start on physw4: read-only root), an alarm and the reason
+  in `show spanning-tree` when RSTP cannot run; bpdu-block (cer-rstpd watches, switchd keeps the port down,
+  `clear error bpdu interface`, disable-timeout, persistent); `clear spanning-tree protocol-migration|statistics`.
+- **Phase 5**: reliable mesh streams (retransmission, reordering, window probes, 30 s give-up; fallback to the old
+  streams for members of an older release): a CLI session relayed to the master, Raft and RPC survive a stacking
+  path change (docs/stack-protocol.md "Mesh").
+
+## Requested 2026-10-03 (still to do, in this order)
+1. **Other**: LACP port numbers wrap for cards >= 16 or ports >= 64 (member*1024 + card*64 + port); Wireshark: decode
+   Raft msgpack.
+2. **BFD**: interval check at commit (W below 100 ms on a member with fewer than 4 CPUs; E below 50 ms is the
+   schema's range already): an implementation existed in this session (model CPUCounter, kernelInventory.CPUs,
+   checkBFD) and was taken out to keep the order; redo it. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
+   for routed interfaces of other members.
+3. **ECMP**: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8).
+4. **LACP with the UniFi (physw4, user report)**: ae0 = 1/0/2 + 1/0/3 to UniFi ports 0/23 and 0/24. physw4: 1/0/3
+   Current/collecting-distributing; 1/0/2 Defaulted (Rx 16, Tx 282 LACPDUs; the partner sends slow, i.e. it never
+   learned our state on that port). The UniFi shows 0/23 with an all-zero partner (ACT|AGG|LTO): our LACPDUs on 1/0/2
+   do not reach it or are refused. Check: LACPDUs are sent at the same time on all ports of a bundle (one periodic
+   timer per bundle, not per port), they really leave a port that is not enabled in the team (team tx path, source
+   MAC of that port, no VLAN tag), the frames on both ports compared byte by byte (tcpdump on the UniFi side), and
+   how the UniFi treats a partner that answers fast while it is slow.
+5. **`request daemon restart|stop <daemon>`** instead of `restart <daemon>` (reference 1.9; decide what stop means:
+   until start, a switchd restart or a reboot).
+6. **Applying `request system diagnose` hints** (proposal, confirm with the user first): configuration statements
+   for what a hint recommends (interfaces <port> ether-options rx-ring/tx-ring/offload, system performance rps),
+   the hint names the `set` command, `request system diagnose apply` loads them into a candidate.
+7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), BFD client, lab interop with FRR (v2 and
+   v3, broadcast and p2p), the punt frame test and OSPFv3 sockets in the lab.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

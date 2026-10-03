@@ -90,7 +90,7 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
 
 | Size | Field |
 |---|---|
-| 1 | type: 1 = LSA, 2 = OPEN, 3 = DATA, 4 = CREDIT, 5 = CLOSE, 6 = RESET |
+| 1 | type: 1 = LSA, 2 = OPEN, 3 = DATA, 4 = CREDIT, 5 = CLOSE, 6 = RESET; reliable streams: 7 = OPEN2, 8 = DATA2, 9 = ACK2, 10 = CLOSE2, 11 = PROBE2 |
 | 1 | hop limit (starts at 16; a message reaching 0 is dropped) |
 | 1 | source member |
 | 1 | destination member (0 for LSA: not forwarded as such, flooded) |
@@ -102,14 +102,26 @@ After the hellos, a member session carries **mesh messages**, each `uint32` leng
   neighbours (one byte each). Sent on every neighbour change and every 5 s; a member re-floods an LSA it has not seen
   (higher sequence number for that origin) to all its other sessions. LSAs older than 20 s are dropped. Paths are
   the shortest in hops (ties: lower next-hop member id), recomputed on every change.
-* **Streams**: OPEN carries a service name (e.g. `raft`); the destination answers with CREDIT (initial window 256 KiB)
-  or RESET (no such service). DATA is only sent within the granted credit; the receiver grants more as the
-  application reads. A DATA message with an unexpected sequence number (lost on a failed path) resets the stream.
-  CLOSE ends the sending direction; RESET ends the stream at once.
-* Messages for a destination without a path are dropped (streams to it are reset); nothing is buffered for members
-  that are gone.
-* When the path to a member changes, streams to it are reset as well: messages may have been lost on the old path,
-  and a stream that waits for an answer would not notice. Their users (Raft, RPC) reconnect over the new path.
+* **Reliable streams** (OPEN2 …): a stream survives a change of its path (a stacking cable cut, a member taking
+  another route), so a CLI session relayed to the master, Raft and stack RPC go on unchanged.
+  * OPEN2 carries the service name; the destination answers with CREDIT (seq = initial window, 256 KiB) or RESET.
+  * DATA2 and CLOSE2 are numbered per stream and direction (CLOSE2 takes a number too, so it never overtakes data).
+    The sender keeps every message until it is acknowledged; it sends the unacknowledged ones again after a timeout
+    (100 ms, doubling up to 2 s) and the first one at once after two duplicate acknowledgments.
+  * The receiver delivers in order, keeps up to 4096 messages that overtook others, and drops duplicates. It answers
+    every DATA2/CLOSE2 with ACK2: seq = the next message it expects, payload = the window's right edge (bytes in
+    total, uint64). Both are absolute, so a lost ACK2 is repaired by the next one. A sender with a full window and
+    nothing unacknowledged sends PROBE2, which the receiver answers with ACK2.
+  * Messages without a path wait in the sender's buffer; the stream fails only when its member stays unreachable,
+    or a message stays unacknowledged, for 30 s.
+  * Rolling updates: a member that does not know OPEN2 ignores it; the dialer then opens the stream with OPEN, as
+    before, after 1 s, and remembers that member for a minute.
+* **Streams of before** (OPEN …, with members of an older release): OPEN carries a service name; the destination
+  answers with CREDIT (initial window 256 KiB) or RESET (no such service). DATA is only sent within the granted credit;
+  the receiver grants more as the application reads. A DATA message with an unexpected sequence number (lost on a
+  failed path) resets the stream. CLOSE ends the sending direction; RESET ends the stream at once. Messages for a
+  destination without a path are dropped (such streams are reset); when the path to a member changes, these streams
+  are reset as well, and their users (Raft, RPC) reconnect over the new path.
 
 ## Stack tunnels (data between members)
 

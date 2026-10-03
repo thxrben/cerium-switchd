@@ -110,6 +110,9 @@ type streamKey struct {
 type Mesh struct {
 	Self int
 	Log  *slog.Logger
+	// GiveUp: how long a reliable stream waits for its member (0:
+	// DefaultGiveUp).
+	GiveUp time.Duration
 
 	mu       sync.Mutex
 	peers    map[int][]*peer // direct neighbours (parallel cables possible)
@@ -119,8 +122,12 @@ type Mesh struct {
 	services map[string]*listener
 	streams  map[streamKey]*Stream
 	nextID   uint32
-	changed  chan struct{} // closed and replaced on topology changes
-	draining bool          // announced: other members route around this one
+	legacy   map[int]time.Time // members that answered only tOpen (until)
+	timerOn  bool              // the retransmission timer runs (reliable.go)
+	// oldRelease (tests): behave like a release without reliable streams.
+	oldRelease bool
+	changed    chan struct{} // closed and replaced on topology changes
+	draining   bool          // announced: other members route around this one
 }
 
 // New creates the mesh of member self.
@@ -310,6 +317,9 @@ func (m *Mesh) recomputeLocked() {
 		close(m.changed)
 		m.changed = make(chan struct{})
 		for k, s := range m.streams {
+			if s.reliable {
+				continue // they repair themselves (reliable.go)
+			}
 			next, ok := routes[k.member]
 			switch {
 			case !ok:
@@ -545,7 +555,13 @@ type Stream struct {
 	rdl, wdl  time.Time
 	service   string
 	remoteEnd bool // the other side opened it
+	// reliable: survives path changes (reliable.go); otherwise a stream
+	// of a member that does not know them (reset on a path change).
+	reliable bool
+	rel      relState
 }
+
+var errClosed = net.ErrClosed
 
 func newStream(m *Mesh, key streamKey) *Stream {
 	s := &Stream{m: m, key: key, opened: make(chan error, 1)}
@@ -569,7 +585,41 @@ func (s *Stream) fail(err error) {
 func (m *Mesh) deliverLocked(x *msg) {
 	key := streamKey{int(x.src), x.stream}
 	s := m.streams[key]
+	if m.oldRelease && x.typ >= tOpen2 {
+		return // unknown to an older release: ignored
+	}
 	switch x.typ {
+	case tData2, tAck2, tClose2, tProbe2:
+		if s != nil && s.reliable {
+			m.deliverReliableLocked(x, s)
+		} else if s == nil && x.typ != tAck2 {
+			// Unknown stream (forgotten, or the member restarted).
+			m.sendLocked(&msg{typ: tReset, hops: maxHops, src: byte(m.Self), dst: x.src, stream: x.stream})
+		}
+		return
+	case tOpen2:
+		if s != nil && s.reliable && s.remoteEnd {
+			// The dialer did not get our answer: answer again.
+			m.sendLocked(&msg{typ: tCredit, hops: maxHops, src: byte(m.Self), dst: x.src, stream: x.stream, seq: Window})
+			return
+		}
+		l := m.services[string(x.payload)]
+		if l == nil || s != nil {
+			m.sendLocked(&msg{typ: tReset, hops: maxHops, src: byte(m.Self), dst: x.src, stream: x.stream})
+			return
+		}
+		s = newStream(m, key)
+		s.service, s.remoteEnd, s.reliable = string(x.payload), true, true
+		s.rel.edge, s.rel.advEdge, s.rel.rto = Window, Window, rtoMin
+		m.streams[key] = s
+		m.timerLocked()
+		m.sendLocked(&msg{typ: tCredit, hops: maxHops, src: byte(m.Self), dst: x.src, stream: x.stream, seq: Window})
+		select {
+		case l.accept <- s:
+		default:
+			delete(m.streams, key)
+			m.sendLocked(&msg{typ: tReset, hops: maxHops, src: byte(m.Self), dst: x.src, stream: x.stream})
+		}
 	case tOpen:
 		l := m.services[string(x.payload)]
 		if l == nil || s != nil {
@@ -610,7 +660,14 @@ func (m *Mesh) deliverLocked(x *msg) {
 			return
 		}
 		s.mu.Lock()
-		s.credit += int(x.seq)
+		if s.reliable {
+			// The answer to tOpen2: the initial window.
+			if uint64(x.seq) > s.rel.edge {
+				s.rel.edge = uint64(x.seq)
+			}
+		} else {
+			s.credit += int(x.seq)
+		}
 		s.cond.Broadcast()
 		s.mu.Unlock()
 		select {
@@ -644,11 +701,38 @@ func (m *Mesh) resetLocked(s *Stream, err error) {
 	s.fail(err)
 }
 
-// Dial opens a stream to service on member.
+// Dial opens a stream to service on member: a reliable one, or, with a
+// member that does not know them, one as before.
 func (m *Mesh) Dial(member int, service string, timeout time.Duration) (*Stream, error) {
 	if member == m.Self {
 		return nil, errors.New("cannot dial self")
 	}
+	m.mu.Lock()
+	legacy := m.legacy[member].After(time.Now())
+	m.mu.Unlock()
+	if !legacy {
+		s, err := m.dial(member, service, min(timeout, legacyProbe), true)
+		var na noAnswer
+		if err == nil || !errors.As(err, &na) || timeout <= legacyProbe {
+			return s, err
+		}
+		// No answer to tOpen2: an older member (or a slow one).
+		m.mu.Lock()
+		if m.legacy == nil {
+			m.legacy = map[int]time.Time{}
+		}
+		m.legacy[member] = time.Now().Add(legacyTTL)
+		m.mu.Unlock()
+		timeout -= legacyProbe
+	}
+	return m.dial(member, service, timeout, false)
+}
+
+type noAnswer struct{ member int }
+
+func (e noAnswer) Error() string { return fmt.Sprintf("member %d did not answer", e.member) }
+
+func (m *Mesh) dial(member int, service string, timeout time.Duration, reliable bool) (*Stream, error) {
 	m.mu.Lock()
 	// Stream ids: odd from the member with the lower id, even from the other.
 	id := m.nextID * 2
@@ -658,9 +742,17 @@ func (m *Mesh) Dial(member int, service string, timeout time.Duration) (*Stream,
 	m.nextID++
 	key := streamKey{member, id}
 	s := newStream(m, key)
-	s.service = service
+	s.service, s.reliable = service, reliable
+	typ := byte(tOpen)
+	if reliable {
+		typ = tOpen2
+		s.rel.rto, s.rel.advEdge = rtoMin, Window
+	}
 	m.streams[key] = s
-	ok := m.sendLocked(&msg{typ: tOpen, hops: maxHops, src: byte(m.Self), dst: byte(member), stream: id, payload: []byte(service)})
+	if reliable {
+		m.timerLocked()
+	}
+	ok := m.sendLocked(&msg{typ: typ, hops: maxHops, src: byte(m.Self), dst: byte(member), stream: id, payload: []byte(service)})
 	m.mu.Unlock()
 	if !ok {
 		m.drop(key)
@@ -675,7 +767,7 @@ func (m *Mesh) Dial(member int, service string, timeout time.Duration) (*Stream,
 		return s, nil
 	case <-time.After(timeout):
 		m.drop(key)
-		return nil, fmt.Errorf("member %d did not answer", member)
+		return nil, noAnswer{member}
 	}
 }
 
@@ -727,6 +819,12 @@ func (s *Stream) Read(p []byte) (int, error) {
 	}
 	n := copy(p, s.rbuf)
 	s.rbuf = s.rbuf[n:]
+	if s.reliable {
+		s.rel.consumed += uint64(n)
+		s.mu.Unlock()
+		s.readGrantReliable()
+		return n, nil
+	}
 	s.unacked += n
 	grant := 0
 	if s.unacked >= Window/4 {
@@ -742,6 +840,9 @@ func (s *Stream) Read(p []byte) (int, error) {
 }
 
 func (s *Stream) Write(p []byte) (int, error) {
+	if s.reliable {
+		return s.writeReliable(p)
+	}
 	written := 0
 	for written < len(p) {
 		s.mu.Lock()
@@ -786,6 +887,10 @@ func (s *Stream) Close() error {
 	peerDone := s.eof
 	s.cond.Broadcast()
 	s.mu.Unlock()
+	if s.reliable {
+		s.closeReliable()
+		return nil
+	}
 	s.m.mu.Lock()
 	s.m.sendLocked(&msg{typ: tClose, hops: maxHops, src: byte(s.m.Self), dst: byte(s.key.member), stream: s.key.id})
 	if peerDone {
