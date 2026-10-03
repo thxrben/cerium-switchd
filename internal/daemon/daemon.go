@@ -183,11 +183,10 @@ func Run(ctx context.Context, o Options) error {
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	// LACP runs in cer-lacpd, MC-LAG in cer-mclagd (reference 1.9); switchd
-	// follows the legs (RSTP) and port states (LLDP).
-	lacpRT := newLACPLink(services)
+	// passes LACP's port states on to cer-lldpd.
+	republishLACPPorts(services)
 	mclag := mclagClient{services}
 	sysMAC := lacpSystemMAC(vc.StackID())
-	var stp *rstpCtl
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	// Routing (reference 5.8): the RIB with connected and static routes, and
 	// the routing protocols; their active routes go into the kernel with
@@ -209,8 +208,8 @@ func Run(ctx context.Context, o Options) error {
 		if !o.DryRun {
 			services.setConfig("cer-mclagd", mclagConfig(cfg, member))
 		}
-		if stp != nil {
-			stp.setConfig(cfg)
+		if !o.DryRun {
+			services.setConfig("cer-rstpd", stpConfig(cfg, member, names.Linux, vc.StackID()))
 		}
 	}
 	// The management services run on the master (reference 1.8).
@@ -319,16 +318,6 @@ func Run(ctx context.Context, o Options) error {
 			// Remote MACs of VXLAN learned by one member, for all (5.7).
 			go newVXLANSync(member, ctl, log).run(ctx)
 		}
-		var node *control.Node
-		if ctl != nil {
-			node = ctl.node
-		}
-		stp = newRSTP(member, node, vc.Mesh(), names, vc.StackID, o.StateDir, log)
-		stp.legs = lacpRT.Legs
-		if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
-			stp.setConfig(cfg)
-		}
-		go stp.run(ctx)
 	}
 	engine.Start(ctx)
 	go applier.watch(ctx)
@@ -374,7 +363,6 @@ func Run(ctx context.Context, o Options) error {
 		}
 		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
 		maint.Store(liveOps.maint)
-		liveOps.stp = stp
 		liveOps.sup = sup
 		upd := &updater{member: member, dir: softwareDir, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },

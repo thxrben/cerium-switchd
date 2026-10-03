@@ -55,12 +55,14 @@ const (
 type Role struct {
 	Member int `json:"member"`
 	// Master: this member is the master (standalone: always).
-	Master    bool   `json:"master"`
-	MasterID  int    `json:"master_id,omitempty"`
-	Members   []int  `json:"members,omitempty"`   // configured switch members
-	Reachable []int  `json:"reachable,omitempty"` // members reachable over the stack (not this one)
-	StackID   string `json:"stack_id,omitempty"`
-	HostName  string `json:"host_name,omitempty"`
+	Master    bool  `json:"master"`
+	MasterID  int   `json:"master_id,omitempty"`
+	Members   []int `json:"members,omitempty"`   // configured switch members
+	Reachable []int `json:"reachable,omitempty"` // members reachable over the stack (not this one)
+	// Draining: members in maintenance mode (reference 5.2).
+	Draining []int  `json:"draining,omitempty"`
+	StackID  string `json:"stack_id,omitempty"`
+	HostName string `json:"host_name,omitempty"`
 	// ChassisName is the stack's name (one system to the outside).
 	ChassisName string `json:"chassis_name,omitempty"`
 }

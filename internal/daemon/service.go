@@ -236,6 +236,8 @@ func roleOf(member int, ctl *stackCtl, cfg func() *model.Config, hostName func()
 		r.MasterID = ctl.node.Master()
 		r.Reachable = ctl.node.Mesh.Reachable()
 		slices.Sort(r.Reachable)
+		r.Draining = ctl.node.Mesh.Draining()
+		slices.Sort(r.Draining)
 	}
 	return r
 }

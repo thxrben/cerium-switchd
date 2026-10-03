@@ -1,0 +1,57 @@
+package daemon
+
+import (
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/stp"
+)
+
+// stpConfig is cer-rstpd's configuration for member (reference 5.5): the
+// stack's RSTP ports (switch ports that are not bundle members, and
+// aggregated interfaces), with this member's devices.
+func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool), stackID string) stp.Config {
+	c := stp.Config{Member: member, StackID: stackID, SwitchMembers: cfg.SwitchMembers(), Ports: map[string]stp.Port{}}
+	if cfg.RSTP == nil {
+		return c
+	}
+	c.On = true
+	c.Bridge = stp.BridgeConfig{BridgePriority: cfg.RSTP.BridgePriority, HelloTime: cfg.RSTP.HelloTime,
+		MaxAge: cfg.RSTP.MaxAge, ForwardDelay: cfg.RSTP.ForwardDelay}
+	for n, i := range cfg.Interfaces {
+		if !i.Switching || i.Disabled || i.Parent != "" {
+			continue
+		}
+		pc := cfg.RSTP.Ports[n]
+		if pc != nil && pc.Disabled {
+			continue
+		}
+		p := stp.Port{AE: i.AE, LACP: i.LACP != nil}
+		if pc != nil {
+			p.Config = &stp.PortConfig{Cost: pc.Cost, Priority: pc.Priority, Edge: pc.Edge, RootGuard: pc.RootGuard, PointToPnt: pc.PointToPnt}
+		}
+		switch {
+		case i.AE:
+			p.Members = append([]int(nil), i.MemberIDs...)
+			for _, m := range cfg.Interfaces {
+				if m.Parent == n && m.Member == member {
+					if l, ok := linux(m.Name); ok {
+						p.Legs = append(p.Legs, l)
+					}
+				}
+			}
+			for _, id := range i.MemberIDs {
+				if id == member {
+					p.Device = n
+				}
+			}
+		case i.Member > 0:
+			p.Members = []int{i.Member}
+			if i.Member == member {
+				p.Device, _ = linux(n)
+			}
+		default:
+			continue
+		}
+		c.Ports[n] = p
+	}
+	return c
+}

@@ -7,6 +7,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
@@ -51,7 +52,6 @@ type ops struct {
 	updater *updater
 	mclag   *mclagClient
 	maint   *maintCtl
-	stp     *rstpCtl
 	// sup starts and watches the cer- daemons (nil: not managed here).
 	sup *supervise.Supervisor
 	// restart ends switchd so that systemd starts it again.
@@ -470,11 +470,13 @@ func (o *ops) DHCPBindings() ([]cli.DHCPBinding, error) {
 }
 
 func (o *ops) SpanningTree() (cli.STPStatus, error) {
-	if o.stp == nil {
+	if o.svc == nil {
 		return cli.STPStatus{}, errors.New("not available (dry-run mode?)")
 	}
-	st, err := o.stp.status()
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var st stp.Status
+	if err := o.svc.call(ctx, "cer-rstpd", svc.MethodStatus, nil, &st); err != nil {
 		return cli.STPStatus{}, err
 	}
 	out := cli.STPStatus{Running: st.Running, Owner: st.Owner, BridgeID: st.Bridge.ID.String(), RootID: st.Root.Root.String(),

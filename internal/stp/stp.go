@@ -1,4 +1,4 @@
-package daemon
+package stp
 
 import (
 	"context"
@@ -19,12 +19,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/thxrben/cerium-switchd/internal/dataplane"
-	"github.com/thxrben/cerium-switchd/internal/inventory"
-	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/names"
 	"github.com/thxrben/cerium-switchd/internal/schema"
-	"github.com/thxrben/cerium-switchd/internal/stack/control"
-	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"github.com/thxrben/cerium-switchd/pkg/rstp"
 )
 
@@ -82,20 +79,17 @@ type rstpSock struct {
 	stop    chan struct{}
 }
 
-type rstpCtl struct {
+type Controller struct {
 	member    int
-	node      *control.Node // nil: standalone
-	mesh      *mesh.Mesh    // nil: standalone
-	names     *inventory.Naming
-	stackID   func() string
+	stack     Stack // nil: standalone
 	stateFile string
 	log       *slog.Logger
 	// legs reports per LACP bundle whether this member's leg carries
 	// traffic (nil: carrier only).
-	legs func() map[string]bool
+	Legs func() map[string]bool
 
 	mu  sync.Mutex
-	cfg *model.Config
+	cfg *Config
 	on  bool // RSTP configured (bridge in user-space STP)
 
 	// Member side.
@@ -123,8 +117,8 @@ type rstpCtl struct {
 	lastTick    time.Time
 }
 
-func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Naming, stackID func() string, stateDir string, log *slog.Logger) *rstpCtl {
-	r := &rstpCtl{member: member, node: node, mesh: m, names: names, stackID: stackID, log: log,
+func New(member int, stack Stack, stateDir string, log *slog.Logger) *Controller {
+	r := &Controller{member: member, stack: stack, log: log,
 		stateFile: filepath.Join(stateDir, "rstp.json"),
 		socks:     map[string]*rstpSock{}, devs: map[string]string{}, facts: map[string]rstpFact{},
 		desired: map[string]int{}, queues: map[int]chan func(){}, remote: map[int]map[string]rstpFact{},
@@ -135,8 +129,8 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 			r.snap = &s
 		}
 	}
-	if node != nil {
-		node.Handle("rstp-facts", func(from int, req json.RawMessage) (any, error) {
+	if stack != nil {
+		stack.Handle("rstp-facts", func(from int, req json.RawMessage) (any, error) {
 			var msg rstpFactsMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
@@ -150,7 +144,7 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 			r.dispatch()
 			return nil, nil
 		})
-		node.Handle("rstp-rx", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("rstp-rx", func(from int, req json.RawMessage) (any, error) {
 			var msg rstpRxMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
@@ -158,7 +152,7 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 			r.received(msg.Port, msg.BPDU)
 			return nil, nil
 		})
-		node.Handle("rstp-cmd", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("rstp-cmd", func(from int, req json.RawMessage) (any, error) {
 			var msg rstpCmdMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
@@ -172,7 +166,7 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 			r.command(&msg)
 			return nil, nil
 		})
-		node.Handle("rstp-snap", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("rstp-snap", func(from int, req json.RawMessage) (any, error) {
 			var msg rstpSnapMsg
 			if err := json.Unmarshal(req, &msg); err != nil {
 				return nil, err
@@ -186,7 +180,7 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 			r.mu.Unlock()
 			return nil, nil
 		})
-		node.Handle("rstp-status", func(from int, req json.RawMessage) (any, error) {
+		stack.Handle("rstp-status", func(from int, req json.RawMessage) (any, error) {
 			return r.localStatus(), nil
 		})
 	}
@@ -194,7 +188,7 @@ func newRSTP(member int, node *control.Node, m *mesh.Mesh, names *inventory.Nami
 }
 
 // setConfig takes the applied configuration.
-func (r *rstpCtl) setConfig(cfg *model.Config) {
+func (r *Controller) SetConfig(cfg *Config) {
 	r.mu.Lock()
 	r.cfg = cfg
 	r.syncModeLocked()
@@ -208,12 +202,12 @@ func (r *rstpCtl) setConfig(cfg *model.Config) {
 
 // syncModeLocked switches the bridge between user-space STP (RSTP
 // configured) and no STP.
-func (r *rstpCtl) syncModeLocked() {
-	on := r.cfg != nil && r.cfg.RSTP != nil
+func (r *Controller) syncModeLocked() {
+	on := r.cfg != nil && r.cfg.On
 	if on == r.on {
 		return
 	}
-	if err := dataplane.SetBridgeSTP(on); err != nil {
+	if err := netdev.SetBridgeSTP(names.Bridge, on); err != nil {
 		r.log.Error("rstp: bridge", "err", err)
 		return
 	}
@@ -229,9 +223,9 @@ func (r *rstpCtl) syncModeLocked() {
 	}
 }
 
-func (r *rstpCtl) bridgeConfigLocked() rstp.BridgeConfig {
-	c := r.cfg.RSTP
-	sum := sha256.Sum256([]byte("ceros rstp bridge\x00" + r.stackID()))
+func (r *Controller) bridgeConfigLocked() rstp.BridgeConfig {
+	c := r.cfg.Bridge
+	sum := sha256.Sum256([]byte("ceros rstp bridge\x00" + r.cfg.StackID))
 	var mac [6]byte
 	copy(mac[:], sum[:6])
 	mac[0] = mac[0]&^1 | 2
@@ -242,36 +236,21 @@ func (r *rstpCtl) bridgeConfigLocked() rstp.BridgeConfig {
 type rstpPort struct {
 	name    string
 	members []int // members with a device for it (an MC-LAG bundle: both)
-	cfg     *model.RSTPPort
+	cfg     *PortConfig
 }
 
 // portsLocked lists the RSTP ports of the stack (reference 5.5): switch
 // ports that are not bundle members, and aggregated interfaces.
-func (r *rstpCtl) portsLocked() map[string]rstpPort {
+func (r *Controller) portsLocked() map[string]rstpPort {
 	out := map[string]rstpPort{}
 	c := r.cfg
-	if c == nil || c.RSTP == nil {
+	if c == nil || !c.On {
 		return out
 	}
-	for n, i := range c.Interfaces {
-		if !i.Switching || i.Disabled || i.Parent != "" {
-			continue
-		}
-		pc := c.RSTP.Ports[n]
-		if pc != nil && pc.Disabled {
-			continue
-		}
-		p := rstpPort{name: n, cfg: pc}
-		switch {
-		case i.AE:
-			p.members = slices.Clone(i.MemberIDs)
-		case i.Member > 0:
-			p.members = []int{i.Member}
-		default:
-			continue
-		}
-		sort.Ints(p.members)
-		out[n] = p
+	for n, p := range c.Ports {
+		members := slices.Clone(p.Members)
+		sort.Ints(members)
+		out[n] = rstpPort{name: n, members: members, cfg: p.Config}
 	}
 	return out
 }
@@ -319,12 +298,12 @@ func natLess(a, b string) bool {
 
 // ownerLocked is the RSTP owner: the lowest member id this member reaches
 // (itself included), members in maintenance mode only if nothing else.
-func (r *rstpCtl) ownerLocked() int {
+func (r *Controller) ownerLocked() int {
 	cands := []int{r.member}
 	var draining []int
-	if r.mesh != nil {
-		cands = append(cands, r.mesh.Reachable()...)
-		draining = r.mesh.Draining()
+	if r.stack != nil {
+		cands = append(cands, r.stack.Reachable()...)
+		draining = r.stack.Draining()
 	}
 	best, bestDrain := 0, 0
 	for _, id := range cands {
@@ -346,7 +325,7 @@ func (r *rstpCtl) ownerLocked() int {
 
 // ---- member side ----
 
-func (r *rstpCtl) run(ctx context.Context) {
+func (r *Controller) Run(ctx context.Context) {
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -364,7 +343,7 @@ func (r *rstpCtl) run(ctx context.Context) {
 	}
 }
 
-func (r *rstpCtl) step(now time.Time) {
+func (r *Controller) step(now time.Time) {
 	r.mu.Lock()
 	r.syncModeLocked() // (retries when the bridge was not there yet)
 	if !r.on || r.cfg == nil {
@@ -378,13 +357,9 @@ func (r *rstpCtl) step(now time.Time) {
 		if !slices.Contains(p.members, r.member) {
 			continue
 		}
-		dev := n
-		if !r.cfg.Interfaces[n].AE {
-			l, ok := r.names.Linux(n)
-			if !ok {
-				continue // not plugged in
-			}
-			dev = l
+		dev := r.cfg.Ports[n].Device
+		if dev == "" {
+			continue // not plugged in
 		}
 		local[n] = dev
 	}
@@ -409,8 +384,8 @@ func (r *rstpCtl) step(now time.Time) {
 		f.Flaps = prev.Flaps
 		// The kernel resets a port to blocking when its link returns: a
 		// flap too short for this poll to see.
-		if want, ok := r.desired[n]; ok && want == dataplane.PortForwarding && f.Up && prev.Up {
-			if st, err := dataplane.PortSTPState(dev); err == nil && st != dataplane.PortForwarding {
+		if want, ok := r.desired[n]; ok && want == netdev.PortForwarding && f.Up && prev.Up {
+			if st, err := netdev.PortSTPState(dev); err == nil && st != netdev.PortForwarding {
 				f.Flaps++
 			}
 		}
@@ -460,7 +435,7 @@ func (r *rstpCtl) step(now time.Time) {
 		r.snap = snapMsg
 		r.saveLocked(tick)
 	}
-	members := r.cfg.SwitchMembers()
+	members := r.cfg.SwitchMembers
 	r.mu.Unlock()
 
 	if send {
@@ -468,46 +443,41 @@ func (r *rstpCtl) step(now time.Time) {
 			// (the owner uses its own facts directly)
 		} else {
 			r.enqueue(owner, func() {
-				r.node.Call(owner, "rstp-facts", rstpFactsMsg{Facts: facts}, time.Second)
+				r.stack.Call(owner, "rstp-facts", rstpFactsMsg{Facts: facts}, time.Second)
 			})
 		}
 	}
 	r.dispatch()
-	if snapMsg != nil && r.node != nil {
+	if snapMsg != nil && r.stack != nil {
 		for _, id := range members {
-			if id != r.member && r.mesh != nil && slices.Contains(r.mesh.Reachable(), id) {
-				r.enqueue(id, func() { r.node.Call(id, "rstp-snap", snapMsg, time.Second) })
+			if id != r.member && slices.Contains(r.stack.Reachable(), id) {
+				r.enqueue(id, func() { r.stack.Call(id, "rstp-snap", snapMsg, time.Second) })
 			}
 		}
 	}
 }
 
-func (r *rstpCtl) readFact(name, dev string) rstpFact {
+func (r *Controller) readFact(name, dev string) rstpFact {
 	rd := func(f string) string {
 		b, _ := os.ReadFile(filepath.Join("/sys/class/net", dev, f))
 		return strings.TrimSpace(string(b))
 	}
 	f := rstpFact{Up: rd("operstate") == "up" || (rd("carrier") == "1" && rd("operstate") == "unknown")}
-	i := r.cfg.Interfaces[name]
-	if i.AE && i.LACP != nil && r.legs != nil {
-		f.Up = f.Up && r.legs()[name] // a held or negotiating leg carries nothing
+	p := r.cfg.Ports[name]
+	if p.AE && p.LACP && r.Legs != nil {
+		f.Up = f.Up && r.Legs()[name] // a held or negotiating leg carries nothing
 	}
 	if !f.Up {
 		return f
 	}
-	if i.AE {
+	if p.AE {
 		// A bundle: the speed of its local members that are up.
-		for _, i := range r.cfg.Interfaces {
-			if i.Parent != name || i.Member != r.member {
-				continue
-			}
-			if l, ok := r.names.Linux(i.Name); ok {
-				b, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "carrier"))
-				s, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "speed"))
-				if strings.TrimSpace(string(b)) == "1" {
-					if v, err := strconv.Atoi(strings.TrimSpace(string(s))); err == nil && v > 0 {
-						f.Mbps += v
-					}
+		for _, l := range p.Legs {
+			b, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "carrier"))
+			s, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "speed"))
+			if strings.TrimSpace(string(b)) == "1" {
+				if v, err := strconv.Atoi(strings.TrimSpace(string(s))); err == nil && v > 0 {
+					f.Mbps += v
 				}
 			}
 		}
@@ -522,8 +492,8 @@ func (r *rstpCtl) readFact(name, dev string) rstpFact {
 }
 
 // applyStatesLocked puts every bridge port into the state it should have.
-func (r *rstpCtl) applyStatesLocked() {
-	all, err := dataplane.BridgePorts()
+func (r *Controller) applyStatesLocked() {
+	all, err := netdev.BridgePorts(names.Bridge)
 	if err != nil {
 		return
 	}
@@ -532,7 +502,7 @@ func (r *rstpCtl) applyStatesLocked() {
 		rstpDev[dev] = n
 	}
 	for _, dev := range all {
-		want := dataplane.PortForwarding
+		want := netdev.PortForwarding
 		if n, ok := rstpDev[dev]; ok {
 			w, known := r.desired[n]
 			if !known {
@@ -540,8 +510,8 @@ func (r *rstpCtl) applyStatesLocked() {
 			}
 			want = w
 		}
-		if st, err := dataplane.PortSTPState(dev); err == nil && st != want && st != dataplane.PortDisabled {
-			if err := dataplane.SetPortSTPState(dev, want); err != nil {
+		if st, err := netdev.PortSTPState(dev); err == nil && st != want && st != netdev.PortDisabled {
+			if err := netdev.SetPortSTPState(dev, want); err != nil {
 				r.log.Debug("rstp: port state", "port", dev, "err", err)
 			}
 		}
@@ -549,7 +519,7 @@ func (r *rstpCtl) applyStatesLocked() {
 }
 
 // command applies what the owner sent.
-func (r *rstpCtl) command(msg *rstpCmdMsg) {
+func (r *Controller) command(msg *rstpCmdMsg) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if msg.States != nil {
@@ -563,7 +533,7 @@ func (r *rstpCtl) command(msg *rstpCmdMsg) {
 	}
 	for _, n := range msg.Flush {
 		if dev, ok := r.devs[n]; ok {
-			dataplane.FlushLearned(dev)
+			netdev.FlushLearned(dev)
 		}
 	}
 	for _, tx := range msg.Tx {
@@ -572,7 +542,7 @@ func (r *rstpCtl) command(msg *rstpCmdMsg) {
 }
 
 // received handles a BPDU from a member's port (on the owner).
-func (r *rstpCtl) received(port string, raw []byte) {
+func (r *Controller) received(port string, raw []byte) {
 	r.mu.Lock()
 	if r.br == nil {
 		r.mu.Unlock()
@@ -595,7 +565,7 @@ func (r *rstpCtl) received(port string, raw []byte) {
 
 // ---- owner side ----
 
-func (r *rstpCtl) becomeOwnerLocked() {
+func (r *Controller) becomeOwnerLocked() {
 	cfg := r.bridgeConfigLocked()
 	r.pending = map[int]*rstpCmdMsg{}
 	r.states = map[string]int{}
@@ -619,7 +589,7 @@ func (r *rstpCtl) becomeOwnerLocked() {
 	r.syncPortsLocked()
 }
 
-func (r *rstpCtl) portConfigLocked(p rstpPort) rstp.PortConfig {
+func (r *Controller) portConfigLocked(p rstpPort) rstp.PortConfig {
 	pc := rstp.PortConfig{Priority: 128, AutoEdge: true}
 	fact := r.factLocked(p)
 	pc.SpeedMbps = fact.Mbps
@@ -638,7 +608,7 @@ func (r *rstpCtl) portConfigLocked(p rstpPort) rstp.PortConfig {
 
 // factLocked combines the members' facts about a port (a bundle is up if
 // any leg is, with the speed of all).
-func (r *rstpCtl) factLocked(p rstpPort) rstpFact {
+func (r *Controller) factLocked(p rstpPort) rstpFact {
 	var out rstpFact
 	for _, m := range p.members {
 		f, ok := r.remote[m][p.name]
@@ -657,7 +627,7 @@ func (r *rstpCtl) factLocked(p rstpPort) rstpFact {
 
 // syncPortsLocked makes the bridge's ports match the configuration and the
 // members' facts.
-func (r *rstpCtl) syncPortsLocked() {
+func (r *Controller) syncPortsLocked() {
 	ports := r.portsLocked()
 	nums := rstpNumbers(slices.Collect(maps.Keys(ports)))
 	for n, v := range r.numbers {
@@ -685,7 +655,7 @@ func (r *rstpCtl) syncPortsLocked() {
 	r.snapChanged = true
 }
 
-func (r *rstpCtl) cmdFor(member int) *rstpCmdMsg {
+func (r *Controller) cmdFor(member int) *rstpCmdMsg {
 	c := r.pending[member]
 	if c == nil {
 		c = &rstpCmdMsg{}
@@ -696,7 +666,7 @@ func (r *rstpCtl) cmdFor(member int) *rstpCmdMsg {
 
 // onSend: the BPDU leaves on the port's member (a bundle: the lowest member
 // whose leg is up).
-func (r *rstpCtl) onSend(num uint16, b *rstp.BPDU) {
+func (r *Controller) onSend(num uint16, b *rstp.BPDU) {
 	n := r.byNum[num]
 	ports := r.portsLocked()
 	p, ok := ports[n]
@@ -712,14 +682,14 @@ func (r *rstpCtl) onSend(num uint16, b *rstp.BPDU) {
 	}
 }
 
-func (r *rstpCtl) onState(num uint16, learning, forwarding bool) {
+func (r *Controller) onState(num uint16, learning, forwarding bool) {
 	n := r.byNum[num]
-	st := dataplane.PortBlocking
+	st := netdev.PortBlocking
 	switch {
 	case forwarding:
-		st = dataplane.PortForwarding
+		st = netdev.PortForwarding
 	case learning:
-		st = dataplane.PortLearning
+		st = netdev.PortLearning
 	}
 	if r.states[n] == st {
 		return
@@ -734,7 +704,7 @@ func (r *rstpCtl) onState(num uint16, learning, forwarding bool) {
 	}
 }
 
-func (r *rstpCtl) onFlush(num uint16) {
+func (r *Controller) onFlush(num uint16) {
 	n := r.byNum[num]
 	if p, ok := r.portsLocked()[n]; ok {
 		for _, m := range p.members {
@@ -745,7 +715,7 @@ func (r *rstpCtl) onFlush(num uint16) {
 }
 
 // dispatch sends the owner's pending outputs to the members.
-func (r *rstpCtl) dispatch() {
+func (r *Controller) dispatch() {
 	r.mu.Lock()
 	if r.br == nil || len(r.pending) == 0 {
 		r.pending = map[int]*rstpCmdMsg{}
@@ -772,11 +742,11 @@ func (r *rstpCtl) dispatch() {
 		r.mu.Unlock()
 	}
 	for m, c := range out {
-		if r.node == nil {
+		if r.stack == nil {
 			continue
 		}
 		r.enqueue(m, func() {
-			if _, err := r.node.Call(m, "rstp-cmd", c, time.Second); err != nil {
+			if _, err := r.stack.Call(m, "rstp-cmd", c, time.Second); err != nil {
 				r.log.Debug("rstp: to member", "member", m, "err", err)
 			}
 		})
@@ -784,8 +754,8 @@ func (r *rstpCtl) dispatch() {
 }
 
 // enqueue runs f in order with the other messages to member m.
-func (r *rstpCtl) enqueue(m int, f func()) {
-	if r.node == nil {
+func (r *Controller) enqueue(m int, f func()) {
+	if r.stack == nil {
 		return
 	}
 	r.mu.Lock()
@@ -807,7 +777,7 @@ func (r *rstpCtl) enqueue(m int, f func()) {
 	}
 }
 
-func (r *rstpCtl) saveLocked(force bool) {
+func (r *Controller) saveLocked(force bool) {
 	if r.snap == nil || (!force && time.Since(r.savedAt) < time.Second) {
 		return
 	}
@@ -823,7 +793,7 @@ func (r *rstpCtl) saveLocked(force bool) {
 
 // ---- BPDU sockets ----
 
-func (r *rstpCtl) openSockLocked(port, dev string) error {
+func (r *Controller) openSockLocked(port, dev string) error {
 	ifi, err := net.InterfaceByName(dev)
 	if err != nil {
 		return err
@@ -848,14 +818,14 @@ func (r *rstpCtl) openSockLocked(port, dev string) error {
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func (r *rstpCtl) closeSockLocked(port string) {
+func (r *Controller) closeSockLocked(port string) {
 	if s := r.socks[port]; s != nil {
 		close(s.stop)
 		delete(r.socks, port)
 	}
 }
 
-func (r *rstpCtl) read(port string, s *rstpSock) {
+func (r *Controller) read(port string, s *rstpSock) {
 	buf := make([]byte, 1600)
 	for {
 		select {
@@ -882,12 +852,12 @@ func (r *rstpCtl) read(port string, s *rstpSock) {
 		if owner == r.member {
 			r.received(port, raw)
 		} else {
-			r.enqueue(owner, func() { r.node.Call(owner, "rstp-rx", rstpRxMsg{Port: port, BPDU: raw}, time.Second) })
+			r.enqueue(owner, func() { r.stack.Call(owner, "rstp-rx", rstpRxMsg{Port: port, BPDU: raw}, time.Second) })
 		}
 	}
 }
 
-func (r *rstpCtl) sendLocked(port string, raw []byte) {
+func (r *Controller) sendLocked(port string, raw []byte) {
 	s := r.socks[port]
 	if s == nil {
 		return
@@ -905,8 +875,8 @@ func (r *rstpCtl) sendLocked(port string, raw []byte) {
 
 // ---- status ----
 
-// RSTPStatus is what "show spanning-tree" shows (from the owner).
-type RSTPStatus struct {
+// Status is what "show spanning-tree" shows (from the owner).
+type Status struct {
 	Running    bool
 	Owner      int
 	Bridge     rstp.BridgeConfig
@@ -915,18 +885,18 @@ type RSTPStatus struct {
 	Times      rstp.Times
 	Changes    uint64
 	SinceTicks uint64
-	Ports      []RSTPPortStatus
+	Ports      []PortStatus
 }
 
-type RSTPPortStatus struct {
+type PortStatus struct {
 	Name string
 	rstp.PortStatus
 }
 
-func (r *rstpCtl) localStatus() RSTPStatus {
+func (r *Controller) localStatus() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := RSTPStatus{Running: r.on, Owner: r.ownerLocked()}
+	st := Status{Running: r.on, Owner: r.ownerLocked()}
 	if r.br == nil {
 		return st
 	}
@@ -937,23 +907,23 @@ func (r *rstpCtl) localStatus() RSTPStatus {
 		st.RootPort = r.byNum[rp.Number()]
 	}
 	for _, p := range r.br.Ports() {
-		st.Ports = append(st.Ports, RSTPPortStatus{Name: r.byNum[p.Number], PortStatus: p})
+		st.Ports = append(st.Ports, PortStatus{Name: r.byNum[p.Number], PortStatus: p})
 	}
 	return st
 }
 
 // status asks the owner.
-func (r *rstpCtl) status() (RSTPStatus, error) {
+func (r *Controller) Status() (Status, error) {
 	r.mu.Lock()
 	owner := r.ownerLocked()
 	r.mu.Unlock()
-	if owner == r.member || r.node == nil {
+	if owner == r.member || r.stack == nil {
 		return r.localStatus(), nil
 	}
-	raw, err := r.node.Call(owner, "rstp-status", nil, 2*time.Second)
+	raw, err := r.stack.Call(owner, "rstp-status", nil, 2*time.Second)
 	if err != nil {
-		return RSTPStatus{}, fmt.Errorf("RSTP owner (member %d): %w", owner, err)
+		return Status{}, fmt.Errorf("RSTP owner (member %d): %w", owner, err)
 	}
-	var st RSTPStatus
+	var st Status
 	return st, json.Unmarshal(raw, &st)
 }

@@ -130,9 +130,8 @@ func TestMirrorOverDaemonRestart(t *testing.T) {
 	}
 }
 
-// switchd follows cer-lacpd's legs (RSTP) and republishes its port states
-// (cer-lldpd).
-func TestLACPLink(t *testing.T) {
+// switchd republishes cer-lacpd's port states (for cer-lldpd).
+func TestLACPPortsRepublished(t *testing.T) {
 	dir, err := os.MkdirTemp("", "svc")
 	if err != nil {
 		t.Fatal(err)
@@ -142,22 +141,21 @@ func TestLACPLink(t *testing.T) {
 	defer cancel()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	s := newService(1, nil, func(string) {}, func() svc.Role { return svc.Role{Member: 1, Master: true} }, log)
-	link := newLACPLink(s)
+	republishLACPPorts(s)
 	if err := s.start(ctx, dir); err != nil {
 		t.Fatal(err)
 	}
 	k := daemonkit.New(ctx, daemonkit.Options{Name: "cer-lacpd", SocketDir: dir, Log: log})
-	k.Endpoint.Replace(svc.TopicLACPLegs, map[string]any{"ae1": false, "ae2": true})
 	k.Endpoint.Publish(svc.TopicLACPPorts, "", map[string]bool{"eth1": true})
 	if err := k.Start(); err != nil {
 		t.Fatal(err)
 	}
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		if l := link.Legs(); len(l) == 2 && l["ae2"] && !l["ae1"] && string(s.ep.Get(svc.TopicLACPPorts, "")) == `{"eth1":true}` {
+		if string(s.ep.Get(svc.TopicLACPPorts, "")) == `{"eth1":true}` {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("legs %v ports %s", link.Legs(), s.ep.Get(svc.TopicLACPPorts, ""))
+			t.Fatalf("ports %s", s.ep.Get(svc.TopicLACPPorts, ""))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
