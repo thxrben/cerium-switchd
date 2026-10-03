@@ -53,6 +53,7 @@ func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
 					if dev, here := dataplane.UnitDevice(cfg, unit, names); here {
 						ic.Device = dev
 					}
+					ic.Owners, ic.IRB = unitOwners(cfg, u)
 					for _, p := range u.Addrs {
 						if _, perMember := u.AddrMember[p]; perMember || p.Addr().Is4() == o.V3 {
 							continue
@@ -66,4 +67,19 @@ func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
 		}
 	}
 	return c
+}
+
+// unitOwners returns the members that have a unit's device: a routed
+// port's member, a bundle's leg members; an irb is on every member.
+func unitOwners(cfg *model.Config, u *model.L3Unit) ([]int, bool) {
+	switch {
+	case u.IRB():
+		return cfg.SwitchMembers(), true
+	case u.Member != 0:
+		return []int{u.Member}, false
+	}
+	if i, ok := cfg.Interfaces[u.Parent]; ok && i.AE {
+		return slices.Clone(i.MemberIDs), false
+	}
+	return nil, false
 }

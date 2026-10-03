@@ -59,6 +59,11 @@ type Iface struct {
 	TransitDelay int            `json:"transit_delay"`
 	Simple       string         `json:"simple,omitempty"`
 	MD5          map[int]string `json:"md5,omitempty"`
+	// Owners are the members that have the unit's device (a routed port:
+	// its member; a bundle: the members of its legs); IRB: an irb (on
+	// every member, its frames reach the master in their VLAN).
+	Owners []int `json:"owners,omitempty"`
+	IRB    bool  `json:"irb,omitempty"`
 }
 
 func (i Instance) key() string { return fmt.Sprintf("%s/v%d", i.Name, i.Version) }
@@ -105,16 +110,24 @@ type Daemon struct {
 	// Settle is the least time after the start before the routes count as
 	// complete (0: 40 s, at least every dead interval).
 	Settle time.Duration
+	// Member is this member's id; StackCall calls cer-ospfd on another
+	// member (the relay of routed interfaces of other members; nil:
+	// standalone).
+	Member    int
+	StackCall func(ctx context.Context, member int, method string, req, resp any) error
 
 	events  chan func()
 	started time.Time
 
-	mu     sync.Mutex // guards cfg, master for the setters
-	cfg    Config
-	master bool
+	mu       sync.Mutex // guards cfg, master and masterID for the setters
+	cfg      Config
+	master   bool
+	masterID int
 
 	// Owned by the event loop.
-	insts map[string]*instance
+	insts  map[string]*instance
+	rel    relayState                   // a non-master's relay sockets
+	remote map[string]map[int]RelayLink // the master's view of relayed devices (key|unit -> member)
 }
 
 type instance struct {
@@ -152,11 +165,20 @@ func (d *Daemon) SetConfig(c Config) {
 }
 
 // SetMaster tells whether this member is the master (the protocol runs
-// there only).
+// there only); standalone or tests.
 func (d *Daemon) SetMaster(m bool) {
+	id := 0
+	if m {
+		id = d.Member
+	}
+	d.SetRole(m, id)
+}
+
+// SetRole tells whether this member is the master and which member is.
+func (d *Daemon) SetRole(m bool, masterID int) {
 	d.mu.Lock()
-	changed := d.master != m
-	d.master = m
+	changed := d.master != m || d.masterID != masterID
+	d.master, d.masterID = m, masterID
 	d.mu.Unlock()
 	if changed {
 		d.do(d.apply)
@@ -209,8 +231,13 @@ func (d *Daemon) stopAll() {
 // apply converges the instances with the configuration and the role.
 func (d *Daemon) apply() {
 	d.mu.Lock()
-	cfg, master := d.cfg, d.master
+	cfg, master, masterID := d.cfg, d.master, d.masterID
 	d.mu.Unlock()
+	me := d.Member
+	if master {
+		me = masterID
+	}
+	d.relay(cfg, me, masterID)
 	want := map[string]Instance{}
 	if master {
 		for _, in := range cfg.Instances {
@@ -248,6 +275,12 @@ func (d *Daemon) apply() {
 // refreshLinks follows the kernel (carrier, addresses, MTU, speed).
 func (d *Daemon) refreshLinks() {
 	now := time.Now()
+	d.mu.Lock()
+	cfg, master, masterID := d.cfg, d.master, d.masterID
+	d.mu.Unlock()
+	if !master {
+		d.relay(cfg, d.Member, masterID)
+	}
 	for _, k := range d.sortedKeys() {
 		in := d.insts[k]
 		changed := false
@@ -296,11 +329,18 @@ func (in *instance) configure(now time.Time) {
 	for _, ic := range c.Interfaces {
 		seen[ic.Unit] = true
 		li, ok := LinkInfo{}, false
+		owner := 0 // the member sending for us (0: this one)
 		if ic.Device != "" {
 			li, ok = d.Kernel.Link(ic.Device)
+		} else if rel, _ := relayed(ic, -1, d.Member); rel {
+			li, owner, ok = d.remoteLink(c.key(), ic)
 		}
 		in.links[ic.Unit] = li
-		oc := ospf.IfaceConfig{Name: ic.Unit, Area: ic.Area, ID: uint32(li.Index), P2P: ic.P2P, Passive: ic.Passive,
+		ifID := uint32(li.Index)
+		if owner != 0 {
+			ifID = uint32(owner)<<24 | uint32(li.Index)&0xffffff // unique among this router's interfaces
+		}
+		oc := ospf.IfaceConfig{Name: ic.Unit, Area: ic.Area, ID: ifID, P2P: ic.P2P, Passive: ic.Passive,
 			Cost: cost(ic, c.ReferenceBW, li), Priority: uint8(ic.Priority), Hello: uint16(ic.Hello), Dead: uint32(ic.Dead),
 			Retransmit: uint16(ic.Retransmit), TransitDelay: uint16(ic.TransitDelay), MTU: uint16(li.MTU)}
 		if c.Version == ospf.V2 {
@@ -327,7 +367,16 @@ func (in *instance) configure(now time.Time) {
 		// The port: open on an interface that is up and not passive.
 		need := oc.Up && !ic.Passive
 		p := in.ports[ic.Unit]
+		if rp, isRelay := p.(*relayPort); isRelay && (owner == 0 || rp.member != owner) {
+			delete(in.ports, ic.Unit) // another owner, or local now
+			p = nil
+		}
 		switch {
+		case need && p == nil && owner != 0:
+			if d.StackCall == nil {
+				continue
+			}
+			in.ports[ic.Unit] = &relayPort{d: d, key: c.key(), unit: ic.Unit, member: owner}
 		case need && p == nil:
 			unit := ic.Unit
 			np, err := d.Net.Open(c.Version, ic.Device, li.Index, func(src, dst netip.Addr, pkt []byte) {

@@ -39,6 +39,33 @@ func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, er
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := ospfd.New(ospfd.LinuxKernel{}, ospfd.LinuxNet{}, rc, k.Log)
+	d.Member = k.Member
+	d.StackCall = k.StackCall
+	// The relay of routed interfaces of other members (reference 5.8).
+	k.HandleStack(ospfd.StackRx, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var p ospfd.RelayPacket
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		d.ReceiveRelayed(p)
+		return nil, nil
+	})
+	k.HandleStack(ospfd.StackTx, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var p ospfd.RelayPacket
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		d.SendRelayed(p)
+		return nil, nil
+	})
+	k.HandleStack(ospfd.StackLink, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var l ospfd.RelayLink
+		if err := json.Unmarshal(raw, &l); err != nil {
+			return nil, err
+		}
+		d.LinkReported(l)
+		return nil, nil
+	})
 	// The master's routes for the other members.
 	d.Replicate = func(sr ribd.SetRoutes) {
 		r, ok := k.Role()
@@ -73,7 +100,7 @@ func setup(k *daemonkit.Kit) error {
 	})
 	var lastReachable []int
 	k.OnRole(func(r svc.Role) {
-		d.SetMaster(r.Master)
+		d.SetRole(r.Master, r.MasterID)
 		// A member that became reachable gets the routes at once.
 		if r.Master && !slices.Equal(r.Reachable, lastReachable) {
 			lastReachable = slices.Clone(r.Reachable)
