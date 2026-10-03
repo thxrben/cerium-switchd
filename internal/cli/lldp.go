@@ -11,7 +11,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/config"
-	"github.com/thxrben/cerium-switchd/internal/lldp"
+	"github.com/thxrben/cerium-switchd/pkg/lldp"
 )
 
 // lldpCommand is "show lldp …" (reference 5.5).

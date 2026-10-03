@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
-	"github.com/thxrben/cerium-switchd/internal/lacp"
 	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
 // completeAE offers the configured aggregated interfaces.

@@ -18,8 +18,8 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
-	"github.com/thxrben/cerium-switchd/internal/lacp"
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
 // mclagCtl runs this member's side of its MC-LAG domain (reference 5.6):

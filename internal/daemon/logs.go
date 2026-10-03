@@ -5,8 +5,8 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ntp"
-	"github.com/thxrben/cerium-switchd/internal/syslog"
+	"github.com/thxrben/cerium-switchd/pkg/ntp"
+	"github.com/thxrben/cerium-switchd/pkg/syslog"
 )
 
 var severityName = []string{"emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"}

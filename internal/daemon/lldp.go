@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/inventory"
-	"github.com/thxrben/cerium-switchd/internal/lldp"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/lldp"
 )
 
 // lldpConfig returns what LLDP announces and the ports it runs on for

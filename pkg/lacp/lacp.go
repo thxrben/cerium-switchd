@@ -321,8 +321,11 @@ func (b *Bundle) Tick(now time.Time) {
 }
 
 // selection attaches the bundle's aggregator to one partner: the one it
-// has now if any port still has it, else the partner of the port with the
-// lowest number. Ports with another partner stay unselected.
+// has now if a port with it is attached (carries or is about to carry
+// traffic), else the partner of the port with the lowest number. Until a
+// port is attached (the wait-while time), a lower-numbered port's partner
+// takes over, so the choice does not depend on which partner was heard
+// first. Ports with another partner stay unselected.
 func (b *Bundle) selection(names []string) {
 	candidate := func(p *Port) bool {
 		return p.up && (p.rx == RxCurrent || p.rx == RxExpired) && p.partner.State.Has(Aggregation) &&
@@ -331,7 +334,7 @@ func (b *Bundle) selection(names []string) {
 	keep := false
 	for _, n := range names {
 		p := b.ports[n]
-		if b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key {
+		if b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key && p.mux >= MuxAttached {
 			keep = true
 		}
 	}

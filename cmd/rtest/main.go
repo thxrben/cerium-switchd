@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfd"
+	"github.com/thxrben/cerium-switchd/pkg/bfd"
 )
 
 // Config describes what rtest runs.

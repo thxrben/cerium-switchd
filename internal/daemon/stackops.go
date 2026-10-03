@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
-	"github.com/thxrben/cerium-switchd/internal/lacp"
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
 // stackOps is the operational data of the whole stack: the members work as

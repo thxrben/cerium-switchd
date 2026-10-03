@@ -9,8 +9,8 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/access"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ntp"
-	"github.com/thxrben/cerium-switchd/internal/syslog"
+	"github.com/thxrben/cerium-switchd/pkg/ntp"
+	"github.com/thxrben/cerium-switchd/pkg/syslog"
 )
 
 // mgmtCtl runs the management services where they belong (reference 1.8):

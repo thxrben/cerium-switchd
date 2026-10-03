@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
-	"github.com/thxrben/cerium-switchd/internal/lacp"
-	"github.com/thxrben/cerium-switchd/internal/lldp"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
+	"github.com/thxrben/cerium-switchd/pkg/lldp"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"log/slog"
@@ -24,10 +24,10 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
-	"github.com/thxrben/cerium-switchd/internal/dhcp"
 	"github.com/thxrben/cerium-switchd/internal/diag"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ntp"
+	"github.com/thxrben/cerium-switchd/pkg/dhcp"
+	"github.com/thxrben/cerium-switchd/pkg/ntp"
 )
 
 // ops implements cli.Operational from the kernel and the active

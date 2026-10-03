@@ -22,10 +22,10 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/rstp"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/pkg/rstp"
 )
 
 // RSTP for the whole stack as one bridge (reference 5.5): every member

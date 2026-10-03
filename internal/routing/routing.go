@@ -17,7 +17,7 @@ import (
 	"sync"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/rib"
+	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
 
 // FIBRoute is an active protocol route for the kernel.

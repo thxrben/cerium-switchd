@@ -16,8 +16,8 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/diag"
-	"github.com/thxrben/cerium-switchd/internal/lacp"
-	"github.com/thxrben/cerium-switchd/internal/lldp"
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
+	"github.com/thxrben/cerium-switchd/pkg/lldp"
 )
 
 type nopApplier struct{}
