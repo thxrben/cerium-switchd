@@ -4,6 +4,7 @@ package netdev
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,10 @@ const STPHelper = "/sbin/bridge-stp" // the kernel's fixed path
 // by earlier versions are recognised).
 func stpHelperMarker(bridge string) string { return "# switchd: RSTP runs in switchd for " + bridge }
 
+// STPHelperText is the helper for bridge (a read-only system, such as the
+// cerOS image, ships it: the kernel's path is fixed).
+func STPHelperText(bridge string) string { return stpHelperText(bridge) }
+
 func stpHelperText(bridge string) string {
 	return "#!/bin/sh\n" + stpHelperMarker(bridge) + "\n" +
 		"[ \"$1\" = \"" + bridge + "\" ] && exit 0\nexit 1\n"
@@ -50,6 +55,13 @@ func EnsureSTPHelper(bridge string) error {
 	}
 	tmp := STPHelper + ".tmp"
 	if err := hwio.WriteFile(tmp, []byte(stpHelperText(bridge)), 0o755); err != nil {
+		if errors.Is(err, unix.EROFS) {
+			what := "is missing"
+			if cur != nil {
+				what = "is outdated"
+			}
+			return fmt.Errorf("%s %s and the root file system is read-only: the system image must contain it", STPHelper, what)
+		}
 		return err
 	}
 	return hwio.Rename(tmp, STPHelper)

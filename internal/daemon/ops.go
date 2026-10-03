@@ -484,7 +484,7 @@ func (o *ops) SpanningTree() (cli.STPStatus, error) {
 	if err := o.svc.call(ctx, "cer-rstpd", svc.MethodStatus, nil, &st); err != nil {
 		return cli.STPStatus{}, err
 	}
-	out := cli.STPStatus{Running: st.Running, Owner: st.Owner, BridgeID: st.Bridge.ID.String(), RootID: st.Root.Root.String(),
+	out := cli.STPStatus{Running: st.Running, Error: st.Error, Owner: st.Owner, BridgeID: st.Bridge.ID.String(), RootID: st.Root.Root.String(),
 		RootCost: st.Root.Cost, RootPort: st.RootPort, HelloTime: st.Times.HelloTime, MaxAge: st.Times.MaxAge,
 		ForwardDelay: st.Times.ForwardDelay, Changes: st.Changes}
 	for _, p := range st.Ports {

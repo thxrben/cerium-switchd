@@ -240,6 +240,10 @@ Linux shell.
 
 `/etc/ceros-release` names the version, the platform and the layout version.
 
+Files the system needs at fixed paths are part of the image, because its root is read-only: the kernel's STP helper
+`/sbin/bridge-stp` (it hands switchd's bridge to cer-rstpd; a test keeps it identical to what cer-rstpd expects), and
+the tmpfiles entry for sshd's `/run/sshd`.
+
 ## 6. Building and installing
 
 * `make image` builds the image in a Debian 13 container (the host needs only docker). The steps are mmdebstrap,

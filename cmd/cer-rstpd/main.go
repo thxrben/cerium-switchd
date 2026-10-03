@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -69,6 +70,9 @@ func setup(k *daemonkit.Kit) error {
 		mu.Unlock()
 	})
 	ctl := stp.New(k.Member, kitStack{k}, k.StateDir, k.Log)
+	ctl.Alarm = func(text string) {
+		go k.Notify(fmt.Sprintf("member %d: %s", k.Member, text)) // never under the controller's lock
+	}
 	ctl.Legs = func() map[string]bool {
 		mu.Lock()
 		defer mu.Unlock()

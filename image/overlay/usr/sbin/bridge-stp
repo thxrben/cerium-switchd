@@ -1,0 +1,4 @@
+#!/bin/sh
+# switchd: RSTP runs in switchd for swbr0
+[ "$1" = "swbr0" ] && exit 0
+exit 1

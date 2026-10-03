@@ -17,6 +17,7 @@ import (
 // STPStatus is the stack's spanning tree as the RSTP owner sees it.
 type STPStatus struct {
 	Running                         bool
+	Error                           string // configured but not running: why
 	Owner                           int
 	BridgeID, RootID                string
 	RootCost                        uint32
@@ -43,6 +44,9 @@ func (sh *Shell) stp() (STPStatus, error) {
 	st, err := sh.env.Ops.SpanningTree()
 	if err != nil {
 		return st, err
+	}
+	if !st.Running && st.Error != "" {
+		return st, errors.New("RSTP is configured but does not run: " + st.Error)
 	}
 	if !st.Running {
 		return st, errors.New("RSTP is not running ('set protocols rstp' enables it)")

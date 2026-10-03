@@ -87,6 +87,10 @@ type Controller struct {
 	// legs reports per LACP bundle whether this member's leg carries
 	// traffic (nil: carrier only).
 	Legs func() map[string]bool
+	// Alarm tells the operators (every CLI session) when RSTP cannot run
+	// although configured (nil: log only).
+	Alarm   func(text string)
+	lastErr string
 
 	mu  sync.Mutex
 	cfg *Config
@@ -208,9 +212,21 @@ func (r *Controller) syncModeLocked() {
 		return
 	}
 	if err := netdev.SetBridgeSTP(names.Bridge, on); err != nil {
-		r.log.Error("rstp: bridge", "err", err)
+		// Once per distinct error (it is retried with every change), and
+		// an alarm: without STP the stack forwards on every port.
+		if msg := err.Error(); msg != r.lastErr {
+			r.lastErr = msg
+			r.log.Error("rstp: cannot switch STP on the bridge", "on", on, "err", err)
+			if on && r.Alarm != nil {
+				r.Alarm("ALARM: RSTP is configured but does not run: " + msg)
+			}
+		}
 		return
 	}
+	if r.lastErr != "" && r.Alarm != nil && on {
+		r.Alarm("RSTP runs again")
+	}
+	r.lastErr = ""
 	r.on = on
 	if on {
 		r.log.Info("rstp: running (the stack is one bridge)")
@@ -877,7 +893,10 @@ func (r *Controller) sendLocked(port string, raw []byte) {
 
 // Status is what "show spanning-tree" shows (from the owner).
 type Status struct {
-	Running    bool
+	Running bool
+	// Error: why RSTP does not run although configured ("": it runs, or
+	// is not configured).
+	Error      string
 	Owner      int
 	Bridge     rstp.BridgeConfig
 	Root       rstp.Vector
@@ -896,7 +915,7 @@ type PortStatus struct {
 func (r *Controller) localStatus() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := Status{Running: r.on, Owner: r.ownerLocked()}
+	st := Status{Running: r.on, Owner: r.ownerLocked(), Error: r.lastErr}
 	if r.br == nil {
 		return st
 	}
