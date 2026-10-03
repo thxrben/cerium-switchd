@@ -581,6 +581,7 @@ func (b *builder) validateRoutingProtocols() {
 				}
 			}
 		}
+		b.checkBFD(base, r)
 		if (r.OSPF != nil || r.OSPF3 != nil || r.BGP != nil) && !r.RouterID.IsValid() && c.autoRouterID(r.Instance) == (netip.Addr{}) {
 			b.warnf(strings.TrimSuffix(base, " protocols")+" routing-options router-id",
 				"no router id can be chosen (no IPv4 address in the instance): the routing protocols wait until there is one")
@@ -783,4 +784,64 @@ func MatchASPath(re *regexp.Regexp, path []uint32) bool {
 	}
 	b.WriteString(" ")
 	return re.MatchString(b.String())
+}
+
+// bfdFastCPUs: members with fewer CPUs get a warning for BFD intervals
+// below bfdFastMs (reference 5.12: false detections on small boards).
+const (
+	bfdFastMs   = 100
+	bfdFastCPUs = 4
+)
+
+// checkBFD warns about fast BFD intervals on members with few CPUs. Any
+// member can be the master, where the sessions end (5.8), so every member
+// whose CPU count is known counts.
+func (b *builder) checkBFD(base string, r *Routing) {
+	cc, ok := b.inv.(CPUCounter)
+	if !ok || b.inv == nil {
+		return
+	}
+	var small []string
+	for _, id := range sortedKeys(b.cfg.Members) {
+		if n, known := cc.CPUs(id); known && n < bfdFastCPUs {
+			small = append(small, fmt.Sprintf("member %d (%d CPUs)", id, n))
+		}
+	}
+	if len(b.cfg.Members) == 0 {
+		if n, known := cc.CPUs(1); known && n < bfdFastCPUs {
+			small = append(small, fmt.Sprintf("member 1 (%d CPUs)", n))
+		}
+	}
+	if len(small) == 0 {
+		return
+	}
+	warn := func(path string, f *NeighborBFD) {
+		if f != nil && f.IntervalMs < bfdFastMs {
+			b.warnf(path+" bfd-liveness-detection minimum-interval",
+				"%d ms is below %d ms on %s: the session may go down while the CPUs are busy (false detection)",
+				f.IntervalMs, bfdFastMs, strings.Join(small, ", "))
+		}
+	}
+	for _, o := range []*OSPF{r.OSPF, r.OSPF3} {
+		if o == nil {
+			continue
+		}
+		name := "ospf"
+		if o.V3 {
+			name = "ospf3"
+		}
+		for _, a := range sortedAddrs(o.Areas) {
+			for _, u := range sortedKeys(o.Areas[a].Interfaces) {
+				warn(fmt.Sprintf("%s %s area %s interface %s", base, name, a, u), o.Areas[a].Interfaces[u].BFD)
+			}
+		}
+	}
+	if r.BGP != nil {
+		for _, g := range sortedKeys(r.BGP.Groups) {
+			grp := r.BGP.Groups[g]
+			for _, a := range sortedAddrs(grp.Neighbors) {
+				warn(fmt.Sprintf("%s bgp group %s neighbor %s", base, g, a), grp.Neighbors[a].BFD)
+			}
+		}
+	}
 }

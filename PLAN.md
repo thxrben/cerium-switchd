@@ -576,6 +576,42 @@ and lab install. 3. `pkg/ipc`, `pkg/journal`, `pkg/sdnotify`, daemonkit. 4. Supe
 (leases -> switchd, which adds the addresses). 9. cer-lacpd. 10. cer-mclagd. 11. cer-rstpd. 12. cer-ribd (routes
 leave the data plane). 13. cer-bfdd. Then OSPF continues as cer-ospfd, BGP as cer-bgpd.
 
+### Phase 9c: OSPF and OSPFv3 (requested 2026-10-03; config reference 5.13, 5.8, 5.12)
+
+One protocol core for both versions (`pkg/ospf`), pure and driven by packets, a clock and timers:
+* **Types shared by both versions**: router ids and LS ids as 32-bit values; LS types as 16-bit codes (v2 types 1–5
+  as they are, v3 function codes 0x2001… with their flooding scope: link, area, AS); one LSA header layout (the
+  v2 options+type bytes are the v3 type field). The v2 DR/BDR are interface addresses, the v3 ones router ids:
+  both are 32-bit values, so DR election is one function.
+* **Codecs**: OSPFv2 packets (24-byte header, authentication null/simple/MD5) and LSAs 1–5; OSPFv3 packets (16-byte
+  header, instance id, the checksum computed by the kernel through IPV6_CHECKSUM) and LSAs Router, Network,
+  Inter-Area-Prefix, Inter-Area-Router, AS-External, Link, Intra-Area-Prefix; unknown LSAs flooded by their scope.
+* **State machines**: interface (Down, Waiting, PtToPt, DROther, BDR, DR, Passive), neighbour (Down … Full),
+  DR election, database exchange, requests, flooding with retransmission and delayed acknowledgments, aging,
+  refresh, MaxAge removal, MinLSInterval/MinLSArrival.
+* **Origination**: v2 router (p2p, transit, stub links), network, summary, ASBR summary, external; v3 router (no
+  prefixes), network, link (link-local address and prefixes per interface), intra-area prefix (for the router and
+  for each transit network), inter-area prefix and router, AS-external. Overload (max metric, RFC 6987).
+* **SPF**: Dijkstra over router and network vertices with **all equal-cost paths** (up to 16 next hops); next hops
+  from the neighbour's address (v2) or its link-local address from its Link LSA (v3); then stub/intra-area
+  prefixes, inter-area routes (backbone summaries on an ABR), externals (type 1 before type 2, forwarding address).
+* **Graceful restart** (RFC 3623 / 5187): helper mode, and restarting after a mastership change or switchd/cer-ospfd
+  restart (grace LSAs, kept routes in cer-ribd).
+
+Program **cer-ospfd** (one process, OSPF and OSPFv3 of every routing instance; runs the protocol on the master
+only, idle on the other members): switchd computes its configuration (kernel devices, addresses, link-local
+addresses, interface ids, costs from the reference bandwidth, router id); Linux I/O with raw IP sockets (protocol 89,
+IPv4 224.0.0.5/6 with TTL 1; IPv6 ff02::5/6 with hop limit 1 and IPV6_CHECKSUM 12), bound to each interface and its
+VRF; routes go to cer-ribd (`routes.set`, ECMP); BFD sessions through cer-bfdd; `show ospf|ospf3 …` and
+`clear ospf|ospf3 neighbor` through calls to it. Unicast protocol packets that arrive on other members reach the
+master unchanged (MC-LAG for protocols, below).
+
+Steps: (1) shared types and both codecs with tests (encode/decode round trips, checksums, captured packets);
+(2) LSDB with scopes; (3) interface/neighbour state machines, exchange and flooding, tested with simulated
+broadcast and p2p networks of several routers; (4) origination; (5) SPF with ECMP, areas, externals (topology
+tests); (6) cer-ospfd with Linux I/O, configuration from switchd, routes to cer-ribd, show/clear commands, smoke
+test; (7) graceful restart, overload, BFD; (8) lab: interop with FRR on srv1 (v2 and v3, broadcast and p2p).
+
 ### Phase 9b: BGP (EVPN) via GoBGP
 BGP is not written from scratch: GoBGP is embedded as a Go library in switchd (no external daemon; FRR was
 considered and rejected as less predictable to drive). `protocols bgp …` configures it; routes it learns are

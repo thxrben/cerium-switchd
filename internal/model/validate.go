@@ -82,6 +82,12 @@ type Inventory interface {
 	Ports(member int) (ports map[string]PortInfo, known bool)
 }
 
+// CPUCounter is implemented by inventories that know a member's CPU
+// count (the BFD interval check).
+type CPUCounter interface {
+	CPUs(member int) (n int, known bool)
+}
+
 // portsOf returns the ports of a member; known is false if the member is
 // unknown.
 func (b *builder) portsOf(member int) (map[string]PortInfo, bool) {

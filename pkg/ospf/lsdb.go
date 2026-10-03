@@ -2,7 +2,7 @@ package ospf
 
 import (
 	"bytes"
-	"net/netip"
+	"cmp"
 	"slices"
 	"time"
 )
@@ -82,7 +82,7 @@ func (d *LSDB) All(now time.Time) []*LSA {
 }
 
 // OfType returns the LSAs of one type with their current ages, sorted.
-func (d *LSDB) OfType(t uint8, now time.Time) []*LSA {
+func (d *LSDB) OfType(t LSType, now time.Time) []*LSA {
 	var out []*LSA
 	for r := range d.m {
 		if r.Type == t {
@@ -117,14 +117,10 @@ func (d *LSDB) Checksum() uint32 {
 
 func compareRef(a, b LSRef) int {
 	if a.Type != b.Type {
-		return int(a.Type) - int(b.Type)
+		return cmp.Compare(a.Type, b.Type)
 	}
-	if c := a.ID.Compare(b.ID); c != 0 {
-		return c
+	if a.ID != b.ID {
+		return cmp.Compare(a.ID, b.ID)
 	}
-	return a.AdvRtr.Compare(b.AdvRtr)
+	return cmp.Compare(a.AdvRtr, b.AdvRtr)
 }
-
-// addrLess orders router ids and addresses numerically (DR election,
-// master/slave negotiation).
-func addrLess(a, b netip.Addr) bool { return a.Compare(b) < 0 }

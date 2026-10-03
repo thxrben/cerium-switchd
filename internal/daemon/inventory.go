@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"runtime"
+
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 
@@ -43,6 +45,14 @@ func (k *kernelInventory) Ports(member int) (map[string]model.PortInfo, bool) {
 		out[p.Name] = info
 	}
 	return out, true
+}
+
+// CPUs reports this member's CPU count (BFD interval checks).
+func (k *kernelInventory) CPUs(member int) (int, bool) {
+	if member != k.member {
+		return 0, false
+	}
+	return runtime.NumCPU(), true
 }
 
 // hasIP reports whether a link has addresses other than IPv6 link-local.
