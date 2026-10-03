@@ -64,6 +64,15 @@ func (d *LSDB) Install(l *LSA, now time.Time) (changed bool) {
 	return false
 }
 
+// arrived returns when the database copy of an LSA was installed (zero:
+// not in the database).
+func (d *LSDB) arrived(r LSRef) time.Time {
+	if e := d.m[r]; e != nil {
+		return e.arrived
+	}
+	return time.Time{}
+}
+
 // Delete removes an LSA.
 func (d *LSDB) Delete(r LSRef) { delete(d.m, r) }
 

@@ -1,122 +1,51 @@
-//go:build ospfwip
-
-// Work in progress: excluded from the build until the neighbour state
-// machine, flooding, origination and SPF exist.
-
 package ospf
 
 import (
+	"cmp"
 	"log/slog"
 	"net/netip"
 	"slices"
 	"time"
 )
 
-// IO sends packets. dst is a multicast group (AllSPFRouters, AllDRouters)
-// or a neighbour's address; the IO layer uses the interface's primary
-// address as source, TTL 1 and the internetwork-control TOS.
-type IO interface {
-	Send(iface string, dst netip.Addr, pkt []byte)
-}
-
-// IfaceConfig is an OSPF interface (reference 5.13).
-type IfaceConfig struct {
-	Name   string     // unit name ("irb.10", "1/0/5.0")
-	Area   netip.Addr // area id
-	Prefix netip.Prefix
-	// Secondary subnets of the unit, announced as stub networks.
-	Secondary    []netip.Prefix
-	P2P          bool
-	Passive      bool
-	Cost         uint16
-	Priority     uint8
-	Hello        uint16 // seconds
-	Dead         uint32
-	Retransmit   uint16
-	TransitDelay uint16
-	MTU          uint16 // 0: not checked
-	Auth         *Auth
-	// Up: the interface has carrier and its address.
-	Up bool
-}
-
-// External is a route redistributed into OSPF (export policy applied).
-type External struct {
-	Prefix  netip.Prefix
-	Metric  uint32
-	Type1   bool
-	Tag     uint32
-	Forward netip.Addr // invalid: this router
-}
-
-// Config is the configuration of a router (one instance, OSPFv2).
-type Config struct {
-	RouterID   netip.Addr
-	Interfaces []IfaceConfig
-	Externals  []External
-	Overload   bool
-}
-
-// PathType is the type of an OSPF route (RFC 2328 §11).
-type PathType uint8
-
-const (
-	IntraArea PathType = iota
-	InterArea
-	External1
-	External2
-)
-
-func (t PathType) String() string {
-	return [...]string{"Intra", "Inter", "Ext1", "Ext2"}[t&3]
-}
-
-// NextHop is a next hop of an OSPF route.
-type NextHop struct {
-	Iface   string
-	Gateway netip.Addr // invalid: directly connected
-}
-
-// Route is a route computed by SPF.
-type Route struct {
-	Prefix   netip.Prefix
-	Type     PathType
-	Area     netip.Addr
-	Cost     uint32 // for Ext2: the cost to the ASBR (tie breaker)
-	Cost2    uint32 // Ext2: the external metric
-	Tag      uint32
-	NextHops []NextHop
-	// Direct: the network is attached to this router (the RIB has it as a
-	// direct route; it is not installed).
-	Direct bool
-}
-
-// Router is an OSPFv2 router: one routing instance. It is not safe for
-// concurrent use; the owner serialises Configure, Receive and Tick.
+// Router is an OSPF router of one version in one routing instance. It is
+// not safe for concurrent use; the owner serialises Configure,
+// SetExternals, Receive and Tick (and the show functions).
 type Router struct {
+	v   Version
 	io  IO
 	Log *slog.Logger
 	// OnRoutes receives the complete routing table after every change.
 	OnRoutes func([]Route)
 
 	cfg    Config
-	rid    netip.Addr
+	rid    ID
 	now    time.Time
-	areas  map[netip.Addr]*area
+	areas  map[ID]*area
 	ifaces map[string]*iface
-	ext    *LSDB // AS-scope (type 5)
-	// Self-originated LSAs: last origination time (MinLSInterval).
-	origAt map[LSRef]time.Time
-	// maxAgeFlooded: MaxAge LSAs already flooded (aged out naturally).
-	maxAgeFlooded map[LSRef]bool
+	as     *scope // AS-scope LSAs (externals)
+
+	// origAt: when an own LSA was last originated (MinLSInterval);
+	// deferred: own LSAs waiting for it.
+	origAt   map[LSRef]time.Time
+	hold     map[LSRef]time.Duration
+	deferred map[LSRef]bool
+	// extIDs: the LS ids of external (and v3 inter-area) prefixes.
+	prefixIDs map[prefixKey]ID
 
 	dirty      bool // re-originate own LSAs
 	spfPending bool
 	spfAt      time.Time
-	routes     map[netip.Prefix]*Route
+	routes     []Route
 	cryptoSeq  uint32
+	started    time.Time
 
 	Stats Stats
+}
+
+type prefixKey struct {
+	t LSType
+	p netip.Prefix
 }
 
 // Stats are counters for show ospf statistics/overview.
@@ -129,44 +58,71 @@ type Stats struct {
 	SPFDuration  time.Duration
 }
 
+// scope is a flooding scope: a database and where its LSAs are flooded.
+type scope struct {
+	db   *LSDB
+	area *area  // area scope
+	ifc  *iface // link scope
+	// maxAgeFlooded: LSAs that reached MaxAge and were flooded once.
+	maxAgeFlooded map[LSRef]bool
+}
+
+func newScope(a *area, i *iface) *scope {
+	return &scope{db: NewLSDB(), area: a, ifc: i, maxAgeFlooded: map[LSRef]bool{}}
+}
+
 type area struct {
-	id     netip.Addr
-	db     *LSDB
+	id     ID
+	sc     *scope
 	ifaces []*iface
-	// SPF results: routers reachable in the area (for summaries and
-	// externals).
-	routers map[netip.Addr]*spfRouter
+	// SPF results of the area: the reachable routers (ABRs and ASBRs).
+	spf *spfResult
+	// transit: some router of the area announced a full adjacency (for
+	// summaries: whether the area has any routers besides this one).
 }
 
 // spfDelay is the delay between a database change and SPF (changes in
 // quick succession are computed once).
 const spfDelay = 200 * time.Millisecond
 
-// New returns a router; Configure starts it.
-func New(io IO, log *slog.Logger, now time.Time) *Router {
+// New returns a router of version v; Configure starts it.
+func New(v Version, io IO, log *slog.Logger, now time.Time) *Router {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Router{io: io, Log: log, now: now, areas: map[netip.Addr]*area{}, ifaces: map[string]*iface{},
-		ext: NewLSDB(), origAt: map[LSRef]time.Time{}, maxAgeFlooded: map[LSRef]bool{}, routes: map[netip.Prefix]*Route{},
-		cryptoSeq: uint32(now.Unix())}
+	r := &Router{v: v, io: io, Log: log, now: now, started: now}
+	r.reset()
+	r.cryptoSeq = uint32(now.Unix())
+	return r
 }
 
+func (r *Router) reset() {
+	r.areas = map[ID]*area{}
+	r.ifaces = map[string]*iface{}
+	r.as = newScope(nil, nil)
+	r.origAt = map[LSRef]time.Time{}
+	r.hold = map[LSRef]time.Duration{}
+	r.deferred = map[LSRef]bool{}
+	r.prefixIDs = map[prefixKey]ID{}
+	r.routes = nil
+}
+
+// Version returns the router's OSPF version.
+func (r *Router) Version() Version { return r.v }
+
 // RouterID returns the router id in use.
-func (r *Router) RouterID() netip.Addr { return r.rid }
+func (r *Router) RouterID() ID { return r.rid }
 
 // Configure applies a configuration hitlessly: interfaces that did not
 // change keep their adjacencies. A router id change restarts everything.
 func (r *Router) Configure(cfg Config, now time.Time) {
 	r.now = now
+	cfg.Version = r.v
 	if cfg.RouterID != r.rid {
-		for _, i := range r.ifaces {
+		for _, i := range r.sortedIfaces() {
 			i.down()
 		}
-		r.ifaces = map[string]*iface{}
-		r.areas = map[netip.Addr]*area{}
-		r.ext = NewLSDB()
-		r.origAt = map[LSRef]time.Time{}
+		r.reset()
 		r.rid = cfg.RouterID
 	}
 	r.cfg = cfg
@@ -176,9 +132,11 @@ func (r *Router) Configure(cfg Config, now time.Time) {
 	}
 	// Removed interfaces, and interfaces that moved to another area or
 	// changed their addressing or type: down (their neighbours go away).
-	for name, i := range r.ifaces {
-		c, ok := want[name]
-		if !ok || c.Area != i.cfg.Area || c.Prefix != i.cfg.Prefix || c.P2P != i.cfg.P2P || c.Passive != i.cfg.Passive {
+	for _, i := range r.sortedIfaces() {
+		c, ok := want[i.cfg.Name]
+		if !ok || c.Area != i.cfg.Area || c.Addr != i.cfg.Addr || c.ID != i.cfg.ID || c.P2P != i.cfg.P2P ||
+			c.Passive != i.cfg.Passive || c.InstanceID != i.cfg.InstanceID ||
+			(r.v == V2 && len(c.Prefixes) > 0 && len(i.cfg.Prefixes) > 0 && c.Prefixes[0] != i.cfg.Prefixes[0]) {
 			i.down()
 			r.removeIface(i)
 		}
@@ -186,12 +144,14 @@ func (r *Router) Configure(cfg Config, now time.Time) {
 	for _, c := range cfg.Interfaces {
 		a := r.areas[c.Area]
 		if a == nil {
-			a = &area{id: c.Area, db: NewLSDB()}
+			a = &area{id: c.Area}
+			a.sc = newScope(a, nil)
 			r.areas[c.Area] = a
 		}
 		i := r.ifaces[c.Name]
 		if i == nil {
-			i = &iface{r: r, area: a, cfg: c, nbrs: map[netip.Addr]*neighbor{}}
+			i = &iface{r: r, area: a, cfg: c, nbrs: map[ID]*neighbor{}}
+			i.sc = newScope(a, i)
 			r.ifaces[c.Name] = i
 			a.ifaces = append(a.ifaces, i)
 			if c.Up {
@@ -237,16 +197,26 @@ func (r *Router) SetExternals(ext []External, now time.Time) {
 	r.settle()
 }
 
+// SetOverload switches the overload announcement (RFC 6987).
+func (r *Router) SetOverload(on bool, now time.Time) {
+	r.now = now
+	if r.cfg.Overload != on {
+		r.cfg.Overload = on
+		r.dirty = true
+	}
+	r.settle()
+}
+
 // Receive processes a packet received on an interface (src: the IP
 // source, dst: the IP destination).
 func (r *Router) Receive(ifname string, src, dst netip.Addr, raw []byte, now time.Time) {
 	r.now = now
 	defer r.settle()
 	i := r.ifaces[ifname]
-	if i == nil || i.state == IfDown || i.cfg.Passive {
+	if i == nil || i.state == IfDown || i.state == IfPassive {
 		return
 	}
-	p, err := Decode(raw)
+	p, err := Decode(r.v, raw)
 	if err != nil {
 		r.Stats.RxErrors++
 		return
@@ -254,13 +224,17 @@ func (r *Router) Receive(ifname string, src, dst netip.Addr, raw []byte, now tim
 	if int(p.Type) < len(r.Stats.Rx) {
 		r.Stats.Rx[p.Type]++
 	}
-	// RFC 2328 §8.2.
+	// RFC 2328 §8.2 / RFC 5340 §4.2.2.
 	switch {
 	case p.AreaID != i.area.id, p.RouterID == r.rid:
 		return
-	case dst == AllDRouters && i.state != IfDR && i.state != IfBackup:
+	case r.v == V3 && p.InstanceID != i.cfg.InstanceID:
 		return
-	case !i.cfg.P2P && !i.cfg.Prefix.Contains(src):
+	case dst == r.v.AllDR() && i.state != IfDR && i.state != IfBackup:
+		return
+	case r.v == V2 && !i.cfg.P2P && len(i.cfg.Prefixes) > 0 && !i.cfg.Prefixes[0].Contains(src):
+		return
+	case r.v == V3 && !src.IsLinkLocalUnicast():
 		return
 	}
 	if !i.cfg.Auth.Verify(raw, p) {
@@ -302,20 +276,22 @@ func (r *Router) Tick(now time.Time) {
 		i.tick()
 	}
 	r.age()
+	r.originateDeferred()
 }
 
 // settle finishes an event: own LSAs are re-originated when something
 // changed, and SPF runs when it is due.
 func (r *Router) settle() {
-	if r.dirty {
-		r.dirty = false
-		r.originateAll()
-	}
-	if r.spfPending && !r.now.Before(r.spfAt) {
+	for range 4 { // origination and SPF feed each other (summaries)
+		if r.dirty {
+			r.dirty = false
+			r.originateAll()
+		}
+		if !r.spfPending || r.now.Before(r.spfAt) {
+			return
+		}
 		r.spfPending = false
 		r.runSPF()
-		// Summaries depend on the routes.
-		r.originateAll()
 	}
 }
 
@@ -331,15 +307,7 @@ func (r *Router) sortedIfaces() []*iface {
 	for _, i := range r.ifaces {
 		out = append(out, i)
 	}
-	slices.SortFunc(out, func(a, b *iface) int {
-		if a.cfg.Name < b.cfg.Name {
-			return -1
-		}
-		if a.cfg.Name > b.cfg.Name {
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(out, func(a, b *iface) int { return cmp.Compare(a.cfg.Name, b.cfg.Name) })
 	return out
 }
 
@@ -348,25 +316,34 @@ func (r *Router) sortedAreas() []*area {
 	for _, a := range r.areas {
 		out = append(out, a)
 	}
-	slices.SortFunc(out, func(a, b *area) int { return a.id.Compare(b.id) })
+	slices.SortFunc(out, func(a, b *area) int { return cmp.Compare(a.id, b.id) })
 	return out
 }
 
-// isABR: interfaces in more than one area, one of them the backbone.
+// isABR: interfaces in more than one area, one of them the backbone
+// (RFC 3509 is not needed: an ABR must have the backbone, reference 5.13).
 func (r *Router) isABR() bool {
 	if len(r.areas) < 2 {
 		return false
 	}
-	_, ok := r.areas[netip.IPv4Unspecified()]
+	_, ok := r.areas[Backbone]
 	return ok
 }
 
 func (r *Router) isASBR() bool { return len(r.cfg.Externals) > 0 }
 
+// options are the options this router announces.
+func (r *Router) options() uint32 {
+	if r.v == V3 {
+		return OptV6 | OptE | OptR
+	}
+	return OptE
+}
+
 // send encodes and sends a packet on an interface.
 func (r *Router) send(i *iface, dst netip.Addr, p *Packet) {
-	p.RouterID, p.AreaID = r.rid, i.area.id
-	if i.cfg.Auth != nil && i.cfg.Auth.Type == AuthCrypto {
+	p.V, p.RouterID, p.AreaID, p.InstanceID = r.v, r.rid, i.area.id, i.cfg.InstanceID
+	if r.v == V2 && i.cfg.Auth != nil && i.cfg.Auth.Type == AuthCrypto {
 		if s := uint32(r.now.Unix()); s > r.cryptoSeq {
 			r.cryptoSeq = s
 		} else {
@@ -380,52 +357,76 @@ func (r *Router) send(i *iface, dst netip.Addr, p *Packet) {
 	r.io.Send(i.cfg.Name, dst, p.Encode(i.cfg.Auth))
 }
 
-// dbFor returns the database an LSA belongs to (nil: unknown type).
-func (r *Router) dbFor(a *area, t uint8) *LSDB {
-	switch t {
-	case LSARouter, LSANetwork, LSASummaryNet, LSASummaryASBR:
-		return a.db
-	case LSAExternal:
-		return r.ext
+// scopeFor returns the scope an LSA received on interface i belongs to
+// (nil: not accepted: an OSPFv2 LSA of an unknown type). An unknown
+// OSPFv3 LSA without the U bit is treated as link-local (RFC 5340 §4.5.2).
+func (r *Router) scopeFor(i *iface, t LSType) *scope {
+	if !r.v.Known(t) {
+		if r.v == V2 {
+			return nil
+		}
+		if t&0x8000 == 0 {
+			return i.sc
+		}
 	}
-	return nil
+	switch r.v.Scope(t) {
+	case ScopeLink:
+		return i.sc
+	case ScopeAS:
+		return r.as
+	}
+	return i.area.sc
+}
+
+// scopes returns every scope (for aging and show).
+func (r *Router) scopes() []*scope {
+	out := []*scope{r.as}
+	for _, a := range r.sortedAreas() {
+		out = append(out, a.sc)
+		for _, i := range a.ifaces {
+			out = append(out, i.sc)
+		}
+	}
+	return out
+}
+
+// floodIfaces returns the interfaces a scope floods over.
+func (r *Router) floodIfaces(s *scope) []*iface {
+	switch {
+	case s.ifc != nil:
+		return []*iface{s.ifc}
+	case s.area != nil:
+		out := slices.Clone(s.area.ifaces)
+		slices.SortFunc(out, func(a, b *iface) int { return cmp.Compare(a.cfg.Name, b.cfg.Name) })
+		return out
+	}
+	return r.sortedIfaces()
 }
 
 // age handles LSAs that reached MaxAge (RFC 2328 §14): they are flooded
 // once and removed when no neighbour still needs them; own LSAs are
 // refreshed before that.
 func (r *Router) age() {
-	scopes := []struct {
-		db *LSDB
-		a  *area
-	}{{r.ext, nil}}
-	for _, a := range r.sortedAreas() {
-		scopes = append(scopes, struct {
-			db *LSDB
-			a  *area
-		}{a.db, a})
-	}
-	for _, s := range scopes {
+	for _, s := range r.scopes() {
 		for _, ref := range s.db.MaxAged(r.now) {
-			l := s.db.Get(ref, r.now)
-			if !r.maxAgeFlooded[ref] {
-				r.maxAgeFlooded[ref] = true
-				r.flood(l, s.a, nil, nil)
+			if !s.maxAgeFlooded[ref] {
+				s.maxAgeFlooded[ref] = true
+				r.flood(s, s.db.Get(ref, r.now), nil, nil)
 				r.scheduleSPF()
 			}
-			if !r.maxAgeBusy(ref) {
+			if !r.maxAgeBusy(s, ref) {
 				s.db.Delete(ref)
-				delete(r.maxAgeFlooded, ref)
+				delete(s.maxAgeFlooded, ref)
 			}
 		}
 	}
 	r.refreshOwn()
 }
 
-// maxAgeBusy: an LSA is still on a retransmission list, or a neighbour is
-// exchanging databases (RFC 2328 §14).
-func (r *Router) maxAgeBusy(ref LSRef) bool {
-	for _, i := range r.ifaces {
+// maxAgeBusy: an LSA is still on a retransmission list, or a neighbour of
+// the scope is exchanging databases (RFC 2328 §14).
+func (r *Router) maxAgeBusy(s *scope, ref LSRef) bool {
+	for _, i := range r.floodIfaces(s) {
 		for _, n := range i.nbrs {
 			if n.state == NbrExchange || n.state == NbrLoading {
 				return true

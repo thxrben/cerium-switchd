@@ -1,11 +1,7 @@
-//go:build ospfwip
-
-// Work in progress: excluded from the build until the neighbour state
-// machine, flooding, origination and SPF exist.
-
 package ospf
 
 import (
+	"cmp"
 	"net/netip"
 	"slices"
 	"time"
@@ -32,11 +28,13 @@ func (s IfState) String() string {
 type iface struct {
 	r     *Router
 	area  *area
+	sc    *scope // link-scope LSAs (OSPFv3 link LSAs)
 	cfg   IfaceConfig
 	state IfState
-	// dr and bdr are interface addresses (OSPFv2 identifies them so).
-	dr, bdr netip.Addr
-	nbrs    map[netip.Addr]*neighbor // broadcast: by address; p2p: by router id
+	// dr and bdr: OSPFv2 the interface addresses, OSPFv3 the router ids.
+	dr, bdr ID
+	// nbrs: OSPFv2 broadcast by address, otherwise by router id.
+	nbrs    map[ID]*neighbor
 	helloAt time.Time
 	waitAt  time.Time
 	acks    []LSAHeader // delayed acknowledgments
@@ -44,18 +42,37 @@ type iface struct {
 	since   time.Time
 }
 
-func (i *iface) addr() netip.Addr { return i.cfg.Prefix.Addr() }
-
 func (i *iface) hello() time.Duration { return time.Duration(i.cfg.Hello) * time.Second }
 
 func (i *iface) dead() time.Duration { return time.Duration(i.cfg.Dead) * time.Second }
 
-func (i *iface) rxmt() time.Duration { return time.Duration(i.cfg.Retransmit) * time.Second }
+func (i *iface) rxmt() time.Duration {
+	if i.cfg.Retransmit == 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(i.cfg.Retransmit) * time.Second
+}
+
+// self is this router's identity in DR/BDR fields on the interface.
+func (i *iface) self() ID {
+	if i.r.v == V2 {
+		return IDFrom(i.cfg.Addr)
+	}
+	return i.r.rid
+}
+
+// prefixBits is the OSPFv2 interface's prefix length (hello mask).
+func (i *iface) prefixBits() int {
+	if len(i.cfg.Prefixes) == 0 {
+		return 32
+	}
+	return i.cfg.Prefixes[0].Bits()
+}
 
 // up is the InterfaceUp event.
 func (i *iface) up() {
 	i.since = i.r.now
-	i.dr, i.bdr = netip.Addr{}, netip.Addr{}
+	i.dr, i.bdr = 0, 0
 	switch {
 	case i.cfg.Passive:
 		i.setState(IfPassive)
@@ -71,13 +88,16 @@ func (i *iface) up() {
 	i.helloAt = i.r.now // first hello at once
 }
 
-// down is the InterfaceDown event: every neighbour is killed.
+// down is the InterfaceDown event: every neighbour is killed and the
+// link-scope LSAs are gone.
 func (i *iface) down() {
 	for _, n := range i.sortedNbrs() {
 		n.kill()
 	}
+	i.nbrs = map[ID]*neighbor{}
 	i.acks = nil
-	i.dr, i.bdr = netip.Addr{}, netip.Addr{}
+	i.dr, i.bdr = 0, 0
+	i.sc = newScope(i.area, i)
 	i.setState(IfDown)
 }
 
@@ -85,10 +105,11 @@ func (i *iface) setState(s IfState) {
 	if s == i.state {
 		return
 	}
-	i.r.Log.Debug("ospf interface state", "interface", i.cfg.Name, "from", i.state, "to", s)
+	i.r.Log.Debug("ospf interface state", "version", i.r.v, "interface", i.cfg.Name, "from", i.state, "to", s)
 	i.state = s
 	i.since = i.r.now
 	i.r.dirty = true
+	i.r.scheduleSPF()
 }
 
 func (i *iface) sortedNbrs() []*neighbor {
@@ -96,16 +117,22 @@ func (i *iface) sortedNbrs() []*neighbor {
 	for _, n := range i.nbrs {
 		out = append(out, n)
 	}
-	slices.SortFunc(out, func(a, b *neighbor) int { return a.id.Compare(b.id) })
+	slices.SortFunc(out, func(a, b *neighbor) int { return cmp.Compare(a.id, b.id) })
 	return out
 }
 
-// neighborFor finds the neighbour a non-hello packet came from.
-func (i *iface) neighborFor(src, rid netip.Addr) *neighbor {
-	if i.cfg.P2P {
-		return i.nbrs[rid]
+// nbrKey is the key of a neighbour: OSPFv2 on broadcast networks its
+// address, otherwise its router id (RFC 2328 §10.5, RFC 5340 §4.2.2.1).
+func (i *iface) nbrKey(src netip.Addr, rid ID) ID {
+	if i.r.v == V2 && !i.cfg.P2P {
+		return IDFrom(src)
 	}
-	return i.nbrs[src]
+	return rid
+}
+
+// neighborFor finds the neighbour a non-hello packet came from.
+func (i *iface) neighborFor(src netip.Addr, rid ID) *neighbor {
+	return i.nbrs[i.nbrKey(src, rid)]
 }
 
 func (i *iface) tick() {
@@ -129,57 +156,48 @@ func (i *iface) tick() {
 }
 
 func (i *iface) sendHello() {
-	h := &Hello{Mask: Mask(i.cfg.Prefix.Bits()), Interval: i.cfg.Hello, Options: OptE, Priority: i.cfg.Priority,
-		Dead: i.cfg.Dead, DR: zeroIfInvalid(i.dr), BDR: zeroIfInvalid(i.bdr)}
+	h := &Hello{MaskBits: i.prefixBits(), InterfaceID: i.cfg.ID, Interval: i.cfg.Hello, Options: i.r.options(),
+		Priority: i.cfg.Priority, Dead: i.cfg.Dead, DR: i.dr, BDR: i.bdr}
 	if i.cfg.P2P {
 		h.Priority = 0
+		if i.r.v == V2 {
+			h.MaskBits = 0 // RFC 2328 §9.5: unnumbered/p2p mask is 0
+		}
 	}
 	for _, n := range i.sortedNbrs() {
 		if n.state >= NbrInit {
 			h.Neighbors = append(h.Neighbors, n.id)
 		}
 	}
-	i.r.send(i, AllSPFRouters, &Packet{Type: TypeHello, Hello: h})
+	i.r.send(i, i.r.v.AllSPF(), &Packet{Type: TypeHello, Hello: h})
 }
 
-func zeroIfInvalid(a netip.Addr) netip.Addr {
-	if !a.IsValid() {
-		return netip.IPv4Unspecified()
-	}
-	return a
-}
-
-func validOrZero(a netip.Addr) netip.Addr {
-	if a == netip.IPv4Unspecified() {
-		return netip.Addr{}
-	}
-	return a
-}
-
-// receiveHello processes a hello (RFC 2328 §10.5).
+// receiveHello processes a hello (RFC 2328 §10.5, RFC 5340 §4.2.2.1).
 func (i *iface) receiveHello(src netip.Addr, p *Packet) {
 	h := p.Hello
 	if h.Interval != i.cfg.Hello || h.Dead != i.cfg.Dead || h.Options&OptE == 0 {
 		i.r.Stats.RxErrors++
 		return
 	}
-	if !i.cfg.P2P && MaskBits(h.Mask) != i.cfg.Prefix.Bits() {
+	if i.r.v == V2 && !i.cfg.P2P && h.MaskBits != i.prefixBits() {
 		i.r.Stats.RxErrors++
 		return
 	}
-	key := src
-	if i.cfg.P2P {
-		key = p.RouterID
-	}
+	key := i.nbrKey(src, p.RouterID)
 	n := i.nbrs[key]
 	if n == nil {
 		n = &neighbor{ifc: i, id: p.RouterID, addr: src, state: NbrDown, retrans: map[LSRef]*LSA{}, requests: map[LSRef]LSAHeader{}}
 		i.nbrs[key] = n
 	}
-	n.id, n.addr = p.RouterID, src
+	if n.state == NbrDown {
+		// A new neighbour hears from us at once instead of after up to a
+		// hello interval (2-Way in one round trip).
+		i.helloAt = i.r.now
+	}
+	n.id, n.addr, n.ifID = p.RouterID, src, h.InterfaceID
 	oldPrio, oldDR, oldBDR := n.prio, n.dr, n.bdr
 	n.prio, n.options = h.Priority, h.Options
-	n.dr, n.bdr = validOrZero(h.DR), validOrZero(h.BDR)
+	n.dr, n.bdr = h.DR, h.BDR
 	n.helloReceived()
 	if !slices.Contains(h.Neighbors, i.r.rid) {
 		n.oneWay()
@@ -189,14 +207,12 @@ func (i *iface) receiveHello(src netip.Addr, p *Packet) {
 	if i.cfg.P2P {
 		return
 	}
-	change := false
-	if n.prio != oldPrio {
-		change = true
-	}
-	declDR, wasDR := n.dr == src, oldDR == src
-	declBDR, wasBDR := n.bdr == src, oldBDR == src
+	me := n.self()
+	change := n.prio != oldPrio
+	declDR, wasDR := n.dr == me, oldDR == me
+	declBDR, wasBDR := n.bdr == me, oldBDR == me
 	backupSeen := false
-	if declDR && !n.bdr.IsValid() && i.state == IfWaiting {
+	if declDR && n.bdr == 0 && i.state == IfWaiting {
 		backupSeen = true
 	} else if declDR != wasDR {
 		change = true
@@ -221,9 +237,9 @@ func (i *iface) neighborChange() {
 }
 
 type candidate struct {
-	id, addr netip.Addr
-	prio     uint8
-	dr, bdr  netip.Addr
+	rid, self ID // router id; identity in DR fields
+	prio      uint8
+	dr, bdr   ID
 }
 
 // better: higher priority, then higher router id.
@@ -231,7 +247,7 @@ func (c candidate) better(o candidate) bool {
 	if c.prio != o.prio {
 		return c.prio > o.prio
 	}
-	return o.id.Compare(c.id) < 0
+	return c.rid > o.rid
 }
 
 // electDR runs the DR election (RFC 2328 §9.4) and the AdjOK? event on
@@ -240,15 +256,16 @@ func (i *iface) electDR() {
 	if i.cfg.P2P || i.state == IfDown || i.state == IfPassive {
 		return
 	}
-	self := candidate{id: i.r.rid, addr: i.addr(), prio: i.cfg.Priority, dr: i.dr, bdr: i.bdr}
+	me := i.self()
+	self := candidate{rid: i.r.rid, self: me, prio: i.cfg.Priority, dr: i.dr, bdr: i.bdr}
 	var others []candidate
 	for _, n := range i.sortedNbrs() {
 		if n.state >= NbrTwoWay && n.prio > 0 {
-			others = append(others, candidate{id: n.id, addr: n.addr, prio: n.prio, dr: n.dr, bdr: n.bdr})
+			others = append(others, candidate{rid: n.id, self: n.self(), prio: n.prio, dr: n.dr, bdr: n.bdr})
 		}
 	}
 	oldDR, oldBDR := i.dr, i.bdr
-	elect := func(self candidate) (dr, bdr netip.Addr) {
+	elect := func(self candidate) (dr, bdr ID) {
 		cs := slices.Clone(others)
 		if self.prio > 0 {
 			cs = append(cs, self)
@@ -259,22 +276,22 @@ func (i *iface) electDR() {
 		bestDecl := false
 		for k := range cs {
 			c := &cs[k]
-			if c.dr == c.addr {
+			if c.dr == c.self {
 				continue
 			}
-			decl := c.bdr == c.addr
+			decl := c.bdr == c.self
 			if best == nil || (decl && !bestDecl) || (decl == bestDecl && c.better(*best)) {
 				best, bestDecl = c, decl
 			}
 		}
 		if best != nil {
-			bdr = best.addr
+			bdr = best.self
 		}
 		// DR: among those declaring themselves DR; none: the BDR.
 		best = nil
 		for k := range cs {
 			c := &cs[k]
-			if c.dr != c.addr {
+			if c.dr != c.self {
 				continue
 			}
 			if best == nil || c.better(*best) {
@@ -282,22 +299,20 @@ func (i *iface) electDR() {
 			}
 		}
 		if best != nil {
-			dr = best.addr
+			dr = best.self
 		} else {
 			dr = bdr
 		}
 		return dr, bdr
 	}
 	dr, bdr := elect(self)
-	me := i.addr()
 	// Step 4: when this router's role changed, run steps 2 and 3 again.
 	if (dr == me) != (oldDR == me) || (bdr == me) != (oldBDR == me) {
 		self.dr, self.bdr = dr, bdr
 		dr, bdr = elect(self)
 	}
-	// A DR that is also BDR: the BDR is empty (two-router network).
 	if bdr == dr {
-		bdr = netip.Addr{}
+		bdr = 0
 	}
 	i.dr, i.bdr = dr, bdr
 	switch {
@@ -309,7 +324,7 @@ func (i *iface) electDR() {
 		i.setState(IfDROther)
 	}
 	if dr != oldDR || bdr != oldBDR {
-		i.r.Log.Debug("ospf DR election", "interface", i.cfg.Name, "dr", dr, "bdr", bdr)
+		i.r.Log.Debug("ospf DR election", "version", i.r.v, "interface", i.cfg.Name, "dr", dr, "bdr", bdr)
 		for _, n := range i.sortedNbrs() {
 			if n.state >= NbrTwoWay {
 				n.adjOK()
@@ -325,23 +340,33 @@ func (i *iface) adjacent(n *neighbor) bool {
 	if i.cfg.P2P {
 		return true
 	}
-	me := i.addr()
-	return i.dr == me || i.bdr == me || n.addr == i.dr || n.addr == i.bdr
+	me, other := i.self(), n.self()
+	return i.dr == me || i.bdr == me || other == i.dr || other == i.bdr
+}
+
+// drNeighbor returns the DR's neighbour entry (nil: this router or none).
+func (i *iface) drNeighbor() *neighbor {
+	for _, n := range i.nbrs {
+		if n.self() == i.dr {
+			return n
+		}
+	}
+	return nil
 }
 
 // floodDst is the destination of flooded updates and delayed acks.
 func (i *iface) floodDst() netip.Addr {
 	if i.cfg.P2P || i.state == IfDR || i.state == IfBackup {
-		return AllSPFRouters
+		return i.r.v.AllSPF()
 	}
-	return AllDRouters
+	return i.r.v.AllDR()
 }
 
 // unicast is the destination of packets for one neighbour (p2p: the
 // multicast group, which also works on unnumbered links).
 func (i *iface) unicast(n *neighbor) netip.Addr {
 	if i.cfg.P2P {
-		return AllSPFRouters
+		return i.r.v.AllSPF()
 	}
 	return n.addr
 }
@@ -363,13 +388,26 @@ func (i *iface) flushAcks() {
 	i.acks = nil
 }
 
-// maxHeaders is how many LSA headers fit into a packet on the interface.
-func (i *iface) maxHeaders() int {
-	mtu := int(i.cfg.MTU)
-	if mtu == 0 {
-		mtu = 1500
+// mtu is the interface's IP MTU (1500 when unknown).
+func (i *iface) mtu() int {
+	if i.cfg.MTU == 0 {
+		return 1500
 	}
-	return max(1, (mtu-20-headerLen-ddLen-md5Len)/lsaHeaderLen)
+	return int(i.cfg.MTU)
+}
+
+// payload is the room for an OSPF packet (IP header and, for OSPFv2 MD5,
+// the digest left out).
+func (i *iface) payload() int {
+	if i.r.v == V3 {
+		return i.mtu() - 40
+	}
+	return i.mtu() - 20 - md5Len
+}
+
+// maxHeaders is how many LSA headers fit into a DD or ack packet.
+func (i *iface) maxHeaders() int {
+	return max(1, (i.payload()-i.r.v.headerLen()-ddLen(i.r.v))/lsaHeaderLen)
 }
 
 // fullNbrs returns the neighbours in state Full.
