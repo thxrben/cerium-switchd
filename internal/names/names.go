@@ -32,3 +32,7 @@ func VXLANVNI(name string) int {
 	}
 	return v
 }
+
+// StackTable is the routing table of the stack's internal instance (the
+// stack tunnels' underlay, switchd's; cer-ribd leaves it alone).
+const StackTable = 999

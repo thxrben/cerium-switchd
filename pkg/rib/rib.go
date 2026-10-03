@@ -28,9 +28,11 @@ const (
 	OSPF
 	OSPF3
 	BGP
+	// DHCP: the default route of a lease (family inet dhcp).
+	DHCP
 )
 
-var protoNames = [...]string{"Direct", "Local", "Static", "OSPF", "OSPF3", "BGP"}
+var protoNames = [...]string{"Direct", "Local", "Static", "OSPF", "OSPF3", "BGP", "DHCP"}
 
 func (p Protocol) String() string {
 	if int(p) < len(protoNames) {
@@ -57,6 +59,9 @@ const (
 	PrefOSPF         = 10
 	PrefOSPFExternal = 150
 	PrefBGP          = 170
+	// PrefDHCP: a lease's default route is used only when no other source
+	// offers one (reference 5.3.2).
+	PrefDHCP = 200
 )
 
 // NextHop is one next hop of a route.

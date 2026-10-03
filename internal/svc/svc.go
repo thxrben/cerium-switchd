@@ -152,3 +152,10 @@ const (
 	MethodLegsUp        = "mclag.legs-up"
 	MethodDrainBlockers = "mclag.drain-blockers"
 )
+
+// cer-ribd's calls: MethodRoutesSet (ribd.SetRoutes, from the routing
+// protocols) and MethodRoutes (rib.Query -> []rib.Entry, show route).
+const (
+	MethodRoutesSet = "routes.set"
+	MethodRoutes    = "routes"
+)

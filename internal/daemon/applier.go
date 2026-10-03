@@ -7,10 +7,8 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"log/slog"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -22,42 +20,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/routing"
 )
-
-// addProtoRoutes adds the routing protocols' active routes to the desired
-// L3 state. A protocol route replaces the static route of the same prefix
-// in the same instance (the RIB chose it by preference); next hops whose
-// unit does not exist on this member are dropped.
-func addProtoRoutes(desired *dataplane.State, cfg *model.Config, names dataplane.PortNames, rs []routing.FIBRoute) {
-	if desired.L3 == nil || len(rs) == 0 {
-		return
-	}
-	type key struct {
-		vrf string
-		p   netip.Prefix
-	}
-	proto := map[key]bool{}
-	var out []dataplane.Route
-	for _, r := range rs {
-		dr := dataplane.Route{VRF: r.Instance, Prefix: r.Prefix, Discard: r.Discard, Proto: r.KernelProto}
-		for _, h := range r.NextHops {
-			dev, ok := dataplane.UnitDevice(cfg, h.Interface, names)
-			if !ok {
-				continue
-			}
-			dr.NextHops = append(dr.NextHops, h.Gateway)
-			dr.Devs = append(dr.Devs, dev)
-		}
-		if !dr.Discard && len(dr.NextHops) == 0 {
-			continue
-		}
-		proto[key{r.Instance, r.Prefix}] = true
-		out = append(out, dr)
-	}
-	desired.L3.Routes = slices.DeleteFunc(desired.L3.Routes, func(r dataplane.Route) bool { return proto[key{r.VRF, r.Prefix}] })
-	desired.L3.Routes = append(desired.L3.Routes, out...)
-}
 
 // kernelApplier makes a configuration effective on this member's kernel.
 type kernelApplier struct {
@@ -88,11 +51,6 @@ type kernelApplier struct {
 	// stackPort reports whether a kernel port is a stacking port (the stack
 	// manager owns those).
 	stackPort func(linux string) bool
-	// protoRoutes returns the active routes of the routing protocols
-	// (reference 5.8; nil: none). They are installed next to the static
-	// routes; a static route of the same prefix wins only by preference,
-	// which the RIB already decided, so the two never overlap.
-	protoRoutes func() []routing.FIBRoute
 }
 
 func (a *kernelApplier) master() bool { return a.isMaster == nil || a.isMaster() }
@@ -258,9 +216,6 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		}
 	}
 	dataplane.Management(desired, cfg, a.member, a.names.Linux, a.master(), dataplane.Carrier, a.cmeMAC, unconf)
-	if a.protoRoutes != nil {
-		addProtoRoutes(desired, cfg, a.names.Linux, a.protoRoutes())
-	}
 	actual, err := a.kernel.Read()
 	if err != nil {
 		return fmt.Errorf("reading kernel state: %w", err)

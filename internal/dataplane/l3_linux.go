@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"net"
 	"net/netip"
 	"os"
@@ -20,19 +21,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Static routes are installed with this protocol id, so switchd only ever
-// removes its own routes, and with this metric, so they never replace a
-// route the operating system installed for the same destination. Routes of
-// the routing protocols use the standard ids (reference 5.8).
+// RouteProto and RouteMetric are those of the switch's routes (netdev):
+// switchd uses them for the stack's internal table, cer-ribd for the
+// routing instances (reference 5.8, 1.9).
 const (
-	RouteProto  = 250
-	RouteMetric = 20
-	ProtoOSPF   = unix.RTPROT_OSPF // 188
-	ProtoBGP    = unix.RTPROT_BGP  // 186
+	RouteProto  = netdev.ProtoStatic
+	RouteMetric = netdev.RouteMetric
 )
-
-// ownProtos are the kernel protocol ids of routes switchd installs.
-var ownProtos = []int{RouteProto, ProtoOSPF, ProtoBGP}
 
 // l3Owned is what switchd changed outside its own devices, so that it can
 // be undone (addresses on ports, IPv6 forwarding, accept_ra).
@@ -199,8 +194,8 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 	}
 
-	// DHCP leases become addresses of their units and default routes of
-	// their instances (unless the instance has a static default route).
+	// DHCP leases become addresses of their units (their default routes are
+	// cer-ribd's).
 	var dhcpIfs []DHCPIf
 	for _, i := range l.Ifs {
 		if i.DHCP {
@@ -210,23 +205,15 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	if k.DHCP != nil {
 		leases := k.DHCP(dhcpIfs)
 		ifs := slices.Clone(l.Ifs)
-		routes := slices.Clone(l.Routes)
-		defaulted := map[string]bool{}
 		for n, i := range ifs {
 			le, ok := leases[i.Name]
 			if !i.DHCP || !ok {
 				continue
 			}
 			ifs[n].Addrs = append(slices.Clone(i.Addrs), le.Addr)
-			// Any other default route (static or from a routing protocol) wins.
-			static := slices.ContainsFunc(l.Routes, func(r Route) bool { return r.VRF == i.VRF && r.Prefix.Bits() == 0 && r.Prefix.Addr().Is4() })
-			if le.Router.IsValid() && !static && !defaulted[i.VRF] {
-				defaulted[i.VRF] = true
-				routes = append(routes, Route{VRF: i.VRF, Prefix: netip.MustParsePrefix("0.0.0.0/0"), NextHops: []netip.Addr{le.Router}})
-			}
 		}
 		withLeases := *l
-		withLeases.Ifs, withLeases.Routes = ifs, routes
+		withLeases.Ifs = ifs
 		l = &withLeases
 	}
 
@@ -271,8 +258,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		delete(st.Addrs, port)
 	}
 
-	c, warnings, err := syncRoutes(l.Routes, tables)
-	note(c, err)
+	// Routes are cer-ribd's (reference 1.9).
 
 	// Devices that are no longer configured.
 	links, err := netlink.LinkList()
@@ -323,7 +309,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 			accept = append(accept, fmt.Sprintf("ip saddr { %s } ip daddr %s udp dport %d", strings.Join(rs, ", "), l.VTEP, l.VXLANPort))
 		}
 	}
-	c, err = k.syncProtect(protect, accept)
+	c, err := k.syncProtect(protect, accept)
 	note(c, err)
 	note(syncVTEP(l.VTEP))
 	mgmtTable := 0
@@ -360,7 +346,7 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	if err := k.saveL3(st); err != nil {
 		errs = append(errs, err)
 	}
-	return changed, warnings, errors.Join(errs...)
+	return changed, nil, errors.Join(errs...)
 }
 
 // Kernel objects of older versions (the management VRF before routing
@@ -595,156 +581,6 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 		st.Addrs[i.Name] = added
 	}
 	return changed, nil
-}
-
-// syncRoutes makes switchd's routes in the main table match want. A route
-// whose next hop is not reachable yet is skipped (it is retried on every
-// reconcile) and reported.
-func syncRoutes(want []Route, tables map[string]int) (bool, []string, error) {
-	var cur []netlink.Route
-	for _, p := range ownProtos {
-		rs, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netlink.RouteProtocol(p), Table: unix.RT_TABLE_UNSPEC},
-			netlink.RT_FILTER_PROTOCOL|netlink.RT_FILTER_TABLE)
-		if err != nil {
-			return false, nil, err
-		}
-		cur = append(cur, rs...)
-	}
-	devIndex := map[string]int{}
-	index := func(dev string) int {
-		if dev == "" {
-			return 0
-		}
-		if i, ok := devIndex[dev]; ok {
-			return i
-		}
-		i := 0
-		if ln, err := netlink.LinkByName(dev); err == nil {
-			i = ln.Attrs().Index
-		}
-		devIndex[dev] = i
-		return i
-	}
-	// Kernel routes by table and destination: the comparison stays linear
-	// for large routing tables (BGP).
-	curBy := map[string][]netlink.Route{}
-	for _, c := range cur {
-		if c.Dst != nil {
-			k := fmt.Sprintf("%d %s", c.Table, c.Dst)
-			curBy[k] = append(curBy[k], c)
-		}
-	}
-	changed := false
-	var errs []error
-	var warnings []string
-	keep := map[string]bool{}
-	for _, r := range want {
-		table := unix.RT_TABLE_MAIN
-		if r.VRF != "" {
-			if table = tables[r.VRF]; table == 0 {
-				continue // the instance could not be created (reported)
-			}
-		}
-		proto := r.Proto
-		if proto == 0 {
-			proto = RouteProto
-		}
-		nr := &netlink.Route{Protocol: netlink.RouteProtocol(proto), Priority: RouteMetric, Table: table,
-			Dst: &net.IPNet{IP: r.Prefix.Addr().AsSlice(), Mask: net.CIDRMask(r.Prefix.Bits(), r.Prefix.Addr().BitLen())}}
-		if r.Prefix.Addr().Is6() {
-			nr.Family = netlink.FAMILY_V6
-		} else {
-			nr.Family = netlink.FAMILY_V4
-		}
-		// The kernel reports unicast routes as RTN_UNICAST: the same here, or
-		// routePresent never matches and every pass replaces the route.
-		nr.Type = unix.RTN_UNICAST
-		switch {
-		case r.Discard:
-			nr.Type = unix.RTN_BLACKHOLE
-		case len(r.NextHops) == 1:
-			if r.NextHops[0].IsValid() {
-				nr.Gw = r.NextHops[0].AsSlice()
-			}
-			if len(r.Devs) > 0 {
-				if nr.LinkIndex = index(r.Devs[0]); nr.LinkIndex == 0 {
-					warnings = append(warnings, fmt.Sprintf("route %s: interface %s does not exist yet", r.Prefix, r.Devs[0]))
-					continue
-				}
-			}
-		default:
-			for n, h := range r.NextHops {
-				nh := &netlink.NexthopInfo{}
-				if h.IsValid() {
-					nh.Gw = h.AsSlice()
-				}
-				if n < len(r.Devs) {
-					nh.LinkIndex = index(r.Devs[n])
-				}
-				nr.MultiPath = append(nr.MultiPath, nh)
-			}
-		}
-		keep[fmt.Sprintf("%d %s %d", table, r.Prefix, proto)] = true
-		if routePresent(curBy[fmt.Sprintf("%d %s", table, nr.Dst)], nr) {
-			continue
-		}
-		if err := netlink.RouteReplace(nr); err != nil {
-			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
-				warnings = append(warnings, fmt.Sprintf("route %s: next hop not reachable; inactive until it is", r.Prefix))
-			} else {
-				errs = append(errs, fmt.Errorf("route %s: %w", r.Prefix, err))
-			}
-			continue
-		}
-		changed = true
-	}
-	for _, c := range cur {
-		if c.Dst == nil || c.Table == StackTable {
-			continue // (the stack tunnels' routes are SyncStackUnderlay's)
-		}
-		p, ok := netip.AddrFromSlice(c.Dst.IP)
-		ones, _ := c.Dst.Mask.Size()
-		if ok && keep[fmt.Sprintf("%d %s %d", c.Table, netip.PrefixFrom(p.Unmap(), ones), c.Protocol)] {
-			continue
-		}
-		if err := netlink.RouteDel(&c); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		changed = true
-	}
-	return changed, warnings, errors.Join(errs...)
-}
-
-// routePresent reports whether an identical route exists.
-func routePresent(cur []netlink.Route, r *netlink.Route) bool {
-	for _, c := range cur {
-		if c.Dst == nil || c.Table != r.Table || c.Dst.String() != r.Dst.String() || c.Type != r.Type || c.Priority != r.Priority ||
-			c.Protocol != r.Protocol {
-			continue
-		}
-		if len(r.MultiPath) == 0 {
-			if len(c.MultiPath) == 0 && c.Gw.Equal(r.Gw) && (r.LinkIndex == 0 || c.LinkIndex == r.LinkIndex) {
-				return true
-			}
-			continue
-		}
-		if len(c.MultiPath) != len(r.MultiPath) {
-			continue
-		}
-		same := true
-		for _, h := range r.MultiPath {
-			if !slices.ContainsFunc(c.MultiPath, func(x *netlink.NexthopInfo) bool {
-				return x.Gw.Equal(h.Gw) && (h.LinkIndex == 0 || x.LinkIndex == h.LinkIndex)
-			}) {
-				same = false
-			}
-		}
-		if same {
-			return true
-		}
-	}
-	return false
 }
 
 // GatewayMAC derives the stack-wide gateway MAC from the stack id: locally

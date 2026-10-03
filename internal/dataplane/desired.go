@@ -251,15 +251,8 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 		}
 		l.Ifs = append(l.Ifs, i)
 	}
-	for _, r := range cfg.Routes {
-		l.Routes = append(l.Routes, Route{Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
-	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Instances)) {
-		in := cfg.Instances[name]
 		l.VRFs = append(l.VRFs, VRF{Name: name, Mgmt: name == cfg.System.MgmtInstance})
-		for _, r := range in.Routes {
-			l.Routes = append(l.Routes, Route{VRF: name, Prefix: r.Prefix, NextHops: slices.Clone(r.NextHops), Discard: r.Discard})
-		}
 	}
 	return l
 }

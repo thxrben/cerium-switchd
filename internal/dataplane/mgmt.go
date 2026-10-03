@@ -37,7 +37,6 @@ func Management(s *State, cfg *model.Config, m int, names PortNames, master bool
 	mi := cfg.System.MgmtInstance
 	if !master && mi != "" {
 		l.Ifs = slices.DeleteFunc(l.Ifs, func(i L3If) bool { return i.VRF == mi })
-		l.Routes = slices.DeleteFunc(l.Routes, func(r Route) bool { return r.VRF == mi })
 	}
 	var ports []string
 	for _, p := range cfg.MgmtPorts(m) {

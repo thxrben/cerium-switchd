@@ -1725,9 +1725,12 @@ next hops of equal cost are installed as ECMP routes.
 | OSPF and OSPFv3 internal (intra-area and inter-area) | 10 | `OSPF`, `OSPF3` |
 | OSPF and OSPFv3 external | 150 | `OSPF`, `OSPF3` |
 | BGP (external and internal) | 170 | `BGP` |
+| A DHCP lease's default route (`family inet dhcp`) | 200 | `DHCP` |
 
-* switchd installs routes with its own protocol ids (static: `switchd`, OSPF: `ospf`, BGP: `bgp`) and only ever
-  changes or removes routes with these ids. Only routes that changed are replaced; a commit that does not change a
+* cer-ribd (1.9) installs the routes, with the switch's own protocol ids (static and DHCP: `switchd`, OSPF: `ospf`,
+  BGP: `bgp`), and only ever changes or removes routes with these ids. After a restart it removes nothing of a
+  routing protocol until that protocol has reported all its routes again (or its graceful restart time, 180 s,
+  has passed). Only routes that changed are replaced; a commit that does not change a
   route never touches it.
 * A route is never removed and added again to change it: next hops are replaced in place, so forwarding never has
   a gap.

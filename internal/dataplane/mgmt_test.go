@@ -46,7 +46,7 @@ func linuxNames(name string) (string, bool) {
 	return "lx" + strings.ReplaceAll(name, "/", ""), true
 }
 
-// The management address, its instance's routes and in-band addresses
+// The management address and in-band addresses
 // exist only on the master; cme goes onto the first management port with a
 // link (reference 1.8).
 func TestManagementRole(t *testing.T) {
@@ -64,9 +64,8 @@ func TestManagementRole(t *testing.T) {
 	if !slices.Equal(s.L3.Bare, []string{"lx120", "lx121", "lx150"}) {
 		t.Errorf("bare ports: %v", s.L3.Bare)
 	}
-	if !slices.ContainsFunc(s.L3.Ifs, func(i L3If) bool { return i.Name == "irb.99" }) ||
-		!slices.ContainsFunc(s.L3.Routes, func(r Route) bool { return r.VRF == "oob" }) {
-		t.Errorf("master lacks the in-band address or the instance's route: %+v", s.L3)
+	if !slices.ContainsFunc(s.L3.Ifs, func(i L3If) bool { return i.Name == "irb.99" }) {
+		t.Errorf("master lacks the in-band address: %+v", s.L3)
 	}
 	for _, i := range s.L3.Ifs {
 		if i.Name == CMEName {
@@ -93,8 +92,8 @@ func TestManagementRole(t *testing.T) {
 		t.Errorf("cme without a link: %+v", s.L3.CME)
 	}
 
-	// Another member: no cme, no management addresses or routes; the data
-	// plane's routes stay.
+	// Another member: no cme, no management addresses (the instance's
+	// routes: cer-ribd's configuration, daemon.ribConfig).
 	s, _ = Compute(cfg, 2, linuxNames)
 	Management(s, cfg, 2, linuxNames, false, func(string) bool { return true }, mac, nil)
 	if s.L3.CME != nil {
@@ -104,10 +103,6 @@ func TestManagementRole(t *testing.T) {
 		if i.VRF == "oob" {
 			t.Errorf("management interface on a member that is not the master: %+v", i)
 		}
-	}
-	if slices.ContainsFunc(s.L3.Routes, func(r Route) bool { return r.VRF == "oob" }) ||
-		!slices.ContainsFunc(s.L3.Routes, func(r Route) bool { return r.VRF == "" }) {
-		t.Errorf("routes on a member that is not the master: %+v", s.L3.Routes)
 	}
 	if !slices.Equal(s.L3.Bare, []string{"lx220"}) {
 		t.Errorf("bare ports of member 2: %v", s.L3.Bare)

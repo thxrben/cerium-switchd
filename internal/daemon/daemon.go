@@ -31,7 +31,6 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/routing"
 	"github.com/thxrben/cerium-switchd/internal/rpcserver"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -188,15 +187,13 @@ func Run(ctx context.Context, o Options) error {
 	mclag := mclagClient{services}
 	sysMAC := lacpSystemMAC(vc.StackID())
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
-	// Routing (reference 5.8): the RIB with connected and static routes, and
-	// the routing protocols; their active routes go into the kernel with
-	// the next data plane apply.
-	rt := routing.New(log)
-	defer rt.Stop()
-	applier.protoRoutes = rt.FIB
-	rt.Changed = func() { go applier.reconcile("routing") }
 	applier.afterApply = func(cfg *model.Config) {
-		rt.Apply(cfg)
+		// Routing (reference 5.8): cer-ribd has the routing table and
+		// installs every route; the management instance only on the master
+		// (after mastership changes, a reconcile runs).
+		if !o.DryRun {
+			services.setConfig("cer-ribd", ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State())))
+		}
 		// LACP bundles: after the data plane created their devices.
 		if !o.DryRun {
 			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, sysMAC), Hooks: "cer-mclagd"})

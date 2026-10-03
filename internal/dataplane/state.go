@@ -44,7 +44,7 @@ func (k Kind) String() string {
 // docs/stack-protocol.md "Stack tunnels").
 const (
 	StackVRF     = "swstack"
-	StackTable   = 999
+	StackTable   = devnames.StackTable
 	StackUDPPort = 4789
 	// StackUDPPortVXLAN is the stack tunnels' port while VXLAN to remote
 	// VTEPs uses 4789 (a socket in the default instance and one bound to
@@ -157,12 +157,11 @@ type BridgeOpts struct {
 	AgeingSeconds int
 }
 
-// L3 is the routed part of the default instance (reference 5.3.2, 5.3.3,
-// 5.8): IP interfaces and static routes.
+// L3 is the routed part (reference 5.3.2, 5.3.3, 5.9): IP interfaces and
+// routing instances. Routes are cer-ribd's (reference 1.9).
 type L3 struct {
-	VRFs   []VRF // routing instances
-	Ifs    []L3If
-	Routes []Route
+	VRFs []VRF // routing instances
+	Ifs  []L3If
 	// CME is the chassis management interface on this member (only on the
 	// master, reference 1.8; nil: none).
 	CME *CMEIf
@@ -219,20 +218,6 @@ type DHCPLease struct {
 	Router netip.Addr // invalid: none
 }
 
-// Route is a route switchd installs (reference 5.8): a static route or an
-// active route of a routing protocol from the RIB.
-type Route struct {
-	VRF      string // routing instance ("" = default)
-	Prefix   netip.Prefix
-	NextHops []netip.Addr
-	// Devs are the kernel devices of the next hops (same order; "" lets the
-	// kernel resolve the gateway). Routing protocols always set them.
-	Devs    []string
-	Discard bool
-	// Proto is the kernel protocol id (0: RouteProto, static).
-	Proto int
-}
-
 // IPv6 reports whether any data interface (not management) has an IPv6
 // address, i.e. IPv6 routing is needed.
 func (l *L3) IPv6() bool {
@@ -272,14 +257,10 @@ func (s *State) Clone() *State {
 		c.Bridge = &b
 	}
 	if s.L3 != nil {
-		l := &L3{Routes: slices.Clone(s.L3.Routes), VRFs: slices.Clone(s.L3.VRFs)}
+		l := &L3{VRFs: slices.Clone(s.L3.VRFs)}
 		for _, i := range s.L3.Ifs {
 			i.Addrs = slices.Clone(i.Addrs)
 			l.Ifs = append(l.Ifs, i)
-		}
-		for n := range l.Routes {
-			l.Routes[n].NextHops = slices.Clone(l.Routes[n].NextHops)
-			l.Routes[n].Devs = slices.Clone(l.Routes[n].Devs)
 		}
 		if s.L3.CME != nil {
 			cme := *s.L3.CME

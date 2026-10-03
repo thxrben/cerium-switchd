@@ -66,6 +66,7 @@ var Daemons = []Daemon{
 	{Program: "cer-lacpd", Name: "lacp", Help: "LACP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
 	{Program: "cer-mclagd", Name: "mclag", Help: "MC-LAG", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
 	{Program: "cer-rstpd", Name: "rstp", Help: "RSTP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
+	{Program: "cer-ribd", Name: "routing", Help: "routing table", Always: true, Nice: -5, OOM: -500, Caps: netCaps},
 	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps},
 	{Program: "cer-dhcpcd", Name: "dhcp", Help: "DHCP client", Always: true, OOM: -500, Caps: netCaps},
 	{Program: "cer-ntpd", Name: "ntp", Help: "NTP client", Always: true, OOM: -500, Caps: []string{"CAP_SYS_TIME", "CAP_NET_RAW"}},
