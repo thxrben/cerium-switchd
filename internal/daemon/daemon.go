@@ -7,21 +7,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/internal/config"
-	"github.com/thxrben/cerium-switchd/internal/osconf"
-	"github.com/thxrben/cerium-switchd/internal/stack"
-	"github.com/thxrben/cerium-switchd/internal/stack/control"
-	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 	"log/slog"
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/osconf"
+	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/stack/control"
+	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 
 	"golang.org/x/sys/unix"
 
@@ -37,7 +37,11 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/packaging"
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
+	"github.com/thxrben/cerium-switchd/pkg/sdnotify"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // Options configure the daemon.
@@ -93,12 +97,24 @@ func Run(ctx context.Context, o Options) error {
 	// show log and forwards (reference 1.9).
 	log := o.Log
 	exe, _ := os.Executable()
+	// Kernel requests and disk access have deadlines (hwio); the netlink
+	// sockets as well.
+	nlx.SetSocketTimeout()
+	// switchd's loops feed the systemd watchdog: a loop that hangs (a bug,
+	// a deadlock) gets switchd restarted, the daemons keep running. A
+	// hanging device does not: its calls fail at their deadline (alarm).
+	live := &sdnotify.Liveness{Max: loopMax}
+	go live.Run(ctx, func(late []string) {
+		if len(late) > 0 {
+			log.Error("switchd: loops make no progress; the watchdog restarts switchd", "loops", strings.Join(late, ", "))
+		}
+	})
 	if !o.DryRun {
 		// The operating system's network configuration is switchd's
 		// (reference 1.4), and its unit is the one this version brings.
 		// Only an installed switchd that systemd started: a program run by
 		// hand (a test build) must not become the unit's program.
-		if _, err := os.Stat(unitPath); err == nil && os.Getenv("INVOCATION_ID") != "" {
+		if _, err := hwio.Stat(unitPath); err == nil && os.Getenv("INVOCATION_ID") != "" {
 			reload := func() error { return command("systemctl", "daemon-reload") }
 			ensureUnit(unitPath, packaging.Unit, exe, reload, log)
 			// The update daemon (reference 3.6) runs beside switchd.
@@ -156,6 +172,7 @@ func Run(ctx context.Context, o Options) error {
 	inv := &kernelInventory{kernel: kernel, names: names, member: member, vc: vc}
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.member = member
+	applier.live = live
 	applier.inv, applier.names = inv, names
 	// The cer- daemons' service (reference 1.9): it exists from the start,
 	// so that the data plane's first apply can use it; it serves once
@@ -282,6 +299,7 @@ func Run(ctx context.Context, o Options) error {
 				mgmt.sync(nil)
 			}()
 		}
+		ctl.live = live
 		go ctl.run(ctx)
 	}
 	// Notices for the CLI sessions of the whole stack: the sessions run on
@@ -296,6 +314,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 		srv.Notify(context.Background(), text)
 	}
+	watchHangs(member, log, notifyStack)
 	if ctl != nil {
 		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {
 			var text string
@@ -324,7 +343,8 @@ func Run(ctx context.Context, o Options) error {
 		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
-				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) }}
+				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) },
+				Beat: func() { live.Beat("daemon supervisor") }}
 			supRef.Store(sup)
 			go sup.Run(ctx)
 		}
@@ -507,17 +527,17 @@ func Run(ctx context.Context, o Options) error {
 // listen creates the CLI socket. Every local user may connect; switchd
 // authorises each connection by its kernel credentials.
 func listen(path string) (*net.UnixListener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := hwio.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := hwio.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o666); err != nil {
+	if err := hwio.Chmod(path, 0o666); err != nil {
 		l.Close()
 		return nil, err
 	}
@@ -526,9 +546,8 @@ func listen(path string) (*net.UnixListener, error) {
 
 // command runs a system tool and returns its output in the error.
 func command(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	if _, err := sysexec.CombinedOutput(name, args...); err != nil {
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return nil
 }
@@ -544,7 +563,7 @@ func replaceConfig(stateDir string, member int, cfg json.RawMessage) error {
 func replaceConfigAs(stateDir, backup, comment string, cfg json.RawMessage) error {
 	dir := filepath.Join(stateDir, "config")
 	keep := filepath.Join(stateDir, backup+time.Now().UTC().Format("20060102T150405"))
-	if err := os.Rename(dir, keep); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := hwio.Rename(dir, keep); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	st, err := commit.OpenFileStore(dir, 50)

@@ -4,6 +4,7 @@ package dataplane
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -34,7 +37,7 @@ var (
 func (k *Netlink) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 	changed := false
 	var errs []error
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return false, err
 	}
@@ -49,7 +52,7 @@ func (k *Netlink) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 		for _, a := range remotes[name] {
 			want[a] = true
 		}
-		neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+		neighs, err := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -65,7 +68,7 @@ func (k *Netlink) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 				continue
 			}
 			nn := n
-			if err := netlink.NeighDel(&nn); err != nil {
+			if err := nlx.NeighDel(&nn); err != nil {
 				errs = append(errs, fmt.Errorf("%s: remote VTEP %s: %w", name, a, err))
 			} else {
 				changed = true
@@ -77,7 +80,7 @@ func (k *Netlink) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 			}
 			n := &netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, State: netlink.NUD_PERMANENT | netlink.NUD_NOARP,
 				Flags: netlink.NTF_SELF, HardwareAddr: make(net.HardwareAddr, 6), IP: a.AsSlice()}
-			if err := netlink.NeighAppend(n); err != nil {
+			if err := nlx.NeighAppend(n); err != nil {
 				errs = append(errs, fmt.Errorf("%s: remote VTEP %s: %w", name, a, err))
 			} else {
 				changed = true
@@ -101,12 +104,8 @@ func (k *Netlink) SyncVXLAN(remotes map[string][]netip.Addr) (bool, error) {
 				errs = append(errs, errors.New("nftables (the nft program) is required for VXLAN; install the nftables package"))
 			}
 		} else {
-			cmd := exec.Command(nft, "-f", "-")
-			cmd.Stdin = strings.NewReader(text)
-			var out bytes.Buffer
-			cmd.Stdout, cmd.Stderr = &out, &out
-			if err := cmd.Run(); err != nil {
-				errs = append(errs, fmt.Errorf("nft: %v: %s", err, strings.TrimSpace(out.String())))
+			if _, err := sysexec.Command(nft, "-f", "-").WithStdin(strings.NewReader(text)).CombinedOutput(context.Background()); err != nil {
+				errs = append(errs, err)
 			} else {
 				vxlanLast, changed = text, true
 			}

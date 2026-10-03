@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Entry is a journal record as a log reader needs it.
@@ -96,7 +97,7 @@ func Follow(ctx context.Context, cursorFile string, backlog int, f func(Entry)) 
 	}
 	for ctx.Err() == nil {
 		args := []string{"--follow", "--output=json", "--boot", "--cursor-file=" + cursorFile}
-		if _, err := os.Stat(cursorFile); err != nil {
+		if _, err := hwio.Stat(cursorFile); err != nil {
 			args = append(args, fmt.Sprintf("--lines=%d", backlog))
 		}
 		cmd := exec.CommandContext(ctx, "journalctl", args...)

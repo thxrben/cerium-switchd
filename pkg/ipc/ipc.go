@@ -32,6 +32,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Version is the protocol version.
@@ -229,7 +231,7 @@ func (e *Endpoint) ConnTo(name string) *Conn {
 // Listen creates the socket at path (replacing a stale one), readable and
 // writable by its owner only.
 func Listen(path string) (net.Listener, error) {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := hwio.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	l, err := net.Listen("unix", path)
@@ -240,7 +242,7 @@ func Listen(path string) (net.Listener, error) {
 	// the program (or a test's next one) may already listen there. A stale
 	// socket file is replaced by the next Listen.
 	l.(*net.UnixListener).SetUnlinkOnClose(false)
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := hwio.Chmod(path, 0o600); err != nil {
 		l.Close()
 		return nil, err
 	}

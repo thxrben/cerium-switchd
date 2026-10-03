@@ -9,11 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"os"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"golang.org/x/sys/unix"
 )
 
@@ -126,7 +126,7 @@ func (m *Manager) loadLocked() {
 	if m.StateFile == "" {
 		return
 	}
-	raw, err := os.ReadFile(m.StateFile)
+	raw, err := hwio.ReadFile(m.StateFile)
 	if err != nil {
 		return
 	}
@@ -155,8 +155,8 @@ func (m *Manager) save() {
 	m.mu.Unlock()
 	raw, _ := json.Marshal(out)
 	tmp := m.StateFile + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil {
-		os.Rename(tmp, m.StateFile)
+	if hwio.WriteFile(tmp, raw, 0o600) == nil {
+		hwio.Rename(tmp, m.StateFile)
 	}
 }
 

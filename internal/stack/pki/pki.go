@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Validity of every certificate: nothing ever expires (RFC 5280 4.1.2.5
@@ -186,7 +188,7 @@ func Wire(c *tls.Config, alpn string) *tls.Config {
 	c.NextProtos = []string{alpn}
 	keyLogOnce.Do(func() {
 		if path := os.Getenv(KeyLogEnv); path != "" {
-			if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+			if f, err := hwio.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
 				keyLog = f
 			}
 		}

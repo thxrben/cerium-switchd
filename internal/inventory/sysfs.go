@@ -2,24 +2,24 @@
 package inventory
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // PhysicalPorts lists physical network interfaces from sysfs (those with a
 // backing device), excluding loopback and virtual devices. sysRoot is
 // normally "/sys".
 func PhysicalPorts(sysRoot string) []string {
-	ents, err := os.ReadDir(filepath.Join(sysRoot, "class", "net"))
+	ents, err := hwio.ReadDir(filepath.Join(sysRoot, "class", "net"))
 	if err != nil {
 		return nil
 	}
 	var out []string
 	for _, e := range ents {
-		if _, err := os.Stat(filepath.Join(sysRoot, "class", "net", e.Name(), "device")); err == nil {
+		if _, err := hwio.Stat(filepath.Join(sysRoot, "class", "net", e.Name(), "device")); err == nil {
 			out = append(out, e.Name())
 		}
 	}

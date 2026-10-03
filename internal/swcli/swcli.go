@@ -27,6 +27,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"github.com/thxrben/cerium-switchd/internal/rshell"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // DefaultSocket is where switchd listens for CLI sessions.
@@ -300,10 +301,10 @@ func (u *ui) home(name string) string {
 	return name
 }
 
-func (u *ui) ReadFile(name string) ([]byte, error) { return os.ReadFile(u.home(name)) }
+func (u *ui) ReadFile(name string) ([]byte, error) { return hwio.ReadFile(u.home(name)) }
 
 func (u *ui) WriteFile(name string, data []byte) error {
-	return os.WriteFile(u.home(name), data, 0o600)
+	return hwio.WriteFile(u.home(name), data, 0o600)
 }
 
 // cooked runs f with the terminal in normal (non-raw) mode.

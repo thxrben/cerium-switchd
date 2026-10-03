@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -47,7 +48,7 @@ var (
 
 func teamFamily() (*netlink.GenlFamily, error) {
 	teamFamOnce.Do(func() {
-		teamFam, teamFamErr = netlink.GenlFamilyGet("team")
+		teamFam, teamFamErr = nlx.GenlFamilyGet("team")
 		if teamFamErr != nil {
 			teamFamErr = fmt.Errorf("team driver (generic netlink family \"team\"): %w", teamFamErr)
 		}
@@ -97,7 +98,7 @@ func teamSetOption(team int, o teamOption) error {
 	req.AddData(list)
 	// The driver announces every change on its "change_event" group and
 	// passes on ESRCH when nobody listens there: the options are set.
-	if _, err := req.Execute(unix.NETLINK_GENERIC, 0); err != nil && !errors.Is(err, unix.ESRCH) {
+	if _, err := nlx.Execute(req, unix.NETLINK_GENERIC, 0); err != nil && !errors.Is(err, unix.ESRCH) {
 		return err
 	}
 	return nil
@@ -127,7 +128,7 @@ func teamGetOptions(team int) (map[string][]teamOptionValue, error) {
 	req := nl.NewNetlinkRequest(int(fam.ID), unix.NLM_F_ACK)
 	req.AddData(&nl.Genlmsg{Command: teamCmdOptionsGet, Version: 1})
 	req.AddData(nl.NewRtAttr(teamAttrTeamIfindex, nl.Uint32Attr(uint32(team))))
-	msgs, err := req.Execute(unix.NETLINK_GENERIC, 0)
+	msgs, err := nlx.Execute(req, unix.NETLINK_GENERIC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("team options: %w", err)
 	}
@@ -181,15 +182,15 @@ func trimNul(b []byte) []byte {
 
 // createTeam creates an LACP bundle device.
 func CreateTeam(name, hashPolicy string) error {
-	if err := netlink.LinkAdd(&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{Name: name}, LinkType: "team"}); err != nil {
+	if err := nlx.LinkAdd(&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{Name: name}, LinkType: "team"}); err != nil {
 		return fmt.Errorf("%s: creating team device: %w", name, err)
 	}
-	l, err := netlink.LinkByName(name)
+	l, err := nlx.LinkByName(name)
 	if err != nil {
 		return err
 	}
 	if err := teamSetOptions(l.Attrs().Index, teamOption{name: "mode", typ: nlaString, data: nl.ZeroTerminated("loadbalance")}); err != nil {
-		netlink.LinkDel(l)
+		nlx.LinkDel(l)
 		return err
 	}
 	return SetTeamHash(l.Attrs().Index, hashPolicy)
@@ -230,11 +231,11 @@ func TeamPortInit(team, port int) error {
 // collecting and distributing). The bundle's link is up while at least
 // one port carries traffic.
 func SetTeamPort(teamName, portName string, on bool) error {
-	t, err := netlink.LinkByName(teamName)
+	t, err := nlx.LinkByName(teamName)
 	if err != nil {
 		return err
 	}
-	p, err := netlink.LinkByName(portName)
+	p, err := nlx.LinkByName(portName)
 	if err != nil {
 		return err
 	}
@@ -250,7 +251,7 @@ func SetTeamPort(teamName, portName string, on bool) error {
 
 // TeamPortsEnabled reports which ports of a team carry traffic.
 func TeamPortsEnabled(teamName string) (map[string]bool, error) {
-	t, err := netlink.LinkByName(teamName)
+	t, err := nlx.LinkByName(teamName)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +261,7 @@ func TeamPortsEnabled(teamName string) (map[string]bool, error) {
 	}
 	out := map[string]bool{}
 	for _, v := range opts["enabled"] {
-		if l, err := netlink.LinkByIndex(v.port); err == nil {
+		if l, err := nlx.LinkByIndex(v.port); err == nil {
 			out[l.Attrs().Name] = v.set
 		}
 	}

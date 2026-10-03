@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
 	"github.com/thxrben/cerium-switchd/internal/names"
 	"github.com/thxrben/cerium-switchd/pkg/netdev"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
 
 // Controller runs this member's side of its MC-LAG domain (reference 5.6):
@@ -582,11 +582,11 @@ func (m *Controller) BeforeLeave(bundle string) {
 		return
 	}
 	tunnel := v.(string)
-	l, err := netlink.LinkByName(bundle)
+	l, err := nlx.LinkByName(bundle)
 	if err != nil {
 		return
 	}
-	neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+	neighs, err := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
 	if err != nil {
 		return
 	}

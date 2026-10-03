@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Port is a physical port of this member with its Junos-style name
@@ -92,7 +92,7 @@ type found struct {
 }
 
 func (n *Naming) readFile(parts ...string) string {
-	raw, err := os.ReadFile(filepath.Join(append([]string{n.SysRoot}, parts...)...))
+	raw, err := hwio.ReadFile(filepath.Join(append([]string{n.SysRoot}, parts...)...))
 	if err != nil {
 		return ""
 	}
@@ -102,15 +102,15 @@ func (n *Naming) readFile(parts ...string) string {
 // discover lists the physical ports with their card identity.
 func (n *Naming) discover() []found {
 	netDir := filepath.Join(n.SysRoot, "class", "net")
-	ents, _ := os.ReadDir(netDir)
+	ents, _ := hwio.ReadDir(netDir)
 	var out []found
 	for _, e := range ents {
 		linux := e.Name()
-		dev, err := filepath.EvalSymlinks(filepath.Join(netDir, linux, "device"))
+		dev, err := hwio.EvalSymlinks(filepath.Join(netDir, linux, "device"))
 		if err != nil {
 			continue // virtual device
 		}
-		if _, err := os.Stat(filepath.Join(dev, "physfn")); err == nil {
+		if _, err := hwio.Stat(filepath.Join(dev, "physfn")); err == nil {
 			continue // SR-IOV virtual function
 		}
 		f := found{Port: Port{Linux: linux}, cardKind: 1}
@@ -143,7 +143,7 @@ func (n *Naming) discover() []found {
 		f.devPort, _ = strconv.Atoi(n.readFile("class", "net", linux, "dev_port"))
 		f.physName = n.readFile("class", "net", linux, "phys_port_name")
 		f.MAC = n.readFile("class", "net", linux, "address")
-		if drv, err := filepath.EvalSymlinks(filepath.Join(dev, "driver")); err == nil {
+		if drv, err := hwio.EvalSymlinks(filepath.Join(dev, "driver")); err == nil {
 			f.Driver = filepath.Base(drv)
 		}
 		out = append(out, f)
@@ -157,7 +157,7 @@ func (n *Naming) load() {
 	}
 	n.loaded = true
 	n.cards, n.info, n.notes, n.moved = map[string]int{}, map[string]*CardInfo{}, map[int]string{}, map[int]int{}
-	if raw, err := os.ReadFile(n.StateFile); err == nil {
+	if raw, err := hwio.ReadFile(n.StateFile); err == nil {
 		var st namingState
 		if json.Unmarshal(raw, &st) == nil && st.Cards != nil {
 			n.cards = st.Cards
@@ -320,10 +320,10 @@ func (n *Naming) save() error {
 		return err
 	}
 	tmp := n.StateFile + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, n.StateFile)
+	return hwio.Rename(tmp, n.StateFile)
 }
 
 // Linux returns the kernel name of a port ("1/0/3").

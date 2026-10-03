@@ -7,15 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"net"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -42,7 +44,7 @@ func (k *Netlink) l3StatePath() string { return filepath.Join(k.StateDir, "l3-ow
 
 func (k *Netlink) loadL3() l3Owned {
 	st := l3Owned{}
-	if raw, err := os.ReadFile(k.l3StatePath()); err == nil {
+	if raw, err := hwio.ReadFile(k.l3StatePath()); err == nil {
 		_ = json.Unmarshal(raw, &st)
 	}
 	if st.Addrs == nil {
@@ -60,10 +62,10 @@ func (k *Netlink) saveL3(st l3Owned) error {
 	}
 	raw, _ := json.Marshal(st)
 	tmp := k.l3StatePath() + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, k.l3StatePath())
+	return hwio.Rename(tmp, k.l3StatePath())
 }
 
 // isOwnL3Device reports whether a kernel name is an irb or subinterface
@@ -74,14 +76,14 @@ func isOwnL3Device(name string) bool {
 
 // SyncSelfVLANs makes the bridge device a member of vids.
 func (k *Netlink) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
-	br, err := netlink.LinkByName(BridgeName)
+	br, err := nlx.LinkByName(BridgeName)
 	if err != nil {
 		if len(vids) == 0 {
 			return false, nil
 		}
 		return false, errors.New("bridge missing")
 	}
-	all, err := netlink.BridgeVlanList()
+	all, err := nlx.BridgeVlanList()
 	if err != nil {
 		return false, err
 	}
@@ -92,7 +94,7 @@ func (k *Netlink) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 	changed := false
 	for _, v := range vids {
 		if !have[v] {
-			if err := netlink.BridgeVlanAdd(br, uint16(v), false, false, true, false); err != nil {
+			if err := nlx.BridgeVlanAdd(br, uint16(v), false, false, true, false); err != nil {
 				return changed, err
 			}
 			changed = true
@@ -101,7 +103,7 @@ func (k *Netlink) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 	if prune {
 		for v := range have {
 			if !slices.Contains(vids, v) {
-				if err := netlink.BridgeVlanDel(br, uint16(v), false, false, true, false); err != nil {
+				if err := nlx.BridgeVlanDel(br, uint16(v), false, false, true, false); err != nil {
 					return changed, err
 				}
 				changed = true
@@ -112,14 +114,14 @@ func (k *Netlink) SyncSelfVLANs(vids []int, prune bool) (bool, error) {
 }
 
 func writeSysctl(path, value string) (bool, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := hwio.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(string(raw)) == value {
 		return false, nil
 	}
-	return true, os.WriteFile(path, []byte(value), 0o644)
+	return true, hwio.WriteFile(path, []byte(value), 0o644)
 }
 
 // SyncL3 converges the routed interfaces and static routes. Order: devices
@@ -156,12 +158,12 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	// IPv6 routing needs forwarding for the whole system; interfaces that
 	// autoconfigure from router advertisements keep doing so (accept_ra 2).
 	if l.IPv6() && !st.IPv6Fwd {
-		links, _ := netlink.LinkList()
+		links, _ := nlx.LinkList()
 		for _, ln := range links {
 			name := ln.Attrs().Name
 			p := "/proc/sys/net/ipv6/conf/" + name + "/accept_ra"
-			if raw, err := os.ReadFile(p); err == nil && strings.TrimSpace(string(raw)) == "1" {
-				if err := os.WriteFile(p, []byte("2"), 0o644); err == nil {
+			if raw, err := hwio.ReadFile(p); err == nil && strings.TrimSpace(string(raw)) == "1" {
+				if err := hwio.WriteFile(p, []byte("2"), 0o644); err == nil {
 					st.AcceptRA = append(st.AcceptRA, name)
 				}
 			}
@@ -246,10 +248,10 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		if want[port] {
 			continue
 		}
-		if ln, err := netlink.LinkByName(port); err == nil {
+		if ln, err := nlx.LinkByName(port); err == nil {
 			for _, a := range addrs {
 				if ad, err := netlink.ParseAddr(a); err == nil {
-					if err := netlink.AddrDel(ln, ad); err == nil {
+					if err := nlx.AddrDel(ln, ad); err == nil {
 						changed = true
 					}
 				}
@@ -261,20 +263,20 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 	// Routes are cer-ribd's (reference 1.9).
 
 	// Devices that are no longer configured.
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		errs = append(errs, err)
 	}
 	for _, ln := range links {
 		name := ln.Attrs().Name
 		if (isOwnL3Device(name) || name == legacyMgmtIRB) && ln.Type() == "vlan" && !want[name] {
-			note(true, netlink.LinkDel(ln))
+			note(true, nlx.LinkDel(ln))
 		}
 	}
 	// Routing instances that are no longer configured (and the management
 	// VRF of older versions): members leave, then the VRF goes. (Fresh list:
 	// devices were deleted above.)
-	if links, err = netlink.LinkList(); err != nil {
+	if links, err = nlx.LinkList(); err != nil {
 		errs = append(errs, err)
 	}
 	for _, ln := range links {
@@ -289,10 +291,10 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 		for _, m := range links {
 			if m.Attrs().MasterIndex == ln.Attrs().Index {
-				note(true, netlink.LinkSetNoMaster(m))
+				note(true, nlx.LinkSetNoMaster(m))
 			}
 		}
-		note(true, netlink.LinkDel(ln))
+		note(true, nlx.LinkDel(ln))
 		delete(st.Tables, name)
 	}
 	// VXLAN from the remote VTEPs reaches the stack's VTEP address through
@@ -382,30 +384,30 @@ func (k *Netlink) syncVRF(v VRF, st *l3Owned) (int, bool, error) {
 		st.Tables[v.Name] = table
 	}
 	changed := false
-	ln, _ := netlink.LinkByName(v.Name)
+	ln, _ := nlx.LinkByName(v.Name)
 	if ln != nil && ln.Type() != "vrf" {
 		// Never replace another device (commit check rejects the name).
 		return table, false, fmt.Errorf("routing instance %s: a %s device of that name exists", v.Name, ln.Type())
 	}
 	if cur, ok := ln.(*netlink.Vrf); ln != nil && (!ok || int(cur.Table) != table) {
 		// Wrong table: recreate (its members re-join below).
-		if err := netlink.LinkDel(ln); err != nil {
+		if err := nlx.LinkDel(ln); err != nil {
 			return table, changed, err
 		}
 		ln, changed = nil, true
 	}
 	if ln == nil {
-		if err := netlink.LinkAdd(&netlink.Vrf{LinkAttrs: netlink.LinkAttrs{Name: v.Name}, Table: uint32(table)}); err != nil {
+		if err := nlx.LinkAdd(&netlink.Vrf{LinkAttrs: netlink.LinkAttrs{Name: v.Name}, Table: uint32(table)}); err != nil {
 			return table, changed, fmt.Errorf("creating VRF %s: %w", v.Name, err)
 		}
 		changed = true
 		var err error
-		if ln, err = netlink.LinkByName(v.Name); err != nil {
+		if ln, err = nlx.LinkByName(v.Name); err != nil {
 			return table, changed, err
 		}
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
-		if err := netlink.LinkSetUp(ln); err != nil {
+		if err := nlx.LinkSetUp(ln); err != nil {
 			return table, changed, err
 		}
 		changed = true
@@ -416,14 +418,14 @@ func (k *Netlink) syncVRF(v VRF, st *l3Owned) (int, bool, error) {
 // syncL3If converges one routed interface.
 func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	changed := false
-	ln, _ := netlink.LinkByName(i.Name)
+	ln, _ := nlx.LinkByName(i.Name)
 	if i.Own {
-		parent, err := netlink.LinkByName(i.Parent)
+		parent, err := nlx.LinkByName(i.Parent)
 		if err != nil {
 			return false, fmt.Errorf("%s: parent %s: %w", i.Name, i.Parent, err)
 		}
 		if v, ok := ln.(*netlink.Vlan); ln != nil && (!ok || v.VlanId != i.VID || v.ParentIndex != parent.Attrs().Index) {
-			if err := netlink.LinkDel(ln); err != nil {
+			if err := nlx.LinkDel(ln); err != nil {
 				return false, err
 			}
 			ln, changed = nil, true
@@ -433,28 +435,28 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 			if i.MTU > 0 {
 				attrs.MTU = i.MTU
 			}
-			if err := netlink.LinkAdd(&netlink.Vlan{LinkAttrs: attrs, VlanId: i.VID}); err != nil {
+			if err := nlx.LinkAdd(&netlink.Vlan{LinkAttrs: attrs, VlanId: i.VID}); err != nil {
 				return changed, fmt.Errorf("creating %s: %w", i.Name, err)
 			}
 			changed = true
-			if ln, err = netlink.LinkByName(i.Name); err != nil {
+			if ln, err = nlx.LinkByName(i.Name); err != nil {
 				return changed, err
 			}
 		}
 		if i.MTU > 0 && ln.Attrs().MTU != i.MTU {
-			if err := netlink.LinkSetMTU(ln, i.MTU); err != nil {
+			if err := nlx.LinkSetMTU(ln, i.MTU); err != nil {
 				return changed, fmt.Errorf("%s mtu: %w", i.Name, err)
 			}
 			changed = true
 		}
 		up := ln.Attrs().Flags&net.FlagUp != 0
 		if i.Up && !up {
-			if err := netlink.LinkSetUp(ln); err != nil {
+			if err := nlx.LinkSetUp(ln); err != nil {
 				return changed, err
 			}
 			changed = true
 		} else if !i.Up && up {
-			if err := netlink.LinkSetDown(ln); err != nil {
+			if err := nlx.LinkSetDown(ln); err != nil {
 				return changed, err
 			}
 			changed = true
@@ -467,7 +469,7 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	// into the instance's table).
 	master := 0
 	if i.VRF != "" {
-		v, err := netlink.LinkByName(i.VRF)
+		v, err := nlx.LinkByName(i.VRF)
 		if err != nil {
 			return changed, fmt.Errorf("%s: routing instance %s: %w", i.Name, i.VRF, err)
 		}
@@ -475,18 +477,18 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	}
 	if cur := ln.Attrs().MasterIndex; cur != master {
 		curIsVRF := false
-		if m, err := netlink.LinkByIndex(cur); err == nil && m.Type() == "vrf" {
+		if m, err := nlx.LinkByIndex(cur); err == nil && m.Type() == "vrf" {
 			curIsVRF = true
 		}
 		switch {
 		case master != 0:
-			v, _ := netlink.LinkByIndex(master)
-			if err := netlink.LinkSetMaster(ln, v); err != nil {
+			v, _ := nlx.LinkByIndex(master)
+			if err := nlx.LinkSetMaster(ln, v); err != nil {
 				return changed, fmt.Errorf("%s: joining %s: %w", i.Name, i.VRF, err)
 			}
 			changed = true
 		case curIsVRF:
-			if err := netlink.LinkSetNoMaster(ln); err != nil {
+			if err := nlx.LinkSetNoMaster(ln); err != nil {
 				return changed, err
 			}
 			changed = true
@@ -526,7 +528,7 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 
 	// Addresses: own devices get exactly the configured ones; on a port only
 	// addresses switchd added are ever removed.
-	cur, err := netlink.AddrList(ln, netlink.FAMILY_ALL)
+	cur, err := nlx.AddrList(ln, netlink.FAMILY_ALL)
 	if err != nil {
 		return changed, err
 	}
@@ -534,9 +536,9 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	for _, a := range cur {
 		if anycast && a.Flags&unix.IFA_F_DADFAILED != 0 {
 			re := a
-			_ = netlink.AddrDel(ln, &a)
+			_ = nlx.AddrDel(ln, &a)
 			re.Flags = (re.Flags &^ (unix.IFA_F_DADFAILED | unix.IFA_F_TENTATIVE)) | unix.IFA_F_NODAD
-			if err := netlink.AddrAdd(ln, &re); err != nil && !errors.Is(err, unix.EEXIST) {
+			if err := nlx.AddrAdd(ln, &re); err != nil && !errors.Is(err, unix.EEXIST) {
 				return changed, fmt.Errorf("%s: address %s after failed DAD: %w", i.Name, a.IPNet, err)
 			}
 			changed = true
@@ -561,7 +563,7 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 		if anycast && p.Addr().Is6() {
 			ad.Flags |= unix.IFA_F_NODAD
 		}
-		if err := netlink.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
+		if err := nlx.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
 			return changed, fmt.Errorf("%s: address %s: %w", i.Name, p, err)
 		}
 		changed = true
@@ -571,7 +573,7 @@ func (k *Netlink) syncL3If(i L3If, st *l3Owned, vrf VRF) (bool, error) {
 	}
 	for p, a := range have {
 		if !slices.Contains(i.Addrs, p) && removable(p) {
-			if err := netlink.AddrDel(ln, &a); err != nil {
+			if err := nlx.AddrDel(ln, &a); err != nil {
 				return changed, err
 			}
 			changed = true
@@ -622,14 +624,14 @@ func (k *Netlink) syncGatewayMAC(l *L3) (bool, error) {
 	changed := false
 	var errs []error
 	for n, mac := range want {
-		ln, err := netlink.LinkByName(n)
+		ln, err := nlx.LinkByName(n)
 		if err != nil {
 			continue // created later in this sync; the next one sets it
 		}
 		if ln.Attrs().HardwareAddr.String() == mac.String() {
 			continue
 		}
-		if err := netlink.LinkSetHardwareAddr(ln, mac); err != nil {
+		if err := nlx.LinkSetHardwareAddr(ln, mac); err != nil {
 			errs = append(errs, fmt.Errorf("%s: gateway MAC: %w", n, err))
 			continue
 		}

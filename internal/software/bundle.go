@@ -14,11 +14,12 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // A bundle is the software of one platform (docs/os-image.md §4.1): an
@@ -121,14 +122,14 @@ func PublicKeyText(p ed25519.PublicKey, comment string) string {
 
 // LoadKeys reads the trusted keys: every *.pub file in dir.
 func LoadKeys(dir string) ([]PublicKey, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.pub"))
+	files, err := hwio.Glob(filepath.Join(dir, "*.pub"))
 	if err != nil {
 		return nil, err
 	}
 	slices.Sort(files)
 	var keys []PublicKey
 	for _, f := range files {
-		raw, err := os.ReadFile(f)
+		raw, err := hwio.ReadFile(f)
 		if err != nil {
 			return nil, err
 		}
@@ -149,13 +150,13 @@ func LoadKeys(dir string) ([]PublicKey, error) {
 // WriteBundle writes a bundle: m (whose image size and SHA-256 are filled
 // in from the image file) signed with key.
 func WriteBundle(w io.Writer, m BundleManifest, imagePath string, key ed25519.PrivateKey) error {
-	f, err := os.Open(imagePath)
+	f, err := hwio.Open(imagePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, f)
+	n, err := io.Copy(h, hwio.Reader(f, SlotIODeadline))
 	if err != nil {
 		return err
 	}
@@ -317,12 +318,12 @@ func (c *checkedReader) Read(p []byte) (int, error) {
 
 // VerifyBundleFile checks a whole bundle file: signature and image.
 func VerifyBundleFile(path string, keys []PublicKey) (*BundleManifest, error) {
-	f, err := os.Open(path)
+	f, err := hwio.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := OpenBundle(f, keys)
+	b, err := OpenBundle(hwio.Reader(f, SlotIODeadline), keys)
 	if err != nil {
 		return nil, err
 	}

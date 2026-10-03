@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
 
 // vxlanSync distributes the remote MACs the members learn on their VXLAN
@@ -171,7 +172,7 @@ func cmpMAC(a, b vxlanMAC) int {
 // VXLAN ports, with the VTEP each is behind (from the VXLAN port's own
 // table).
 func learnedVXLAN() vxlanSet {
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return nil
 	}
@@ -181,7 +182,7 @@ func learnedVXLAN() vxlanSet {
 		if vni == 0 {
 			continue
 		}
-		neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+		neighs, err := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
 		if err != nil {
 			continue
 		}
@@ -212,7 +213,7 @@ func learnedVXLAN() vxlanSet {
 // bridge (externally learned: it does not age, and the bridge replaces it
 // if it learns the address itself) and in the port's own table (the VTEP).
 func vxlanSet1(m vxlanMAC) error {
-	l, err := netlink.LinkByName(dataplane.VXLANName(m.VNI))
+	l, err := nlx.LinkByName(dataplane.VXLANName(m.VNI))
 	if err != nil {
 		return err
 	}
@@ -220,16 +221,16 @@ func vxlanSet1(m vxlanMAC) error {
 	if err != nil {
 		return err
 	}
-	if err := netlink.NeighSet(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, State: netlink.NUD_NOARP,
+	if err := nlx.NeighSet(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, State: netlink.NUD_NOARP,
 		Flags: netlink.NTF_SELF, HardwareAddr: mac, IP: m.VTEP.AsSlice()}); err != nil {
 		return err
 	}
-	return netlink.NeighSet(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, State: netlink.NUD_REACHABLE,
+	return nlx.NeighSet(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, State: netlink.NUD_REACHABLE,
 		Flags: netlink.NTF_MASTER | netlink.NTF_EXT_LEARNED, HardwareAddr: mac, Vlan: m.VLAN})
 }
 
 func vxlanDel(m vxlanMAC) error {
-	l, err := netlink.LinkByName(dataplane.VXLANName(m.VNI))
+	l, err := nlx.LinkByName(dataplane.VXLANName(m.VNI))
 	if err != nil {
 		return err
 	}
@@ -237,9 +238,9 @@ func vxlanDel(m vxlanMAC) error {
 	if err != nil {
 		return err
 	}
-	e1 := netlink.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_MASTER,
+	e1 := nlx.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_MASTER,
 		HardwareAddr: mac, Vlan: m.VLAN})
-	e2 := netlink.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_SELF,
+	e2 := nlx.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_SELF,
 		HardwareAddr: mac, IP: m.VTEP.AsSlice()})
 	if e1 != nil {
 		return e1

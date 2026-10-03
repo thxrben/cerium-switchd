@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -20,31 +21,31 @@ import (
 // comes up, so coming up announces them (arp_notify, ndisc_notify) and
 // the management network learns the new place of the address at once.
 func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
-	ln, _ := netlink.LinkByName(CMEName)
+	ln, _ := nlx.LinkByName(CMEName)
 	if c == nil {
 		if ln == nil {
 			return false, nil
 		}
-		return true, netlink.LinkDel(ln)
+		return true, nlx.LinkDel(ln)
 	}
-	parent, err := netlink.LinkByName(c.Parent)
+	parent, err := nlx.LinkByName(c.Parent)
 	if err != nil {
 		return false, fmt.Errorf("cme: management port %s: %w", c.Parent, err)
 	}
 	changed := false
 	if mv, ok := ln.(*netlink.Macvlan); ln != nil && (!ok || mv.ParentIndex != parent.Attrs().Index || mv.HardwareAddr.String() != c.MAC.String()) {
-		if err := netlink.LinkDel(ln); err != nil {
+		if err := nlx.LinkDel(ln); err != nil {
 			return false, err
 		}
 		ln, changed = nil, true
 	}
 	if ln == nil {
 		attrs := netlink.LinkAttrs{Name: CMEName, ParentIndex: parent.Attrs().Index, HardwareAddr: c.MAC}
-		if err := netlink.LinkAdd(&netlink.Macvlan{LinkAttrs: attrs, Mode: netlink.MACVLAN_MODE_PRIVATE}); err != nil {
+		if err := nlx.LinkAdd(&netlink.Macvlan{LinkAttrs: attrs, Mode: netlink.MACVLAN_MODE_PRIVATE}); err != nil {
 			return changed, fmt.Errorf("creating cme: %w", err)
 		}
 		changed = true
-		if ln, err = netlink.LinkByName(CMEName); err != nil {
+		if ln, err = nlx.LinkByName(CMEName); err != nil {
 			return changed, err
 		}
 	}
@@ -64,7 +65,7 @@ func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
 	}
 	master := 0
 	if c.VRF != "" {
-		v, err := netlink.LinkByName(c.VRF)
+		v, err := nlx.LinkByName(c.VRF)
 		if err != nil {
 			return changed, fmt.Errorf("cme: routing instance %s: %w", c.VRF, err)
 		}
@@ -72,10 +73,10 @@ func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
 	}
 	if ln.Attrs().MasterIndex != master {
 		if master == 0 {
-			err = netlink.LinkSetNoMaster(ln)
+			err = nlx.LinkSetNoMaster(ln)
 		} else {
-			v, _ := netlink.LinkByIndex(master)
-			err = netlink.LinkSetMaster(ln, v)
+			v, _ := nlx.LinkByIndex(master)
+			err = nlx.LinkSetMaster(ln, v)
 		}
 		if err != nil {
 			return changed, fmt.Errorf("cme: routing instance %s: %w", c.VRF, err)
@@ -90,9 +91,9 @@ func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
 	up := ln.Attrs().Flags&net.FlagUp != 0
 	switch {
 	case c.Up && !up:
-		err = netlink.LinkSetUp(ln)
+		err = nlx.LinkSetUp(ln)
 	case !c.Up && up:
-		err = netlink.LinkSetDown(ln)
+		err = nlx.LinkSetDown(ln)
 	default:
 		return changed, nil
 	}
@@ -102,7 +103,7 @@ func (k *Netlink) syncCME(c *CMEIf) (bool, error) {
 // syncExactAddrs gives a link exactly the addresses want (link-local
 // addresses aside); IPv6 addresses skip duplicate address detection.
 func syncExactAddrs(ln netlink.Link, want []netip.Prefix) (bool, error) {
-	cur, err := netlink.AddrList(ln, netlink.FAMILY_ALL)
+	cur, err := nlx.AddrList(ln, netlink.FAMILY_ALL)
 	if err != nil {
 		return false, err
 	}
@@ -119,7 +120,7 @@ func syncExactAddrs(ln netlink.Link, want []netip.Prefix) (bool, error) {
 			have[p] = true
 			continue
 		}
-		if err := netlink.AddrDel(ln, &a); err != nil {
+		if err := nlx.AddrDel(ln, &a); err != nil {
 			return changed, err
 		}
 		changed = true
@@ -135,7 +136,7 @@ func syncExactAddrs(ln netlink.Link, want []netip.Prefix) (bool, error) {
 		if p.Addr().Is6() {
 			ad.Flags |= unix.IFA_F_NODAD
 		}
-		if err := netlink.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
+		if err := nlx.AddrAdd(ln, ad); err != nil && !errors.Is(err, unix.EEXIST) {
 			return changed, fmt.Errorf("address %s: %w", p, err)
 		}
 		changed = true
@@ -150,7 +151,7 @@ func syncBare(ports []string, unconfigured map[string]bool) (bool, error) {
 	changed := false
 	var errs []error
 	for _, n := range ports {
-		ln, err := netlink.LinkByName(n)
+		ln, err := nlx.LinkByName(n)
 		if err != nil {
 			continue
 		}
@@ -167,7 +168,7 @@ func syncBare(ports []string, unconfigured map[string]bool) (bool, error) {
 		flushNeighbors(ln) // not a change of configuration: not reported
 		if unconfigured[n] && ln.Attrs().Alias != "" {
 			changed = true
-			if err := netlink.LinkSetAlias(ln, ""); err != nil {
+			if err := nlx.LinkSetAlias(ln, ""); err != nil {
 				errs = append(errs, fmt.Errorf("%s: description: %w", n, err))
 			}
 		}
@@ -196,7 +197,7 @@ func syncNoIP(links []string) (bool, error) {
 func flushNeighbors(ln netlink.Link) bool {
 	changed := false
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		ns, err := netlink.NeighList(ln.Attrs().Index, fam)
+		ns, err := nlx.NeighList(ln.Attrs().Index, fam)
 		if err != nil {
 			continue
 		}
@@ -204,7 +205,7 @@ func flushNeighbors(ln netlink.Link) bool {
 			if n.State&netlink.NUD_PERMANENT != 0 {
 				continue
 			}
-			if netlink.NeighDel(&n) == nil {
+			if nlx.NeighDel(&n) == nil {
 				changed = true
 			}
 		}
@@ -214,7 +215,7 @@ func flushNeighbors(ln netlink.Link) bool {
 
 // Carrier reports whether a kernel port has a link.
 func Carrier(name string) bool {
-	ln, err := netlink.LinkByName(name)
+	ln, err := nlx.LinkByName(name)
 	return err == nil && ln.Attrs().RawFlags&unix.IFF_LOWER_UP != 0
 }
 
@@ -224,20 +225,20 @@ const VTEPDevice = "swvtep"
 
 // syncVTEP keeps the VTEP device with exactly addr (invalid: no device).
 func syncVTEP(addr netip.Addr) (bool, error) {
-	ln, _ := netlink.LinkByName(VTEPDevice)
+	ln, _ := nlx.LinkByName(VTEPDevice)
 	if !addr.IsValid() {
 		if ln == nil {
 			return false, nil
 		}
-		return true, netlink.LinkDel(ln)
+		return true, nlx.LinkDel(ln)
 	}
 	changed := false
 	if ln == nil {
-		if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: VTEPDevice}}); err != nil {
+		if err := nlx.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: VTEPDevice}}); err != nil {
 			return false, fmt.Errorf("%s: %w", VTEPDevice, err)
 		}
 		var err error
-		if ln, err = netlink.LinkByName(VTEPDevice); err != nil {
+		if ln, err = nlx.LinkByName(VTEPDevice); err != nil {
 			return true, err
 		}
 		changed = true
@@ -251,7 +252,7 @@ func syncVTEP(addr netip.Addr) (bool, error) {
 		return changed, err
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
-		if err := netlink.LinkSetUp(ln); err != nil {
+		if err := nlx.LinkSetUp(ln); err != nil {
 			return changed, err
 		}
 		changed = true

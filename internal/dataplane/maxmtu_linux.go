@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"strings"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
@@ -16,7 +17,7 @@ func maxMTUs() map[string]int {
 	out := map[string]int{}
 	req := nl.NewNetlinkRequest(unix.RTM_GETLINK, unix.NLM_F_DUMP)
 	req.AddData(nl.NewIfInfomsg(unix.AF_UNSPEC))
-	msgs, err := req.Execute(unix.NETLINK_ROUTE, unix.RTM_NEWLINK)
+	msgs, err := nlx.Execute(req, unix.NETLINK_ROUTE, unix.RTM_NEWLINK)
 	if err != nil {
 		return out
 	}

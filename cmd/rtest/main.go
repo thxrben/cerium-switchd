@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/pkg/bfd"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Config describes what rtest runs.
@@ -35,7 +36,7 @@ func main() {
 	status := flag.String("status", "/tmp/rtest-status.json", "status file, rewritten every second")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	raw, err := os.ReadFile(*file)
+	raw, err := hwio.ReadFile(*file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -70,8 +71,8 @@ func main() {
 		case <-tick.C:
 			st := map[string]any{"bfd": sv.Sessions()}
 			b, _ := json.MarshalIndent(st, "", " ")
-			os.WriteFile(*status+".tmp", b, 0o644)
-			os.Rename(*status+".tmp", *status)
+			hwio.WriteFile(*status+".tmp", b, 0o644)
+			hwio.Rename(*status+".tmp", *status)
 		}
 	}
 }

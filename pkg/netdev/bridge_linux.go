@@ -3,25 +3,22 @@
 package netdev
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
 // runTool runs a system tool and returns its output.
 func runTool(name string, args ...string) ([]byte, error) {
-	var stderr bytes.Buffer
-	cmd := exec.Command(name, args...)
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := sysexec.Output(name, args...)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return out, nil
 }
@@ -135,11 +132,11 @@ func walkRouters(v interface{}, out *[]McastRouterPort) {
 // FlushLearned removes the MAC addresses a bridge learned on dev (not
 // static or externally installed ones) and returns how many.
 func FlushLearned(dev string) (int, error) {
-	l, err := netlink.LinkByName(dev)
+	l, err := nlx.LinkByName(dev)
 	if err != nil {
 		return 0, err
 	}
-	neighs, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+	neighs, err := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
 	if err != nil {
 		return 0, err
 	}
@@ -152,7 +149,7 @@ func FlushLearned(dev string) (int, error) {
 			continue
 		}
 		e.Flags |= netlink.NTF_MASTER // delete from the bridge's table
-		if err := netlink.NeighDel(&e); err == nil {
+		if err := nlx.NeighDel(&e); err == nil {
 			n++
 		}
 	}

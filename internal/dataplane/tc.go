@@ -5,6 +5,7 @@ package dataplane
 import (
 	"errors"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -58,7 +59,7 @@ func ensureClsact(l netlink.Link) error {
 		},
 		QdiscType: "clsact",
 	}
-	if err := netlink.QdiscAdd(q); err != nil && !errors.Is(err, unix.EEXIST) {
+	if err := nlx.QdiscAdd(q); err != nil && !errors.Is(err, unix.EEXIST) {
 		return err
 	}
 	return nil
@@ -139,7 +140,7 @@ func (r tcRule) install(l netlink.Link) error {
 		enc(acts.AddRtAttr(i+1, nil))
 	}
 	req.AddData(opts)
-	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
+	_, err := nlx.Execute(req, unix.NETLINK_ROUTE, 0)
 	return err
 }
 
@@ -165,7 +166,7 @@ func removeHookRule(l netlink.Link, egress bool, chain uint32, prio uint16) erro
 		Info:    netlink.MakeHandle(prio, 0),
 	})
 	req.AddData(nl.NewRtAttr(nl.TCA_CHAIN, nl.Uint32Attr(chain)))
-	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
+	_, err := nlx.Execute(req, unix.NETLINK_ROUTE, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
@@ -228,7 +229,7 @@ var validRules = map[[2]uint32]bool{
 // removed: they can only differ from what the configuration asks for.
 func readTC(l netlink.Link) tcState {
 	st := tcState{rules: map[[2]uint32]bool{}}
-	fs, err := netlink.FilterList(l, netlink.HANDLE_MIN_INGRESS)
+	fs, err := nlx.FilterList(l, netlink.HANDLE_MIN_INGRESS)
 	if err != nil {
 		return st
 	}

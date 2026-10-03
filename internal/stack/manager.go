@@ -33,6 +33,8 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack/link"
 	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
 
 // Manager owns the stack identity and the VC ports of this switch.
@@ -176,7 +178,7 @@ func (m *Manager) Load() error {
 	if m.Log == nil {
 		m.Log = slog.Default()
 	}
-	if err := os.MkdirAll(m.Dir, 0o700); err != nil {
+	if err := hwio.MkdirAll(m.Dir, 0o700); err != nil {
 		return err
 	}
 	if err := m.loadKeys(); err != nil {
@@ -196,7 +198,7 @@ const joinedFile = "joined"
 // or after it was removed from another stack) and never joined one since
 // (docs/stack-protocol.md, bootstrap).
 func (m *Manager) Founder() bool {
-	_, err := os.Stat(m.path(joinedFile))
+	_, err := hwio.Stat(m.path(joinedFile))
 	return errors.Is(err, os.ErrNotExist)
 }
 
@@ -231,7 +233,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Unlock()
 	go m.mesh.Run(ctx.Done())
 	var st vcState
-	if raw, err := os.ReadFile(m.path("vc-ports.json")); err == nil {
+	if raw, err := hwio.ReadFile(m.path("vc-ports.json")); err == nil {
 		_ = json.Unmarshal(raw, &st)
 	}
 	for _, p := range st.Ports {
@@ -244,7 +246,7 @@ func (m *Manager) Start(ctx context.Context) error {
 // on first start.
 func (m *Manager) loadKeys() error {
 	read := func(n string) []byte {
-		b, _ := os.ReadFile(m.path(n))
+		b, _ := hwio.ReadFile(m.path(n))
 		return b
 	}
 	sk, sc, mk, mc := read("stack.key"), read("stack.crt"), read("member.key"), read("member.crt")
@@ -300,12 +302,12 @@ func (m *Manager) newStack(id int) error {
 	mkb, _ := pki.EncodeKey(key)
 	files := map[string][]byte{"stack.key": skb, "stack.crt": pki.EncodeCert(s.Cert), "member.key": mkb, "member.crt": pki.EncodeCert(cert)}
 	for n, b := range files {
-		if err := os.WriteFile(m.path(n+".new"), b, 0o600); err != nil {
+		if err := hwio.WriteFile(m.path(n+".new"), b, 0o600); err != nil {
 			return err
 		}
 	}
 	for n := range files {
-		if err := os.Rename(m.path(n+".new"), m.path(n)); err != nil {
+		if err := hwio.Rename(m.path(n+".new"), m.path(n)); err != nil {
 			return err
 		}
 	}
@@ -322,7 +324,7 @@ func (m *Manager) Leave() error {
 		return err
 	}
 	for _, name := range []string{"raft", "control.json", joinedFile} {
-		if err := os.RemoveAll(m.path(name)); err != nil {
+		if err := hwio.RemoveAll(m.path(name)); err != nil {
 			return err
 		}
 	}
@@ -356,10 +358,10 @@ func (m *Manager) save() error {
 	sort.Slice(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i], st.Ports[j]) })
 	raw, _ := json.Marshal(st)
 	tmp := m.path("vc-ports.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, m.path("vc-ports.json"))
+	return hwio.Rename(tmp, m.path("vc-ports.json"))
 }
 
 // SetPort designates (add) or releases a VC port "<card>/<port>".
@@ -666,7 +668,7 @@ func (m *Manager) Mesh() *mesh.Mesh {
 // preparePort makes a port usable for stacking and nothing else: up, out
 // of any bridge or bond, no addresses, IPv6 off.
 func preparePort(linux string) error {
-	ln, err := netlink.LinkByName(linux)
+	ln, err := nlx.LinkByName(linux)
 	if err != nil {
 		return err
 	}
@@ -677,25 +679,25 @@ func preparePort(linux string) error {
 		return err
 	}
 	p := "/proc/sys/net/ipv6/conf/" + linux + "/disable_ipv6"
-	if raw, err := os.ReadFile(p); err == nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("1")) {
-		if err := os.WriteFile(p, []byte("1"), 0o644); err != nil {
+	if raw, err := hwio.ReadFile(p); err == nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("1")) {
+		if err := hwio.WriteFile(p, []byte("1"), 0o644); err != nil {
 			return err
 		}
 	}
-	addrs, _ := netlink.AddrList(ln, netlink.FAMILY_ALL)
+	addrs, _ := nlx.AddrList(ln, netlink.FAMILY_ALL)
 	for _, a := range addrs {
-		_ = netlink.AddrDel(ln, &a)
+		_ = nlx.AddrDel(ln, &a)
 	}
 	// The largest frames the NIC can carry, once: the stack tunnels need
 	// room for the largest data frame plus 58 bytes, and a later MTU change
 	// could restart the link (reference 5.2, stack MTU).
 	if want := dataplane.StackPortMTU(linux); want > ln.Attrs().MTU {
-		if err := netlink.LinkSetMTU(ln, want); err != nil {
+		if err := nlx.LinkSetMTU(ln, want); err != nil {
 			return fmt.Errorf("setting the MTU to %d: %w", want, err)
 		}
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
-		return netlink.LinkSetUp(ln)
+		return nlx.LinkSetUp(ln)
 	}
 	return nil
 }

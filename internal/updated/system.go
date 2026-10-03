@@ -2,20 +2,23 @@ package updated
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/thxrben/cerium-switchd/internal/software"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // Paths of the image (docs/os-image.md §3).
@@ -29,12 +32,12 @@ const (
 // Release reads /etc/ceros-release.
 func Release(path string) map[string]string {
 	out := map[string]string{}
-	f, err := os.Open(path)
+	f, err := hwio.Open(path)
 	if err != nil {
 		return out
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(hwio.Reader(f, 0))
 	for sc.Scan() {
 		if k, v, ok := strings.Cut(sc.Text(), "="); ok {
 			out[k] = strings.Trim(v, `"`)
@@ -57,7 +60,7 @@ type System struct {
 
 // NewSystem detects the image's slots.
 func NewSystem() (*System, error) {
-	cmdline, err := os.ReadFile("/proc/cmdline")
+	cmdline, err := hwio.ReadFile("/proc/cmdline")
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +80,7 @@ func (s *System) Keys() ([]software.PublicKey, error) { return software.LoadKeys
 func (s *System) withESP(rw bool, f func(dir string) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(espMount, 0o700); err != nil {
+	if err := hwio.MkdirAll(espMount, 0o700); err != nil {
 		return err
 	}
 	flags := uintptr(syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC)
@@ -89,7 +92,7 @@ func (s *System) withESP(rw bool, f func(dir string) error) error {
 	}
 	ferr := f(espMount)
 	// Only the ESP: a global sync would wait for a slot being written.
-	if d, err := os.Open(espMount); err == nil {
+	if d, err := hwio.Open(espMount); err == nil {
 		unix.Syncfs(int(d.Fd()))
 		d.Close()
 	}
@@ -123,21 +126,27 @@ func (s *System) WriteSlot(slot string, img io.Reader, size int64, sha string) e
 // runs its switchd's configuration check.
 func (s *System) CheckConfig(slot string, m *software.BundleManifest) (string, error) {
 	name := "ceros-check-" + slot
-	exec.Command("veritysetup", "close", name).Run()
-	if out, err := exec.Command("veritysetup", "open", s.Sys.Dev[slot], name, s.Sys.Dev[slot], m.RootHash,
-		fmt.Sprintf("--hash-offset=%d", m.HashOffset)).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("the new slot does not match its verity root hash: %v %s", err, strings.TrimSpace(string(out)))
+	veritysetup := func(args ...string) error {
+		_, err := sysexec.Command("veritysetup", args...).WithTimeout(time.Minute).CombinedOutput(context.Background())
+		return err
 	}
-	defer exec.Command("veritysetup", "close", name).Run()
-	dir, err := os.MkdirTemp("/run/switchd-update", "slot-")
+	veritysetup("close", name)
+	if err := veritysetup("open", s.Sys.Dev[slot], name, s.Sys.Dev[slot], m.RootHash,
+		fmt.Sprintf("--hash-offset=%d", m.HashOffset)); err != nil {
+		return "", fmt.Errorf("the new slot does not match its verity root hash: %w", err)
+	}
+	defer veritysetup("close", name)
+	dir, err := hwio.MkdirTemp("/run/switchd-update", "slot-")
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(dir)
-	if err := syscall.Mount("/dev/mapper/"+name, dir, "squashfs", syscall.MS_RDONLY|syscall.MS_NODEV|syscall.MS_NOSUID, ""); err != nil {
+	defer hwio.Remove(dir)
+	if err := hwio.DoErr("/dev/mapper/"+name, "mount", 30*time.Second, func() error {
+		return syscall.Mount("/dev/mapper/"+name, dir, "squashfs", syscall.MS_RDONLY|syscall.MS_NODEV|syscall.MS_NOSUID, "")
+	}); err != nil {
 		return "", fmt.Errorf("mounting the new slot: %w", err)
 	}
-	defer syscall.Unmount(dir, 0)
+	defer hwio.DoErr("/dev/mapper/"+name, "unmount", 30*time.Second, func() error { return syscall.Unmount(dir, 0) })
 	if rel := Release(filepath.Join(dir, "etc/ceros-release")); rel["VERSION"] != m.Version {
 		return "", fmt.Errorf("the new slot says version %q, the bundle %q", rel["VERSION"], m.Version)
 	}
@@ -148,22 +157,22 @@ func (s *System) CheckConfig(slot string, m *software.BundleManifest) (string, e
 	if err != nil {
 		return "", fmt.Errorf("reading the active configuration: %w", err)
 	}
-	f, err := os.CreateTemp("/run/switchd-update", "config-*.json")
+	f, err := hwio.CreateTemp("/run/switchd-update", "config-*.json")
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(f.Name())
+	defer hwio.Remove(f.Name())
 	f.Write(cfg)
 	f.Close()
 	return s.Check(filepath.Join(dir, "usr/local/sbin/switchd"), f.Name())
 }
 
-func (s *System) Reboot() error { return exec.Command("systemctl", "reboot").Run() }
+func (s *System) Reboot() error { _, err := sysexec.CombinedOutput("systemctl", "reboot"); return err }
 
 // RunCheck runs a switchd program's configuration check: exit 0 accepts
 // (output = warnings), 1 rejects.
 func RunCheck(prog, cfgFile string) (string, error) {
-	out, err := exec.Command(prog, "check-config", cfgFile).CombinedOutput()
+	out, err := sysexec.Command(prog, "check-config", cfgFile).WithTimeout(2 * time.Minute).CombinedOutput(context.Background())
 	text := strings.TrimSpace(string(out))
 	var ee *exec.ExitError
 	switch {
@@ -183,7 +192,7 @@ func ConfigFromStore(switchdDir string) ([]byte, error) {
 	if name == "" {
 		return []byte("{}"), nil
 	}
-	raw, err := os.ReadFile(filepath.Join(switchdDir, "config", "rev", name))
+	raw, err := hwio.ReadFile(filepath.Join(switchdDir, "config", "rev", name))
 	if err != nil {
 		return nil, err
 	}

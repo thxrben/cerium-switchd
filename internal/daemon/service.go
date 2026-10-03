@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
 )
 
@@ -129,7 +129,7 @@ func (s *service) start(ctx context.Context, dir string) error {
 	if dir == "" {
 		dir = svc.SocketDir
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := hwio.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	l, err := ipc.Listen(svc.Socket(dir, svc.Switchd))

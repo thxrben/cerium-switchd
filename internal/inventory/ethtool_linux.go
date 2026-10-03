@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unsafe"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"golang.org/x/sys/unix"
 )
 
@@ -65,7 +67,19 @@ type ifreq struct {
 	_    [16]byte
 }
 
+// ethtool runs an ethtool ioctl with the kernel deadline. It works on a
+// copy of buf, copied back when it succeeds: a call that timed out may
+// still write into its buffer later.
 func ethtool(name string, buf []byte) error {
+	tmp := slices.Clone(buf)
+	err := hwio.DoErr(nlx.Resource, "ethtool "+name, 0, func() error { return ethtoolIoctl(name, tmp) })
+	if err == nil {
+		copy(buf, tmp)
+	}
+	return err
+}
+
+func ethtoolIoctl(name string, buf []byte) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return err
@@ -87,7 +101,7 @@ func ReadCaps(sysRoot, linux string) Caps {
 	c.MaxSpeedMbps = linkModes(linux)
 	c.Pause = pauseSupport(linux)
 	c.Features = features(linux)
-	if raw, err := os.ReadFile(filepath.Join(sysRoot, "class", "net", linux, "phys_switch_id")); err == nil && len(bytes.TrimSpace(raw)) > 0 {
+	if raw, err := hwio.ReadFile(filepath.Join(sysRoot, "class", "net", linux, "phys_switch_id")); err == nil && len(bytes.TrimSpace(raw)) > 0 {
 		c.Switchdev = true
 	}
 	return c

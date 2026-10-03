@@ -2,13 +2,13 @@ package daemon
 
 import (
 	"crypto/sha256"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
@@ -20,9 +20,9 @@ import (
 func lacpSystemMAC(stackID string) [6]byte {
 	seed := "stack\x00" + stackID
 	if stackID == "" {
-		id, err := os.ReadFile("/etc/machine-id")
+		id, err := hwio.ReadFile("/etc/machine-id")
 		if err != nil || len(strings.TrimSpace(string(id))) == 0 {
-			id, _ = os.ReadFile("/proc/sys/kernel/random/boot_id")
+			id, _ = hwio.ReadFile("/proc/sys/kernel/random/boot_id")
 		}
 		seed = "machine\x00" + strings.TrimSpace(string(id))
 	}

@@ -4,16 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/internal/mclag"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/internal/mclag"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
@@ -50,7 +52,7 @@ func newMaint(stateDir string, self int, m *mesh.Mesh, node *control.Node, mc mc
 			return nil, nil
 		})
 	}
-	if _, err := os.Stat(x.file); err == nil {
+	if _, err := hwio.Stat(x.file); err == nil {
 		log.Warn("maintenance mode: this member stays drained until 'request system maintenance-mode exit'")
 		x.set(true)
 	}
@@ -88,7 +90,7 @@ func (x *maintCtl) enter(force, persist bool, user string) (string, error) {
 		}
 	}
 	if persist {
-		if err := os.WriteFile(x.file, []byte(time.Now().UTC().Format(time.RFC3339)+" "+user+"\n"), 0o644); err != nil {
+		if err := hwio.WriteFile(x.file, []byte(time.Now().UTC().Format(time.RFC3339)+" "+user+"\n"), 0o644); err != nil {
 			return "", err
 		}
 		x.log.Warn("maintenance mode entered", "facility", "change-log", "user", user, "force", force)
@@ -135,7 +137,7 @@ func (x *maintCtl) exit(user string) (string, error) {
 	if !x.active() {
 		return "", errors.New("this member is not in maintenance mode")
 	}
-	if err := os.Remove(x.file); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := hwio.Remove(x.file); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	x.set(false)
@@ -236,7 +238,7 @@ func (x *maintCtl) singleHomed() []string {
 
 // systemStopping: the machine is shutting down (not just switchd).
 func systemStopping() bool {
-	out, _ := exec.Command("systemctl", "is-system-running").Output()
+	out, _ := sysexec.Output("systemctl", "is-system-running")
 	return strings.TrimSpace(string(out)) == "stopping"
 }
 
@@ -247,7 +249,7 @@ const daemonsStopTime = 60 * time.Second
 // unitStopping reports whether systemd is stopping unit (a stop job, not a
 // restart): then switchd ends for good and takes the daemons with it.
 func unitStopping(unit string) bool {
-	out, _ := exec.Command("systemctl", "list-jobs", "--no-legend", "--plain").Output()
+	out, _ := sysexec.Output("systemctl", "list-jobs", "--no-legend", "--plain")
 	return stopJob(string(out), unit)
 }
 

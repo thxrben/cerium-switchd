@@ -2,16 +2,17 @@ package supervise
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,10 +25,15 @@ type Systemd struct {
 }
 
 func (s *Systemd) systemctl(args ...string) (string, error) {
+	return s.systemctlWait(0, args...)
+}
+
+// systemctlWait runs systemctl with a deadline (0: sysexec.Default).
+func (s *Systemd) systemctlWait(d time.Duration, args ...string) (string, error) {
 	if s.Systemctl != nil {
 		return s.Systemctl(args...)
 	}
-	out, err := exec.Command("systemctl", args...).CombinedOutput()
+	out, err := sysexec.Command("systemctl", args...).WithTimeout(d).CombinedOutput(context.Background())
 	if err != nil {
 		return string(out), fmt.Errorf("systemctl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -36,22 +42,22 @@ func (s *Systemd) systemctl(args ...string) (string, error) {
 
 // Installed reports whether an executable program is at path.
 func (s *Systemd) Installed(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := hwio.Stat(path)
 	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
 }
 
 // WriteUnit writes the unit file atomically when its content differs.
 func (s *Systemd) WriteUnit(unit, content string) (bool, error) {
 	path := filepath.Join(s.UnitDir, unit)
-	if have, err := os.ReadFile(path); err == nil && string(have) == content {
+	if have, err := hwio.ReadFile(path); err == nil && string(have) == content {
 		return false, nil
 	}
 	tmp := path + ".switchd-tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := hwio.Rename(tmp, path); err != nil {
+		hwio.Remove(tmp)
 		return false, err
 	}
 	return true, nil
@@ -77,17 +83,11 @@ func (s *Systemd) Restart(unit string) error {
 // StopWait stops a unit and waits until it has ended (systemd kills it at
 // its TimeoutStopSec); timeout bounds the wait here.
 func (s *Systemd) StopWait(unit string, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.systemctl("stop", unit)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(timeout):
+	_, err := s.systemctlWait(timeout, "stop", unit)
+	if errors.Is(err, hwio.ErrTimeout) {
 		return fmt.Errorf("%s still running after %s", unit, timeout)
 	}
+	return err
 }
 
 // Kill ends a unit's processes at once.

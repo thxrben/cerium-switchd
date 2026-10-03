@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Host keeps the OS files in line with the configuration.
@@ -37,14 +38,14 @@ func (h *Host) Sync(cfg *model.Config, member int) error {
 func HostName(cfg *model.Config, member int) string { return cfg.MemberHostName(member) }
 
 func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
-	if old, err := os.ReadFile(path); err == nil && string(old) == content {
+	if old, err := hwio.ReadFile(path); err == nil && string(old) == content {
 		return false, nil
 	}
 	tmp := path + ".switchd-tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(content), mode); err != nil {
 		return false, err
 	}
-	return true, os.Rename(tmp, path)
+	return true, hwio.Rename(tmp, path)
 }
 
 func (h *Host) syncHostName(cfg *model.Config, member int) error {
@@ -68,7 +69,7 @@ func (h *Host) syncHostName(cfg *model.Config, member int) error {
 		line = "127.0.1.1\t" + name + "." + d + " " + name
 	}
 	hosts := h.path("/etc/hosts")
-	raw, err := os.ReadFile(hosts)
+	raw, err := hwio.ReadFile(hosts)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(append(errs, err)...)
 	}
@@ -126,7 +127,7 @@ func (h *Host) syncResolver(cfg *model.Config) error {
 		servers = servers[:3]
 	}
 	if len(servers) == 0 {
-		raw, err := os.ReadFile(backupPath)
+		raw, err := hwio.ReadFile(backupPath)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil // never managed
 		}
@@ -139,15 +140,15 @@ func (h *Host) syncResolver(cfg *model.Config) error {
 		}
 		switch {
 		case b.Absent:
-			err = os.Remove(path)
+			err = hwio.Remove(path)
 			if errors.Is(err, os.ErrNotExist) {
 				err = nil
 			}
 		case b.Symlink != "":
 			tmp := path + ".switchd-tmp"
-			os.Remove(tmp)
-			if err = os.Symlink(b.Symlink, tmp); err == nil {
-				err = os.Rename(tmp, path)
+			hwio.Remove(tmp)
+			if err = hwio.Symlink(b.Symlink, tmp); err == nil {
+				err = hwio.Rename(tmp, path)
 			}
 		default:
 			_, err = writeIfChanged(path, b.Content, 0o644)
@@ -156,7 +157,7 @@ func (h *Host) syncResolver(cfg *model.Config) error {
 			return fmt.Errorf("restoring resolv.conf: %w", err)
 		}
 		h.Log.Info("resolver configuration restored (name-server removed)")
-		return os.Remove(backupPath)
+		return hwio.Remove(backupPath)
 	}
 
 	var b strings.Builder
@@ -169,38 +170,38 @@ func (h *Host) syncResolver(cfg *model.Config) error {
 	}
 	want := b.String()
 
-	_, err := os.Stat(backupPath)
+	_, err := hwio.Stat(backupPath)
 	managed := err == nil
 	if !managed {
 		var bk resolvBackup
-		if fi, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		if fi, err := hwio.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			bk.Absent = true
 		} else if err != nil {
 			return err
 		} else if fi.Mode()&os.ModeSymlink != 0 {
-			if bk.Symlink, err = os.Readlink(path); err != nil {
+			if bk.Symlink, err = hwio.Readlink(path); err != nil {
 				return err
 			}
 		} else {
-			raw, err := os.ReadFile(path)
+			raw, err := hwio.ReadFile(path)
 			if err != nil {
 				return err
 			}
 			bk.Content = string(raw)
 		}
 		raw, _ := json.Marshal(bk)
-		if err := os.MkdirAll(h.StateDir, 0o700); err != nil {
+		if err := hwio.MkdirAll(h.StateDir, 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(backupPath, raw, 0o600); err != nil {
+		if err := hwio.WriteFile(backupPath, raw, 0o600); err != nil {
 			return err
 		}
 	}
 	// A symlink (e.g. to systemd-resolved's stub) is replaced by a file.
-	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		os.Remove(path)
+	if fi, err := hwio.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		hwio.Remove(path)
 	}
-	old, _ := os.ReadFile(path)
+	old, _ := hwio.ReadFile(path)
 	changed, err := writeIfChanged(path, want, 0o644)
 	if err != nil {
 		return err

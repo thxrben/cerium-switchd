@@ -4,25 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
+	"net"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-	"log/slog"
-	"maps"
-	"net"
-	"os"
-	"slices"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
@@ -128,8 +130,8 @@ func (o *ops) Interfaces() ([]cli.IfStatus, error) {
 			s.Role = "access " + vlanName[i.AccessVLAN]
 		case i.Management:
 			s.Role = "management"
-			if ln, err := netlink.LinkByName(dataplane.CMEName); err == nil && ln.Attrs().ParentIndex > 0 {
-				if par, err := netlink.LinkByIndex(ln.Attrs().ParentIndex); err == nil && par.Attrs().Name == p.Name {
+			if ln, err := nlx.LinkByName(dataplane.CMEName); err == nil && ln.Attrs().ParentIndex > 0 {
+				if par, err := nlx.LinkByIndex(ln.Attrs().ParentIndex); err == nil && par.Attrs().Name == p.Name {
 					s.Role += ", active (cme)"
 				}
 			}
@@ -177,7 +179,7 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 			}
 			linux, _ = o.names.Linux(u.Parent)
 		}
-		l, err := netlink.LinkByName(linux)
+		l, err := nlx.LinkByName(linux)
 		if linux == "" || err != nil {
 			continue
 		}
@@ -270,11 +272,11 @@ func (o *ops) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 	if ipv6 {
 		fam = netlink.FAMILY_V6
 	}
-	neighs, err := netlink.NeighList(0, fam)
+	neighs, err := nlx.NeighList(0, fam)
 	if err != nil {
 		return nil, err
 	}
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +345,7 @@ func (o *ops) NTP() (cli.NTPStatus, error) {
 
 func (o *ops) Uptime() (cli.Uptime, error) {
 	u := cli.Uptime{Started: o.started}
-	if raw, err := os.ReadFile("/proc/stat"); err == nil {
+	if raw, err := hwio.ReadFile("/proc/stat"); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
 			if v, ok := strings.CutPrefix(l, "btime "); ok {
 				if sec, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
@@ -352,7 +354,7 @@ func (o *ops) Uptime() (cli.Uptime, error) {
 			}
 		}
 	}
-	if raw, err := os.ReadFile("/proc/loadavg"); err == nil {
+	if raw, err := hwio.ReadFile("/proc/loadavg"); err == nil {
 		f := strings.Fields(string(raw))
 		for i := 0; i < 3 && i < len(f); i++ {
 			u.Load[i], _ = strconv.ParseFloat(f[i], 64)
@@ -554,18 +556,18 @@ func (o *ops) Routes(instance string) ([]cli.Route, error) {
 		return nil, fmt.Errorf("routing instance %s does not exist on this member", instance) // internal (reference 5.2)
 	}
 	if instance != "" {
-		l, err := netlink.LinkByName(instance)
+		l, err := nlx.LinkByName(instance)
 		v, ok := l.(*netlink.Vrf)
 		if err != nil || !ok {
 			return nil, fmt.Errorf("routing instance %s does not exist on this member", instance)
 		}
 		table = int(v.Table)
 	}
-	rs, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+	rs, err := nlx.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return nil, err
 	}
-	links, _ := netlink.LinkList()
+	links, _ := nlx.LinkList()
 	byIndex := map[int]string{}
 	for _, l := range links {
 		byIndex[l.Attrs().Index] = l.Attrs().Name
@@ -641,7 +643,7 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		if p.PeerPort != "" && p.NeighborID > 0 {
 			vp.PeerPort = strconv.Itoa(p.NeighborID) + "/" + p.PeerPort
 		}
-		if raw, err := os.ReadFile("/sys/class/net/" + p.Linux + "/speed"); err == nil && p.State == "up" {
+		if raw, err := hwio.ReadFile("/sys/class/net/" + p.Linux + "/speed"); err == nil && p.State == "up" {
 			if v, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && v > 0 {
 				vp.SpeedMbps = v
 			}
@@ -913,12 +915,12 @@ func (o *ops) VXLAN() ([]cli.VXLANStatus, error) {
 		for _, r := range remotes[n] {
 			p.Remotes = append(p.Remotes, r.String())
 		}
-		if l, err := netlink.LinkByName(n); err == nil {
+		if l, err := nlx.LinkByName(n); err == nil {
 			p.Up = l.Attrs().Flags&net.FlagUp != 0
 			if s := l.Attrs().Statistics; s != nil {
 				p.RxPackets, p.TxPackets = s.RxPackets, s.TxPackets
 			}
-			if ns, err := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE); err == nil {
+			if ns, err := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE); err == nil {
 				for _, e := range ns {
 					if e.MasterIndex != 0 && e.Vlan != 0 && e.State&netlink.NUD_PERMANENT == 0 {
 						p.RemoteMACs++
@@ -933,14 +935,14 @@ func (o *ops) VXLAN() ([]cli.VXLANStatus, error) {
 		vr := cli.VTEPRoute{VTEP: r}
 		// As the VXLAN ports send: from the stack's VTEP address (an
 		// unspecified source follows the management origin rules).
-		rs, err := netlink.RouteGetWithOptions(ip, &netlink.RouteGetOptions{SrcAddr: net.ParseIP(st.Source)})
+		rs, err := nlx.RouteGetWithOptions(ip, &netlink.RouteGetOptions{SrcAddr: net.ParseIP(st.Source)})
 		if err != nil || len(rs) == 0 || rs[0].Type == unix.RTN_UNREACHABLE {
 			vr.NoRoute = true
 		} else {
 			if rs[0].Gw != nil {
 				vr.Via = rs[0].Gw.String()
 			}
-			if l, err := netlink.LinkByIndex(rs[0].LinkIndex); err == nil {
+			if l, err := nlx.LinkByIndex(rs[0].LinkIndex); err == nil {
 				vr.Interface = l.Attrs().Name
 				if n, ok := o.names.Name(vr.Interface); ok {
 					vr.Interface = n
@@ -956,7 +958,7 @@ func (o *ops) VXLAN() ([]cli.VXLANStatus, error) {
 // own tables.
 func vxlanVTEPs() map[string]string {
 	out := map[string]string{}
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return out
 	}
@@ -965,7 +967,7 @@ func vxlanVTEPs() map[string]string {
 		if vni == 0 {
 			continue
 		}
-		ns, _ := netlink.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
+		ns, _ := nlx.NeighList(l.Attrs().Index, unix.AF_BRIDGE)
 		for _, n := range ns {
 			if n.MasterIndex == 0 && n.IP != nil && len(n.HardwareAddr) == 6 {
 				out[fmt.Sprintf("%d %s", vni, n.HardwareAddr)] = n.IP.String()

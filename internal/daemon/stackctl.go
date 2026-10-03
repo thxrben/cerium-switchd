@@ -21,6 +21,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/sdnotify"
 )
 
 // Stack apply timeouts (docs/stack-protocol.md, "Commits in a stack").
@@ -38,6 +39,7 @@ type stackCtl struct {
 	vc     *stack.Manager
 	local  *kernelApplier
 	member int
+	live   *sdnotify.Liveness
 	log    *slog.Logger
 	// stateDir holds the configuration store (rewritten when this member
 	// leaves the stack).
@@ -247,6 +249,8 @@ func (s *stackCtl) catchUp(periodic bool) {
 func (s *stackCtl) run(ctx context.Context) {
 	t := time.NewTicker(catchUpInterval)
 	defer t.Stop()
+	defer s.live.Forget("stack control")
+	s.live.Beat("stack control")
 	for {
 		select {
 		case <-ctx.Done():
@@ -256,6 +260,7 @@ func (s *stackCtl) run(ctx context.Context) {
 				s.checkRemoved()
 				s.catchUp(true)
 			}
+			s.live.Beat("stack control")
 		}
 	}
 }

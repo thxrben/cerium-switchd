@@ -24,6 +24,20 @@ type Process struct {
 	Scheduling  string
 }
 
+// Hang is a system call that does not return (a device that stopped
+// answering).
+type Hang struct {
+	Program  string
+	Resource string
+	Call     string
+	Since    time.Time
+}
+
+// Hangs is implemented by members that report calls that do not return.
+type Hangs interface {
+	Hangs() []Hang
+}
+
 // Processes is what the processes commands need from the member.
 type Processes interface {
 	// Processes lists switchd and the daemons of this member.
@@ -77,6 +91,14 @@ func (sh *Shell) showProcesses(c *call) error {
 	c.out.WriteString("Restarts: in the last hour.\n")
 	if len(failures) > 0 {
 		c.out.WriteString("Last failures:\n" + strings.Join(failures, "\n") + "\n")
+	}
+	if h, ok := p.(Hangs); ok {
+		if hs := h.Hangs(); len(hs) > 0 {
+			c.out.WriteString("ALARM: calls that do not return (the device does not answer):\n")
+			for _, x := range hs {
+				fmt.Fprintf(c.out, "  %s: %s: %s, for %s\n", x.Program, x.Resource, x.Call, fmtDuration(now.Sub(x.Since)))
+			}
+		}
 	}
 	return nil
 }

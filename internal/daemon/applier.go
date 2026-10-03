@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sdnotify"
 
 	"github.com/vishvananda/netlink"
 
@@ -46,6 +48,8 @@ type kernelApplier struct {
 	// isMaster reports whether this member is the master (nil: standalone,
 	// always master); the management address lives there (reference 1.8).
 	isMaster func() bool
+	// live is fed by the watch loop (nil: not watched).
+	live *sdnotify.Liveness
 	// cmeMAC is the stack-wide MAC address of cme.
 	cmeMAC net.HardwareAddr
 	// stackPort reports whether a kernel port is a stacking port (the stack
@@ -73,7 +77,7 @@ func memberName(id int) string { return fmt.Sprintf("member%d", id) }
 
 func (a *kernelApplier) loadOwned() map[string]bool {
 	owned := map[string]bool{}
-	raw, err := os.ReadFile(a.stateFile)
+	raw, err := hwio.ReadFile(a.stateFile)
 	if err != nil {
 		return owned
 	}
@@ -94,10 +98,10 @@ func (a *kernelApplier) saveOwned(s *dataplane.State) error {
 	sort.Strings(names)
 	raw, _ := json.Marshal(names)
 	tmp := a.stateFile + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, a.stateFile)
+	return hwio.Rename(tmp, a.stateFile)
 }
 
 func (a *kernelApplier) Apply(_ context.Context, _, to *config.Tree) []commit.MemberResult {
@@ -154,6 +158,10 @@ func (a *kernelApplier) watch(ctx context.Context) {
 	}
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
+	beat := time.NewTicker(5 * time.Second)
+	defer beat.Stop()
+	defer a.live.Forget("data plane")
+	a.live.Beat("data plane")
 	debounce := time.NewTimer(time.Hour)
 	debounce.Stop()
 	for {
@@ -170,7 +178,9 @@ func (a *kernelApplier) watch(ctx context.Context) {
 			a.reconcile("link event")
 		case <-tick.C:
 			a.reconcile("periodic")
+		case <-beat.C:
 		}
+		a.live.Beat("data plane")
 	}
 }
 

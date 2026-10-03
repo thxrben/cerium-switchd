@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Source is where a package comes from (reference 3.6).
@@ -78,12 +79,12 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source, dst, password string) e
 // FetchOptional fetches a small companion file (e.g. <package>.sha256);
 // a missing one is not an error (ok false).
 func (f *Fetcher) FetchOptional(ctx context.Context, src Source, suffix string) (string, bool) {
-	tmp, err := os.CreateTemp("", "ceros-*"+suffix)
+	tmp, err := hwio.CreateTemp("", "ceros-*"+suffix)
 	if err != nil {
 		return "", false
 	}
 	tmp.Close()
-	defer os.Remove(tmp.Name())
+	defer hwio.Remove(tmp.Name())
 	var s Source
 	switch src.Kind {
 	case "url":
@@ -97,7 +98,7 @@ func (f *Fetcher) FetchOptional(ctx context.Context, src Source, suffix string) 
 	if f.Fetch(ctx, s, tmp.Name(), "") != nil {
 		return "", false
 	}
-	b, err := os.ReadFile(tmp.Name())
+	b, err := hwio.ReadFile(tmp.Name())
 	return string(b), err == nil
 }
 
@@ -115,7 +116,7 @@ func (f *Fetcher) curl(ctx context.Context, u *url.URL, dst, password string) er
 		} else {
 			args = append(args, "-u", user+":")
 			for _, k := range []string{"/root/.ssh/id_ed25519", "/root/.ssh/id_rsa"} {
-				if _, err := os.Stat(k); err == nil && u.Scheme == "sftp" {
+				if _, err := hwio.Stat(k); err == nil && u.Scheme == "sftp" {
 					args = append(args, "--key", k)
 					break
 				}
@@ -149,7 +150,7 @@ func (f *Fetcher) fromUSB(ctx context.Context, path, dst string) error {
 	if dir == "" {
 		dir = "/run/switchd/usb"
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := hwio.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	if out, err := f.run(ctx, "mount", "-o", "ro", dev, dir); err != nil {
@@ -166,16 +167,16 @@ func (f *Fetcher) usbDevice() (string, error) {
 	if root == "" {
 		root = "/sys"
 	}
-	disks, _ := filepath.Glob(filepath.Join(root, "block", "sd*"))
+	disks, _ := hwio.Glob(filepath.Join(root, "block", "sd*"))
 	for _, d := range disks {
-		rem, _ := os.ReadFile(filepath.Join(d, "removable"))
-		link, _ := os.Readlink(filepath.Join(d, "device"))
-		real, _ := filepath.EvalSymlinks(filepath.Join(d, "device"))
+		rem, _ := hwio.ReadFile(filepath.Join(d, "removable"))
+		link, _ := hwio.Readlink(filepath.Join(d, "device"))
+		real, _ := hwio.EvalSymlinks(filepath.Join(d, "device"))
 		if strings.TrimSpace(string(rem)) != "1" && !strings.Contains(link+real, "/usb") {
 			continue
 		}
 		name := filepath.Base(d)
-		parts, _ := filepath.Glob(filepath.Join(d, name+"*"))
+		parts, _ := hwio.Glob(filepath.Join(d, name+"*"))
 		if len(parts) > 0 {
 			return "/dev/" + filepath.Base(parts[0]), nil
 		}
@@ -185,18 +186,23 @@ func (f *Fetcher) usbDevice() (string, error) {
 }
 
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := hwio.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	out, err := hwio.Create(dst)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	// A USB stick: every read and write has a deadline.
+	if _, err := io.Copy(hwio.Writer(out, SlotIODeadline), hwio.Reader(in, SlotIODeadline)); err != nil {
 		out.Close()
 		return err
 	}
-	return out.Close()
+	if err := hwio.Sync(out); err != nil {
+		out.Close()
+		return err
+	}
+	return hwio.Close(out)
 }

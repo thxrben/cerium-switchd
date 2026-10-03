@@ -3,12 +3,14 @@
 package dataplane
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"slices"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // protectTable is switchd's nftables table protecting the switch's own
@@ -56,12 +58,8 @@ func (k *Netlink) syncProtect(ifs []string, accept []string) (bool, error) {
 		}
 		return false, errors.New("nftables (the nft program) is required to protect routed interfaces; install the nftables package")
 	}
-	cmd := exec.Command(nft, "-f", "-")
-	cmd.Stdin = strings.NewReader(rules)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("nft: %v: %s", err, strings.TrimSpace(out.String()))
+	if _, err := sysexec.Command(nft, "-f", "-").WithStdin(strings.NewReader(rules)).CombinedOutput(context.Background()); err != nil {
+		return false, err
 	}
 	changed := k.protected != rules
 	k.protected = rules

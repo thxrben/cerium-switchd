@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // Consoles runs the CLI on the local consoles (reference 5.1 system
@@ -64,12 +65,12 @@ type consoleState struct {
 // and the kernel console.
 func (c *Consoles) Detect() []string {
 	seen := map[string]bool{}
-	ents, _ := os.ReadDir(filepath.Join(c.SysRoot, "class", "tty"))
+	ents, _ := hwio.ReadDir(filepath.Join(c.SysRoot, "class", "tty"))
 	for _, e := range ents {
 		n := e.Name()
 		switch {
 		case strings.HasPrefix(n, "ttyS"):
-			raw, err := os.ReadFile(filepath.Join(c.SysRoot, "class", "tty", n, "type"))
+			raw, err := hwio.ReadFile(filepath.Join(c.SysRoot, "class", "tty", n, "type"))
 			if t, _ := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && t != 0 {
 				seen[n] = true
 			}
@@ -77,7 +78,7 @@ func (c *Consoles) Detect() []string {
 			seen[n] = true
 		}
 	}
-	if raw, err := os.ReadFile(filepath.Join(c.SysRoot, "class", "tty", "console", "active")); err == nil {
+	if raw, err := hwio.ReadFile(filepath.Join(c.SysRoot, "class", "tty", "console", "active")); err == nil {
 		for _, n := range strings.Fields(string(raw)) {
 			if !strings.HasPrefix(n, "tty") || strings.TrimLeft(n[3:], "0123456789") == "" {
 				continue // virtual terminals (tty0, tty1, …) have their own gettys
@@ -119,7 +120,7 @@ func (c *Consoles) dropIn(tty string) string {
 
 func (c *Consoles) load() consoleState {
 	st := consoleState{TTYs: map[string]int{}}
-	if raw, err := os.ReadFile(c.StateFile); err == nil {
+	if raw, err := hwio.ReadFile(c.StateFile); err == nil {
 		_ = json.Unmarshal(raw, &st)
 		if st.TTYs == nil {
 			st.TTYs = map[string]int{}
@@ -147,14 +148,14 @@ func (c *Consoles) Sync(cfg *model.Config) error {
 	var changes []change
 	for tty, speed := range want {
 		unit := serialUnit(speed, cfg.System.ConsoleLogin)
-		if old, err := os.ReadFile(c.dropIn(tty)); err == nil && string(old) == unit && st.TTYs[tty] == speed {
+		if old, err := hwio.ReadFile(c.dropIn(tty)); err == nil && string(old) == unit && st.TTYs[tty] == speed {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(c.dropIn(tty)), 0o755); err != nil {
+		if err := hwio.MkdirAll(filepath.Dir(c.dropIn(tty)), 0o755); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		if err := os.WriteFile(c.dropIn(tty), []byte(unit), 0o644); err != nil {
+		if err := hwio.WriteFile(c.dropIn(tty), []byte(unit), 0o644); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -203,7 +204,7 @@ func (c *Consoles) Sync(cfg *model.Config) error {
 				errs = append(errs, err)
 				continue
 			}
-			_ = os.Remove(c.dropIn(ch.tty))
+			_ = hwio.Remove(c.dropIn(ch.tty))
 			st.TTYs[ch.tty] = 0
 			c.Log.Info("console login disabled", "tty", ch.tty)
 		default:
@@ -213,7 +214,7 @@ func (c *Consoles) Sync(cfg *model.Config) error {
 				_ = c.Systemctl("unmask", unit)
 			} else {
 				_ = c.Systemctl("disable", "--now", unit)
-				_ = os.Remove(c.dropIn(ch.tty))
+				_ = hwio.Remove(c.dropIn(ch.tty))
 			}
 			delete(st.TTYs, ch.tty)
 		}
@@ -222,7 +223,7 @@ func (c *Consoles) Sync(cfg *model.Config) error {
 		errs = append(errs, err)
 	}
 	raw, _ := json.Marshal(st)
-	if err := os.WriteFile(c.StateFile, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(c.StateFile, raw, 0o600); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -258,13 +259,13 @@ func (c *Consoles) syncVTs(cfg *model.Config) error {
 	path := filepath.Join(c.UnitDir, vtDropIn, "switchd.conf")
 	changed := false
 	if cfg.System.ConsoleLogin {
-		if err := os.Remove(path); err == nil {
+		if err := hwio.Remove(path); err == nil {
 			changed = true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	} else {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := hwio.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
 		var err error
@@ -290,7 +291,7 @@ func (c *Consoles) syncVTs(cfg *model.Config) error {
 
 // SystemdMainComm implements Consoles.MainComm with systemctl and /proc.
 func SystemdMainComm(unit string) string {
-	out, err := exec.Command("systemctl", "show", "--property=MainPID", "--value", unit).Output()
+	out, err := sysexec.Output("systemctl", "show", "--property=MainPID", "--value", unit)
 	if err != nil {
 		return ""
 	}
@@ -298,7 +299,7 @@ func SystemdMainComm(unit string) string {
 	if pid == "" || pid == "0" {
 		return ""
 	}
-	comm, err := os.ReadFile("/proc/" + pid + "/comm")
+	comm, err := hwio.ReadFile("/proc/" + pid + "/comm")
 	if err != nil {
 		return ""
 	}

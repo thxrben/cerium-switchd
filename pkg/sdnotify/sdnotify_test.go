@@ -52,3 +52,23 @@ func TestWatchdogInterval(t *testing.T) {
 		t.Fatal("watchdog for another process")
 	}
 }
+
+func TestLiveness(t *testing.T) {
+	now := time.Unix(100, 0)
+	l := &Liveness{Max: 10 * time.Second, now: func() time.Time { return now }}
+	l.Beat("applier")
+	l.Beat("stack")
+	now = now.Add(5 * time.Second)
+	l.Beat("stack")
+	if late := l.Late(); len(late) != 0 {
+		t.Fatalf("late %v", late)
+	}
+	now = now.Add(6 * time.Second)
+	if late := l.Late(); len(late) != 1 || late[0] != "applier" {
+		t.Fatalf("late %v", late)
+	}
+	l.Forget("applier")
+	if late := l.Late(); len(late) != 0 {
+		t.Fatalf("late after forget %v", late)
+	}
+}

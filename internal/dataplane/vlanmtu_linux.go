@@ -3,7 +3,7 @@
 package dataplane
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // vlanMTUTable drops frames larger than their VLAN's mtu when they are
@@ -68,19 +70,15 @@ func nftRun(text string) error {
 	if err != nil {
 		return errors.New("nftables (the nft program) is required; install the nftables package")
 	}
-	cmd := exec.Command(nft, "-f", "-")
-	cmd.Stdin = strings.NewReader(text)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("nft: %v: %s", err, strings.TrimSpace(out.String()))
+	if _, err := sysexec.Command(nft, "-f", "-").WithStdin(strings.NewReader(text)).CombinedOutput(context.Background()); err != nil {
+		return err
 	}
 	return nil
 }
 
 // VLANMTUDrops returns the frames dropped per VLAN for exceeding its mtu.
 func VLANMTUDrops() (map[int]uint64, error) {
-	out, err := exec.Command("nft", "-j", "list", "counters", "table", "bridge", vlanMTUTable).Output()
+	out, err := sysexec.Output("nft", "-j", "list", "counters", "table", "bridge", vlanMTUTable)
 	if err != nil {
 		return map[int]uint64{}, nil // no table: no VLAN has an mtu
 	}

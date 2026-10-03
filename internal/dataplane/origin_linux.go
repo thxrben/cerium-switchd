@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -72,7 +73,7 @@ func syncOriginRules(table int, addrs []netip.Addr) (bool, error) {
 			want[key{originPrioTable, src.String()}] = to
 			want[key{originPrioBlock, src.String()}] = block
 		}
-		rules, err := netlink.RuleList(fam)
+		rules, err := nlx.RuleList(fam)
 		if err != nil {
 			fail(err)
 			continue
@@ -102,7 +103,7 @@ func syncOriginRules(table int, addrs []netip.Addr) (bool, error) {
 				continue
 			}
 			rr := r
-			if err := netlink.RuleDel(&rr); err != nil {
+			if err := nlx.RuleDel(&rr); err != nil {
 				fail(err)
 			}
 			changed = true
@@ -116,7 +117,7 @@ func syncOriginRules(table int, addrs []netip.Addr) (bool, error) {
 					continue
 				}
 				w := want[k]
-				if err := netlink.RuleAdd(&w); err != nil {
+				if err := nlx.RuleAdd(&w); err != nil {
 					fail(err)
 					continue
 				}

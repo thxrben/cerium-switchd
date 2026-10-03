@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Main runs the update daemon (the program switchd-update) until it fails.
@@ -24,7 +26,7 @@ func Main() int {
 	// ceros.healthtimeout=<seconds> on the kernel command line shortens the
 	// health timeout (image tests).
 	var timeout time.Duration
-	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+	if cmdline, err := hwio.ReadFile("/proc/cmdline"); err == nil {
 		for _, f := range strings.Fields(string(cmdline)) {
 			if v, ok := strings.CutPrefix(f, "ceros.healthtimeout="); ok {
 				if n, err := strconv.Atoi(v); err == nil && n > 0 {

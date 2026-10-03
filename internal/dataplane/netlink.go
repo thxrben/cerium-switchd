@@ -4,12 +4,14 @@ package dataplane
 
 import (
 	"fmt"
-	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"net"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -51,13 +53,13 @@ func (k *Netlink) sysRoot() string {
 }
 
 func (k *Netlink) physical(name string) bool {
-	_, err := os.Stat(filepath.Join(k.sysRoot(), "class", "net", name, "device"))
+	_, err := hwio.Stat(filepath.Join(k.sysRoot(), "class", "net", name, "device"))
 	return err == nil
 }
 
 // Read returns the bridge, all links and the VLANs of bridge ports.
 func (k *Netlink) Read() (*State, error) {
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return nil, err
 	}
@@ -138,13 +140,13 @@ func (k *Netlink) Read() (*State, error) {
 		}
 		s.Links[a.Name] = ln
 	}
-	vlans, err := netlink.BridgeVlanList()
+	vlans, err := nlx.BridgeVlanList()
 	if err != nil {
 		return nil, err
 	}
 	for _, l := range links {
 		if ln := s.Links[l.Attrs().Name]; ln != nil && ln.Master == BridgeName {
-			if pi, err := netlink.LinkGetProtinfo(l); err == nil {
+			if pi, err := nlx.LinkGetProtinfo(l); err == nil {
 				ln.NoLearning, ln.Isolated = !pi.Learning, pi.Isolated
 			}
 		}
@@ -166,7 +168,7 @@ func (k *Netlink) Read() (*State, error) {
 }
 
 func (k *Netlink) byName(n string) (netlink.Link, error) {
-	l, err := netlink.LinkByName(n)
+	l, err := nlx.LinkByName(n)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", n, err)
 	}
@@ -197,9 +199,9 @@ func (k *Netlink) Apply(op Op) error {
 			// Snooping starts off; SyncMulticast switches it on once the
 			// router ports are set (reference 5.5).
 			br.MulticastSnooping = &off
-			return netlink.LinkAdd(br)
+			return nlx.LinkAdd(br)
 		}
-		return netlink.LinkModify(br)
+		return nlx.LinkModify(br)
 	case OpCreateTunnel:
 		if VXLANVNI(op.Link) > 0 {
 			return createVXLAN(op.Link, *op.Tunnel, op.MTU)
@@ -211,7 +213,7 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link})
 		bondAttrs(b, op.Bond)
-		return netlink.LinkAdd(b)
+		return nlx.LinkAdd(b)
 	}
 	l, err := k.byName(op.Link)
 	if err != nil {
@@ -224,22 +226,22 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		b := netlink.NewLinkBond(netlink.LinkAttrs{Name: op.Link, Index: l.Attrs().Index})
 		bondAttrs(b, op.Bond)
-		return netlink.LinkModify(b)
+		return nlx.LinkModify(b)
 	case OpDeleteLink:
-		return netlink.LinkDel(l)
+		return nlx.LinkDel(l)
 	case OpSetUp:
-		return netlink.LinkSetUp(l)
+		return nlx.LinkSetUp(l)
 	case OpSetDown:
-		return netlink.LinkSetDown(l)
+		return nlx.LinkSetDown(l)
 	case OpSetMaster:
 		if op.Master == "" {
-			return netlink.LinkSetNoMaster(l)
+			return nlx.LinkSetNoMaster(l)
 		}
 		m, err := k.byName(op.Master)
 		if err != nil {
 			return err
 		}
-		if err := netlink.LinkSetMaster(l, m); err != nil {
+		if err := nlx.LinkSetMaster(l, m); err != nil {
 			return err
 		}
 		if m.Type() == "team" {
@@ -248,13 +250,13 @@ func (k *Netlink) Apply(op Op) error {
 		}
 		return nil
 	case OpSetMTU:
-		return netlink.LinkSetMTU(l, op.MTU)
+		return nlx.LinkSetMTU(l, op.MTU)
 	case OpSetAlias:
-		return netlink.LinkSetAlias(l, op.Alias)
+		return nlx.LinkSetAlias(l, op.Alias)
 	case OpVlanDel:
-		return netlink.BridgeVlanDel(l, op.VID, false, false, false, true)
+		return nlx.BridgeVlanDel(l, op.VID, false, false, false, true)
 	case OpVlanSet:
-		return netlink.BridgeVlanAdd(l, op.VID, op.Flags.PVID, op.Flags.Untagged, false, true)
+		return nlx.BridgeVlanAdd(l, op.VID, op.Flags.PVID, op.Flags.Untagged, false, true)
 	case OpSetDropTagged:
 		return setDropTagged(l, op.Bool)
 	case OpSetStormBroadcast:
@@ -265,9 +267,9 @@ func (k *Netlink) Apply(op Op) error {
 		k.setMaxLearned(op.Link, op.Int)
 		return nil
 	case OpSetLearning:
-		return netlink.LinkSetLearning(l, op.Bool)
+		return nlx.LinkSetLearning(l, op.Bool)
 	case OpSetIsolated:
-		return netlink.LinkSetIsolated(l, op.Bool)
+		return nlx.LinkSetIsolated(l, op.Bool)
 	case OpSetFlowControl:
 		return setFlowControl(op.Link, op.Bool)
 	}

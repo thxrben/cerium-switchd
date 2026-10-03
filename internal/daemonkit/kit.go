@@ -21,14 +21,17 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
 	"github.com/thxrben/cerium-switchd/pkg/journal"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/thxrben/cerium-switchd/pkg/sdnotify"
 )
 
@@ -56,6 +59,10 @@ type Kit struct {
 	Endpoint *ipc.Endpoint
 	// Switchd is the connection to switchd.
 	Switchd *ipc.Client
+	// Live feeds the systemd watchdog: a loop of the daemon that beats
+	// (Live.Beat) and then stops making progress gets the daemon
+	// restarted.
+	Live *sdnotify.Liveness
 
 	mu       sync.Mutex
 	shutdown []func(context.Context)
@@ -77,7 +84,7 @@ func New(ctx context.Context, o Options) *Kit {
 	}
 	e := ipc.NewEndpoint(o.Name, version.Version, o.Log)
 	kctx, cancel := context.WithCancel(ctx)
-	return &Kit{Options: o, Ctx: kctx, cancel: cancel, Endpoint: e}
+	return &Kit{Options: o, Ctx: kctx, cancel: cancel, Endpoint: e, Live: &sdnotify.Liveness{}}
 }
 
 // OnShutdown registers work to do when the daemon is told to stop (close
@@ -145,7 +152,7 @@ func (k *Kit) Start() error {
 	meta, _ := json.Marshal(svc.Meta{Stack: k.stack})
 	k.mu.Unlock()
 	k.Endpoint.Meta = meta
-	if err := os.MkdirAll(k.socketDir(), 0o755); err != nil {
+	if err := hwio.MkdirAll(k.socketDir(), 0o755); err != nil {
 		return err
 	}
 	l, err := ipc.Listen(svc.Socket(k.SocketDir, k.Name))
@@ -288,6 +295,7 @@ func Main(name string, setup func(k *Kit) error) {
 	}
 	log := slog.New(journal.NewHandler(journal.Options{Identifier: name, Level: level, Fields: fields}))
 	slog.SetDefault(log)
+	nlx.SetSocketTimeout()
 	sig, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	k := New(context.Background(), Options{Name: name, SocketDir: *sockDir, StateDir: *stateDir, Member: *member, Log: log, StopTimeout: *stopTimeout})
@@ -306,20 +314,22 @@ func run(k *Kit, sig context.Context, setup func(*Kit) error) error {
 	}
 	sdnotify.Ready()
 	k.Log.Info(k.Name+" started", "version", version.Version)
-	if iv := sdnotify.WatchdogInterval(); iv > 0 {
-		go func() {
-			t := time.NewTicker(iv)
-			defer t.Stop()
-			for {
-				select {
-				case <-k.Ctx.Done():
-					return
-				case <-t.C:
-					sdnotify.Alive()
-				}
-			}
-		}()
-	}
+	go k.Live.Run(k.Ctx, func(late []string) {
+		if len(late) > 0 {
+			k.Log.Error(k.Name+": loops make no progress; the watchdog restarts it", "loops", strings.Join(late, ", "))
+		}
+	})
+	// A device that stops answering: an alarm for the operators (the
+	// call failed at its deadline; nothing restarts).
+	hwio.WatchResources(func(c hwio.Call, raised bool) {
+		if raised {
+			k.Log.Error("ALARM: a device does not answer", "resource", c.Resource, "call", c.Op, "since", c.Since)
+			k.Notify(fmt.Sprintf("%s: ALARM: %s does not answer (%s, since %s)", k.Name, c.Resource, c.Op, c.Since.Format("15:04:05")))
+			return
+		}
+		k.Log.Warn("alarm cleared: the device answers again", "resource", c.Resource)
+		k.Notify(fmt.Sprintf("%s: alarm cleared: %s answers again", k.Name, c.Resource))
+	})
 	<-sig.Done()
 	sdnotify.Notify("STOPPING=1")
 	k.Log.Info(k.Name + " stopping")

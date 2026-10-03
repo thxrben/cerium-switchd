@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -44,7 +45,7 @@ func vrfTable(name string, tables map[string]int) int {
 		return t
 	}
 	t := 0
-	if l, err := netlink.LinkByName(name); err == nil {
+	if l, err := nlx.LinkByName(name); err == nil {
 		if v, ok := l.(*netlink.Vrf); ok {
 			t = int(v.Table)
 		}
@@ -61,7 +62,7 @@ func vrfTable(name string, tables map[string]int) int {
 func SyncRoutes(want []Route, protos []int, skipTable int) (bool, []string, error) {
 	var cur []netlink.Route
 	for _, p := range protos {
-		rs, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netlink.RouteProtocol(p), Table: unix.RT_TABLE_UNSPEC},
+		rs, err := nlx.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Protocol: netlink.RouteProtocol(p), Table: unix.RT_TABLE_UNSPEC},
 			netlink.RT_FILTER_PROTOCOL|netlink.RT_FILTER_TABLE)
 		if err != nil {
 			return false, nil, err
@@ -77,7 +78,7 @@ func SyncRoutes(want []Route, protos []int, skipTable int) (bool, []string, erro
 			return i
 		}
 		i := 0
-		if ln, err := netlink.LinkByName(dev); err == nil {
+		if ln, err := nlx.LinkByName(dev); err == nil {
 			i = ln.Attrs().Index
 		}
 		devIndex[dev] = i
@@ -148,7 +149,7 @@ func SyncRoutes(want []Route, protos []int, skipTable int) (bool, []string, erro
 		if routePresent(curBy[fmt.Sprintf("%d %s", table, nr.Dst)], nr) {
 			continue
 		}
-		if err := netlink.RouteReplace(nr); err != nil {
+		if err := nlx.RouteReplace(nr); err != nil {
 			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
 				warnings = append(warnings, fmt.Sprintf("route %s: next hop not reachable; inactive until it is", r.Prefix))
 			} else {
@@ -167,7 +168,7 @@ func SyncRoutes(want []Route, protos []int, skipTable int) (bool, []string, erro
 		if ok && keep[fmt.Sprintf("%d %s %d", c.Table, netip.PrefixFrom(p.Unmap(), ones), c.Protocol)] {
 			continue
 		}
-		if err := netlink.RouteDel(&c); err != nil {
+		if err := nlx.RouteDel(&c); err != nil {
 			errs = append(errs, err)
 			continue
 		}

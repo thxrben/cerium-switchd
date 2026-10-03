@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"golang.org/x/sys/unix"
 )
 
@@ -155,7 +156,7 @@ func Serve(rw io.ReadWriteCloser, r *bufio.Reader, cmd *exec.Cmd, rows, cols uin
 }
 
 func openPTY() (*os.File, *os.File, error) {
-	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	m, err := hwio.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -169,7 +170,7 @@ func openPTY() (*os.File, *os.File, error) {
 		m.Close()
 		return nil, nil, fmt.Errorf("pty number: %w", err)
 	}
-	s, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	s, err := hwio.OpenFile(fmt.Sprintf("/dev/pts/%d", n), os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		m.Close()
 		return nil, nil, err

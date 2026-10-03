@@ -19,6 +19,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/swcli"
 	"github.com/thxrben/cerium-switchd/internal/updated"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/journal"
 )
 
@@ -79,7 +80,7 @@ func checkConfig(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: switchd check-config <configuration.json>")
 		return 2
 	}
-	raw, err := os.ReadFile(args[0])
+	raw, err := hwio.ReadFile(args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -113,7 +114,7 @@ func makeBundle(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: switchd bundle -o <file> -image <rootfs.img> -key <key> -roothash <hex> -hash-offset <n> [-version <v>]")
 		return 2
 	}
-	raw, err := os.ReadFile(*keyFile)
+	raw, err := hwio.ReadFile(*keyFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -123,14 +124,14 @@ func makeBundle(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	f, err := os.Create(*out)
+	f, err := hwio.Create(*out)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if err := software.WriteBundle(f, m, *img, key); err != nil {
 		f.Close()
-		os.Remove(*out)
+		hwio.Remove(*out)
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -153,15 +154,15 @@ func keygen(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if _, err := os.Stat(args[0] + ".key"); err == nil {
+	if _, err := hwio.Stat(args[0] + ".key"); err == nil {
 		fmt.Fprintln(os.Stderr, args[0]+".key exists")
 		return 1
 	}
-	if err := os.WriteFile(args[0]+".key", []byte(priv), 0o600); err != nil {
+	if err := hwio.WriteFile(args[0]+".key", []byte(priv), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := os.WriteFile(args[0]+".pub", []byte(pub), 0o644); err != nil {
+	if err := hwio.WriteFile(args[0]+".pub", []byte(pub), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

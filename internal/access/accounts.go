@@ -2,12 +2,12 @@ package access
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // Shell is the login shell of managed accounts.
@@ -59,7 +61,7 @@ type state struct {
 
 func (m *Manager) load() state {
 	st := state{Users: map[string]int{}}
-	if raw, err := os.ReadFile(m.StateFile); err == nil {
+	if raw, err := hwio.ReadFile(m.StateFile); err == nil {
 		_ = json.Unmarshal(raw, &st)
 		if st.Users == nil {
 			st.Users = map[string]int{}
@@ -71,10 +73,10 @@ func (m *Manager) load() state {
 func (m *Manager) save(st state) error {
 	raw, _ := json.Marshal(st)
 	tmp := m.StateFile + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, m.StateFile)
+	return hwio.Rename(tmp, m.StateFile)
 }
 
 // Check reports configuration problems that depend on the OS: accounts
@@ -256,12 +258,12 @@ func (o *OS) path(p string) string { return filepath.Join(o.Root, p) }
 
 func readColonFile(path string) map[string][]string {
 	out := map[string][]string{}
-	f, err := os.Open(path)
+	f, err := hwio.Open(path)
 	if err != nil {
 		return out
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(hwio.Reader(f, 0))
 	for sc.Scan() {
 		fs := strings.Split(sc.Text(), ":")
 		if len(fs) > 1 && fs[0] != "" {
@@ -294,9 +296,9 @@ func (o *OS) UIDTaken(uid int) bool {
 }
 
 func run(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %v: %s", name, err, strings.TrimSpace(string(out)))
+	// chown -R of a large home directory takes a while.
+	if _, err := sysexec.Command(name, args...).WithTimeout(time.Minute).CombinedOutput(context.Background()); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }
@@ -312,7 +314,7 @@ func (o *OS) Add(e Entry) error {
 	// A home directory kept from an earlier account of this name belongs
 	// to root (see Delete); it becomes the new account's.
 	home := o.path(e.Home)
-	if st, err := os.Stat(home); err == nil {
+	if st, err := hwio.Stat(home); err == nil {
 		if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) != e.UID {
 			return run("chown", "-R", "--no-dereference", e.Name+":", home)
 		}
@@ -349,13 +351,13 @@ func (o *OS) Delete(name string) error {
 		return err
 	}
 	home := o.path(e.Home)
-	if _, serr := os.Stat(home); serr != nil {
+	if _, serr := hwio.Stat(home); serr != nil {
 		return nil
 	}
 	if err := run("chown", "-R", "--no-dereference", "root:root", home); err != nil {
 		return err
 	}
-	return os.Chmod(home, 0o700)
+	return hwio.Chmod(home, 0o700)
 }
 
 // WriteKeys writes ~/.ssh/authorized_keys owned by root (0644 in a root
@@ -364,24 +366,24 @@ func (o *OS) WriteKeys(e Entry, keys []string) error {
 	dir := o.path(filepath.Join(e.Home, ".ssh"))
 	file := filepath.Join(dir, "authorized_keys")
 	if len(keys) == 0 {
-		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := hwio.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := hwio.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.Chown(dir, 0, 0); err != nil && o.Root == "" {
+	if err := hwio.Chown(dir, 0, 0); err != nil && o.Root == "" {
 		return err
 	}
-	if err := os.Chmod(dir, 0o755); err != nil {
+	if err := hwio.Chmod(dir, 0o755); err != nil {
 		return err
 	}
 	content := strings.Join(slices.Clone(keys), "\n") + "\n"
 	tmp := file + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, file)
+	return hwio.Rename(tmp, file)
 }

@@ -5,7 +5,6 @@ package diag
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // PortRef names a port of this member.
@@ -44,7 +44,7 @@ func (c *Collector) root() (string, string) {
 }
 
 func readStr(path string) string {
-	raw, err := os.ReadFile(path)
+	raw, err := hwio.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -82,7 +82,7 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 				p.SpeedMbps = v
 			}
 		}
-		qs, _ := filepath.Glob(filepath.Join(net, "queues", "rx-*"))
+		qs, _ := hwio.Glob(filepath.Join(net, "queues", "rx-*"))
 		p.RXQueues = len(qs)
 		for _, q := range qs {
 			if m := strings.Trim(readStr(filepath.Join(q, "rps_cpus")), "0,"); m != "" {
@@ -106,7 +106,7 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 
 		// The PCIe link of the port's PCI device (a card's functions share
 		// it).
-		dev, err := filepath.EvalSymlinks(filepath.Join(net, "device"))
+		dev, err := hwio.EvalSymlinks(filepath.Join(net, "device"))
 		if err != nil || readStr(filepath.Join(dev, "current_link_speed")) == "" {
 			continue
 		}
@@ -140,8 +140,8 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 
 	// softnet_stat: one line per CPU; columns processed, dropped,
 	// time_squeeze (hex).
-	if fh, err := os.Open(filepath.Join(proc, "net", "softnet_stat")); err == nil {
-		sc := bufio.NewScanner(fh)
+	if fh, err := hwio.Open(filepath.Join(proc, "net", "softnet_stat")); err == nil {
+		sc := bufio.NewScanner(hwio.Reader(fh, 0))
 		for id := 0; sc.Scan(); id++ {
 			col := strings.Fields(sc.Text())
 			if len(col) < 3 {
@@ -158,7 +158,7 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 		}
 		fh.Close()
 	}
-	govs, _ := filepath.Glob(filepath.Join(sys, "devices", "system", "cpu", "cpu[0-9]*", "cpufreq", "scaling_governor"))
+	govs, _ := hwio.Glob(filepath.Join(sys, "devices", "system", "cpu", "cpu[0-9]*", "cpufreq", "scaling_governor"))
 	for _, g := range govs {
 		f.Governors = append(f.Governors, readStr(g))
 	}
@@ -205,12 +205,12 @@ func (c *Collector) delta(key string, v uint64) uint64 {
 // (/proc/interrupts: "ens1f0-TxRx-0", "eth0", "enp1s0-rx-1" ...).
 func irqsByName(proc string) map[string][]int {
 	out := map[string][]int{}
-	fh, err := os.Open(filepath.Join(proc, "interrupts"))
+	fh, err := hwio.Open(filepath.Join(proc, "interrupts"))
 	if err != nil {
 		return out
 	}
 	defer fh.Close()
-	sc := bufio.NewScanner(fh)
+	sc := bufio.NewScanner(hwio.Reader(fh, 0))
 	for sc.Scan() {
 		line := sc.Text()
 		i := strings.IndexByte(line, ':')

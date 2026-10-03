@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/updated"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // updater updates the stack's software (reference 3.6): the master fetches
@@ -142,7 +142,7 @@ func (u *updater) status() swStatus {
 	if rep, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err == nil {
 		st.Daemon, st.Slots, st.Active, st.Update, st.Note = rep.State, rep.Slots, rep.Active, rep.Update, rep.Note
 	}
-	files, _ := filepath.Glob(filepath.Join(u.dir, "ceros-*-"+software.Arch()+".bundle"))
+	files, _ := hwio.Glob(filepath.Join(u.dir, "ceros-*-"+software.Arch()+".bundle"))
 	for _, f := range files {
 		v := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "ceros-"), "-"+software.Arch()+".bundle")
 		st.Packages[v] = f
@@ -178,17 +178,17 @@ func (u *updater) receive(nc net.Conn) {
 		return
 	}
 	fail := func(err error) { fmt.Fprintf(nc, "error: %v\n", err) }
-	if err := os.MkdirAll(u.dir, 0o700); err != nil {
+	if err := hwio.MkdirAll(u.dir, 0o700); err != nil {
 		fail(err)
 		return
 	}
 	tmp := u.pkgPath(h.Version) + ".part"
-	f, err := os.Create(tmp)
+	f, err := hwio.Create(tmp)
 	if err != nil {
 		fail(err)
 		return
 	}
-	_, err = io.CopyN(f, r, h.Size)
+	_, err = io.CopyN(hwio.Writer(f, software.SlotIODeadline), r, h.Size)
 	f.Close()
 	if err == nil {
 		err = checkSum(tmp, h.SHA256)
@@ -200,11 +200,11 @@ func (u *updater) receive(nc net.Conn) {
 		}
 	}
 	if err != nil {
-		os.Remove(tmp)
+		hwio.Remove(tmp)
 		fail(err)
 		return
 	}
-	if err := os.Rename(tmp, u.pkgPath(h.Version)); err != nil {
+	if err := hwio.Rename(tmp, u.pkgPath(h.Version)); err != nil {
 		fail(err)
 		return
 	}
@@ -217,13 +217,13 @@ func checkSum(path, want string) error {
 	if want == "" {
 		return nil
 	}
-	f, err := os.Open(path)
+	f, err := hwio.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, hwio.Reader(f, software.SlotIODeadline)); err != nil {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
@@ -234,10 +234,10 @@ func checkSum(path, want string) error {
 
 // prune keeps the newest bundles (the current one and one more).
 func (u *updater) prune(keep string) {
-	files, _ := filepath.Glob(filepath.Join(u.dir, "ceros-*.bundle"))
+	files, _ := hwio.Glob(filepath.Join(u.dir, "ceros-*.bundle"))
 	slices.SortFunc(files, func(a, b string) int {
-		ia, _ := os.Stat(a)
-		ib, _ := os.Stat(b)
+		ia, _ := hwio.Stat(a)
+		ib, _ := hwio.Stat(b)
 		if ia == nil || ib == nil {
 			return 0
 		}
@@ -245,7 +245,7 @@ func (u *updater) prune(keep string) {
 	})
 	for i, f := range files {
 		if i >= 2 && f != u.pkgPath(keep) {
-			os.Remove(f)
+			hwio.Remove(f)
 		}
 	}
 }
@@ -261,7 +261,7 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 	req := updated.Request{Op: "install", Bundle: u.pkgPath(r.Version), Standalone: len(u.members()) == 1, NoValidate: r.NoValidate}
 	if r.Rollback {
 		req = updated.Request{Op: "rollback"}
-	} else if _, err := os.Stat(req.Bundle); err != nil {
+	} else if _, err := hwio.Stat(req.Bundle); err != nil {
 		return "", fmt.Errorf("member %d does not have the bundle %s", u.member, r.Version)
 	}
 	var out strings.Builder
@@ -499,12 +499,12 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(u.dir, 0o700); err != nil {
+	if err := hwio.MkdirAll(u.dir, 0o700); err != nil {
 		return "", err
 	}
 	f := &software.Fetcher{VRF: u.mgmtVRF()}
 	tmp := filepath.Join(u.dir, "incoming.bundle")
-	defer os.Remove(tmp)
+	defer hwio.Remove(tmp)
 	u.say("fetching %s", src.Raw)
 	if err := f.Fetch(ctx, src, tmp, req.Password); err != nil {
 		return "", err
@@ -546,7 +546,7 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 			return "", fmt.Errorf("member %d does not run the cerOS image (its update daemon does not answer)", id)
 		}
 	}
-	if err := os.Rename(tmp, u.pkgPath(v)); err != nil {
+	if err := hwio.Rename(tmp, u.pkgPath(v)); err != nil {
 		return "", err
 	}
 	u.prune(v)
@@ -555,7 +555,7 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 		return "", err
 	}
 	// Distribute.
-	raw, err := os.ReadFile(u.pkgPath(v))
+	raw, err := hwio.ReadFile(u.pkgPath(v))
 	if err != nil {
 		return "", err
 	}

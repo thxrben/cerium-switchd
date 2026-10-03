@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // JoinTimeout bounds a join attempt.
@@ -94,21 +94,21 @@ func (m *Manager) Join(token string) (int, error) {
 	}
 	a := res.answer
 	for name, b := range map[string][]byte{"stack.key": a.StackKey, "stack.crt": a.StackCert, "member.crt": a.MemberCert} {
-		if err := os.WriteFile(m.path(name+".new"), b, 0o600); err != nil {
+		if err := hwio.WriteFile(m.path(name+".new"), b, 0o600); err != nil {
 			return 0, err
 		}
 	}
 	for _, name := range []string{"stack.key", "stack.crt", "member.crt"} {
-		if err := os.Rename(m.path(name+".new"), m.path(name)); err != nil {
+		if err := hwio.Rename(m.path(name+".new"), m.path(name)); err != nil {
 			return 0, err
 		}
 	}
 	// The replicated state of the previous (own) stack is gone; the new
 	// stack's master adds this member.
 	for _, name := range []string{"raft", "control.json"} {
-		os.RemoveAll(m.path(name))
+		hwio.RemoveAll(m.path(name))
 	}
-	if err := os.WriteFile(m.path(joinedFile), nil, 0o600); err != nil {
+	if err := hwio.WriteFile(m.path(joinedFile), nil, 0o600); err != nil {
 		return 0, err
 	}
 	m.Log.Warn("stack: joined virtual chassis", "facility", "change-log", "member", a.Member)

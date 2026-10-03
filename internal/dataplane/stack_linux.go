@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
@@ -40,26 +41,26 @@ type StackLink struct {
 // ensureStackVRF creates the hidden VRF if needed and returns its index.
 func ensureStackVRF() (int, bool, error) {
 	changed := false
-	ln, err := netlink.LinkByName(StackVRF)
+	ln, err := nlx.LinkByName(StackVRF)
 	if v, ok := ln.(*netlink.Vrf); err == nil && (!ok || v.Table != StackTable) {
-		if err := netlink.LinkDel(ln); err != nil {
+		if err := nlx.LinkDel(ln); err != nil {
 			return 0, false, err
 		}
 		ln, err = nil, errors.New("recreate")
 	}
 	if err != nil {
-		if err := netlink.LinkAdd(&netlink.Vrf{LinkAttrs: netlink.LinkAttrs{Name: StackVRF}, Table: StackTable}); err != nil {
+		if err := nlx.LinkAdd(&netlink.Vrf{LinkAttrs: netlink.LinkAttrs{Name: StackVRF}, Table: StackTable}); err != nil {
 			return 0, false, fmt.Errorf("%s: %w", StackVRF, err)
 		}
-		if ln, err = netlink.LinkByName(StackVRF); err != nil {
+		if ln, err = nlx.LinkByName(StackVRF); err != nil {
 			return 0, false, err
 		}
-		_ = netlink.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
+		_ = nlx.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
 			Priority: stackUnreachableMetric, Dst: &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}})
 		changed = true
 	}
 	if ln.Attrs().Flags&net.FlagUp == 0 {
-		if err := netlink.LinkSetUp(ln); err != nil {
+		if err := nlx.LinkSetUp(ln); err != nil {
 			return 0, changed, err
 		}
 		changed = true
@@ -73,7 +74,7 @@ func EnsureStackPort(linux string) error {
 	if err != nil {
 		return err
 	}
-	ln, err := netlink.LinkByName(linux)
+	ln, err := nlx.LinkByName(linux)
 	if err != nil {
 		return err
 	}
@@ -81,15 +82,15 @@ func EnsureStackPort(linux string) error {
 		return nil
 	}
 	if ln.Attrs().MasterIndex != 0 {
-		if err := netlink.LinkSetNoMaster(ln); err != nil {
+		if err := nlx.LinkSetNoMaster(ln); err != nil {
 			return err
 		}
 	}
-	m, err := netlink.LinkByIndex(vrf)
+	m, err := nlx.LinkByIndex(vrf)
 	if err != nil {
 		return err
 	}
-	return netlink.LinkSetMaster(ln, m)
+	return nlx.LinkSetMaster(ln, m)
 }
 
 // stackUnreachableMetric is the metric of the stack table's unreachable
@@ -132,7 +133,7 @@ func createTunnel(name string, t TunnelOpts, mtu int) error {
 	data.AddRtAttr(nl.IFLA_VXLAN_PORT, htons16(uint16(port)))
 	data.AddRtAttr(iflaVxlanDF, nl.Uint8Attr(vxlanDFSet))
 	req.AddData(info)
-	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {
+	if _, err := nlx.Execute(req, unix.NETLINK_ROUTE, 0); err != nil {
 		return fmt.Errorf("%s: creating the stack tunnel: %w", name, err)
 	}
 	return nil
@@ -159,7 +160,7 @@ func createVXLAN(name string, t TunnelOpts, mtu int) error {
 	data.AddRtAttr(nl.IFLA_VXLAN_PORT, htons16(uint16(t.Port)))
 	data.AddRtAttr(iflaVxlanDF, nl.Uint8Attr(vxlanDFSet))
 	req.AddData(info)
-	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {
+	if _, err := nlx.Execute(req, unix.NETLINK_ROUTE, 0); err != nil {
 		return fmt.Errorf("%s: creating the VXLAN port: %w", name, err)
 	}
 	return nil
@@ -182,14 +183,14 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 			errs = append(errs, err)
 		}
 	}
-	vrfLink, err := netlink.LinkByIndex(vrf)
+	vrfLink, err := nlx.LinkByIndex(vrf)
 	if err != nil {
 		return changed, err
 	}
 
 	// The member's address on the VRF device.
 	own := netip.PrefixFrom(StackAddr(u.Member), 32)
-	addrs, _ := netlink.AddrList(vrfLink, netlink.FAMILY_V4)
+	addrs, _ := nlx.AddrList(vrfLink, netlink.FAMILY_V4)
 	has := false
 	for _, a := range addrs {
 		p, _ := netip.AddrFromSlice(a.IP.To4())
@@ -197,29 +198,29 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 			has = true
 			continue
 		}
-		note(true, netlink.AddrDel(vrfLink, &a))
+		note(true, nlx.AddrDel(vrfLink, &a))
 	}
 	if !has && u.Member > 0 {
-		note(true, netlink.AddrAdd(vrfLink, &netlink.Addr{IPNet: &net.IPNet{IP: own.Addr().AsSlice(), Mask: net.CIDRMask(32, 32)}}))
+		note(true, nlx.AddrAdd(vrfLink, &netlink.Addr{IPNet: &net.IPNet{IP: own.Addr().AsSlice(), Mask: net.CIDRMask(32, 32)}}))
 	}
 
 	// Ports: in the VRF, IPv4 forwarding on, no reverse-path filter, and
 	// routes over a link without carrier are ignored at once.
 	index := map[string]int{}
-	links, _ := netlink.LinkList()
+	links, _ := nlx.LinkList()
 	for _, ln := range links {
 		a := ln.Attrs()
 		if slices.Contains(u.Ports, a.Name) {
 			index[a.Name] = a.Index
 			if a.MasterIndex != vrf {
 				// Enslaving restarts the port once (the kernel cycles it).
-				note(true, netlink.LinkSetMaster(ln, vrfLink))
+				note(true, nlx.LinkSetMaster(ln, vrfLink))
 			}
 			for f, v := range map[string]string{"forwarding": "1", "rp_filter": "0", "ignore_routes_with_linkdown": "1"} {
 				note(writeSysctl("/proc/sys/net/ipv4/conf/"+a.Name+"/"+f, v))
 			}
 		} else if a.MasterIndex == vrf && ln.Type() != "vxlan" {
-			note(true, netlink.LinkSetNoMaster(ln)) // no longer a stacking port
+			note(true, nlx.LinkSetNoMaster(ln)) // no longer a stacking port
 		}
 	}
 
@@ -236,7 +237,7 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 		}
 	}
 	for port, idx := range index {
-		neighs, _ := netlink.NeighList(idx, netlink.FAMILY_V4)
+		neighs, _ := nlx.NeighList(idx, netlink.FAMILY_V4)
 		for _, n := range neighs {
 			ip, _ := netip.AddrFromSlice(n.IP.To4())
 			mac, ok := want[nkey{port, ip}]
@@ -245,12 +246,12 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 				continue
 			}
 			if !ok {
-				note(true, netlink.NeighDel(&n))
+				note(true, nlx.NeighDel(&n))
 			}
 		}
 	}
 	for k, mac := range want {
-		note(true, netlink.NeighSet(&netlink.Neigh{LinkIndex: index[k.port], Family: netlink.FAMILY_V4,
+		note(true, nlx.NeighSet(&netlink.Neigh{LinkIndex: index[k.port], Family: netlink.FAMILY_V4,
 			State: netlink.NUD_PERMANENT, IP: k.ip.AsSlice(), HardwareAddr: mac}))
 	}
 
@@ -275,7 +276,7 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 			routes[StackAddr(m)] = hops
 		}
 	}
-	cur, _ := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: StackTable}, netlink.RT_FILTER_TABLE)
+	cur, _ := nlx.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: StackTable}, netlink.RT_FILTER_TABLE)
 	// Without a route to a member, a lookup must fail rather than fall
 	// through to the main table (the tunnel would send out of the
 	// management port and keep that route cached).
@@ -286,7 +287,7 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 		}
 	}
 	if !unreachable {
-		note(true, netlink.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
+		note(true, nlx.RouteReplace(&netlink.Route{Table: StackTable, Type: unix.RTN_UNREACHABLE, Protocol: RouteProto,
 			Priority: stackUnreachableMetric, Dst: &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}}))
 	}
 	for _, r := range cur {
@@ -300,7 +301,7 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 			continue
 		}
 		if !ok {
-			note(true, netlink.RouteDel(&r))
+			note(true, nlx.RouteDel(&r))
 		}
 	}
 	for dst, hops := range routes {
@@ -309,7 +310,7 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 		for _, h := range hops {
 			r.MultiPath = append(r.MultiPath, &netlink.NexthopInfo{LinkIndex: h.idx, Gw: h.gw.AsSlice(), Flags: int(netlink.FLAG_ONLINK)})
 		}
-		note(true, netlink.RouteReplace(r))
+		note(true, nlx.RouteReplace(r))
 	}
 	return changed, errors.Join(errs...)
 }

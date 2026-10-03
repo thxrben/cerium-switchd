@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/names"
 	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"github.com/thxrben/cerium-switchd/pkg/rstp"
 )
@@ -123,7 +123,7 @@ func New(member int, stack Stack, stateDir string, log *slog.Logger) *Controller
 		socks:     map[string]*rstpSock{}, devs: map[string]string{}, facts: map[string]rstpFact{},
 		desired: map[string]int{}, queues: map[int]chan func(){}, remote: map[int]map[string]rstpFact{},
 		flaps: map[string]int{}, states: map[string]int{}}
-	if raw, err := os.ReadFile(r.stateFile); err == nil {
+	if raw, err := hwio.ReadFile(r.stateFile); err == nil {
 		var s rstpSnapMsg
 		if json.Unmarshal(raw, &s) == nil && time.Since(s.At) < rstpSnapFresh {
 			r.snap = &s
@@ -459,7 +459,7 @@ func (r *Controller) step(now time.Time) {
 
 func (r *Controller) readFact(name, dev string) rstpFact {
 	rd := func(f string) string {
-		b, _ := os.ReadFile(filepath.Join("/sys/class/net", dev, f))
+		b, _ := hwio.ReadFile(filepath.Join("/sys/class/net", dev, f))
 		return strings.TrimSpace(string(b))
 	}
 	f := rstpFact{Up: rd("operstate") == "up" || (rd("carrier") == "1" && rd("operstate") == "unknown")}
@@ -473,8 +473,8 @@ func (r *Controller) readFact(name, dev string) rstpFact {
 	if p.AE {
 		// A bundle: the speed of its local members that are up.
 		for _, l := range p.Legs {
-			b, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "carrier"))
-			s, _ := os.ReadFile(filepath.Join("/sys/class/net", l, "speed"))
+			b, _ := hwio.ReadFile(filepath.Join("/sys/class/net", l, "carrier"))
+			s, _ := hwio.ReadFile(filepath.Join("/sys/class/net", l, "speed"))
 			if strings.TrimSpace(string(b)) == "1" {
 				if v, err := strconv.Atoi(strings.TrimSpace(string(s))); err == nil && v > 0 {
 					f.Mbps += v
@@ -786,7 +786,7 @@ func (r *Controller) saveLocked(force bool) {
 		return
 	}
 	tmp := r.stateFile + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil && os.Rename(tmp, r.stateFile) == nil {
+	if hwio.WriteFile(tmp, raw, 0o600) == nil && hwio.Rename(tmp, r.stateFile) == nil {
 		r.savedAt = time.Now()
 	}
 }

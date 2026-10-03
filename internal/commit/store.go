@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Revision is one committed configuration.
@@ -79,10 +80,10 @@ func OpenFileStore(dir string, max int) (*FileStore, error) {
 		max = 2
 	}
 	s := &FileStore{dir: dir, max: max, fileMode: 0o600}
-	if err := os.MkdirAll(filepath.Join(dir, "rev"), 0o700); err != nil {
+	if err := hwio.MkdirAll(filepath.Join(dir, "rev"), 0o700); err != nil {
 		return nil, err
 	}
-	ents, err := os.ReadDir(filepath.Join(dir, "rev"))
+	ents, err := hwio.ReadDir(filepath.Join(dir, "rev"))
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +95,7 @@ func OpenFileStore(dir string, max int) (*FileStore, error) {
 		if _, err := strconv.ParseUint(strings.TrimSuffix(name, ".json"), 10, 64); err != nil {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, "rev", name))
+		raw, err := hwio.ReadFile(filepath.Join(dir, "rev", name))
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +107,7 @@ func OpenFileStore(dir string, max int) (*FileStore, error) {
 	}
 	sort.Slice(s.revs, func(i, j int) bool { return s.revs[i].Seq < s.revs[j].Seq })
 
-	raw, err := os.ReadFile(filepath.Join(dir, pendingFile))
+	raw, err := hwio.ReadFile(filepath.Join(dir, pendingFile))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
@@ -120,7 +121,7 @@ func OpenFileStore(dir string, max int) (*FileStore, error) {
 		// target is gone (then there is nothing to roll back to).
 		if last := s.last(); last != nil && last.Seq >= p.First && s.find(p.Target) != nil {
 			s.pending = &p
-		} else if err := os.Remove(filepath.Join(dir, pendingFile)); err != nil {
+		} else if err := hwio.Remove(filepath.Join(dir, pendingFile)); err != nil {
 			return nil, err
 		}
 	}
@@ -182,7 +183,7 @@ func (s *FileStore) Put(r *Revision, keep uint64) error {
 		if s.revs[0].Seq == keep {
 			i = 1
 		}
-		if err := os.Remove(s.revPath(s.revs[i].Seq)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := hwio.Remove(s.revPath(s.revs[i].Seq)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		s.revs = append(s.revs[:i], s.revs[i+1:]...)
@@ -195,7 +196,7 @@ func (s *FileStore) SetPending(p *Pending) error {
 	defer s.mu.Unlock()
 	path := filepath.Join(s.dir, pendingFile)
 	if p == nil {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := hwio.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		s.pending = nil
@@ -215,36 +216,10 @@ func (s *FileStore) SetPending(p *Pending) error {
 
 // writeAtomic writes data to path via a synced temporary file and rename.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(path))
+	return hwio.WriteFileAtomic(path, data, mode)
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
+func syncDir(dir string) error { return hwio.SyncDir(dir) }
 
 // CandidateStore is implemented by stores that keep the shared candidate
 // across restarts of switchd (reference 3.1).
@@ -260,7 +235,7 @@ const candidateFile = "candidate.json"
 func (s *FileStore) Candidate() (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	raw, err := os.ReadFile(filepath.Join(s.dir, candidateFile))
+	raw, err := hwio.ReadFile(filepath.Join(s.dir, candidateFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -272,7 +247,7 @@ func (s *FileStore) SetCandidate(t *config.Tree) error {
 	defer s.mu.Unlock()
 	path := filepath.Join(s.dir, candidateFile)
 	if t == nil {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := hwio.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
@@ -290,7 +265,7 @@ func (s *FileStore) SetCandidateRaw(raw json.RawMessage) error {
 	defer s.mu.Unlock()
 	path := filepath.Join(s.dir, candidateFile)
 	if raw == nil {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := hwio.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
@@ -318,10 +293,10 @@ func (s *FileStore) Replace(revs []*Revision, p *Pending, candidate json.RawMess
 		}
 		keepFiles[filepath.Base(s.revPath(r.Seq))] = true
 	}
-	ents, _ := os.ReadDir(filepath.Join(s.dir, "rev"))
+	ents, _ := hwio.ReadDir(filepath.Join(s.dir, "rev"))
 	for _, e := range ents {
 		if !keepFiles[e.Name()] {
-			_ = os.Remove(filepath.Join(s.dir, "rev", e.Name()))
+			_ = hwio.Remove(filepath.Join(s.dir, "rev", e.Name()))
 		}
 	}
 	s.revs = sorted

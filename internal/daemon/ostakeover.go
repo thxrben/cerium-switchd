@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/thxrben/cerium-switchd/packaging"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // unitPath is where switchd keeps its systemd unit, updateUnitPath the
@@ -28,7 +29,7 @@ func updateUnit(exe string) string {
 	if exe == "" {
 		return packaging.UpdateUnit
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), "switchd-update")); err != nil {
+	if _, err := hwio.Stat(filepath.Join(filepath.Dir(exe), "switchd-update")); err != nil {
 		return strings.Replace(packaging.UpdateUnit, "/usr/local/sbin/switchd-update", "/usr/local/sbin/switchd update-daemon", 1)
 	}
 	return packaging.UpdateUnit
@@ -46,17 +47,17 @@ func renderUnit(unit, exe string) string {
 // update. The new unit applies the next time systemd starts or stops switchd.
 func ensureUnit(path, unit, exe string, reload func() error, log *slog.Logger) bool {
 	want := renderUnit(unit, exe)
-	have, err := os.ReadFile(path)
+	have, err := hwio.ReadFile(path)
 	if err == nil && string(have) == want {
 		return false
 	}
 	tmp := path + ".switchd-tmp"
-	if err := os.WriteFile(tmp, []byte(want), 0o644); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(want), 0o644); err != nil {
 		log.Warn("systemd unit: not updated", "path", path, "err", err)
 		return false
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := hwio.Rename(tmp, path); err != nil {
+		hwio.Remove(tmp)
 		log.Warn("systemd unit: not updated", "path", path, "err", err)
 		return false
 	}
@@ -112,7 +113,7 @@ type proc struct {
 
 // findProcs lists the processes whose program name is one of names.
 func findProcs(procRoot string, names []string) []proc {
-	entries, err := os.ReadDir(procRoot)
+	entries, err := hwio.ReadDir(procRoot)
 	if err != nil {
 		return nil
 	}
@@ -122,7 +123,7 @@ func findProcs(procRoot string, names []string) []proc {
 		if err != nil || pid == os.Getpid() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
+		raw, err := hwio.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
 		if err != nil {
 			continue
 		}
@@ -139,6 +140,6 @@ func findProcs(procRoot string, names []string) []proc {
 // systemctlOutput runs systemctl and returns its standard output (is-enabled
 // reports through its output and exit status).
 func systemctlOutput(args ...string) (string, error) {
-	out, err := exec.Command("systemctl", args...).Output()
+	out, err := sysexec.Output("systemctl", args...)
 	return string(out), err
 }

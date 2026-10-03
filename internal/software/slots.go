@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"golang.org/x/sys/unix"
 )
 
@@ -72,7 +74,7 @@ func (e Env) Bytes() ([]byte, error) {
 // ReadEnv reads the boot state from path. A missing or damaged block reads
 // as the defaults GRUB uses then (ORDER="A B", both slots OK).
 func ReadEnv(path string) (Env, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := hwio.ReadFile(path)
 	if err == nil {
 		if env, perr := ParseEnv(raw); perr == nil {
 			return env, nil
@@ -90,23 +92,25 @@ func WriteEnv(path string, e Env) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteAt(raw, 0); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Truncate(EnvSize); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return hwio.DoErr(hwio.Resource(path), "write "+path, hwio.FileDeadline, func() error {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := f.WriteAt(raw, 0); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Truncate(EnvSize); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
+	})
 }
 
 // Slots are A and B.
@@ -207,23 +211,23 @@ func DetectSystem(cmdline, sysRoot, devRoot string) (*System, error) {
 	if !slices.Contains(Slots, slot) || part == "" {
 		return nil, errors.New("this system does not run from a cerOS image (no ceros.slot on the kernel command line)")
 	}
-	dev, err := filepath.EvalSymlinks(filepath.Join(devRoot, "disk/by-partuuid", strings.ToLower(part)))
+	dev, err := hwio.EvalSymlinks(filepath.Join(devRoot, "disk/by-partuuid", strings.ToLower(part)))
 	if err != nil {
 		return nil, fmt.Errorf("the running slot's partition %s: %w", part, err)
 	}
-	partDir, err := filepath.EvalSymlinks(filepath.Join(sysRoot, "class/block", filepath.Base(dev)))
+	partDir, err := hwio.EvalSymlinks(filepath.Join(sysRoot, "class/block", filepath.Base(dev)))
 	if err != nil {
 		return nil, err
 	}
 	disk := filepath.Dir(partDir)
 	diskName := filepath.Base(disk)
 	byNum := map[string]string{}
-	ents, _ := os.ReadDir(disk)
+	ents, _ := hwio.ReadDir(disk)
 	for _, e := range ents {
 		if !strings.HasPrefix(e.Name(), diskName) {
 			continue
 		}
-		n, err := os.ReadFile(filepath.Join(disk, e.Name(), "partition"))
+		n, err := hwio.ReadFile(filepath.Join(disk, e.Name(), "partition"))
 		if err == nil {
 			byNum[strings.TrimSpace(string(n))] = filepath.Join(devRoot, e.Name())
 		}
@@ -234,6 +238,13 @@ func DetectSystem(cmdline, sysRoot, devRoot string) (*System, error) {
 	}
 	return sys, nil
 }
+
+// SlotIODeadline bounds one read, write or sync of a slot (4 MiB, or a
+// sync of syncEvery bytes on a slow USB stick).
+var SlotIODeadline = 60 * time.Second
+
+// syncEvery: the slot is synced after every so many bytes.
+const syncEvery = 64 << 20
 
 // Backup is the slot that is not running.
 func (s *System) Backup() string { return OtherSlot(s.Active) }
@@ -246,11 +257,14 @@ func (s *System) WriteSlot(slot string, img io.Reader, size int64, want string, 
 		return errors.New("the running slot is never written")
 	}
 	dev := s.Dev[slot]
-	f, err := os.OpenFile(dev, os.O_WRONLY, 0)
+	raw, err := hwio.OpenFile(dev, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
-	if devSize, err := f.Seek(0, io.SeekEnd); err == nil && devSize > 0 && !isRegular(f) && devSize < size {
+	// Every write, seek and sync has a deadline: a disk that stops
+	// answering fails the update instead of hanging it.
+	f := hwio.Writer(raw, SlotIODeadline)
+	if devSize, err := f.Seek(0, io.SeekEnd); err == nil && devSize > 0 && !isRegular(raw) && devSize < size {
 		f.Close()
 		return fmt.Errorf("the image (%d bytes) does not fit into slot %s (%d bytes)", size, slot, devSize)
 	}
@@ -268,6 +282,13 @@ func (s *System) WriteSlot(slot string, img io.Reader, size int64, want string, 
 				return fmt.Errorf("writing slot %s: %w", slot, err)
 			}
 			n += int64(k)
+			// Synced as it goes, so no single sync has gigabytes to write.
+			if n%syncEvery < int64(k) {
+				if err := f.Sync(); err != nil {
+					f.Close()
+					return fmt.Errorf("writing slot %s: %w", slot, err)
+				}
+			}
 			if progress != nil {
 				progress(n)
 			}
@@ -306,15 +327,21 @@ func isRegular(f *os.File) bool {
 
 // sumDevice hashes the first size bytes of dev, past the page cache.
 func sumDevice(dev string, size int64) (string, error) {
-	f, err := os.Open(dev)
+	raw, err := hwio.Open(dev)
 	if err != nil {
 		return "", err
 	}
+	f := hwio.Reader(raw, SlotIODeadline)
 	defer f.Close()
 	// Drop the cached pages: the read must come from the disk.
-	_ = unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
-	if !isRegular(f) {
-		_ = unix.IoctlSetInt(int(f.Fd()), unix.BLKFLSBUF, 0)
+	if err := hwio.DoErr(hwio.Resource(dev), "flush cache "+dev, SlotIODeadline, func() error {
+		_ = unix.Fadvise(int(raw.Fd()), 0, 0, unix.FADV_DONTNEED)
+		if !isRegular(raw) {
+			_ = unix.IoctlSetInt(int(raw.Fd()), unix.BLKFLSBUF, 0)
+		}
+		return nil
+	}); err != nil {
+		return "", err
 	}
 	h := sha256.New()
 	if _, err := io.CopyN(h, f, size); err != nil {

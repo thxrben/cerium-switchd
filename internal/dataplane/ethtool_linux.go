@@ -8,6 +8,8 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"golang.org/x/sys/unix"
 )
 
@@ -26,7 +28,19 @@ type ifreqData struct {
 	_    [16]byte // pad to sizeof(struct ifreq)
 }
 
+// ethtoolPauseIoctl runs the ioctl with the kernel deadline, on a copy of p
+// (copied back when it succeeds).
 func ethtoolPauseIoctl(name string, p *ethtoolPause) error {
+	tmp := new(ethtoolPause)
+	*tmp = *p
+	err := hwio.DoErr(nlx.Resource, "ethtool "+name, 0, func() error { return ethtoolPauseIoctlRaw(name, tmp) })
+	if err == nil {
+		*p = *tmp
+	}
+	return err
+}
+
+func ethtoolPauseIoctlRaw(name string, p *ethtoolPause) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return err

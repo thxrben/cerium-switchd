@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"golang.org/x/term"
 )
 
@@ -110,7 +111,7 @@ func supervise(args []string) int {
 		os.Stdout.WriteString("\x1b[?2004l\r\n")
 		fmt.Fprintf(os.Stderr, "*** The CLI stopped unexpectedly (%v) ***\n", describe(err))
 		if len(report) > 0 {
-			if f, ferr := os.CreateTemp("", "swcli-crash-*.txt"); ferr == nil {
+			if f, ferr := hwio.CreateTemp("", "swcli-crash-*.txt"); ferr == nil {
 				_, _ = f.Write(report)
 				f.Close()
 				fmt.Fprintf(os.Stderr, "The crash report is in %s; please pass it on to the developers.\n", f.Name())

@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // MaxVoters is the largest number of voting members.
@@ -108,7 +108,7 @@ func (n *Node) Start() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(n.Dir, 0o700); err != nil {
+	if err := hwio.MkdirAll(n.Dir, 0o700); err != nil {
 		return err
 	}
 	n.bolt, err = raftboltdb.NewBoltStore(filepath.Join(n.Dir, "raft.db"))
@@ -150,7 +150,7 @@ func (n *Node) Start() error {
 			n.closeStores()
 			return fmt.Errorf("force-master: %w", err)
 		}
-		os.Remove(n.forceFile())
+		hwio.Remove(n.forceFile())
 	}
 	n.raft, err = raft.NewRaft(conf, n.fsm, n.bolt, n.bolt, snaps, n.trans)
 	if err != nil {
@@ -182,7 +182,7 @@ func (n *Node) Start() error {
 	return nil
 }
 
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+func fileExists(p string) bool { _, err := hwio.Stat(p); return err == nil }
 
 // forceFile marks a forced recovery for the next start.
 func (n *Node) forceFile() string { return filepath.Join(n.Dir, "force-master") }
@@ -200,7 +200,7 @@ func (n *Node) ForceMaster() error {
 	if n.Master() != 0 {
 		return fmt.Errorf("the stack has a master (member %d); nothing to override", n.Master())
 	}
-	return os.WriteFile(n.forceFile(), []byte("force\n"), 0o600)
+	return hwio.WriteFile(n.forceFile(), []byte("force\n"), 0o600)
 }
 
 func (n *Node) closeStores() {

@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"golang.org/x/sys/unix"
 )
 
@@ -106,7 +106,7 @@ func (r *Runtime) init() {
 	if !r.loaded {
 		r.loaded = true
 		r.restore = map[string]map[string]PortSnapshot{}
-		if raw, err := os.ReadFile(r.StateFile); err == nil {
+		if raw, err := hwio.ReadFile(r.StateFile); err == nil {
 			_ = json.Unmarshal(raw, &r.restore)
 		}
 	}
@@ -312,13 +312,13 @@ func (r *Runtime) save() {
 		return
 	}
 	tmp := r.StateFile + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil && os.Rename(tmp, r.StateFile) == nil {
+	if hwio.WriteFile(tmp, raw, 0o600) == nil && hwio.Rename(tmp, r.StateFile) == nil {
 		r.lastSave = string(raw)
 	}
 }
 
 func (r *Runtime) carrier(port string) bool {
-	b, err := os.ReadFile(filepath.Join(r.SysRoot, "class", "net", port, "carrier"))
+	b, err := hwio.ReadFile(filepath.Join(r.SysRoot, "class", "net", port, "carrier"))
 	return err == nil && strings.TrimSpace(string(b)) == "1"
 }
 

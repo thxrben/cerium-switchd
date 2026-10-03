@@ -8,6 +8,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=exec
+# Liveness: switchd pings the watchdog while its loops make progress
+# (reference 1.9); a hanging device only raises an alarm.
+WatchdogSec=60s
+NotifyAccess=main
 ExecStart=/usr/local/sbin/switchd $SWITCHD_ARGS
 # The stack's management address must never outlive switchd on this member
 # (after a crash another member takes it over).

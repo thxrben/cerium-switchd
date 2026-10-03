@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
@@ -95,7 +96,7 @@ func mirrorOuts(f netlink.Filter) []int {
 func (k *Netlink) SyncMirrors(want map[string]*MirrorPort) (bool, error) {
 	changed := false
 	var errs []error
-	links, err := netlink.LinkList()
+	links, err := nlx.LinkList()
 	if err != nil {
 		return false, err
 	}
@@ -107,7 +108,7 @@ func (k *Netlink) SyncMirrors(want map[string]*MirrorPort) (bool, error) {
 			idx := func(devs []string) []int {
 				var out []int
 				for _, d := range devs {
-					if o, err := netlink.LinkByName(d); err == nil {
+					if o, err := nlx.LinkByName(d); err == nil {
 						out = append(out, o.Attrs().Index)
 					}
 				}
@@ -131,7 +132,7 @@ func (k *Netlink) SyncMirrors(want map[string]*MirrorPort) (bool, error) {
 		// What is there now.
 		have := map[[2]int][]int{} // (egress, prio) -> outs
 		for _, eg := range []bool{false, true} {
-			fs, err := netlink.FilterList(l, hook(eg))
+			fs, err := nlx.FilterList(l, hook(eg))
 			if err != nil {
 				continue // no clsact
 			}

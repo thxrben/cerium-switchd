@@ -6,25 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"maps"
-	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
+	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 )
 
 // The bridge's multicast options are set with iproute2: the netlink library
 // does not cover the per-VLAN multicast contexts.
 
 func runTool(name string, args ...string) ([]byte, error) {
-	out, err := exec.Command(name, args...).Output()
+	out, err := sysexec.Output(name, args...)
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return nil, fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, err
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return out, nil
 }

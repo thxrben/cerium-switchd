@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -121,11 +122,11 @@ func (k *Netlink) enforceOnce(log *slog.Logger) {
 		}
 	}
 	set := func(port string, learn bool) {
-		l, err := netlink.LinkByName(port)
+		l, err := nlx.LinkByName(port)
 		if err != nil {
 			return
 		}
-		if err := netlink.LinkSetLearning(l, learn); err != nil {
+		if err := nlx.LinkSetLearning(l, learn); err != nil {
 			log.Error("mac-limit: cannot change learning", "port", port, "err", err)
 			return
 		}

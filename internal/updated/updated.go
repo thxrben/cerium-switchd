@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/software"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // DefaultSocket is where the daemon listens.
@@ -160,7 +161,7 @@ func (d *Daemon) statePath() string { return filepath.Join(d.ConfigDir, "state.j
 
 // Load returns the recorded update (nil: none).
 func (d *Daemon) Load() *State {
-	raw, err := os.ReadFile(d.statePath())
+	raw, err := hwio.ReadFile(d.statePath())
 	if err != nil {
 		return nil
 	}
@@ -172,7 +173,7 @@ func (d *Daemon) Load() *State {
 }
 
 func (d *Daemon) save(st *State) error {
-	if err := os.MkdirAll(d.ConfigDir, 0o700); err != nil {
+	if err := hwio.MkdirAll(d.ConfigDir, 0o700); err != nil {
 		return err
 	}
 	raw, _ := json.MarshalIndent(st, "", "  ")
@@ -180,30 +181,7 @@ func (d *Daemon) save(st *State) error {
 }
 
 // writeSync writes a file atomically and durably.
-func writeSync(path string, raw []byte) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		dir.Sync()
-		dir.Close()
-	}
-	return nil
-}
+func writeSync(path string, raw []byte) error { return hwio.WriteFileAtomic(path, raw, 0o600) }
 
 // Run serves until ctx ends. At start it looks at the recorded update: a
 // new slot that just booted is watched; an old slot that came back after
@@ -214,15 +192,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.state = "idle"
 	d.boot(ctx)
-	if err := os.MkdirAll(filepath.Dir(d.Socket), 0o700); err != nil {
+	if err := hwio.MkdirAll(filepath.Dir(d.Socket), 0o700); err != nil {
 		return err
 	}
-	os.Remove(d.Socket)
+	hwio.Remove(d.Socket)
 	l, err := net.Listen("unix", d.Socket)
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(d.Socket, 0o600); err != nil { // root (switchd) only
+	if err := hwio.Chmod(d.Socket, 0o600); err != nil { // root (switchd) only
 		l.Close()
 		return err
 	}
@@ -314,7 +292,7 @@ func (d *Daemon) failed(st *State, why string) {
 
 // newestRevision returns the name of the newest stored revision.
 func newestRevision(switchdDir string) string {
-	ents, _ := os.ReadDir(filepath.Join(switchdDir, "config", "rev"))
+	ents, _ := hwio.ReadDir(filepath.Join(switchdDir, "config", "rev"))
 	var names []string
 	for _, e := range ents {
 		if strings.HasSuffix(e.Name(), ".json") {
@@ -333,17 +311,17 @@ func newestRevision(switchdDir string) string {
 func (d *Daemon) backupConfig(from string) error {
 	src := filepath.Join(d.SwitchdDir, "config")
 	dst := filepath.Join(d.BackupDir, from)
-	if err := os.RemoveAll(dst + ".new"); err != nil {
+	if err := hwio.RemoveAll(dst + ".new"); err != nil {
 		return err
 	}
 	if err := copyTree(src, dst+".new"); err != nil {
 		return err
 	}
-	os.RemoveAll(dst)
-	if err := os.Rename(dst+".new", dst); err != nil {
+	hwio.RemoveAll(dst)
+	if err := hwio.Rename(dst+".new", dst); err != nil {
 		return err
 	}
-	ents, _ := os.ReadDir(d.BackupDir)
+	ents, _ := hwio.ReadDir(d.BackupDir)
 	type b struct {
 		name string
 		t    time.Time
@@ -357,7 +335,7 @@ func (d *Daemon) backupConfig(from string) error {
 	slices.SortFunc(bs, func(x, y b) int { return y.t.Compare(x.t) })
 	for i, x := range bs {
 		if i >= 2 && x.name != from {
-			os.RemoveAll(filepath.Join(d.BackupDir, x.name))
+			hwio.RemoveAll(filepath.Join(d.BackupDir, x.name))
 		}
 	}
 	return nil
@@ -366,21 +344,21 @@ func (d *Daemon) backupConfig(from string) error {
 // restoreConfig puts the backup of version v back (before switchd starts).
 func (d *Daemon) restoreConfig(v string) error {
 	src := filepath.Join(d.BackupDir, v)
-	if _, err := os.Stat(src); err != nil {
+	if _, err := hwio.Stat(src); err != nil {
 		return err
 	}
 	dst := filepath.Join(d.SwitchdDir, "config")
 	tmp := dst + ".restore"
-	os.RemoveAll(tmp)
+	hwio.RemoveAll(tmp)
 	if err := copyTree(src, tmp); err != nil {
 		return err
 	}
 	old := dst + ".after-failed-update"
-	os.RemoveAll(old)
-	if err := os.Rename(dst, old); err != nil && !errors.Is(err, os.ErrNotExist) {
+	hwio.RemoveAll(old)
+	if err := hwio.Rename(dst, old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(tmp, dst)
+	return hwio.Rename(tmp, dst)
 }
 
 func copyTree(src, dst string) error {
@@ -391,12 +369,12 @@ func copyTree(src, dst string) error {
 		rel, _ := filepath.Rel(src, p)
 		t := filepath.Join(dst, rel)
 		if e.IsDir() {
-			return os.MkdirAll(t, 0o700)
+			return hwio.MkdirAll(t, 0o700)
 		}
 		if !e.Type().IsRegular() {
 			return nil
 		}
-		raw, err := os.ReadFile(p)
+		raw, err := hwio.ReadFile(p)
 		if err != nil {
 			return err
 		}
@@ -524,11 +502,11 @@ func (d *Daemon) openBundle(path string) (*os.File, *software.Bundle, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	f, err := os.Open(path)
+	f, err := hwio.Open(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	b, err := software.OpenBundle(f, keys)
+	b, err := software.OpenBundle(hwio.Reader(f, software.SlotIODeadline), keys)
 	if err != nil {
 		f.Close()
 		return nil, nil, err

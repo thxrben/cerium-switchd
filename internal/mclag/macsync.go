@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/thxrben/cerium-switchd/internal/names"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
 
 // MAC synchronisation between the two members of an MC-LAG pair
@@ -103,7 +104,7 @@ func newMACSync(m *Controller, log *slog.Logger) *macSync {
 // forgetLearned removes an address the bridge learned on dev (if it is
 // there; entries elsewhere or installed from outside stay).
 func forgetLearned(dev string, k macKey) error {
-	l, err := netlink.LinkByName(dev)
+	l, err := nlx.LinkByName(dev)
 	if err != nil {
 		return err
 	}
@@ -111,7 +112,7 @@ func forgetLearned(dev string, k macKey) error {
 	if err != nil {
 		return err
 	}
-	return netlink.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_MASTER,
+	return nlx.NeighDel(&netlink.Neigh{LinkIndex: l.Attrs().Index, Family: unix.AF_BRIDGE, Flags: netlink.NTF_MASTER,
 		HardwareAddr: mac, Vlan: k.VLAN})
 }
 
@@ -202,7 +203,7 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 	if n.Family != unix.AF_BRIDGE || n.Vlan == 0 || n.MasterIndex == 0 || len(n.HardwareAddr) != 6 {
 		return
 	}
-	if br, err := netlink.LinkByIndex(n.MasterIndex); err != nil || br.Attrs().Name != names.Bridge {
+	if br, err := nlx.LinkByIndex(n.MasterIndex); err != nil || br.Attrs().Name != names.Bridge {
 		return
 	}
 	if n.State&(unix.NUD_PERMANENT|unix.NUD_NOARP) != 0 {
@@ -212,7 +213,7 @@ func (s *macSync) event(u netlink.NeighUpdate) {
 	if !ok {
 		return
 	}
-	port, err := netlink.LinkByIndex(n.LinkIndex)
+	port, err := nlx.LinkByIndex(n.LinkIndex)
 	if err != nil {
 		return
 	}
@@ -424,7 +425,7 @@ func (s *macSync) clear() {
 }
 
 func fdbNeigh(dev string, k macKey) (*netlink.Neigh, error) {
-	l, err := netlink.LinkByName(dev)
+	l, err := nlx.LinkByName(dev)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +444,7 @@ func fdbSet(dev string, k macKey) error {
 	if err != nil {
 		return err
 	}
-	return netlink.NeighSet(n)
+	return nlx.NeighSet(n)
 }
 
 func fdbDel(dev string, k macKey) error {
@@ -451,16 +452,16 @@ func fdbDel(dev string, k macKey) error {
 	if err != nil {
 		return err
 	}
-	return netlink.NeighDel(n)
+	return nlx.NeighDel(n)
 }
 
 // rescan rebuilds the table of locally learned addresses from the bridge.
 func (s *macSync) rescan(v domainView) {
-	br, err := netlink.LinkByName(names.Bridge)
+	br, err := nlx.LinkByName(names.Bridge)
 	if err != nil {
 		return
 	}
-	neighs, err := netlink.NeighList(0, unix.AF_BRIDGE)
+	neighs, err := nlx.NeighList(0, unix.AF_BRIDGE)
 	if err != nil {
 		return
 	}
@@ -473,7 +474,7 @@ func (s *macSync) rescan(v domainView) {
 		}
 		name, ok := devs[n.LinkIndex]
 		if !ok {
-			if l, err := netlink.LinkByIndex(n.LinkIndex); err == nil {
+			if l, err := nlx.LinkByIndex(n.LinkIndex); err == nil {
 				name = l.Attrs().Name
 			}
 			devs[n.LinkIndex] = name

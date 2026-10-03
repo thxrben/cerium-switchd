@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // CLIGroup is the group of managed users; only it (and root, by policy)
@@ -94,11 +95,11 @@ RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 `
 
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+func fileExists(p string) bool { _, err := hwio.Stat(p); return err == nil }
 
 // currentPort returns the port of the running managed instance (0 = none).
 func (s *SSH) currentPort() int {
-	raw, err := os.ReadFile(s.confPath())
+	raw, err := hwio.ReadFile(s.confPath())
 	if err != nil {
 		return 0
 	}
@@ -115,7 +116,7 @@ func (s *SSH) currentPort() int {
 func (s *SSH) listening(port int) bool {
 	want := fmt.Sprintf(":%04X", port)
 	for _, f := range []string{"tcp", "tcp6"} {
-		raw, err := os.ReadFile(filepath.Join(s.ProcNet, f))
+		raw, err := hwio.ReadFile(filepath.Join(s.ProcNet, f))
 		if err != nil {
 			continue
 		}
@@ -140,21 +141,21 @@ func (s *SSH) Check(cfg *model.Config) model.Issues {
 }
 
 func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
-	if old, err := os.ReadFile(path); err == nil && string(old) == content {
+	if old, err := hwio.ReadFile(path); err == nil && string(old) == content {
 		return false, nil
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(content), mode); err != nil {
 		return false, err
 	}
-	return true, os.Rename(tmp, path)
+	return true, hwio.Rename(tmp, path)
 }
 
 // Sync converges the CLI SSH server. It runs only on the master, inside
 // the management instance (reference 1.8, 5.1 system services ssh).
 func (s *SSH) Sync(cfg *model.Config, master bool) error {
 	if s.LegacyDropIn != "" && fileExists(s.LegacyDropIn) {
-		if err := os.Remove(s.LegacyDropIn); err == nil {
+		if err := hwio.Remove(s.LegacyDropIn); err == nil {
 			_ = s.Run("systemctl", "reload", "ssh")
 		}
 	}
@@ -164,30 +165,30 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 		}
 		_ = s.Run("systemctl", "disable", "--now", sshUnit)
 		for _, p := range []string{s.UnitPath, s.confPath(), s.bannerPath()} {
-			_ = os.Remove(p)
+			_ = hwio.Remove(p)
 		}
 		s.Log.Info("ssh: CLI SSH server stopped (not configured, no management instance, or not the master)")
 		return s.Run("systemctl", "daemon-reload")
 	}
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+	if err := hwio.MkdirAll(s.Dir, 0o755); err != nil {
 		return err
 	}
 	if _, err := writeIfChanged(s.bannerPath(), cfg.System.Banner+"\n", 0o644); err != nil {
 		return err
 	}
 	conf := s.config(cfg)
-	old, _ := os.ReadFile(s.confPath())
+	old, _ := hwio.ReadFile(s.confPath())
 	confChanged := string(old) != conf
 	if confChanged {
 		tmp := s.confPath() + ".new"
-		if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
+		if err := hwio.WriteFile(tmp, []byte(conf), 0o600); err != nil {
 			return err
 		}
 		if err := s.Run("sshd", "-t", "-f", tmp); err != nil {
-			os.Remove(tmp)
+			hwio.Remove(tmp)
 			return fmt.Errorf("ssh: configuration rejected by sshd, previous one kept: %w", err)
 		}
-		if err := os.Rename(tmp, s.confPath()); err != nil {
+		if err := hwio.Rename(tmp, s.confPath()); err != nil {
 			return err
 		}
 	}

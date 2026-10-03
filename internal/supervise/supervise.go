@@ -232,6 +232,9 @@ type Supervisor struct {
 	// Wanted reports which daemons that do not run always are needed now
 	// (by program).
 	Wanted func() map[string]bool
+	// Beat is called after every step (the watchdog of switchd's loops;
+	// nil: none).
+	Beat func()
 	// Daemons overrides the package table (tests).
 	Daemons []Daemon
 
@@ -273,6 +276,9 @@ func (s *Supervisor) Run(ctx context.Context) {
 			return
 		case now := <-t.C:
 			s.Step(now)
+		}
+		if s.Beat != nil {
+			s.Beat()
 		}
 	}
 }

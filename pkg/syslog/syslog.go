@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Severities (RFC 5424).
@@ -413,7 +415,7 @@ func (f *forwarder) dial() (net.Conn, error) {
 	case "tls":
 		conf := &tls.Config{ServerName: f.cfg.Host, MinVersion: tls.VersionTLS12}
 		if f.cfg.CAFile != "" {
-			pem, err := os.ReadFile(f.cfg.CAFile)
+			pem, err := hwio.ReadFile(f.cfg.CAFile)
 			if err != nil {
 				return nil, err
 			}

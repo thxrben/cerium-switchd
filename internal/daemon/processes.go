@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Processes lists switchd and the daemons of this member (show system
@@ -46,7 +47,7 @@ func (o *ops) RestartDaemon(name, user string) error {
 
 // selfRSS reads this process's resident memory.
 func selfRSS() uint64 {
-	raw, err := os.ReadFile("/proc/self/status")
+	raw, err := hwio.ReadFile("/proc/self/status")
 	if err != nil {
 		return 0
 	}
@@ -64,7 +65,7 @@ func selfRSS() uint64 {
 
 // selfScheduling reads this process's nice value.
 func selfScheduling() string {
-	raw, err := os.ReadFile("/proc/self/stat")
+	raw, err := hwio.ReadFile("/proc/self/stat")
 	if err != nil {
 		return ""
 	}

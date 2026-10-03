@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -19,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Server is one configured NTP server.
@@ -424,7 +425,7 @@ var timeServices = []string{"chronyd", "ntpd", "ntpd-rs", "systemd-timesyn", "op
 // OtherService returns the name of another time service running on the host
 // (procDir is /proc), or "".
 func OtherService(procDir string) string {
-	ents, err := os.ReadDir(procDir)
+	ents, err := hwio.ReadDir(procDir)
 	if err != nil {
 		return ""
 	}
@@ -432,7 +433,7 @@ func OtherService(procDir string) string {
 		if e.Name() == "" || e.Name()[0] < '0' || e.Name()[0] > '9' {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(procDir, e.Name(), "comm"))
+		raw, err := hwio.ReadFile(filepath.Join(procDir, e.Name(), "comm"))
 		if err != nil {
 			continue
 		}

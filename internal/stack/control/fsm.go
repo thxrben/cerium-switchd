@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/raft"
 
 	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // MemberInfo is one entry of the member list.
@@ -107,7 +108,7 @@ func (f *fsm) lastChange() time.Time {
 
 func openFSM(store *commit.FileStore, metaFile string, onChange func()) (*fsm, error) {
 	f := &fsm{store: store, metaFile: metaFile, onChange: onChange, meta: meta{Members: map[int]MemberInfo{}}}
-	raw, err := os.ReadFile(metaFile)
+	raw, err := hwio.ReadFile(metaFile)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
@@ -129,10 +130,10 @@ func (f *fsm) saveLocked() error {
 		return err
 	}
 	tmp := f.metaFile + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, f.metaFile)
+	return hwio.Rename(tmp, f.metaFile)
 }
 
 func (f *fsm) snapshotMeta() meta {

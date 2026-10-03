@@ -5,12 +5,12 @@ package netdev
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/vishvananda/netlink"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
@@ -41,7 +41,7 @@ func stpHelperText(bridge string) string {
 
 // EnsureSTPHelper installs the helper that hands bridge to user space.
 func EnsureSTPHelper(bridge string) error {
-	cur, err := os.ReadFile(STPHelper)
+	cur, err := hwio.ReadFile(STPHelper)
 	switch {
 	case err == nil && string(cur) == stpHelperText(bridge):
 		return nil
@@ -49,15 +49,15 @@ func EnsureSTPHelper(bridge string) error {
 		return fmt.Errorf("%s belongs to another program; it must exit 0 for %s", STPHelper, bridge)
 	}
 	tmp := STPHelper + ".tmp"
-	if err := os.WriteFile(tmp, []byte(stpHelperText(bridge)), 0o755); err != nil {
+	if err := hwio.WriteFile(tmp, []byte(stpHelperText(bridge)), 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, STPHelper)
+	return hwio.Rename(tmp, STPHelper)
 }
 
 // BridgeSTP reports whether user-space STP is on for the bridge.
 func BridgeSTP(bridge string) (bool, error) {
-	b, err := os.ReadFile(filepath.Join("/sys/class/net", bridge, "bridge", "stp_state"))
+	b, err := hwio.ReadFile(filepath.Join("/sys/class/net", bridge, "bridge", "stp_state"))
 	if err != nil {
 		return false, err
 	}
@@ -75,7 +75,7 @@ func SetBridgeSTP(bridge string, on bool) error {
 		v = "1"
 	}
 	p := filepath.Join("/sys/class/net", bridge, "bridge", "stp_state")
-	cur, err := os.ReadFile(p)
+	cur, err := hwio.ReadFile(p)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func SetBridgeSTP(bridge string, on bool) error {
 	if on && c == "1" {
 		return fmt.Errorf("the kernel runs its own STP on %s (is %s missing?)", bridge, STPHelper)
 	}
-	if err := os.WriteFile(p, []byte(v), 0o644); err != nil {
+	if err := hwio.WriteFile(p, []byte(v), 0o644); err != nil {
 		return err
 	}
 	if on {
@@ -99,7 +99,7 @@ func SetBridgeSTP(bridge string, on bool) error {
 
 // BridgePorts lists the bridge's ports.
 func BridgePorts(bridge string) ([]string, error) {
-	ents, err := os.ReadDir(filepath.Join("/sys/class/net", bridge, "brif"))
+	ents, err := hwio.ReadDir(filepath.Join("/sys/class/net", bridge, "brif"))
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func BridgePorts(bridge string) ([]string, error) {
 
 // PortSTPState reads a bridge port's state.
 func PortSTPState(dev string) (int, error) {
-	b, err := os.ReadFile(filepath.Join("/sys/class/net", dev, "brport", "state"))
+	b, err := hwio.ReadFile(filepath.Join("/sys/class/net", dev, "brport", "state"))
 	if err != nil {
 		return 0, err
 	}
@@ -121,7 +121,7 @@ func PortSTPState(dev string) (int, error) {
 
 // SetPortSTPState sets a bridge port's state (user-space STP only).
 func SetPortSTPState(dev string, state int) error {
-	l, err := netlink.LinkByName(dev)
+	l, err := nlx.LinkByName(dev)
 	if err != nil {
 		return err
 	}
@@ -132,6 +132,6 @@ func SetPortSTPState(dev string, state int) error {
 	pi := nl.NewRtAttr(unix.IFLA_PROTINFO|unix.NLA_F_NESTED, nil)
 	pi.AddRtAttr(nl.IFLA_BRPORT_STATE, []byte{byte(state)})
 	req.AddData(pi)
-	_, err = req.Execute(unix.NETLINK_ROUTE, 0)
+	_, err = nlx.Execute(req, unix.NETLINK_ROUTE, 0)
 	return err
 }
