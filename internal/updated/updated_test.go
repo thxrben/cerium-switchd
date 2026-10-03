@@ -62,6 +62,14 @@ func (p fakePlatform) ReadEnv() (software.Env, error) {
 	}
 	return e, nil
 }
+func (p fakePlatform) SlotStatus() ([]software.SlotInfo, string, error) {
+	e, err := p.ReadEnv()
+	var out []software.SlotInfo
+	for _, s := range software.Slots {
+		out = append(out, e.Slot(s))
+	}
+	return out, "", err
+}
 func (p fakePlatform) WriteEnv(e software.Env) error {
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()

@@ -66,7 +66,7 @@ UEFI firmware → GRUB (ceros-esp) → picks slot A or B (§4) → kernel + init
 | `/var/lib/switchd` | bind of `/config/switchd` | | switchd's state: committed configurations, stack keys and member id, Raft log, port numbers |
 | `/etc/ssh/ssh_host_*_key[.pub]` | binds of `/config/ssh/…` | | the SSH host keys |
 | `/etc/machine-id` | bind of `/config/machine-id` | | the machine id |
-| `/var` | `ceros-data` | ext4, `nodev,nosuid` | received software (`/var/lib/ceros/software`), crash reports |
+| `/var` | `ceros-data` | ext4, `nodev,nosuid,noexec` | received software (`/var/lib/ceros/software`), crash reports |
 | `/home`, `/root` | binds of `/var/home`, `/var/root` | | home directories (CLI history) |
 | `/tmp`, `/run` | tmpfs | | `/run/log/journal`: the journal (below) |
 | `/boot/efi` | `ceros-esp` | FAT, mounted only while the update daemon changes the boot state | |
@@ -139,6 +139,24 @@ The signature and the manifest are checked **before** anything is written: the s
 **running** image trusts (`/usr/share/ceros/keys/*.pub`). The image is hashed while it is written. Nothing overrides a
 missing or wrong signature (`force` doesn't either).
 
+**What is signed, and what is checked when.**
+
+| What | Protected by | Checked |
+|---|---|---|
+| `manifest.json` (version, platform, `min_from`, image size and SHA-256, verity root hash and hash offset) | the Ed25519 signature | before anything is written |
+| `rootfs.img` (kernel, initramfs, every program and library, the hash tree) | its SHA-256 in the signed manifest | while it is read from the bundle; again from the disk after writing the slot (read back past the page cache) |
+| every block of the running root file system | dm-verity, with the root hash from the signed manifest | at every read (a program, a library, a kernel module); a wrong block stops the system (§2) |
+| the slot's root hash and hash offset | written into the boot state from the signed manifest | by the initramfs, which opens the slot with them |
+
+**Not signed or verified:** GRUB and its configuration, the boot state (`grubenv`, which carries the root hashes),
+the kernel command line, and the kernel and initramfs as GRUB loads them (GRUB reads them from the slot without the
+hash tree). There is no UEFI Secure Boot. So the scheme protects against damaged media and against installing
+unsigned software, but not against someone who can write to the disk directly. Secure Boot with a signed kernel
+image that carries its root hash would close that; it is not part of this release.
+
+**Nothing runs from the writable partitions:** `/config` and `/var` (with `/home` and `/root`) are mounted `noexec`, so
+every program that runs comes from the verified image.
+
 **Keys.** Release images trust the release keys only. Images built for development (`make image DEV=1`) also trust
 the development key in the repository. A new release key is introduced by a release that trusts both the old and the
 new one.
@@ -196,7 +214,9 @@ the boot state. The backup slot must have `OK=1`.
 | GRUB cannot read the new slot (damaged squashfs, no kernel) | GRUB marks it `OK=0` and starts the other slot in the same boot |
 | New switchd not healthy within 5 minutes | the daemon rolls back and reboots |
 | The new version damages the configuration | the old slot puts the backup copy back (alone), or takes the stack's configuration |
-| `grubenv` unreadable | GRUB uses `ORDER="A B"`, both OK |
+| `grubenv` unreadable | GRUB uses `ORDER="A B"`, both OK; `show system software` and `show system version` say `boot state: missing` / `damaged` / `unreadable` |
+| A slot's partition cannot be read (disk failing, removed) | `show system software` and `show system version` show the slot as `unreadable: …` (read from the disk directly, at most 5 s) |
+| The disk stops answering | every read and write fails at its deadline (§7); an alarm tells the CLI sessions; nothing hangs |
 | Configuration file system damaged | `fsck -y`; else formatted and filled from the copy on the data partition |
 | Data file system damaged | formatted again, logs lost, the switch works |
 
@@ -230,3 +250,31 @@ Linux shell.
 * **Installer**: the disk image on a USB stick boots as usual. `request system software install-disk <disk>`
   (console, super-user, asks for confirmation naming the disk and its size) partitions the target disk, writes the
   ESP, both slots and an empty configuration, and then the switch boots from it.
+
+## 7. Hanging devices
+
+switchd and the cer- daemons never wait without limit for the kernel, a disk or a tool. Linux cannot cancel a
+system call that waits inside the kernel (a dying disk, a NIC driver that holds a lock), so every such call runs with
+a **deadline** and the caller goes on with an error when it passes:
+
+| Calls | Deadline |
+|---|---|
+| file and disk access (configuration store, state files, bundles, the boot state) | 10 s per operation |
+| one read or write of a slot, a bundle or a USB stick (4 MiB; slots are synced every 64 MiB) | 60 s |
+| netlink requests, ethtool ioctls, `/sys` and `/proc` | 5 s |
+| system tools (`nft`, `ip`, `bridge`, `systemctl` …; killed with everything they started) | 10 s (account tools 1 min, `veritysetup` 1 min, a new image's configuration check 2 min) |
+| reading a slot's own headers for `show system software` / `show system version` | 5 s |
+
+A call that misses its deadline is **stuck** on its resource (a disk, `/config`, `/var`, the kernel's network
+configuration lock `rtnl`, a tool). Further calls on that resource fail at once instead of piling up, until the stuck
+call returns. switchd raises an **alarm**: a log entry, a notice to every CLI session
+(`member 2: ALARM: the kernel's network configuration (rtnl lock; usually a NIC driver that hangs) does not answer
+(link add ae1, since 12:04:31) …`), and a list in `show system processes`. A commit that needs it fails with the
+reason. The alarm clears when the device answers again. **Nothing reboots**: the member keeps forwarding with what is
+set already.
+
+switchd itself has a systemd **watchdog** (60 s) that it feeds only while its loops make progress (data plane, stack
+control, daemon supervisor): a loop that stops (a bug, a deadlock) gets switchd restarted, and the daemons keep
+running. A hanging device does not trigger it, because every call returns at its deadline. The cer- daemons have the
+same watchdog (10 s). The libraries are `pkg/hwio` (deadlines, stuck resources, file functions), `pkg/sysexec`
+(tools) and `pkg/nlx` (netlink).

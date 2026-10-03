@@ -322,9 +322,16 @@ journal (including kernel messages) and forwards it to the configured servers (5
 On the firmware image the journal is kept in memory (tmpfs, at most 64 MB, oldest entries dropped first), so logging
 never wears the boot medium; remote syslog is where logs are kept.
 
+**Hanging devices.** No program waits without limit for the kernel, a disk or a tool: every such call has a deadline
+(5 s for netlink, ethtool and `/sys`; 10 s for files and tools; docs/os-image.md §7). A device that misses one raises
+an alarm (log and a notice to every CLI session), its later calls fail at once until it answers again, and the alarm
+clears then. Nothing reboots. switchd and the daemons have a systemd watchdog that is fed only while their loops make
+progress, so a deadlock restarts the program (switchd restarts without stopping the daemons).
+
 Operational commands:
 * `show system processes`: per member every program with its state (`running`, `restarting`, `failed`, `stopped`),
-  process id, uptime, restarts in the last hour, the last failure, memory and CPU time, and its scheduling.
+  process id, uptime, restarts in the last hour, the last failure, memory and CPU time, and its scheduling; and an
+  **ALARM** list of system calls that do not return (a disk or NIC driver that stopped answering).
 * `restart lacp|mclag|rstp|lldp|syslog|ntp|dhcp|routing|bfd|ospf|bgp [member <id>|all-members]`: restarts that daemon
   (super-user). Like a crash, it is hitless where the protocol allows it (LACP and RSTP keep their state; BFD, OSPF and
   BGP sessions are re-established, with graceful restart where configured).
@@ -542,7 +549,7 @@ vlans {
 | `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
-| `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
+| `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version (with every member's two system slots, read from the disks: version, active or backup, `unreadable: …` when a slot's partition cannot be read, and a missing or damaged boot state). |
 | `show system processes`, `restart <daemon>` | The switch's programs and their state; restarting one (1.9). |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
 | `start shell [local]` | A Linux shell on the master, or with `local` on the member you are connected to (1.8, 4.3); `exit` returns to the CLI. |
@@ -643,7 +650,10 @@ rollback returns to the newer version.
 
 **`show system software`**: per member the running version and build time, both slots (version, `active` or
 `backup`, `failed` when the slot must not be booted), the result of the last update (`rolled back: <reason>`), and the
-state of a running update (`fetching`, `checking`, `distributing`, `updating member 3`, `done`, `failed: <reason>`).
+state of a running update (`fetching`, `checking`, `distributing`, `updating member 3`, `done`, `failed: <reason>`). The slots are read **from the disks** for every command: the boot state from the ESP (`boot state: missing`,
+`damaged` or `unreadable: …` when it cannot be used), and each slot's partition directly, past the page cache
+(`slot B: 1.3.2 backup (unreadable: …)` when the partition cannot be read or holds no image). A disk that does not
+answer is reported after at most 5 s; an update daemon that does not answer shows `slots: unknown (…)`.
 
 **`request system zeroize [member <id>]`** (super-user, after a `[yes,no] (no)` question): erases the configuration
 and everything on the data partition (logs, state) of the member and reboots it with the factory default: no

@@ -24,9 +24,9 @@ check_fs() {
 # Data: logs and state; formatted again when it cannot be mounted.
 mkdir -p /run/ceros/data
 check_fs "$datadev"
-if ! mount -t ext4 -o nodev,nosuid "$datadev" /run/ceros/data; then
+if ! mount -t ext4 -o nodev,nosuid,noexec "$datadev" /run/ceros/data; then
     warn "cerOS: the data partition $datadev cannot be mounted: formatting it again"
-    mkfs.ext4 -F -q -L ceros-data "$datadev" && mount -t ext4 -o nodev,nosuid "$datadev" /run/ceros/data
+    mkfs.ext4 -F -q -L ceros-data "$datadev" && mount -t ext4 -o nodev,nosuid,noexec "$datadev" /run/ceros/data
     mkdir -p /run/ceros/data/lib/ceros && echo "data partition formatted at boot" > /run/ceros/data/lib/ceros/data-formatted
 fi
 # What the image has under /var (directories, defaults) is kept on the data partition.

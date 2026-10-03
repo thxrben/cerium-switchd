@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -87,16 +88,19 @@ func (s *System) withESP(rw bool, f func(dir string) error) error {
 	if !rw {
 		flags |= syscall.MS_RDONLY
 	}
-	if err := syscall.Mount(s.Sys.ESP, espMount, "vfat", flags, "flush"); err != nil {
+	res := hwio.Resource(s.Sys.ESP)
+	if err := hwio.DoErr(res, "mount "+s.Sys.ESP, hwio.FileDeadline, func() error {
+		return syscall.Mount(s.Sys.ESP, espMount, "vfat", flags, "flush")
+	}); err != nil {
 		return fmt.Errorf("mounting the ESP: %w", err)
 	}
 	ferr := f(espMount)
 	// Only the ESP: a global sync would wait for a slot being written.
 	if d, err := hwio.Open(espMount); err == nil {
-		unix.Syncfs(int(d.Fd()))
+		hwio.DoErr(res, "sync "+s.Sys.ESP, hwio.FileDeadline, func() error { return unix.Syncfs(int(d.Fd())) })
 		d.Close()
 	}
-	if err := syscall.Unmount(espMount, 0); err != nil && ferr == nil {
+	if err := hwio.DoErr(res, "unmount "+s.Sys.ESP, hwio.FileDeadline, func() error { return syscall.Unmount(espMount, 0) }); err != nil && ferr == nil {
 		ferr = fmt.Errorf("unmounting the ESP: %w", err)
 	}
 	return ferr
@@ -110,6 +114,36 @@ func (s *System) ReadEnv() (software.Env, error) {
 		return err
 	})
 	return env, err
+}
+
+// SlotStatus reads the boot state from the ESP (mounted for it, so it is
+// read from the disk) and probes both slot devices in parallel.
+func (s *System) SlotStatus() ([]software.SlotInfo, string, error) {
+	var env software.Env
+	var problem string
+	err := s.withESP(false, func(dir string) error {
+		var err error
+		env, problem, err = software.ReadEnvState(filepath.Join(dir, s.Sys.EnvPath))
+		return err
+	})
+	if err != nil {
+		env = software.Env{}
+	}
+	out := make([]software.SlotInfo, len(software.Slots))
+	var wg sync.WaitGroup
+	for i, sl := range software.Slots {
+		out[i] = env.Slot(sl)
+		off, _ := strconv.ParseInt(env[sl+"_HASHOFFSET"], 10, 64)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if perr := software.ProbeSlot(s.Sys.Dev[sl], off); perr != nil {
+				out[i].Error = perr.Error()
+			}
+		}()
+	}
+	wg.Wait()
+	return out, problem, err
 }
 
 func (s *System) WriteEnv(env software.Env) error {

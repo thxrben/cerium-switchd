@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,11 +73,14 @@ type swStatus struct {
 	Transit []string `json:"transit,omitempty"`
 	// The update daemon's view ("" / nil: it does not run, e.g. not an
 	// image).
-	Daemon string              `json:"daemon,omitempty"`
-	Slots  []software.SlotInfo `json:"slots,omitempty"`
-	Active string              `json:"active,omitempty"`
-	Update *updated.State      `json:"update,omitempty"`
-	Note   string              `json:"note,omitempty"`
+	Daemon string `json:"daemon,omitempty"`
+	// DaemonErr: why the update daemon did not answer.
+	DaemonErr string              `json:"daemon_err,omitempty"`
+	Slots     []software.SlotInfo `json:"slots,omitempty"`
+	BootState string              `json:"boot_state,omitempty"`
+	Active    string              `json:"active,omitempty"`
+	Update    *updated.State      `json:"update,omitempty"`
+	Note      string              `json:"note,omitempty"`
 }
 
 // updating: an update of this member is in progress (written, rebooting,
@@ -141,6 +145,9 @@ func (u *updater) status() swStatus {
 	st.Current = u.ctl == nil || u.ctl.node.Current()
 	if rep, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err == nil {
 		st.Daemon, st.Slots, st.Active, st.Update, st.Note = rep.State, rep.Slots, rep.Active, rep.Update, rep.Note
+		st.BootState = rep.BootState
+	} else if !errors.Is(err, os.ErrNotExist) {
+		st.DaemonErr = err.Error()
 	}
 	files, _ := hwio.Glob(filepath.Join(u.dir, "ceros-*-"+software.Arch()+".bundle"))
 	for _, f := range files {
@@ -639,13 +646,13 @@ func (u *updater) Status() (cli.SoftwareStatus, error) {
 			m.Error = err.Error()
 		} else {
 			m.Version, m.Built, m.Previous, m.Note, m.Maintenance = st.Version, st.Built, st.previous(), st.Note, st.Maintenance
-			m.Daemon = st.Daemon
+			m.Daemon, m.DaemonErr, m.BootState = st.Daemon, st.DaemonErr, st.BootState
 			if st.updating() {
 				m.Pending = st.Update.To
 			}
 			for _, sl := range st.Slots {
 				m.Slots = append(m.Slots, cli.SoftwareSlot{Name: sl.Name, Version: sl.Version, Active: sl.Name == st.Active,
-					OK: sl.OK, Next: sl.First})
+					OK: sl.OK, Next: sl.First, Error: sl.Error})
 			}
 		}
 		out.Members = append(out.Members, m)

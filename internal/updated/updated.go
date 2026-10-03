@@ -70,8 +70,11 @@ type Reply struct {
 	Note    string              `json:"note,omitempty"`    // the result of the last update
 	Text    string              `json:"text,omitempty"`    // install: what the checks said
 	Slots   []software.SlotInfo `json:"slots,omitempty"`
-	Active  string              `json:"active,omitempty"`
-	Update  *State              `json:"update,omitempty"`
+	// BootState: a problem with the boot state (missing, damaged,
+	// unreadable); "" when it reads fine.
+	BootState string `json:"boot_state,omitempty"`
+	Active    string `json:"active,omitempty"`
+	Update    *State `json:"update,omitempty"`
 }
 
 // State is the update in progress, kept on the configuration partition
@@ -111,6 +114,10 @@ type Platform interface {
 	Version() string
 	ReadEnv() (software.Env, error)
 	WriteEnv(software.Env) error
+	// SlotStatus reads the boot state and checks each slot's device on the
+	// disk (show system software); bootProblem says when the boot state is
+	// missing or damaged.
+	SlotStatus() (slots []software.SlotInfo, bootProblem string, err error)
 	// WriteSlot writes and verifies the image.
 	WriteSlot(slot string, img io.Reader, size int64, sha string) error
 	// CheckConfig runs the configuration check of the image in slot on the
@@ -482,10 +489,13 @@ func (d *Daemon) handle(ctx context.Context, r Request, rep *Reply) error {
 	rep.State = d.state
 	d.mu.Unlock()
 	rep.Active = d.P.Active()
-	if env, err := d.P.ReadEnv(); err == nil {
-		for _, s := range software.Slots {
-			rep.Slots = append(rep.Slots, env.Slot(s))
-		}
+	slots, problem, err := d.P.SlotStatus()
+	rep.Slots = slots
+	switch {
+	case err != nil:
+		rep.BootState = "unreadable: " + err.Error()
+	case problem != "":
+		rep.BootState = problem + " (the boot loader uses its defaults: slot A first, both slots bootable)"
 	}
 	if st := d.Load(); st != nil {
 		rep.Update = st

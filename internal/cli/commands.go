@@ -151,6 +151,25 @@ func (sh *Shell) showVersion(c *call) error {
 	if t, err := time.Parse(time.RFC3339, sh.env.Built); err == nil {
 		fmt.Fprintf(c.out, "Built: %s\n", t.Local().Format("2006-01-02 15:04:05 MST"))
 	}
+	// Every member and both of its system slots (docs/os-image.md), read
+	// from the disks now.
+	sw, err := sh.software()
+	if err != nil {
+		return nil // not an image (e.g. switchd started by hand)
+	}
+	st, err := sw.Software()
+	if err != nil {
+		fmt.Fprintf(c.out, "Slots: unknown (%v)\n", err)
+		return nil
+	}
+	for _, m := range st.Members {
+		if m.Error != "" {
+			fmt.Fprintf(c.out, "\nMember %d: not reachable: %s\n", m.Member, m.Error)
+			continue
+		}
+		fmt.Fprintf(c.out, "\nMember %d: cerOS %s\n", m.Member, m.Version)
+		writeSlots(c.out, m, "  ")
+	}
 	return nil
 }
 

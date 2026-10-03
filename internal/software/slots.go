@@ -74,15 +74,26 @@ func (e Env) Bytes() ([]byte, error) {
 // ReadEnv reads the boot state from path. A missing or damaged block reads
 // as the defaults GRUB uses then (ORDER="A B", both slots OK).
 func ReadEnv(path string) (Env, error) {
+	env, _, err := ReadEnvState(path)
+	return env, err
+}
+
+// ReadEnvState is ReadEnv that also says when the defaults were used
+// (problem: "missing" or "damaged").
+func ReadEnvState(path string) (env Env, problem string, err error) {
 	raw, err := hwio.ReadFile(path)
-	if err == nil {
+	switch {
+	case err == nil:
 		if env, perr := ParseEnv(raw); perr == nil {
-			return env, nil
+			return env, "", nil
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		problem = "damaged"
+	case errors.Is(err, os.ErrNotExist):
+		problem = "missing"
+	default:
+		return nil, "", err
 	}
-	return Env{"ORDER": "A B", "A_OK": "1", "B_OK": "1", "A_TRY": "0", "B_TRY": "0"}, nil
+	return Env{"ORDER": "A B", "A_OK": "1", "B_OK": "1", "A_TRY": "0", "B_TRY": "0"}, problem, nil
 }
 
 // WriteEnv writes the boot state in place: the file keeps its blocks (GRUB
@@ -126,11 +137,16 @@ func OtherSlot(s string) string {
 
 // SlotInfo is what the boot state says about a slot.
 type SlotInfo struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// Version is the version the boot state recorded when the slot was
+	// written.
 	Version string `json:"version,omitempty"`
-	OK      bool   `json:"ok"`
-	Tried   bool   `json:"tried"` // started, not confirmed
-	First   bool   `json:"first"` // first in ORDER: booted next
+	// Error: the slot's device cannot be read, or does not hold a cerOS
+	// image ("": it reads fine, or was not checked).
+	Error string `json:"error,omitempty"`
+	OK    bool   `json:"ok"`
+	Tried bool   `json:"tried"` // started, not confirmed
+	First bool   `json:"first"` // first in ORDER: booted next
 }
 
 // Order returns the slots in boot order (every slot exactly once).
@@ -348,4 +364,75 @@ func sumDevice(dev string, size int64) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ProbeDeadline bounds each read of ProbeSlot.
+var ProbeDeadline = 5 * time.Second
+
+// ProbeSlot reads the slot's device directly (O_DIRECT: from the disk, not
+// a cache) and checks that it holds an image: the squashfs superblock at
+// its start and, if hashOffset > 0, the verity superblock of its hash tree.
+// A disk that does not answer fails at ProbeDeadline.
+func ProbeSlot(dev string, hashOffset int64) error {
+	if dev == "" {
+		return errors.New("no partition")
+	}
+	head, err := readDirect(dev, 0)
+	if err != nil {
+		return err
+	}
+	if string(head[:4]) != "hsqs" {
+		return errors.New("no cerOS image (no file system at the start of the partition)")
+	}
+	if hashOffset > 0 {
+		if hashOffset%4096 != 0 {
+			return fmt.Errorf("bad hash offset %d", hashOffset)
+		}
+		sb, err := readDirect(dev, hashOffset)
+		if err != nil {
+			return err
+		}
+		if string(sb[:8]) != "verity\x00\x00" {
+			return errors.New("the image's hash tree is missing or damaged")
+		}
+	}
+	return nil
+}
+
+// readDirect reads 4 KiB at off with O_DIRECT. The buffer is page aligned
+// (mmap); after a timeout it stays mapped, since the kernel may still
+// write into it.
+func readDirect(dev string, off int64) ([]byte, error) {
+	buf, err := unix.Mmap(-1, 0, 4096, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		return nil, err
+	}
+	n, err := hwio.Do(hwio.Resource(dev), "read "+dev, ProbeDeadline, func() (int, error) {
+		f, err := os.OpenFile(dev, os.O_RDONLY|unix.O_DIRECT, 0)
+		if err != nil {
+			// Not every file system takes O_DIRECT (tests on tmpfs).
+			if f, err = os.Open(dev); err != nil {
+				return 0, err
+			}
+		}
+		defer f.Close()
+		n, err := f.ReadAt(buf, off)
+		if errors.Is(err, io.EOF) && n > 0 {
+			err = nil
+		}
+		return n, err
+	})
+	if err != nil {
+		if !errors.Is(err, hwio.ErrTimeout) {
+			unix.Munmap(buf)
+		}
+		return nil, fmt.Errorf("unreadable: %w", err)
+	}
+	out := make([]byte, n)
+	copy(out, buf[:n])
+	unix.Munmap(buf)
+	if n < 8 {
+		return nil, errors.New("unreadable: the partition is too small")
+	}
+	return out, nil
 }

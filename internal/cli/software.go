@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,8 @@ type SoftwareMember struct {
 	Maintenance                             bool
 	Error                                   string
 	Daemon                                  string // the update daemon's state ("": not running)
+	DaemonErr                               string // why the update daemon did not answer
+	BootState                               string // a problem with the boot state ("": fine)
 	Slots                                   []SoftwareSlot
 }
 
@@ -45,6 +48,8 @@ type SoftwareSlot struct {
 	Active        bool // running
 	OK            bool // bootable
 	Next          bool // booted next
+	// Error: the slot's device cannot be read or holds no image.
+	Error string
 }
 
 // SoftwareStatus is "show system software".
@@ -231,26 +236,13 @@ func (sh *Shell) showSoftware(c *call) error {
 		if m.Note != "" {
 			fmt.Fprintf(c.out, "        %s\n", m.Note)
 		}
-		for _, sl := range m.Slots {
-			role := "backup"
-			if sl.Active {
-				role = "active"
-			}
-			var notes []string
-			if !sl.OK {
-				notes = append(notes, "failed, not booted")
-			}
-			if sl.Next && !sl.Active {
-				notes = append(notes, "booted next")
-			}
-			line := fmt.Sprintf("        slot %s: %-16s %s", sl.Name, orDash(sl.Version), role)
-			if len(notes) > 0 {
-				line += " (" + strings.Join(notes, ", ") + ")"
-			}
-			c.out.WriteString(line + "\n")
-		}
+		writeSlots(c.out, m, "        ")
 		if m.Daemon == "" {
-			c.out.WriteString("        update daemon: not running (this member cannot be updated)\n")
+			if m.DaemonErr != "" {
+				fmt.Fprintf(c.out, "        update daemon: no answer (%s)\n", m.DaemonErr)
+			} else {
+				c.out.WriteString("        update daemon: not running (this member cannot be updated)\n")
+			}
 		} else if !strings.HasPrefix(m.Daemon, "idle") && !strings.HasPrefix(m.Daemon, "rolled back") {
 			fmt.Fprintf(c.out, "        update daemon: %s\n", m.Daemon)
 		}
@@ -273,4 +265,37 @@ func (sh *Shell) showSoftware(c *call) error {
 		}
 	}
 	return nil
+}
+
+// writeSlots writes a member's slots and the state of its boot state; the
+// slots are unknown when the update daemon did not answer.
+func writeSlots(w io.Writer, m SoftwareMember, indent string) {
+	if m.Daemon == "" && m.DaemonErr != "" {
+		fmt.Fprintf(w, "%sslots: unknown (the update daemon does not answer: %s)\n", indent, m.DaemonErr)
+		return
+	}
+	if m.BootState != "" {
+		fmt.Fprintf(w, "%sboot state: %s\n", indent, m.BootState)
+	}
+	for _, sl := range m.Slots {
+		role := "backup"
+		if sl.Active {
+			role = "active"
+		}
+		var notes []string
+		if sl.Error != "" {
+			notes = append(notes, sl.Error)
+		}
+		if !sl.OK {
+			notes = append(notes, "failed, not booted")
+		}
+		if sl.Next && !sl.Active {
+			notes = append(notes, "booted next")
+		}
+		line := fmt.Sprintf("%sslot %s: %-16s %s", indent, sl.Name, orDash(sl.Version), role)
+		if len(notes) > 0 {
+			line += " (" + strings.Join(notes, ", ") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
 }

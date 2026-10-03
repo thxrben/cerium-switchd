@@ -143,3 +143,37 @@ func TestWriteSlot(t *testing.T) {
 		t.Fatalf("read-back mismatch not reported: %v", err)
 	}
 }
+
+func TestProbeSlot(t *testing.T) {
+	dir := t.TempDir()
+	img := make([]byte, 3*4096)
+	copy(img, "hsqs")
+	copy(img[8192:], "verity\x00\x00")
+	good := filepath.Join(dir, "good")
+	os.WriteFile(good, img, 0o600)
+	if err := ProbeSlot(good, 8192); err != nil {
+		t.Fatalf("good slot: %v", err)
+	}
+	bad := filepath.Join(dir, "bad")
+	os.WriteFile(bad, make([]byte, 4096), 0o600)
+	if err := ProbeSlot(bad, 0); err == nil || !strings.Contains(err.Error(), "no cerOS image") {
+		t.Fatalf("empty slot: %v", err)
+	}
+	if err := ProbeSlot(good, 4096); err == nil || !strings.Contains(err.Error(), "hash tree") {
+		t.Fatalf("wrong hash offset: %v", err)
+	}
+	if err := ProbeSlot(filepath.Join(dir, "gone"), 0); err == nil || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("missing device: %v", err)
+	}
+}
+
+func TestReadEnvState(t *testing.T) {
+	dir := t.TempDir()
+	if _, p, err := ReadEnvState(filepath.Join(dir, "none")); p != "missing" || err != nil {
+		t.Fatalf("%q %v", p, err)
+	}
+	os.WriteFile(filepath.Join(dir, "junk"), []byte("junk"), 0o600)
+	if _, p, err := ReadEnvState(filepath.Join(dir, "junk")); p != "damaged" || err != nil {
+		t.Fatalf("%q %v", p, err)
+	}
+}
