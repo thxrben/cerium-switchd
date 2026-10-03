@@ -18,3 +18,14 @@ func TestCutPairs(t *testing.T) {
 		t.Errorf("chain end: %v", got)
 	}
 }
+
+func TestStopJob(t *testing.T) {
+	out := "4711 switchd.service stop running\n4712 cer-lacpd.service start waiting\n"
+	if !stopJob(out, "switchd.service") {
+		t.Error("stop job not found")
+	}
+	if stopJob("4711 switchd.service restart running\n", "switchd.service") || stopJob("", "switchd.service") ||
+		stopJob(out, "cer-lacpd.service") {
+		t.Error("restart or other units taken for a stop")
+	}
+}

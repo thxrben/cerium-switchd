@@ -65,11 +65,12 @@ func (a *Agent) Sync(sys System, ports []PortSpec) {
 	defer a.mu.Unlock()
 	a.init()
 	sysChanged := !reflect.DeepEqual(sys, a.sys)
-	a.sys = sys
 	want := map[string]PortSpec{}
 	for _, p := range ports {
 		want[p.Linux] = p
 	}
+	// Ports that leave announce it with what they announced so far (a
+	// shutdown LLDPDU names the chassis and port it ends).
 	for n, p := range a.ports {
 		if _, ok := want[n]; !ok {
 			if p.up {
@@ -80,6 +81,7 @@ func (a *Agent) Sync(sys System, ports []PortSpec) {
 			delete(a.ports, n)
 		}
 	}
+	a.sys = sys
 	for _, s := range ports {
 		p := a.ports[s.Linux]
 		if p == nil {

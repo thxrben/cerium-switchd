@@ -1,16 +1,23 @@
 package supervise
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // fakeSystemd behaves like systemd for the units it is given.
 type fakeSystemd struct {
+	mu        sync.Mutex
+	hangs     map[string]bool // units that do not end when stopped
+	stopped   []string
+	killed    []string
 	installed map[string]bool
 	files     map[string]string
 	states    map[string]UnitState
@@ -57,6 +64,24 @@ func (f *fakeSystemd) Stop(unit string) error {
 func (f *fakeSystemd) Restart(unit string) error {
 	f.actions = append(f.actions, "restart "+unit)
 	f.run(unit)
+	return nil
+}
+
+func (f *fakeSystemd) StopWait(unit string, timeout time.Duration) error {
+	if f.hangs[unit] {
+		time.Sleep(timeout)
+		return errors.New("still running")
+	}
+	f.mu.Lock()
+	f.stopped = append(f.stopped, unit)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeSystemd) Kill(unit string) error {
+	f.mu.Lock()
+	f.killed = append(f.killed, unit)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -198,7 +223,7 @@ func TestPlannedRestartsAreNoFailures(t *testing.T) {
 
 func TestUnit(t *testing.T) {
 	u := Unit(testDaemons[0], "/usr/local/sbin/cer-lacpd", []string{"-member", "2"})
-	for _, want := range []string{"ExecStart=/usr/local/sbin/cer-lacpd -member 2\n", "Nice=-10\n", "OOMScoreAdjust=-900\n",
+	for _, want := range []string{"ExecStart=/usr/local/sbin/cer-lacpd -member 2 -stop-timeout 3s\n", "TimeoutStopSec=5s\n", "Before=switchd.service\n", "Nice=-10\n", "OOMScoreAdjust=-900\n",
 		"RestartSec=100ms\n", "WatchdogSec=10s\n", "Type=notify\n", "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW\n"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %q:\n%s", want, u)
@@ -251,5 +276,41 @@ CPUUsageNSec=[not set]
 	b := m["cer-bfdd.service"]
 	if b.Running() || b.Sub != "auto-restart" || describe(b) != "crashed with signal ABRT" {
 		t.Fatalf("bfdd %+v %q", b, describe(b))
+	}
+}
+
+// Shutdown stops the daemons stage by stage; one that hangs is killed;
+// afterwards nothing is started again.
+func TestShutdown(t *testing.T) {
+	f := newFake()
+	ds := []Daemon{
+		{Program: "cer-syslogd", Always: true, StopStage: 4},
+		{Program: "cer-lacpd", Always: true, StopStage: 3},
+		{Program: "cer-mclagd", Always: true, StopStage: 2},
+		{Program: "cer-lldpd", Always: true, StopStage: 2},
+		{Program: "cer-bfdd", Always: true, StopStage: 1},
+		{Program: "switchd-update", Always: true, External: true},
+	}
+	for _, d := range ds {
+		f.installed["/x/"+d.Program] = true
+	}
+	f.hangs = map[string]bool{"cer-lldpd.service": true}
+	s := &Supervisor{Backend: f, Log: quiet, Dir: "/x", Daemons: ds}
+	s.Step(time.Now())
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	s.Shutdown(ctx)
+	if !slices.Equal(f.killed, []string{"cer-lldpd.service"}) {
+		t.Errorf("killed %v", f.killed)
+	}
+	// cer-bfdd first, then cer-mclagd (cer-lldpd hangs), cer-lacpd,
+	// cer-syslogd; switchd-update keeps running.
+	if !slices.Equal(f.stopped, []string{"cer-bfdd.service", "cer-mclagd.service", "cer-lacpd.service", "cer-syslogd.service"}) {
+		t.Errorf("stopped %v", f.stopped)
+	}
+	f.actions = nil
+	s.Step(time.Now().Add(time.Minute))
+	if len(f.actions) != 0 {
+		t.Errorf("started again after the shutdown: %v", f.actions)
 	}
 }

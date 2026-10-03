@@ -40,10 +40,8 @@ func setup(k *daemonkit.Kit) error {
 		return agent.Snapshot(), nil
 	})
 	go agent.Run(k.Ctx)
-	go func() {
-		<-k.Ctx.Done()
-		agent.Sync(lldp.System{}, nil) // ports closed; neighbours age out
-	}()
+	// Shutdown LLDPDUs: the neighbours forget this switch at once.
+	k.OnShutdown(func(context.Context) { agent.Sync(lldp.System{}, nil) })
 	k.Subscribe(svc.TopicLACPPorts, "", func(ev ipc.Event) {
 		if ev.Sync || ev.Deleted {
 			return

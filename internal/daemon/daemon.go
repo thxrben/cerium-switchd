@@ -58,17 +58,35 @@ func Run(ctx context.Context, o Options) error {
 	// When the machine shuts down, the member drains before switchd stops
 	// (a reboot from the shell or a scheduled one).
 	var maint atomic.Pointer[maintCtl]
+	// When switchd is stopped (the system shuts down, or its unit is
+	// stopped), it stops the daemons in order after draining (reference
+	// 1.9); a restart of switchd leaves them running.
+	var supRef atomic.Pointer[supervise.Supervisor]
 	outer := ctx
 	ctx, stopRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopRun()
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		select {
 		case <-outer.Done():
-			if m := maint.Load(); m != nil && systemStopping() {
+			stopping := systemStopping()
+			if m := maint.Load(); m != nil && stopping {
 				m.drainForShutdown("the system stops")
+			}
+			if sup := supRef.Load(); sup != nil && (stopping || unitStopping("switchd.service")) {
+				o.Log.Info("switchd stops: stopping the daemons")
+				sctx, cancel := context.WithTimeout(context.Background(), daemonsStopTime)
+				sup.Shutdown(sctx)
+				cancel()
 			}
 			stopRun()
 		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		if outer.Err() != nil {
+			<-shutdownDone
 		}
 	}()
 	// Every record goes to the journal; cer-syslogd keeps the buffer for
@@ -307,6 +325,7 @@ func Run(ctx context.Context, o Options) error {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
 				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) }}
+			supRef.Store(sup)
 			go sup.Run(ctx)
 		}
 	}

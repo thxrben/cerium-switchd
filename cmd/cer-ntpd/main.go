@@ -76,9 +76,6 @@ func setup(k *daemonkit.Kit) error {
 		return time.Unix(0, ns), true, nil
 	}}
 	go f.Run(k.Ctx)
-	go func() {
-		<-k.Ctx.Done()
-		client.Stop()
-	}()
+	k.OnShutdown(func(context.Context) { client.Stop() })
 	return nil
 }

@@ -87,6 +87,8 @@ func setup(k *daemonkit.Kit) error {
 		json.Unmarshal(raw, &draining)
 		return ctl.DrainBlockers(draining), nil
 	})
+	// Stopping: the legs leave their bundles first (the peer takes over).
+	k.OnShutdown(ctl.Drain)
 	go ctl.Run(k.Ctx)
 	return nil
 }

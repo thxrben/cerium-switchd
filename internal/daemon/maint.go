@@ -240,6 +240,29 @@ func systemStopping() bool {
 	return strings.TrimSpace(string(out)) == "stopping"
 }
 
+// daemonsStopTime bounds stopping the daemons when switchd stops (their
+// stop budgets in order, with kills; switchd's unit allows more).
+const daemonsStopTime = 60 * time.Second
+
+// unitStopping reports whether systemd is stopping unit (a stop job, not a
+// restart): then switchd ends for good and takes the daemons with it.
+func unitStopping(unit string) bool {
+	out, _ := exec.Command("systemctl", "list-jobs", "--no-legend", "--plain").Output()
+	return stopJob(string(out), unit)
+}
+
+// stopJob finds a stop job for unit in systemctl list-jobs output
+// ("ID UNIT TYPE STATE" per line).
+func stopJob(out, unit string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) >= 3 && f[1] == unit && f[2] == "stop" {
+			return true
+		}
+	}
+	return false
+}
+
 // mclagAPI is what maintenance mode needs from MC-LAG (cer-mclagd).
 type mclagAPI interface {
 	SetMaintenance(on bool, now time.Time)

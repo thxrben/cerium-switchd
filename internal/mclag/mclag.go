@@ -766,3 +766,29 @@ func (m *Controller) installGroups(keys []mcastKey) {
 	m.groups.applied = applied
 	m.mu.Unlock()
 }
+
+// Drain takes this member's legs out of their bundles before cer-mclagd
+// ends, as maintenance mode does (the peer hears first, the partner stops
+// sending, then the legs leave), so the partners move their traffic to the
+// peer instead of losing it. Only when the peer can take over (it is
+// reachable and its legs are up): otherwise the legs keep forwarding.
+func (m *Controller) Drain(ctx context.Context) {
+	up := m.LegsUp()
+	if len(up) == 0 {
+		return
+	}
+	if blockers := m.DrainBlockers(nil); len(blockers) > 0 {
+		m.log.Warn("mclag: legs not drained before stopping", "reasons", strings.Join(blockers, "; "))
+		return
+	}
+	m.log.Info("mclag: draining the legs before stopping", "bundles", strings.Join(up, ", "))
+	m.SetMaintenance(true, time.Now())
+	for len(m.LegsUp()) > 0 {
+		select {
+		case <-ctx.Done():
+			m.log.Warn("mclag: legs still up when stopping", "bundles", strings.Join(m.LegsUp(), ", "))
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}

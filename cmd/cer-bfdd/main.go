@@ -33,9 +33,8 @@ func setup(k *daemonkit.Kit) error {
 		return sv.Sessions(), nil
 	})
 	go sv.Run()
-	go func() {
-		<-k.Ctx.Done()
-		sv.Stop()
-	}()
+	// Every session ends with AdminDown: the neighbours do not count it as
+	// a failure.
+	k.OnShutdown(func(context.Context) { sv.Stop() })
 	return nil
 }

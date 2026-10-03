@@ -89,10 +89,11 @@ func setup(k *daemonkit.Kit) error {
 			k.Log.Error("journal", "err", err)
 		}
 	}()
-	go func() {
-		<-k.Ctx.Done()
+	// The queued messages (the shutdown's own among them) go out first.
+	k.OnShutdown(func(ctx context.Context) {
+		d.hub.Drain(ctx)
 		d.hub.Close()
-	}()
+	})
 	return nil
 }
 

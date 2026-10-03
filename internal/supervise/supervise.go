@@ -40,6 +40,20 @@ type Daemon struct {
 	// External: the unit is written and started elsewhere (switchd-update);
 	// it is only watched and reported.
 	External bool
+	// StopStage orders the shutdown (lower first; the same stage stops in
+	// parallel); StopTimeout is how long a daemon may take to finish its
+	// work (close sessions, tell peers, flush) before it is killed
+	// (default 3 s).
+	StopStage   int
+	StopTimeout time.Duration
+}
+
+// stopTimeout returns the daemon's stop budget.
+func (d Daemon) stopTimeout() time.Duration {
+	if d.StopTimeout > 0 {
+		return d.StopTimeout
+	}
+	return 3 * time.Second
 }
 
 // Unit returns the systemd unit name.
@@ -63,15 +77,28 @@ var netCaps = []string{"CAP_NET_ADMIN", "CAP_NET_RAW"}
 // its program exists (PLAN.md Phase 9a stages).
 var Daemons = []Daemon{
 	{Program: "switchd-update", Name: "update", Help: "update daemon", Always: true, External: true},
-	{Program: "cer-lacpd", Name: "lacp", Help: "LACP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
-	{Program: "cer-mclagd", Name: "mclag", Help: "MC-LAG", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
-	{Program: "cer-rstpd", Name: "rstp", Help: "RSTP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
-	{Program: "cer-ribd", Name: "routing", Help: "routing table", Always: true, Nice: -5, OOM: -500, Caps: netCaps},
-	{Program: "cer-bfdd", Name: "bfd", Help: "BFD", RealTime: 50, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
-	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps},
-	{Program: "cer-dhcpcd", Name: "dhcp", Help: "DHCP client", Always: true, OOM: -500, Caps: netCaps},
-	{Program: "cer-ntpd", Name: "ntp", Help: "NTP client", Always: true, OOM: -500, Caps: []string{"CAP_SYS_TIME", "CAP_NET_RAW"}},
-	{Program: "cer-syslogd", Name: "syslog", Help: "remote syslog", Always: true, Nice: 10, IOIdle: true, Caps: netCaps},
+	// Stop stage 1 (after the routing protocols, stage 0: cer-ospfd 5 s,
+	// cer-bgpd 10 s, which close their sessions): BFD tells its neighbours
+	// AdminDown.
+	{Program: "cer-bfdd", Name: "bfd", Help: "BFD", RealTime: 50, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond,
+		StopStage: 1, StopTimeout: 2 * time.Second},
+	// Stage 2: MC-LAG takes its legs out of their bundles (it needs
+	// cer-lacpd, stage 3) and ends the MAC synchronisation; the others
+	// close their sockets (LLDP sends shutdown LLDPDUs).
+	{Program: "cer-mclagd", Name: "mclag", Help: "MC-LAG", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond,
+		StopStage: 2, StopTimeout: 5 * time.Second},
+	{Program: "cer-rstpd", Name: "rstp", Help: "RSTP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond,
+		StopStage: 2},
+	{Program: "cer-ribd", Name: "routing", Help: "routing table", Always: true, Nice: -5, OOM: -500, Caps: netCaps, StopStage: 2},
+	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps, StopStage: 2},
+	{Program: "cer-dhcpcd", Name: "dhcp", Help: "DHCP client", Always: true, OOM: -500, Caps: netCaps, StopStage: 2},
+	{Program: "cer-ntpd", Name: "ntp", Help: "NTP client", Always: true, OOM: -500, Caps: []string{"CAP_SYS_TIME", "CAP_NET_RAW"}, StopStage: 2},
+	// Stage 3: LACP.
+	{Program: "cer-lacpd", Name: "lacp", Help: "LACP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond,
+		StopStage: 3},
+	// Stage 4: syslog last, so the shutdown's own messages still go out.
+	{Program: "cer-syslogd", Name: "syslog", Help: "remote syslog", Always: true, Nice: 10, IOIdle: true, Caps: netCaps,
+		StopStage: 4, StopTimeout: 5 * time.Second},
 }
 
 // Find returns a daemon by restart name or program.
@@ -88,7 +115,9 @@ var unitTemplate = template.Must(template.New("unit").Parse(`# Written by switch
 [Unit]
 Description=cerOS {{.D.Help}} ({{.D.Program}})
 Documentation=file:///usr/share/doc/switchd/config-reference.md
-After=switchd.service
+# Stopped after switchd at shutdown: switchd stops the daemons itself, in
+# order (reference 1.9).
+Before=switchd.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -98,7 +127,9 @@ ExecStart={{.Exec}}
 Restart=always
 RestartSec={{.RestartMs}}ms
 WatchdogSec=10s
-TimeoutStopSec=5s
+# The daemon finishes within its budget (-stop-timeout); then it is killed.
+TimeoutStopSec={{.StopSec}}s
+SendSIGKILL=yes
 {{- if .D.RealTime}}
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority={{.D.RealTime}}
@@ -122,12 +153,15 @@ func Unit(d Daemon, path string, args []string) string {
 		delay = 200 * time.Millisecond
 	}
 	var b bytes.Buffer
+	args = append(slices.Clone(args), "-stop-timeout", d.stopTimeout().String())
 	unitTemplate.Execute(&b, struct {
 		D         Daemon
 		Exec      string
 		RestartMs int64
 		Caps      string
-	}{d, strings.Join(append([]string{path}, args...), " "), delay.Milliseconds(), strings.Join(d.Caps, " ")})
+		StopSec   int
+	}{d, strings.Join(append([]string{path}, args...), " "), delay.Milliseconds(), strings.Join(d.Caps, " "),
+		int((d.stopTimeout() + 2*time.Second + time.Second - 1) / time.Second)})
 	return b.String()
 }
 
@@ -162,6 +196,10 @@ type Backend interface {
 	Stop(unit string) error
 	Restart(unit string) error
 	Show(units []string) (map[string]UnitState, error)
+	// StopWait stops a unit and returns when it has ended (or after
+	// timeout); Kill ends it at once.
+	StopWait(unit string, timeout time.Duration) error
+	Kill(unit string) error
 }
 
 // Status is one program for show system processes.
@@ -197,9 +235,10 @@ type Supervisor struct {
 	// Daemons overrides the package table (tests).
 	Daemons []Daemon
 
-	mu      sync.Mutex
-	tracked map[string]*tracked
-	units   map[string]string // unit -> content written
+	mu       sync.Mutex
+	tracked  map[string]*tracked
+	units    map[string]string // unit -> content written
+	stopping bool              // Shutdown runs: nothing is started any more
 }
 
 type tracked struct {
@@ -251,6 +290,9 @@ func (s *Supervisor) note(text string) {
 func (s *Supervisor) Step(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopping {
+		return
+	}
 	if s.tracked == nil {
 		s.tracked, s.units = map[string]*tracked{}, map[string]string{}
 	}
@@ -462,4 +504,54 @@ func (s *Supervisor) Status() []Status {
 		out = append(out, st)
 	}
 	return out
+}
+
+// Shutdown stops every daemon (switchd stops, or the system shuts down):
+// stage by stage, the daemons of a stage in parallel; each may take its
+// stop budget to finish its work, one that takes longer (it hangs) is
+// killed. Nothing is started any more afterwards. External units
+// (switchd-update) keep running. ctx bounds the whole shutdown.
+func (s *Supervisor) Shutdown(ctx context.Context) {
+	s.mu.Lock()
+	s.stopping = true
+	for _, t := range s.tracked {
+		t.expectEnd = time.Now().Add(time.Hour) // not failures
+	}
+	s.mu.Unlock()
+	stages := map[int][]Daemon{}
+	for _, d := range s.daemons() {
+		if !d.External && s.Backend.Installed(s.path(d)) {
+			stages[d.StopStage] = append(stages[d.StopStage], d)
+		}
+	}
+	for _, st := range slices.Sorted(maps.Keys(stages)) {
+		var wg sync.WaitGroup
+		for _, d := range stages[st] {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.stopOne(ctx, d)
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+// stopOne stops a daemon within its budget (and the unit's kill timeout),
+// killing it when it does not end.
+func (s *Supervisor) stopOne(ctx context.Context, d Daemon) {
+	start := time.Now()
+	budget := d.stopTimeout() + 3*time.Second // the unit kills at budget + 2 s
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < budget {
+		budget = max(time.Until(dl), time.Second) // late, but still a moment to close
+	}
+	err := s.Backend.StopWait(d.Unit(), budget)
+	if err == nil {
+		s.Log.Info(d.Program+" stopped", "took", time.Since(start).Round(time.Millisecond))
+		return
+	}
+	s.Log.Warn(d.Program+" did not stop in time; killed", "after", time.Since(start).Round(time.Millisecond), "err", err)
+	if err := s.Backend.Kill(d.Unit()); err != nil {
+		s.Log.Error(d.Program+" not killed", "err", err)
+	}
 }

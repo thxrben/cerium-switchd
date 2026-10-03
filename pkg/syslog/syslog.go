@@ -159,6 +159,24 @@ func (h *Hub) Configure(hosts []Host, hostName func() string, bufSize int) {
 	}
 }
 
+// Drain waits until every forwarder sent its queue (or ctx ends).
+func (h *Hub) Drain(ctx context.Context) {
+	for {
+		queued := 0
+		for _, s := range h.Stats() {
+			queued += s.Queued
+		}
+		if queued == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 // Close stops all forwarders.
 func (h *Hub) Close() { h.Configure(nil, nil, 0) }
 

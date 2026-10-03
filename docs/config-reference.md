@@ -274,6 +274,17 @@ restarts (a restart of switchd is hitless, and so is one of a daemon). Daemons t
 (watchdog); one that hangs for 10 s is ended and restarted like one that crashed. A daemon that ends unexpectedly is
 started again after 0.2 s (`cer-lacpd` and `cer-bfdd` after 0.1 s), however often that happens.
 
+**Stopping.** When switchd is stopped (the system shuts down, `request system reboot|halt|power-off`, or
+`systemctl stop switchd`), it first drains the member where that applies (5.2), then stops the daemons in this order,
+the daemons of one step in parallel, each with a budget to finish its work: the routing protocols (they close their
+sessions: BGP 10 s, OSPF 5 s), BFD (its sessions end with AdminDown, so neighbours do not count a failure; 2 s),
+then MC-LAG (its legs leave their bundles as in maintenance mode when the peer can take over, and MAC
+synchronisation ends; 5 s) together with RSTP, the routing table, LLDP (shutdown LLDPDUs), DHCP (the leases are kept
+for the next start) and NTP (3 s each), then LACP (3 s), and syslog last (it sends what is still queued, the
+shutdown's own messages too; 5 s). A daemon that does not finish within its budget (it hangs) is killed; the whole
+stop takes at most a minute. A **restart** of switchd (or its crash) leaves the daemons running. After a full stop,
+MC-LAG legs rejoin as after a boot (`delay-restore`).
+
 **Every CLI session is told** when a daemon of any member fails and when it is back, e.g.
 `*** member 2: cer-lacpd failed (killed by signal SEGV) and is restarted ***` and
 `*** member 2: cer-lacpd runs again (restart 3 in the last hour) ***`. The same appears in the log (facility `daemon`,

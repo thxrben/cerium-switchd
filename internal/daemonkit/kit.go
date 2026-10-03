@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -38,23 +39,30 @@ type Options struct {
 	StateDir  string // persistent state (default /var/lib/switchd)
 	Member    int
 	Log       *slog.Logger
+	// StopTimeout is the daemon's budget to finish when told to stop
+	// (switchd gives it; systemd kills it a little later).
+	StopTimeout time.Duration
 }
 
 // Kit is a running daemon's connection to the rest of the switch.
 type Kit struct {
 	Options
-	Ctx context.Context
+	// Ctx is the daemon's life: it ends after the shutdown work (Shutdown),
+	// so the daemon keeps working while it finishes.
+	Ctx    context.Context
+	cancel context.CancelFunc
 	// Endpoint serves this daemon's calls and topics (to switchd and to
 	// other daemons).
 	Endpoint *ipc.Endpoint
 	// Switchd is the connection to switchd.
 	Switchd *ipc.Client
 
-	mu     sync.Mutex
-	stack  []string
-	role   svc.Role
-	roleOK bool
-	onRole []func(svc.Role)
+	mu       sync.Mutex
+	shutdown []func(context.Context)
+	stack    []string
+	role     svc.Role
+	roleOK   bool
+	onRole   []func(svc.Role)
 	// subscriptions to switchd registered before Start.
 	pending []pendingSub
 }
@@ -68,7 +76,52 @@ func New(ctx context.Context, o Options) *Kit {
 		o.StateDir = "/var/lib/switchd"
 	}
 	e := ipc.NewEndpoint(o.Name, version.Version, o.Log)
-	return &Kit{Options: o, Ctx: ctx, Endpoint: e}
+	kctx, cancel := context.WithCancel(ctx)
+	return &Kit{Options: o, Ctx: kctx, cancel: cancel, Endpoint: e}
+}
+
+// OnShutdown registers work to do when the daemon is told to stop (close
+// sessions, tell peers, flush queues). The hooks run in parallel with a
+// context that ends at the stop budget; the daemon exits when they return
+// or the budget is spent (a hook that hangs does not keep it).
+func (k *Kit) OnShutdown(f func(ctx context.Context)) {
+	k.mu.Lock()
+	k.shutdown = append(k.shutdown, f)
+	k.mu.Unlock()
+}
+
+// Shutdown runs the shutdown hooks within the stop budget.
+func (k *Kit) Shutdown() {
+	budget := k.StopTimeout
+	if budget <= 0 {
+		budget = 3 * time.Second
+	}
+	// A little before systemd's kill, so the exit is clean.
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	k.mu.Lock()
+	hooks := slices.Clone(k.shutdown)
+	k.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for _, f := range hooks {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				f(ctx)
+			}()
+		}
+		wg.Wait()
+		close(done)
+	}()
+	start := time.Now()
+	select {
+	case <-done:
+		k.Log.Info(k.Name+" finished", "took", time.Since(start).Round(time.Millisecond))
+	case <-ctx.Done():
+		k.Log.Warn(k.Name+" did not finish its shutdown work in time; ending anyway", "budget", budget)
+	}
 }
 
 // HandleStack serves a stacking-protocol method: calls of the same daemon
@@ -217,6 +270,7 @@ func Main(name string, setup func(k *Kit) error) {
 	sockDir := fs.String("socket-dir", svc.SocketDir, "directory of the programs' sockets")
 	stateDir := fs.String("state-dir", "/var/lib/switchd", "directory for persistent state")
 	member := fs.Int("member", 0, "this switch's member id")
+	stopTimeout := fs.Duration("stop-timeout", 3*time.Second, "time to finish when told to stop")
 	debug := fs.Bool("debug", false, "debug logging")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Parse(os.Args[1:])
@@ -234,16 +288,16 @@ func Main(name string, setup func(k *Kit) error) {
 	}
 	log := slog.New(journal.NewHandler(journal.Options{Identifier: name, Level: level, Fields: fields}))
 	slog.SetDefault(log)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	sig, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	k := New(ctx, Options{Name: name, SocketDir: *sockDir, StateDir: *stateDir, Member: *member, Log: log})
-	if err := run(k, setup); err != nil {
+	k := New(context.Background(), Options{Name: name, SocketDir: *sockDir, StateDir: *stateDir, Member: *member, Log: log, StopTimeout: *stopTimeout})
+	if err := run(k, sig, setup); err != nil {
 		log.Error(name+" failed", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(k *Kit, setup func(*Kit) error) error {
+func run(k *Kit, sig context.Context, setup func(*Kit) error) error {
 	if err := setup(k); err != nil {
 		return err
 	}
@@ -266,7 +320,10 @@ func run(k *Kit, setup func(*Kit) error) error {
 			}
 		}()
 	}
-	<-k.Ctx.Done()
-	k.Log.Info(k.Name + " stopped")
+	<-sig.Done()
+	sdnotify.Notify("STOPPING=1")
+	k.Log.Info(k.Name + " stopping")
+	k.Shutdown()
+	k.cancel()
 	return nil
 }

@@ -23,8 +23,12 @@ import (
 func Client(rw io.ReadWriter, r *bufio.Reader, in *os.File, out io.Writer, resize <-chan [2]uint16) (int, error) {
 	w := &writer{w: rw}
 	stop := make(chan struct{})
-	defer close(stop)
+	exited := make(chan struct{})
+	// The input reader ends before Client returns: nothing typed after
+	// the shell ended is consumed.
+	defer func() { close(stop); <-exited }()
 	go func() {
+		defer close(exited)
 		fd := int(in.Fd())
 		buf := make([]byte, 4096)
 		for {
@@ -45,6 +49,11 @@ func Client(rw io.ReadWriter, r *bufio.Reader, in *os.File, out io.Writer, resiz
 			}
 			if n == 0 || fds[0].Revents == 0 {
 				continue
+			}
+			select {
+			case <-stop:
+				return
+			default:
 			}
 			k, err := unix.Read(fd, buf)
 			if k <= 0 || err != nil {

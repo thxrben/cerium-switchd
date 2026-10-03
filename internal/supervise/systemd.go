@@ -74,6 +74,28 @@ func (s *Systemd) Restart(unit string) error {
 	return err
 }
 
+// StopWait stops a unit and waits until it has ended (systemd kills it at
+// its TimeoutStopSec); timeout bounds the wait here.
+func (s *Systemd) StopWait(unit string, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.systemctl("stop", unit)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("%s still running after %s", unit, timeout)
+	}
+}
+
+// Kill ends a unit's processes at once.
+func (s *Systemd) Kill(unit string) error {
+	_, err := s.systemctl("kill", "--signal=SIGKILL", unit)
+	return err
+}
+
 var showProps = "Id,LoadState,ActiveState,SubState,Result,MainPID,NRestarts,ExecMainCode,ExecMainStatus,ActiveEnterTimestamp,MemoryCurrent,CPUUsageNSec"
 
 // Show reads the units' states (one systemctl call for all).

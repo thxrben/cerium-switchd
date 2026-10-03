@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,5 +106,37 @@ func TestKitWithSwitchd(t *testing.T) {
 	k.Notify("cer-test is fine")
 	if n := <-notes; n != "cer-test is fine" {
 		t.Fatalf("notice %q", n)
+	}
+}
+
+// The shutdown work runs while the daemon still works (Ctx alive), in
+// parallel, within the budget; a hook that hangs does not keep it.
+func TestShutdownHooks(t *testing.T) {
+	k := New(context.Background(), Options{Name: "cer-test", Log: quiet, StopTimeout: 200 * time.Millisecond})
+	var mu sync.Mutex
+	var done []string
+	k.OnShutdown(func(ctx context.Context) {
+		if k.Ctx.Err() != nil {
+			t.Error("the daemon's context ended before its shutdown work")
+		}
+		mu.Lock()
+		done = append(done, "quick")
+		mu.Unlock()
+	})
+	k.OnShutdown(func(ctx context.Context) {
+		<-ctx.Done() // hangs until the budget is spent
+		mu.Lock()
+		done = append(done, "slow")
+		mu.Unlock()
+	})
+	start := time.Now()
+	k.Shutdown()
+	if d := time.Since(start); d < 150*time.Millisecond || d > time.Second {
+		t.Errorf("shutdown took %v with a 200 ms budget", d)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(done, "quick") {
+		t.Errorf("hooks run: %v", done)
 	}
 }

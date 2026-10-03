@@ -50,15 +50,15 @@ func setup(k *daemonkit.Kit) error {
 	k.Endpoint.Handle(svc.MethodStatus, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
 		return m.Bindings(), nil
 	})
+	// A restart keeps the leases; removing the statement (Sync) releases
+	// them.
+	k.OnShutdown(func(context.Context) { m.Shutdown() })
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-k.Ctx.Done():
-				// A restart keeps the leases; removing the statement (Sync)
-				// releases them.
-				m.Shutdown()
 				return
 			case <-changed:
 			case <-t.C:
