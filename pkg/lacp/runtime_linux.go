@@ -86,6 +86,7 @@ type rtSock struct {
 	mac     net.HardwareAddr
 	bundle  string
 	stop    chan struct{}
+	sendErr string // the last send error (logged once until a send works)
 }
 
 type rxFrame struct {
@@ -487,7 +488,14 @@ func (r *Runtime) send(port string, p *PDU) {
 	var addr [8]byte
 	copy(addr[:], Dest)
 	err := unix.Sendto(s.fd, p.Frame(s.mac), 0, &unix.SockaddrLinklayer{Protocol: htons(EtherType), Ifindex: s.ifindex, Halen: 6, Addr: addr})
-	if err != nil {
-		r.Log.Debug("lacp: send", "port", port, "err", err)
+	switch {
+	case err != nil && err.Error() != s.sendErr:
+		// The LACPDU is counted as sent but did not leave: the partner
+		// never sees this port.
+		s.sendErr = err.Error()
+		r.Log.Warn("lacp: cannot send LACPDUs", "port", port, "err", err)
+	case err == nil && s.sendErr != "":
+		s.sendErr = ""
+		r.Log.Info("lacp: sending LACPDUs again", "port", port)
 	}
 }
