@@ -57,6 +57,9 @@ type Runtime struct {
 	// frames come back to it through the stack. Called with the runtime
 	// locked; it must not call back, and it should return quickly.
 	BeforeJoin func(bundle string)
+	// OnChange is called (with the runtime locked: it must not block or
+	// call back) after a port started or stopped carrying traffic.
+	OnChange func()
 
 	mu       sync.Mutex
 	bundles  map[string]*rtBundle
@@ -274,6 +277,9 @@ func (r *Runtime) enforce(rb *rtBundle) {
 			continue
 		}
 		rb.enabled[p] = on
+		if r.OnChange != nil {
+			r.OnChange()
+		}
 		state := "left"
 		if on {
 			state = "joined"

@@ -63,6 +63,7 @@ var netCaps = []string{"CAP_NET_ADMIN", "CAP_NET_RAW"}
 // its program exists (PLAN.md Phase 9a stages).
 var Daemons = []Daemon{
 	{Program: "switchd-update", Name: "update", Help: "update daemon", Always: true, External: true},
+	{Program: "cer-lacpd", Name: "lacp", Help: "LACP", Always: true, Nice: -10, OOM: -900, Caps: netCaps, RestartDelay: 100 * time.Millisecond},
 	{Program: "cer-lldpd", Name: "lldp", Help: "LLDP", Always: true, OOM: -500, Caps: netCaps},
 	{Program: "cer-dhcpcd", Name: "dhcp", Help: "DHCP client", Always: true, OOM: -500, Caps: netCaps},
 	{Program: "cer-ntpd", Name: "ntp", Help: "NTP client", Always: true, OOM: -500, Caps: []string{"CAP_SYS_TIME", "CAP_NET_RAW"}},

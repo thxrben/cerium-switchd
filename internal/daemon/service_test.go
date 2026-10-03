@@ -129,3 +129,60 @@ func TestMirrorOverDaemonRestart(t *testing.T) {
 		t.Fatalf("after the restart %v", st)
 	}
 }
+
+// MC-LAG's holds reach cer-lacpd as state (also after the daemon
+// restarts), and the daemon's legs reach MC-LAG.
+func TestLACPLink(t *testing.T) {
+	dir, err := os.MkdirTemp("", "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := newService(1, nil, func(string) {}, func() svc.Role { return svc.Role{Member: 1, Master: true} }, log)
+	link := newLACPLink(s)
+	if err := s.start(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	link.SetHold("ae1", true)
+	link.SetPeerReady("ae2", 2)
+
+	k := daemonkit.New(ctx, daemonkit.Options{Name: "cer-lacpd", SocketDir: dir, Log: log})
+	k.Endpoint.Replace(svc.TopicLACPLegs, map[string]any{"ae1": false, "ae2": true})
+	control := make(chan ipc.Event, 10)
+	k.Subscribe(svc.TopicLACPControl, "", func(ev ipc.Event) { control <- ev })
+	if err := k.Start(); err != nil {
+		t.Fatal(err)
+	}
+	next := func() ipc.Event {
+		select {
+		case ev := <-control:
+			return ev
+		case <-time.After(5 * time.Second):
+			t.Fatal("no control event")
+		}
+		return ipc.Event{}
+	}
+	got := map[string]string{}
+	for ev := next(); !ev.Sync; ev = next() {
+		got[ev.Key] = string(ev.Value)
+	}
+	if got["ae1"] != `{"hold":true}` || got["ae2"] != `{"peer_ready":2}` {
+		t.Fatalf("control %v", got)
+	}
+	link.SetHold("ae1", false) // nothing left for ae1: the key goes away
+	if ev := next(); ev.Key != "ae1" || !ev.Deleted {
+		t.Fatalf("release %+v", ev)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if l := link.Legs(); len(l) == 2 && l["ae2"] && !l["ae1"] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("legs %v", link.Legs())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

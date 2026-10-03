@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"crypto/sha256"
-	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"os"
 	"sort"
 	"strconv"
@@ -73,15 +72,4 @@ func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool),
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out
-}
-
-// teamKernel is lacp.Kernel on the real team devices.
-type teamKernel struct{}
-
-func (teamKernel) SetPort(bundle, port string, on bool) error {
-	return netdev.SetTeamPort(bundle, port, on)
-}
-
-func (teamKernel) PortsEnabled(bundle string) (map[string]bool, error) {
-	return netdev.TeamPortsEnabled(bundle)
 }

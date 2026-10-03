@@ -19,7 +19,6 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
 // mclagCtl runs this member's side of its MC-LAG domain (reference 5.6):
@@ -27,7 +26,7 @@ import (
 // legs out of their bundles when needed and keeps the split horizon.
 type mclagCtl struct {
 	member  int
-	lacp    *lacp.Runtime
+	lacp    lacpControl
 	stack   *stackCtl // nil: no stack control (no peer communication)
 	sysRoot string
 	log     *slog.Logger
@@ -165,7 +164,7 @@ func bundleFacts(cfg *model.Config, name string) string {
 	return fmt.Sprintf("%s, mtu %d, lacp %s", sw, i.MTU, mode)
 }
 
-func newMCLAG(member int, rt *lacp.Runtime, stack *stackCtl, log *slog.Logger) *mclagCtl {
+func newMCLAG(member int, rt lacpControl, stack *stackCtl, log *slog.Logger) *mclagCtl {
 	m := &mclagCtl{member: member, lacp: rt, stack: stack, sysRoot: "/sys", log: log, started: time.Now(), holds: map[string]string{},
 		differs: map[string]time.Time{}, drainFrom: map[string]time.Time{}}
 	m.macs = newMACSync(m, log)

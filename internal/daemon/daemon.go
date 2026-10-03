@@ -38,7 +38,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/packaging"
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
-	"github.com/thxrben/cerium-switchd/pkg/lacp"
+	"github.com/thxrben/cerium-switchd/pkg/ipc"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 )
 
@@ -184,17 +184,25 @@ func Run(ctx context.Context, o Options) error {
 	osHost := &osconf.Host{StateDir: o.StateDir, Log: log, Hostname: os.Hostname,
 		SetHostname: func(n string) error { return unix.Sethostname([]byte(n)) }}
 	var mclagRef atomic.Pointer[mclagCtl]
-	lacpRT := &lacp.Runtime{Kernel: teamKernel{}, StateFile: filepath.Join(o.StateDir, "lacp.json"), Log: log,
-		BeforeLeave: func(b string) {
-			if m := mclagRef.Load(); m != nil {
-				m.beforeLeave(b)
-			}
-		},
-		BeforeJoin: func(b string) {
-			if m := mclagRef.Load(); m != nil {
-				m.beforeJoin(b)
-			}
-		}}
+	// LACP runs in cer-lacpd (reference 1.9); MC-LAG decides holds and is
+	// called before legs join or leave.
+	lacpRT := newLACPLink(services)
+	services.ep.Handle(svc.MethodBeforeJoin, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var b string
+		json.Unmarshal(raw, &b)
+		if m := mclagRef.Load(); m != nil {
+			m.beforeJoin(b)
+		}
+		return nil, nil
+	})
+	services.ep.Handle(svc.MethodBeforeLeave, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var b string
+		json.Unmarshal(raw, &b)
+		if m := mclagRef.Load(); m != nil {
+			m.beforeLeave(b)
+		}
+		return nil, nil
+	})
 	sysMAC := lacpSystemMAC(vc.StackID())
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
@@ -209,7 +217,9 @@ func Run(ctx context.Context, o Options) error {
 	applier.afterApply = func(cfg *model.Config) {
 		rt.Apply(cfg)
 		// LACP bundles: after the data plane created their devices.
-		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
+		if !o.DryRun {
+			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, sysMAC), Hooks: svc.Switchd})
+		}
 		if !o.DryRun {
 			sys, ports := lldpConfig(cfg, member, names, chassisMAC, vc.IsPort)
 			services.setConfig("cer-lldpd", lldp.Config{System: sys, Ports: ports})
@@ -315,19 +325,6 @@ func Run(ctx context.Context, o Options) error {
 		if err := services.start(ctx, ""); err != nil {
 			log.Error("service socket", "err", err)
 		}
-		// LACP's port states for the daemons that report them (LLDP).
-		go func() {
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			for {
-				services.ep.Publish(svc.TopicLACPPorts, "", lacpRT.EnabledPorts())
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-				}
-			}
-		}()
 		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
@@ -360,7 +357,6 @@ func Run(ctx context.Context, o Options) error {
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
-		go lacpRT.Run(ctx)
 	}
 	if !o.DryRun {
 		go kernel.EnforceMACLimits(ctx, log)
@@ -394,7 +390,7 @@ func Run(ctx context.Context, o Options) error {
 	liveOps := &ops{restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
-		liveOps.lacp, liveOps.mclag = lacpRT, mclag
+		liveOps.mclag = mclag
 		liveOps.svc = services
 		var node *control.Node
 		if ctl != nil {

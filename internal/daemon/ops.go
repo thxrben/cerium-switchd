@@ -46,7 +46,6 @@ type ops struct {
 	notify  func(string)
 	log     *slog.Logger
 	dryRun  bool
-	lacp    *lacp.Runtime
 	// svc reaches the cer- daemons (reference 1.9).
 	svc     *service
 	updater *updater
@@ -759,10 +758,16 @@ func (o *ops) LLDP() (cli.LLDPStatus, error) {
 }
 
 func (o *ops) LACP() ([]lacp.BundleStatus, error) {
-	if o.lacp == nil {
-		return nil, errors.New("LACP is not running (dry-run mode?)")
+	if o.svc == nil {
+		return nil, nil
 	}
-	return o.lacp.Status(), nil
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st []lacp.BundleStatus
+	if err := o.svc.call(ctx, "cer-lacpd", svc.MethodStatus, nil, &st); err != nil {
+		return nil, err
+	}
+	return st, nil
 }
 
 func (o *ops) MCLAG() ([]cli.MCLAGStatus, error) {

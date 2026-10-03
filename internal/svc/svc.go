@@ -21,6 +21,8 @@ package svc
 import (
 	"encoding/json"
 	"path/filepath"
+
+	"github.com/thxrben/cerium-switchd/pkg/lacp"
 )
 
 // SocketDir holds the sockets of all programs.
@@ -104,4 +106,36 @@ const TopicLeases = "leases"
 type Lease struct {
 	Addr   string `json:"addr"`             // prefix, e.g. 10.1.2.50/24
 	Router string `json:"router,omitempty"` // "" none
+}
+
+// LACP between cer-lacpd and the program that runs MC-LAG (reference 5.6,
+// 1.9). cer-lacpd serves the topics TopicLACPLegs (key: bundle, value:
+// whether this member's leg carries traffic), TopicLACPReady (key: bundle,
+// value: ports LACP has ready) and TopicLACPPorts. The MC-LAG program
+// serves TopicLACPControl (key: bundle, value: LACPControl) and the calls
+// MethodBeforeJoin and MethodBeforeLeave (request: the bundle name), which
+// cer-lacpd makes before a leg carries traffic and before its last port
+// leaves while held.
+const (
+	TopicLACPLegs     = "lacp-legs"
+	TopicLACPReady    = "lacp-ready"
+	TopicLACPControl  = "lacp-control"
+	MethodBeforeJoin  = "lacp.before-join"
+	MethodBeforeLeave = "lacp.before-leave"
+)
+
+// LACPControl is what MC-LAG decides for a bundle's leg on this member.
+type LACPControl struct {
+	// Hold keeps the leg out of its bundle.
+	Hold bool `json:"hold,omitempty"`
+	// PeerReady: ports the peer has ready (minimum-links counts both).
+	PeerReady int `json:"peer_ready,omitempty"`
+}
+
+// LACPConfig is cer-lacpd's configuration.
+type LACPConfig struct {
+	Bundles []lacp.BundleSpec `json:"bundles,omitempty"`
+	// Hooks names the program serving TopicLACPControl and the calls
+	// (switchd, or cer-mclagd).
+	Hooks string `json:"hooks,omitempty"`
 }
