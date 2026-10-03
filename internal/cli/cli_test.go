@@ -485,6 +485,18 @@ func (f *fakeOps) Neighbors(ipv6 bool) ([]Neighbor, error) {
 	}, nil
 }
 
+func (f *fakeOps) Processes() ([]Process, error) {
+	return []Process{
+		{Program: "switchd", State: "running", PID: 812, Since: time.Now().Add(-3 * time.Hour), Memory: 48 << 20, CPU: 95 * time.Second, Scheduling: "nice -10"},
+		{Program: "switchd-update", State: "restarting", Restarts: 2, LastFailure: "killed by signal SEGV", FailedAt: time.Now().Add(-90 * time.Second), Scheduling: "nice 0"},
+	}, nil
+}
+
+func (f *fakeOps) RestartDaemon(name, user string) error {
+	f.power = append(f.power, "restart "+name+" "+user)
+	return nil
+}
+
 func (f *fakeOps) Uptime() (Uptime, error) {
 	return Uptime{Booted: time.Now().Add(-26 * time.Hour), Started: time.Now().Add(-90 * time.Second), Load: [3]float64{0.5, 0.25, 0.125}}, nil
 }
@@ -849,6 +861,15 @@ func TestSystemOperationalCommands(t *testing.T) {
 	contains(t, ts.ok("show system offload"), "1/0/0      enp1s0f0     tg3         1G     yes   no        -    -     on   on   on")
 	contains(t, ts.ok("show system ntp"), "Synchronized: yes, clock slewed 00:01:30 ago", "Queries leave through: mgmt_ceros",
 		"* 10.0.0.1 (prefer)", "1.5ms", "ntp.example.net", "(no answer)", "not queried yet")
+	contains(t, ts.ok("show system processes"), "Program         State         PID      Uptime     Restarts  Memory   CPU       Scheduling",
+		"switchd         running       812      03:00:00   0         48.0M    1m35s     nice -10",
+		"switchd-update  restarting    -        -          2", "Last failures:", "switchd-update: killed by signal SEGV (00:01:30 ago)")
+	ops.power = nil
+	contains(t, ts.ok("restart update"), "switchd-update restarted")
+	if len(ops.power) != 1 || !strings.HasPrefix(ops.power[0], "restart update ") {
+		t.Errorf("restart: %v", ops.power)
+	}
+	ops.power = nil
 	contains(t, ts.ok("show system uptime"), "Current time: ", "System booted: ", "(1d 02:00 ago)", "switchd started: ", "(00:01:30 ago)", "Load averages: 0.50 0.25 0.12")
 
 	ts.term.answers = []string{"no"}

@@ -36,6 +36,8 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/ntp"
 	"github.com/thxrben/cerium-switchd/internal/routing"
 	"github.com/thxrben/cerium-switchd/internal/rpcserver"
+	"github.com/thxrben/cerium-switchd/internal/supervise"
+	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/syslog"
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/packaging"
@@ -279,6 +281,49 @@ func Run(ctx context.Context, o Options) error {
 		go ctl.run(ctx)
 	}
 	mgmt.start(ctx)
+	// Notices for the CLI sessions of the whole stack: the sessions run on
+	// the master (reference 1.8).
+	notifyStack := func(text string) {
+		if ctl != nil && !ctl.node.IsMaster() {
+			if m := ctl.node.Master(); m != 0 {
+				if _, err := ctl.node.Call(m, "notice", text, 5*time.Second); err == nil {
+					return
+				}
+			}
+		}
+		srv.Notify(context.Background(), text)
+	}
+	if ctl != nil {
+		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {
+			var text string
+			if err := json.Unmarshal(req, &text); err != nil {
+				return nil, err
+			}
+			srv.Notify(context.Background(), text)
+			return nil, nil
+		})
+	}
+	// The cer- daemons (reference 1.9): switchd's service socket, and the
+	// supervisor that starts and watches them (only for a switchd that
+	// systemd runs: a program started by hand leaves the system alone).
+	services := newService(member, ctl, notifyStack, func() svc.Role {
+		return roleOf(member, ctl, func() *model.Config {
+			cfg, _ := model.Build(engine.Active().Active(), nil)
+			return cfg
+		}, hostName, vc.StackID())
+	}, log)
+	var sup *supervise.Supervisor
+	if !o.DryRun {
+		if err := services.start(ctx, ""); err != nil {
+			log.Error("service socket", "err", err)
+		}
+		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
+			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
+				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
+				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) }}
+			go sup.Run(ctx)
+		}
+	}
 	if !o.DryRun {
 		mclag = newMCLAG(member, lacpRT, ctl, log)
 		mclagRef.Store(mclag)
@@ -350,6 +395,7 @@ func Run(ctx context.Context, o Options) error {
 		maint.Store(liveOps.maint)
 		liveOps.stp = stp
 		liveOps.dhcp = dhcpMgr
+		liveOps.sup = sup
 		upd := &updater{member: member, dir: softwareDir, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
 			mgmtVRF: func() string {
@@ -530,4 +576,23 @@ func replaceConfigAs(stateDir, backup, comment string, cfg json.RawMessage) erro
 	raw, _ := json.Marshal(config.ToJSON(tree.Root))
 	return st.Put(&commit.Revision{Seq: 1, Time: time.Now().UTC(), User: "system",
 		Comment: comment, Config: raw}, 0)
+}
+
+// wantedDaemons reports which daemons that do not always run are needed by
+// the active configuration (reference 1.9).
+func wantedDaemons(engine *commit.Engine) map[string]bool {
+	out := map[string]bool{}
+	cfg, _ := model.Build(engine.Active().Active(), nil)
+	if cfg == nil {
+		return out
+	}
+	for _, r := range cfg.AllRouting() {
+		if r.OSPF != nil && !r.OSPF.Disabled || r.OSPF3 != nil && !r.OSPF3.Disabled {
+			out["cer-ospfd"] = true
+		}
+		if r.BGP != nil && !r.BGP.Disabled {
+			out["cer-bgpd"] = true
+		}
+	}
+	return out
 }

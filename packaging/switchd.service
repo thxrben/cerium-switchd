@@ -15,6 +15,12 @@ ExecStopPost=-/usr/sbin/ip link del cme
 EnvironmentFile=-/etc/default/switchd
 Restart=always
 RestartSec=1
+# The stacking protocol (stacking BFD) comes first when the CPUs are busy
+# (reference 1.9).
+Nice=-10
+OOMScoreAdjust=-900
+# The cer- daemons are units of their own (switchd writes and starts them):
+# they keep running while switchd restarts.
 RuntimeDirectory=switchd
 RuntimeDirectoryPreserve=yes
 StateDirectory=switchd

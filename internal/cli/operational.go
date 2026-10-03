@@ -1395,12 +1395,14 @@ func registerOperational() {
 						&command{name: "ntp", help: "Show the NTP servers and the clock", class: commit.ReadOnly, run: (*Shell).showNTP},
 						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload},
 						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits},
-						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks})
+						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
+						&command{name: "processes", help: "Show switchd and the daemons, their state and restarts", class: commit.ReadOnly, run: (*Shell).showProcesses})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })
 		}
 	}
+	operational = append(operational, restartCommand())
 	operational = append(operational, &command{name: "clear", help: "Clear information", class: commit.Operator, sub: []*command{
 		{name: "ethernet-switching", help: "Clear switching information", class: commit.Operator, sub: []*command{
 			{name: "table", help: "Remove learned MAC addresses", class: commit.Operator, run: (*Shell).clearMACTable, complete: completeMACArgs},

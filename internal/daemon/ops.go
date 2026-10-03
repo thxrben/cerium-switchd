@@ -8,6 +8,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/lldp"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"log/slog"
@@ -51,6 +52,8 @@ type ops struct {
 	maint   *maintCtl
 	stp     *rstpCtl
 	dhcp    *dhcp.Manager
+	// sup starts and watches the cer- daemons (nil: not managed here).
+	sup *supervise.Supervisor
 	// restart ends switchd so that systemd starts it again.
 	restart func()
 	diag    diag.Collector

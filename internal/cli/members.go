@@ -181,6 +181,12 @@ func markPerMember() {
 		cmd.perMember, cmd.confirm = true, p.confirm
 	}
 	findCmd(operational, []string{"show", "chassis", "hardware"}).allMembers = true
+	// The programs of every member (reference 1.9).
+	ps := findCmd(operational, []string{"show", "system", "processes"})
+	ps.perMember, ps.allMembers = true, true
+	for _, r := range findCmd(operational, []string{"restart"}).sub {
+		r.perMember = true
+	}
 	// The members work as one switch: interface listings cover them all.
 	for _, path := range []string{"show interfaces", "show ethernet-switching table", "show vlans", "show chassis hardware",
 		"show system offload", "show arp", "show ipv6 neighbors", "show virtual-chassis vc-port", "show virtual-chassis mtu",
