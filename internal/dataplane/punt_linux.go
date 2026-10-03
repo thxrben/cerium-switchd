@@ -50,11 +50,11 @@ type puntMatch struct {
 }
 
 var puntMatches = []puntMatch{
-	{proto: 89},                   // OSPF
-	{proto: 17, dstPort: 3784},    // BFD single-hop
-	{proto: 17, dstPort: 4784},    // BFD multihop
-	{proto: 6, dstPort: 179},      // BGP, sessions to the switch
-	{proto: 6, srcPort: 179},      // BGP, sessions the switch opened
+	{proto: 89},                // OSPF
+	{proto: 17, dstPort: 3784}, // BFD single-hop
+	{proto: 17, dstPort: 4784}, // BFD multihop
+	{proto: 6, dstPort: 179},   // BGP, sessions to the switch
+	{proto: 6, srcPort: 179},   // BGP, sessions the switch opened
 }
 
 func be16(v uint16) []byte { return binary.BigEndian.AppendUint16(nil, v) }
