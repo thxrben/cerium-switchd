@@ -51,7 +51,6 @@ type ops struct {
 	svc     *service
 	updater *updater
 	mclag   *mclagCtl
-	ntp     *ntp.Client
 	maint   *maintCtl
 	stp     *rstpCtl
 	dhcp    *dhcp.Manager
@@ -327,10 +326,15 @@ func nudState(s int) string {
 }
 
 func (o *ops) NTP() (cli.NTPStatus, error) {
-	if o.ntp == nil {
+	if o.svc == nil {
 		return cli.NTPStatus{}, nil
 	}
-	st := o.ntp.Status()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st ntp.Status
+	if err := o.svc.call(ctx, "cer-ntpd", svc.MethodStatus, nil, &st); err != nil {
+		return cli.NTPStatus{}, err
+	}
 	out := cli.NTPStatus{Synced: st.Synced, LastAdjust: st.LastAdjust, LastStep: st.LastStep, Via: st.Via}
 	for _, s := range st.Servers {
 		out.Servers = append(out.Servers, cli.NTPServerStatus{Host: s.Host, Prefer: s.Prefer, Addr: s.Addr, Stratum: s.Stratum,

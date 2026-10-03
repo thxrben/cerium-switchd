@@ -1,6 +1,7 @@
 package ntp
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -232,5 +233,30 @@ func TestOtherService(t *testing.T) {
 	mk("333", "chronyd")
 	if got := OtherService(dir); got != "chronyd" {
 		t.Errorf("found %q", got)
+	}
+}
+
+type recClock struct{ steps, slews []time.Duration }
+
+func (c *recClock) Step(d time.Duration) error { c.steps = append(c.steps, d); return nil }
+func (c *recClock) Slew(d time.Duration) error { c.slews = append(c.slews, d); return nil }
+
+func TestFollower(t *testing.T) {
+	c := &recClock{}
+	offset := 5 * time.Second
+	f := &Follower{Clock: c, Query: func(context.Context) (time.Time, bool, error) { return time.Now().Add(offset), true, nil }}
+	f.once(context.Background())
+	if len(c.steps) != 1 || c.steps[0] < 4900*time.Millisecond || c.steps[0] > 5100*time.Millisecond {
+		t.Fatalf("steps %v", c.steps)
+	}
+	offset = 20 * time.Millisecond
+	f.once(context.Background())
+	if len(c.slews) != 1 || len(c.steps) != 1 {
+		t.Fatalf("slews %v steps %v", c.slews, c.steps)
+	}
+	f.Query = func(context.Context) (time.Time, bool, error) { return time.Time{}, false, nil } // master itself
+	f.once(context.Background())
+	if len(c.slews) != 1 || len(c.steps) != 1 {
+		t.Fatal("adjusted without a master")
 	}
 }

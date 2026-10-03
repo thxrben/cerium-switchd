@@ -39,7 +39,6 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
-	"github.com/thxrben/cerium-switchd/pkg/ntp"
 )
 
 // Options configure the daemon.
@@ -184,7 +183,6 @@ func Run(ctx context.Context, o Options) error {
 			}
 		}}
 	sysMAC := lacpSystemMAC(vc.StackID())
-	ntpClient := &ntp.Client{Clock: ntp.SystemClock{}, Log: log}
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
 	// The daemons' configuration goes through switchd's service socket
@@ -214,7 +212,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 	// The management services run on the master (reference 1.8).
-	mgmt := &mgmtCtl{member: member, log: log, ntp: ntpClient, sshd: sshd, clock: ntp.SystemClock{}, dryRun: o.DryRun,
+	mgmt := &mgmtCtl{member: member, log: log, sshd: sshd, dryRun: o.DryRun,
 		publish: func(daemon string, v any) {
 			if services != nil {
 				services.setConfig(daemon, v)
@@ -272,7 +270,6 @@ func Run(ctx context.Context, o Options) error {
 		}
 		go ctl.run(ctx)
 	}
-	mgmt.start(ctx)
 	// Notices for the CLI sessions of the whole stack: the sessions run on
 	// the master (reference 1.8).
 	notifyStack := func(text string) {
@@ -390,7 +387,6 @@ func Run(ctx context.Context, o Options) error {
 	if !o.DryRun {
 		liveOps.lacp, liveOps.mclag = lacpRT, mclag
 		liveOps.svc = services
-		liveOps.ntp = ntpClient
 		var node *control.Node
 		if ctl != nil {
 			node = ctl.node
