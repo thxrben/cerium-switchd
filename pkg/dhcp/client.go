@@ -114,6 +114,22 @@ func (c *Client) schedule(now time.Time) {
 	c.retry = min(c.retry*2, maxRetry)
 }
 
+// Resume continues with a lease held before (the daemon restarted): bound
+// until T1, then renewing as usual. An expired lease is not resumed
+// (false: call Start).
+func (c *Client) Resume(l *Lease, now time.Time) bool {
+	if l == nil || !now.Before(l.Expires()) {
+		return false
+	}
+	cp := *l
+	c.lease, c.state, c.offer = &cp, Bound, nil
+	c.next = l.Acquired.Add(l.T1)
+	if c.next.Before(now) {
+		c.next = now
+	}
+	return true
+}
+
 // Start begins (or restarts) with a DISCOVER.
 func (c *Client) Start(now time.Time) []Out {
 	c.newXID(now)

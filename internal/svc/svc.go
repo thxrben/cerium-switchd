@@ -94,3 +94,14 @@ type Notice struct {
 // port carrying traffic in its bundle) is served by the program that runs
 // LACP: LLDP reports bundle membership with it (reference 5.5).
 const TopicLACPPorts = "lacp-ports"
+
+// TopicLeases (served by cer-dhcpcd; key: kernel device, value: Lease) are
+// the DHCP leases; switchd adds their addresses and default routes
+// (reference 5.3.2, 1.9).
+const TopicLeases = "leases"
+
+// Lease is what switchd takes from a DHCP lease.
+type Lease struct {
+	Addr   string `json:"addr"`             // prefix, e.g. 10.1.2.50/24
+	Router string `json:"router,omitempty"` // "" none
+}

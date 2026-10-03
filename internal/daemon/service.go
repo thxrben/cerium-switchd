@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"sync"
@@ -34,11 +35,82 @@ type service struct {
 	mu sync.Mutex
 	// stack: stacking-protocol method -> daemon serving it.
 	stack map[string]string
+	// mirrors: topics of daemons switchd follows, by daemon.
+	mirrors map[string][]*mirror
+}
+
+// mirror keeps a copy of a daemon's topic over its restarts: each new
+// connection delivers the full state, which replaces the copy at its sync.
+type mirror struct {
+	topic string
+	// onChange receives the whole topic after every change.
+	onChange func(map[string]json.RawMessage)
+
+	mu     sync.Mutex
+	state  map[string]json.RawMessage
+	synced bool
+	ready  chan struct{} // closed at the first sync
+}
+
+// Ready is closed once the daemon delivered its topic the first time.
+func (m *mirror) Ready() <-chan struct{} { return m.ready }
+
+// State returns the current copy.
+func (m *mirror) State() map[string]json.RawMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return maps.Clone(m.state)
+}
+
+func (m *mirror) subscribe(c *ipc.Conn) {
+	fresh := map[string]json.RawMessage{}
+	syncing := true
+	c.Subscribe(m.topic, "", func(ev ipc.Event) {
+		m.mu.Lock()
+		if ev.Sync {
+			if syncing {
+				m.state, syncing = fresh, false
+			}
+			if !m.synced {
+				m.synced = true
+				close(m.ready)
+			}
+		} else if syncing {
+			if ev.Deleted {
+				delete(fresh, ev.Key)
+			} else {
+				fresh[ev.Key] = ev.Value
+			}
+			m.mu.Unlock()
+			return
+		} else if ev.Deleted {
+			delete(m.state, ev.Key)
+		} else {
+			m.state[ev.Key] = ev.Value
+		}
+		st := maps.Clone(m.state)
+		m.mu.Unlock()
+		if m.onChange != nil {
+			m.onChange(st)
+		}
+	})
+}
+
+// follow mirrors a topic of a daemon (register before it connects).
+func (s *service) follow(daemon, topic string, onChange func(map[string]json.RawMessage)) *mirror {
+	m := &mirror{topic: topic, onChange: onChange, state: map[string]json.RawMessage{}, ready: make(chan struct{})}
+	s.mu.Lock()
+	s.mirrors[daemon] = append(s.mirrors[daemon], m)
+	s.mu.Unlock()
+	if c := s.ep.ConnTo(daemon); c != nil {
+		m.subscribe(c)
+	}
+	return m
 }
 
 func newService(member int, ctl *stackCtl, notify func(string), role func() svc.Role, log *slog.Logger) *service {
 	s := &service{ep: ipc.NewEndpoint(svc.Switchd, version.Version, log), member: member, log: log, ctl: ctl,
-		notify: notify, role: role, stack: map[string]string{}}
+		notify: notify, role: role, stack: map[string]string{}, mirrors: map[string][]*mirror{}}
 	s.ep.Handle(svc.MethodNote, func(_ context.Context, c *ipc.Conn, raw json.RawMessage) (any, error) {
 		var n svc.Notice
 		if err := json.Unmarshal(raw, &n); err != nil {
@@ -104,12 +176,15 @@ func (s *service) connected(c *ipc.Conn) {
 	if c.Peer().Version != version.Version {
 		s.log.Warn("daemon runs another version than switchd", "daemon", c.Peer().Name, "version", c.Peer().Version, "switchd", version.Version)
 	}
-	if len(meta.Stack) == 0 || s.ctl == nil {
-		return
-	}
 	daemon := c.Peer().Name
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, m := range s.mirrors[daemon] {
+		m.subscribe(c)
+	}
+	if len(meta.Stack) == 0 || s.ctl == nil {
+		return
+	}
 	for _, m := range meta.Stack {
 		if s.stack[m] == daemon {
 			continue // registered at an earlier connect

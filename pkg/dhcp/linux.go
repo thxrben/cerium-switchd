@@ -5,9 +5,11 @@ package dhcp
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -36,9 +38,21 @@ type Manager struct {
 	// obtained, changes or is lost.
 	OnChange func()
 	Log      *slog.Logger
+	// StateFile keeps the leases while the program restarts (on tmpfs: a
+	// reboot starts over); "" none.
+	StateFile string
 
 	mu      sync.Mutex
 	clients map[string]*runner
+	saved   map[string]savedLease // read from StateFile, by device
+	loaded  bool
+}
+
+// savedLease is a lease of a device kept over a restart, with the MAC it
+// was obtained with.
+type savedLease struct {
+	MAC   [6]byte `json:"mac"`
+	Lease Lease   `json:"lease"`
 }
 
 type runner struct {
@@ -48,6 +62,11 @@ type runner struct {
 	done  chan struct{}
 	mu    sync.Mutex
 	srvHW net.HardwareAddr // the server's (or relay's) MAC, for renewals
+	// resumed: the client continues a saved lease (no DISCOVER).
+	resumed bool
+	// keep: stopping keeps the lease (shutdown for a restart) instead of
+	// releasing it (the statement was removed).
+	keep bool
 }
 
 // Sync starts clients for new interfaces and stops (releasing the lease)
@@ -58,6 +77,7 @@ func (m *Manager) Sync(ifs []Iface) {
 	if m.clients == nil {
 		m.clients = map[string]*runner{}
 	}
+	m.loadLocked()
 	want := map[string]Iface{}
 	for _, i := range ifs {
 		want[i.Name] = i
@@ -75,6 +95,68 @@ func (m *Manager) Sync(ifs []Iface) {
 			m.clients[n] = r
 			go m.run(r)
 		}
+	}
+}
+
+// Shutdown stops every client without releasing its lease (the program
+// restarts and resumes them from StateFile).
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	rs := make([]*runner, 0, len(m.clients))
+	for n, r := range m.clients {
+		r.mu.Lock()
+		r.keep = true
+		r.mu.Unlock()
+		close(r.stop)
+		rs = append(rs, r)
+		delete(m.clients, n)
+	}
+	m.mu.Unlock()
+	for _, r := range rs {
+		<-r.done
+	}
+}
+
+func (m *Manager) loadLocked() {
+	if m.loaded {
+		return
+	}
+	m.loaded = true
+	m.saved = map[string]savedLease{}
+	if m.StateFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(m.StateFile)
+	if err != nil {
+		return
+	}
+	if err := json.Unmarshal(raw, &m.saved); err != nil {
+		m.saved = map[string]savedLease{}
+	}
+}
+
+// save writes the current leases to StateFile.
+func (m *Manager) save() {
+	if m.StateFile == "" {
+		return
+	}
+	m.mu.Lock()
+	out := map[string]savedLease{}
+	for n, r := range m.clients {
+		r.mu.Lock()
+		if r.c != nil {
+			if _, l := r.c.State(); l != nil {
+				out[n] = savedLease{MAC: r.c.MAC, Lease: *l}
+			}
+		}
+		r.mu.Unlock()
+	}
+	m.saved = out
+	m.mu.Unlock()
+	raw, _ := json.Marshal(out)
+	tmp := m.StateFile + ".tmp"
+	if os.WriteFile(tmp, raw, 0o600) == nil {
+		os.Rename(tmp, m.StateFile)
 	}
 }
 
@@ -157,7 +239,9 @@ func (m *Manager) run(r *runner) {
 		unix.SetsockoptTimeval(s, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
 		fd, ifindex, mac = s, ifi.Index, ifi.HardwareAddr
 		r.mu.Lock()
+		resume := false
 		if r.c == nil || [6]byte(mac) != r.c.MAC {
+			resume = true
 			// A new client for a new MAC (the old lease belongs to the old one).
 			host := ""
 			if m.HostName != nil {
@@ -169,10 +253,21 @@ func (m *Manager) run(r *runner) {
 				} else {
 					m.Log.Warn("dhcp: lease lost", "interface", r.iface.Unit)
 				}
+				go m.save()
 				if m.OnChange != nil {
 					go m.OnChange()
 				}
 			}}
+		}
+		if resume {
+			// The lease held before this program restarted.
+			m.mu.Lock()
+			sl, ok := m.saved[r.iface.Name]
+			m.mu.Unlock()
+			if ok && sl.MAC == r.c.MAC && r.c.Resume(&sl.Lease, time.Now()) {
+				r.resumed = true
+				m.Log.Info("dhcp: lease kept from before the restart", "interface", r.iface.Unit, "address", sl.Lease.Addr)
+			}
 		}
 		r.mu.Unlock()
 		return true
@@ -208,7 +303,7 @@ func (m *Manager) run(r *runner) {
 		case <-r.stop:
 			r.mu.Lock()
 			var outs []Out
-			if r.c != nil && fd >= 0 {
+			if r.c != nil && fd >= 0 && !r.keep {
 				outs = r.c.Release(time.Now())
 			}
 			r.mu.Unlock()
@@ -226,7 +321,10 @@ func (m *Manager) run(r *runner) {
 		now := time.Now()
 		if !started {
 			r.mu.Lock()
-			outs := r.c.Start(now)
+			var outs []Out
+			if !r.resumed {
+				outs = r.c.Start(now)
+			}
 			r.mu.Unlock()
 			send(outs)
 			started = true
@@ -318,4 +416,10 @@ func parseFrame(f []byte) (net.HardwareAddr, []byte, bool) {
 		return nil, nil, false
 	}
 	return net.HardwareAddr(append([]byte(nil), f[6:12]...)), u[8:l], true
+}
+
+// Config is what the clients run (computed by switchd for cer-dhcpcd).
+type Config struct {
+	Ifaces   []Iface `json:"ifaces,omitempty"`
+	HostName string  `json:"host_name,omitempty"`
 }

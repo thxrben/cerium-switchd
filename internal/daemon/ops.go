@@ -53,7 +53,6 @@ type ops struct {
 	mclag   *mclagCtl
 	maint   *maintCtl
 	stp     *rstpCtl
-	dhcp    *dhcp.Manager
 	// sup starts and watches the cer- daemons (nil: not managed here).
 	sup *supervise.Supervisor
 	// restart ends switchd so that systemd starts it again.
@@ -444,11 +443,17 @@ func (o *ops) CardForget(card int, user string) error {
 func (o *ops) VLANMTUDrops() (map[int]uint64, error) { return dataplane.VLANMTUDrops() }
 
 func (o *ops) DHCPBindings() ([]cli.DHCPBinding, error) {
-	if o.dhcp == nil {
+	if o.svc == nil {
 		return nil, errors.New("not available (dry-run mode?)")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var bs []dhcp.Binding
+	if err := o.svc.call(ctx, "cer-dhcpcd", svc.MethodStatus, nil, &bs); err != nil {
+		return nil, err
+	}
 	var out []cli.DHCPBinding
-	for _, b := range o.dhcp.Bindings() {
+	for _, b := range bs {
 		cb := cli.DHCPBinding{Unit: b.Unit, State: b.State.String(), Instance: b.VRF}
 		if l := b.Lease; l != nil {
 			cb.Address, cb.Server, cb.Domain, cb.Lease = l.Addr.String(), l.Server.String(), l.Domain, l.Time

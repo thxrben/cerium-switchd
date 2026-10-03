@@ -75,3 +75,57 @@ func TestServiceWithDaemon(t *testing.T) {
 		t.Fatal("stack call without a stack")
 	}
 }
+
+// switchd's copy of a daemon's topic follows the daemon over a restart:
+// keys gone meanwhile disappear, nothing stale stays.
+func TestMirrorOverDaemonRestart(t *testing.T) {
+	dir, err := os.MkdirTemp("", "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := newService(1, nil, func(string) {}, func() svc.Role { return svc.Role{Member: 1, Master: true} }, log)
+	changes := make(chan map[string]json.RawMessage, 10)
+	m := s.follow("cer-dhcpcd", svc.TopicLeases, func(st map[string]json.RawMessage) { changes <- st })
+	if err := s.start(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	run := func(leases map[string]any) context.CancelFunc {
+		kctx, kcancel := context.WithCancel(ctx)
+		k := daemonkit.New(kctx, daemonkit.Options{Name: "cer-dhcpcd", SocketDir: dir, Log: log})
+		k.Endpoint.Replace(svc.TopicLeases, leases)
+		if err := k.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return kcancel
+	}
+	wait := func(want int) map[string]json.RawMessage {
+		for {
+			select {
+			case st := <-changes:
+				if len(st) == want {
+					return st
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("no state with %d leases", want)
+			}
+		}
+	}
+	stop := run(map[string]any{"irb.10": svc.Lease{Addr: "10.1.2.50/24", Router: "10.1.2.1"}, "sw-0-6": svc.Lease{Addr: "10.9.0.7/30"}})
+	<-m.Ready()
+	st := wait(2)
+	got := dhcpLeasesOf(st)
+	if got["irb.10"].Addr.String() != "10.1.2.50/24" || got["irb.10"].Router.String() != "10.1.2.1" || got["sw-0-6"].Router.IsValid() {
+		t.Fatalf("leases %+v", got)
+	}
+	stop()
+	// The daemon comes back holding one lease only.
+	stop = run(map[string]any{"irb.10": svc.Lease{Addr: "10.1.2.50/24", Router: "10.1.2.1"}})
+	defer stop()
+	if st := wait(1); st["irb.10"] == nil {
+		t.Fatalf("after the restart %v", st)
+	}
+}

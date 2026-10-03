@@ -14,6 +14,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,26 +141,38 @@ func Run(ctx context.Context, o Options) error {
 	applier := newKernelApplier(kernel, o.StateDir, o.DryRun, log)
 	applier.member = member
 	applier.inv, applier.names = inv, names
-	// family inet dhcp (reference 5.3.2): the clients follow the data
-	// plane's interfaces, a lease change reconciles it.
-	dhcpMgr := &dhcp.Manager{Log: log, HostName: func() string {
-		if hostName != nil {
-			return hostName()
-		}
-		return ""
-	}, OnChange: func() { applier.reconcile("dhcp lease") }}
+	// The cer- daemons' service (reference 1.9): it exists from the start,
+	// so that the data plane's first apply can use it; it serves once
+	// switchd is set up (below).
+	services := newService(member, nil, nil, nil, log)
+	// family inet dhcp (reference 5.3.2): cer-dhcpcd runs the clients of the
+	// data plane's DHCP interfaces and reports the leases; switchd adds the
+	// addresses and default routes. A lease change reconciles.
+	dhcpLeases := services.follow("cer-dhcpcd", svc.TopicLeases, func(map[string]json.RawMessage) {
+		go applier.reconcile("dhcp lease")
+	})
+	started := time.Now()
 	if !o.DryRun {
 		kernel.DHCP = func(ifs []dataplane.DHCPIf) map[string]dataplane.DHCPLease {
 			var want []dhcp.Iface
 			for _, i := range ifs {
 				want = append(want, dhcp.Iface{Name: i.Name, Unit: i.Unit, VRF: i.VRF})
 			}
-			dhcpMgr.Sync(want)
-			out := map[string]dataplane.DHCPLease{}
-			for n, l := range dhcpMgr.Leases() {
-				out[n] = dataplane.DHCPLease{Addr: l.Addr, Router: l.Router}
+			host := ""
+			if hostName != nil {
+				host = hostName()
 			}
-			return out
+			services.setConfig("cer-dhcpcd", dhcp.Config{Ifaces: want, HostName: host})
+			// After a start of switchd the daemon still holds its leases:
+			// wait for them (briefly) rather than apply without them, which
+			// would remove the addresses.
+			if wait := 5*time.Second - time.Since(started); len(want) > 0 && wait > 0 {
+				select {
+				case <-dhcpLeases.Ready():
+				case <-time.After(wait):
+				}
+			}
+			return dhcpLeasesOf(dhcpLeases.State())
 		}
 	}
 	accounts := &access.Manager{Sys: &access.OS{}, StateFile: filepath.Join(o.StateDir, "accounts.json"), Log: log}
@@ -185,9 +198,6 @@ func Run(ctx context.Context, o Options) error {
 	sysMAC := lacpSystemMAC(vc.StackID())
 	var mclag *mclagCtl // set once the stack control runs
 	var stp *rstpCtl
-	// The daemons' configuration goes through switchd's service socket
-	// (reference 1.9); it exists once the stack control runs.
-	var services *service
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	// Routing (reference 5.8): the RIB with connected and static routes, and
 	// the routing protocols; their active routes go into the kernel with
@@ -200,7 +210,7 @@ func Run(ctx context.Context, o Options) error {
 		rt.Apply(cfg)
 		// LACP bundles: after the data plane created their devices.
 		lacpRT.Sync(lacpSpecs(cfg, member, names.Linux, sysMAC))
-		if !o.DryRun && services != nil {
+		if !o.DryRun {
 			sys, ports := lldpConfig(cfg, member, names, chassisMAC, vc.IsPort)
 			services.setConfig("cer-lldpd", lldp.Config{System: sys, Ports: ports})
 		}
@@ -214,9 +224,7 @@ func Run(ctx context.Context, o Options) error {
 	// The management services run on the master (reference 1.8).
 	mgmt := &mgmtCtl{member: member, log: log, sshd: sshd, dryRun: o.DryRun,
 		publish: func(daemon string, v any) {
-			if services != nil {
-				services.setConfig(daemon, v)
-			}
+			services.setConfig(daemon, v)
 		}}
 	applier.isMaster = mgmt.master
 	applier.stackPort = vc.IsPort
@@ -295,12 +303,13 @@ func Run(ctx context.Context, o Options) error {
 	// The cer- daemons (reference 1.9): switchd's service socket, and the
 	// supervisor that starts and watches them (only for a switchd that
 	// systemd runs: a program started by hand leaves the system alone).
-	services = newService(member, ctl, notifyStack, func() svc.Role {
+	services.ctl, services.notify = ctl, notifyStack
+	services.role = func() svc.Role {
 		return roleOf(member, ctl, func() *model.Config {
 			cfg, _ := model.Build(engine.Active().Active(), nil)
 			return cfg
 		}, hostName, vc.StackID())
-	}, log)
+	}
 	var sup *supervise.Supervisor
 	if !o.DryRun {
 		if err := services.start(ctx, ""); err != nil {
@@ -394,7 +403,6 @@ func Run(ctx context.Context, o Options) error {
 		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
 		maint.Store(liveOps.maint)
 		liveOps.stp = stp
-		liveOps.dhcp = dhcpMgr
 		liveOps.sup = sup
 		upd := &updater{member: member, dir: softwareDir, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
@@ -593,6 +601,25 @@ func wantedDaemons(engine *commit.Engine) map[string]bool {
 		if r.BGP != nil && !r.BGP.Disabled {
 			out["cer-bgpd"] = true
 		}
+	}
+	return out
+}
+
+// dhcpLeasesOf converts cer-dhcpcd's leases for the data plane.
+func dhcpLeasesOf(st map[string]json.RawMessage) map[string]dataplane.DHCPLease {
+	out := map[string]dataplane.DHCPLease{}
+	for dev, raw := range st {
+		var l svc.Lease
+		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		p, err := netip.ParsePrefix(l.Addr)
+		if err != nil {
+			continue
+		}
+		dl := dataplane.DHCPLease{Addr: p}
+		dl.Router, _ = netip.ParseAddr(l.Router)
+		out[dev] = dl
 	}
 	return out
 }

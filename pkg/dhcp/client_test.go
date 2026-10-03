@@ -138,3 +138,34 @@ func TestRelease(t *testing.T) {
 		t.Errorf("release: %+v events %v", outs, *ev)
 	}
 }
+
+// A restarted client continues with its lease: no DISCOVER, no event, the
+// renewal at T1 as before.
+func TestResume(t *testing.T) {
+	c, _ := newClient()
+	s := &server{t: t, addr: netip.MustParseAddr("10.1.2.1"), lease: 3600}
+	now := time.Unix(1000, 0)
+	s.handle(c, c.Start(now), now)
+	_, held := c.State()
+
+	c2, ev := newClient()
+	if !c2.Resume(held, now.Add(600*time.Second)) {
+		t.Fatal("not resumed")
+	}
+	if st, l := c2.State(); st != Bound || l.Addr != held.Addr || len(*ev) != 0 {
+		t.Fatalf("resumed: %v %+v events %d", st, l, len(*ev))
+	}
+	s.seen, s.unicast = nil, nil
+	if outs := c2.Tick(now.Add(1799 * time.Second)); len(outs) != 0 {
+		t.Fatal("sent before T1")
+	}
+	at := now.Add(1800 * time.Second)
+	s.handle(c2, c2.Tick(at), at)
+	if len(s.seen) != 1 || s.seen[0] != Request || !s.unicast[0] {
+		t.Fatalf("renewal after resume: %v %v", s.seen, s.unicast)
+	}
+	// An expired lease is not resumed.
+	if c3, _ := newClient(); c3.Resume(held, now.Add(3600*time.Second)) {
+		t.Fatal("expired lease resumed")
+	}
+}
