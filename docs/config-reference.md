@@ -243,6 +243,81 @@ The stack is managed as one switch through one address, as a Junos Virtual Chass
     On the local consoles you are root (5.1 `system ports`) and may open either. Through SSH it needs root or the
     super-user class (4.3).
 
+### 1.9 Processes
+
+The switch software is a set of programs. **switchd** is the switch daemon: configuration, commit, the CLI, stacking
+and the data plane's structure. Each protocol and service runs in a program of its own, a **cer- daemon**, so that a
+fault in one of them ends only that program: it is restarted at once, the kernel keeps forwarding meanwhile (bundles,
+bridge port states, routes and filters stay as they are), and the restarted daemon continues from where it stopped.
+
+| Program | Does | Runs |
+|---|---|---|
+| `switchd` | configuration, commit and rollback, the CLI, stacking (membership, mastership, Raft, stacking BFD, stack tunnels, relay between members, software distribution), VXLAN control, the data plane's structure, the management services' placement, starting and watching the cer- daemons | always |
+| `cer-lacpd` | LACP (5.3.2): which ports of each bundle carry traffic | always |
+| `cer-mclagd` | MC-LAG (5.6): leg states with the peer, split horizon, MAC synchronisation, failover (holds), multicast groups on MC-LAG bundles | always |
+| `cer-rstpd` | RSTP (5.5): one bridge for the stack, port roles and states | always |
+| `cer-lldpd` | LLDP (5.5) | always |
+| `cer-syslogd` | remote syslog (5.1): reads the journal and forwards; members hand their messages to the master | always |
+| `cer-ntpd` | NTP client on the master, time from the master on the other members (5.1) | always |
+| `cer-dhcpcd` | DHCP clients of `family inet dhcp` (5.3.2) | always |
+| `cer-ribd` | the routing table (5.8): static, connected, DHCP and protocol routes, preferences, ECMP; installs routes | always |
+| `cer-bfdd` | BFD (5.12) for the routing protocols | while BFD is configured |
+| `cer-ospfd` | OSPF and OSPFv3 (5.13) | while configured |
+| `cer-bgpd` | BGP (5.14) | while configured |
+| `switchd-update` | software installation and rollback (3.6) | always |
+| `swcli` | the CLI client (login shell) | per session |
+
+**switchd starts and watches the daemons.** It writes a systemd unit for each (`cer-<name>.service`) with the program,
+its arguments and its scheduling (below), starts the daemons it needs, stops those that are no longer needed, and
+checks every second that they run. systemd executes them; this way a daemon keeps running while switchd itself
+restarts (a restart of switchd is hitless, and so is one of a daemon). Daemons tell systemd that they are alive
+(watchdog); one that hangs for 10 s is ended and restarted like one that crashed. A daemon that ends unexpectedly is
+started again after 0.2 s (`cer-lacpd` and `cer-bfdd` after 0.1 s), however often that happens.
+
+**Every CLI session is told** when a daemon of any member fails and when it is back, e.g.
+`*** member 2: cer-lacpd failed (killed by signal SEGV) and is restarted ***` and
+`*** member 2: cer-lacpd runs again (restart 3 in the last hour) ***`. The same appears in the log (facility `daemon`,
+severity `error` and `notice`). A daemon that cannot be started at all (missing program) is reported every minute.
+
+**Scheduling.** The daemons whose timing the network depends on come first when the CPUs are busy (software
+forwarding uses them heavily):
+
+| Program | CPU scheduling | Memory (killed first when out of memory: higher) |
+|---|---|---|
+| `cer-bfdd` | real-time (`SCHED_FIFO`, priority 50) | −900 |
+| `switchd` (stacking BFD) | nice −10 | −900 |
+| `cer-lacpd`, `cer-rstpd`, `cer-mclagd` | nice −10 | −900 |
+| `cer-ribd`, `cer-ospfd` | nice −5 | −500 |
+| `cer-bgpd` | nice −5 | 0 (large tables: given up before the others) |
+| `cer-lldpd`, `cer-ntpd`, `cer-dhcpcd`, `switchd-update` | nice 0 | −500 |
+| `cer-syslogd` | nice 10, idle I/O | 0 |
+
+Each daemon gets only the privileges it needs (e.g. `cer-lldpd` raw sockets, `cer-ntpd` setting the clock).
+
+**Who changes what in the kernel.** Every kind of kernel object has exactly one owner; no other program changes it.
+Daemons that need something created ask switchd, which applies it with the configuration (hitless, 4.14).
+
+| Kernel object | Owner |
+|---|---|
+| Network devices (bridge, ports' settings, VLANs, bonds and teams, VRFs, irb, VXLAN, stack tunnels, `cme`), addresses (also those a DHCP lease brings: `cer-dhcpcd` only reports the lease), bridge VLANs, tc rules, nftables tables except `switchd_mclag`, routes of the stack's internal table | `switchd` |
+| Which ports of a team carry traffic | `cer-lacpd` |
+| Spanning-tree state of bridge ports | `cer-rstpd` |
+| `switchd_mclag` (split horizon), MAC addresses synchronised for MC-LAG, multicast groups installed on the peer's legs | `cer-mclagd` |
+| Routes of every routing instance (protocol ids `switchd`, `ospf`, `bgp`), including the DHCP default route | `cer-ribd` |
+| The system clock | `cer-ntpd` |
+
+**Logs.** Every program writes to the system journal (with its name, severity and facility). `cer-syslogd` reads the
+journal (including kernel messages) and forwards it to the configured servers (5.1); `show log` shows what it read.
+On the firmware image the journal is kept in memory (tmpfs, at most 64 MB, oldest entries dropped first), so logging
+never wears the boot medium; remote syslog is where logs are kept.
+
+Operational commands:
+* `show system processes`: per member every program with its state (`running`, `restarting`, `failed`, `stopped`),
+  process id, uptime, restarts in the last hour, the last failure, memory and CPU time, and its scheduling.
+* `restart lacp|mclag|rstp|lldp|syslog|ntp|dhcp|routing|bfd|ospf|bgp [member <id>|all-members]`: restarts that daemon
+  (super-user). Like a crash, it is hitless where the protocol allows it (LACP and RSTP keep their state; BFD, OSPF and
+  BGP sessions are re-established, with graceful restart where configured).
+
 ## 2. Configuration formats
 
 The same configuration can be shown and loaded in three equivalent formats. All three round-trip
@@ -457,6 +532,7 @@ vlans {
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version. |
+| `show system processes`, `restart <daemon>` | The switch's programs and their state; restarting one (1.9). |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
 | `start shell [local]` | A Linux shell on the master, or with `local` on the member you are connected to (1.8, 4.3); `exit` returns to the CLI. |
 
@@ -733,6 +809,8 @@ sends the messages of all members (1.8). The format is RFC 5424, with the member
 * `severity <level>`: send messages of this severity **or more severe**. Default `info`. `any` sends everything.
 * A UDP message that cannot be sent is lost (UDP has no delivery guarantee); use `tcp` or `tls` where that matters.
 * The local buffer and `show log` contain every message regardless of these filters.
+* The messages come from the system journal (1.9): those of switchd and the cer- daemons, kernel messages
+  (`kernel`), logins (`authorization`) and the other services of the operating system (`daemon`).
 * `ca-certificate <path>`: PEM CA certificate used to verify a TLS server. Default: the OS CA store.
   The server certificate must match `<host>`.
 

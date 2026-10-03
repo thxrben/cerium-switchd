@@ -184,6 +184,8 @@ Last updated: 2026-10-01 (evening).
   the questions for the user.
 
 ## Requested 2026-10-03 (added to the routing plan of 2026-10-01)
+- **One program per protocol** (decided 2026-10-03, PLAN.md Phase 9a, reference 1.9): in progress, before OSPF
+  continues.
 - **Modular code base.** Reusable libraries, and separate modules for the programs, so each one builds on its own:
   - Libraries (pure, documented APIs, no switchd types): network devices through netlink (links, bonds/teams,
     bridge ports and VLANs, VRFs, routes with protocol ids, FDB, neighbours), nftables tables, hardware state

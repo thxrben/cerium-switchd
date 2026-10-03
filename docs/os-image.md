@@ -66,10 +66,15 @@ UEFI firmware → GRUB (ceros-esp) → picks slot A or B (§4) → kernel + init
 | `/var/lib/switchd` | bind of `/config/switchd` | | switchd's state: committed configurations, stack keys and member id, Raft log, port numbers |
 | `/etc/ssh/ssh_host_*_key[.pub]` | binds of `/config/ssh/…` | | the SSH host keys |
 | `/etc/machine-id` | bind of `/config/machine-id` | | the machine id |
-| `/var` | `ceros-data` | ext4, `nodev,nosuid` | logs (`/var/log/journal`), received software (`/var/lib/ceros/software`), crash reports |
+| `/var` | `ceros-data` | ext4, `nodev,nosuid` | received software (`/var/lib/ceros/software`), crash reports |
 | `/home`, `/root` | binds of `/var/home`, `/var/root` | | home directories (CLI history) |
-| `/tmp`, `/run` | tmpfs | | |
+| `/tmp`, `/run` | tmpfs | | `/run/log/journal`: the journal (below) |
 | `/boot/efi` | `ceros-esp` | FAT, mounted only while the update daemon changes the boot state | |
+
+**Logs are kept in memory.** The journal is volatile (`Storage=volatile`, in `/run/log/journal` on tmpfs, at most
+64 MB in files of 8 MB, the oldest dropped first), so logging never writes to the boot medium (USB sticks and small
+flash wear out). `cer-syslogd` forwards the journal to the configured syslog servers (config reference 1.9, 5.1),
+which is where logs are kept. The log of a boot ends with it; crash reports are still written to `/var`.
 
 **`/etc` is not kept across a reboot.** Every boot starts with the image's `/etc`, and switchd writes what the
 configuration says: host name, `/etc/hosts`, `resolv.conf`, the accounts of `system login user` and

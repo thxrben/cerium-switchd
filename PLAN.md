@@ -531,6 +531,51 @@ The stacking ring carries client traffic between members and replaces the MC-LAG
    and VXLAN ports are excluded from RSTP.
 6. `show vxlan`, `show vxlan remote-vteps`, `show ethernet-switching table vni …`.
 
+### Phase 9a: One program per protocol (requested 2026-10-03; config reference 1.9)
+
+Decisions (user, 2026-10-03): every protocol and service in its own `cer-` daemon, switchd starts and watches them
+and tells every CLI session when one fails; stacking stays in switchd; mclagd does MAC synchronisation, leg states
+and failover only; no mirrord/igmpd (nothing runs at run time); the journal stays in memory on the image.
+
+Design:
+* **Supervision through systemd.** switchd writes `cer-<name>.service` units (program, arguments, Nice, real-time
+  scheduling, OOMScoreAdjust, capabilities, watchdog, Restart=always) and starts/stops them; systemd executes them.
+  Reason: the daemons must outlive a restart or crash of switchd (hitless), which direct child processes of switchd
+  cannot (they die with switchd's cgroup or have to be adopted). switchd polls their state every second
+  (`systemctl show`), notifies the CLI sessions of the whole stack (local `rpc.Server.Notify`, other members over
+  the stacking protocol to the master) and restarts what systemd gave up. Backend behind an interface (a fake in
+  tests).
+* **IPC (`pkg/ipc`).** Unix stream sockets in `/run/ceros/<program>.sock` (root only, peer credentials checked),
+  length-prefixed JSON frames, a versioned hello (protocol version, program, version). Every endpoint can serve
+  calls and **state topics**: a subscriber gets the full state, a sync mark, then changes; after a reconnect it gets
+  the full state again and drops keys it did not see. Clients reconnect by themselves. Calls in both directions on
+  one connection (switchd asks a daemon for its status; the daemon asks switchd to relay to another member).
+* **switchd's service socket** (`/run/ceros/switchd.sock`): topics `config` (key: daemon; the daemon's own config,
+  computed by switchd as today, e.g. lldp ports, LACP bundle specs), `role` (member id, master, reachable members,
+  stack id); calls `stack.call` (relay a call to the same daemon on another member over the stacking protocol),
+  `notify` (to the CLI sessions), `lease` and other inputs to the data plane. A daemon lists the stacking-protocol
+  methods it serves in its hello; switchd registers them with the stack node and forwards (old message names such as
+  `mclag-legs` keep working across a rolling update).
+* **Direct sockets between daemons** for local paths: cer-lacpd -> cer-mclagd (before join/leave), cer-lacpd topics
+  (legs, enabled ports) for cer-mclagd, cer-rstpd, cer-lldpd; routing protocols -> cer-ribd; cer-bfdd -> protocols.
+* **Logging (`pkg/journal`):** slog handler writing the journal's native protocol (MESSAGE, PRIORITY,
+  SYSLOG_IDENTIFIER, SYSLOG_FACILITY, CEROS_FACILITY, CEROS_MEMBER); stderr when there is no journal.
+  cer-syslogd follows the journal (`journalctl -f -o json`, cursor in /run), keeps the `show log` buffer, relays to
+  the master's cer-syslogd on members, forwards on the master.
+* **Daemon kit (`internal/daemonkit`):** flags, journal logging, signals, sd_notify ready/watchdog, connection to
+  switchd, the config and role subscriptions, panic -> exit (systemd restarts).
+* **Layout:** module path `github.com/thxrben/cerium-switchd`; reusable libraries under `pkg/` (no imports from
+  `internal/`, checked by a test); programs under `cmd/` (switchd, swcli, switchd-update, cer-*, rtest), each
+  built on its own (`make switchd`, `make cer-lldpd`, ...). Separate Go modules/repositories later are a mechanical
+  step once the layering holds.
+
+Stages (each one commit, all tests green, the system works after every stage):
+1. Spec (1.9, os-image), plan. 2. Module path, `pkg/`, separate swcli and switchd-update binaries, Makefile, image
+and lab install. 3. `pkg/ipc`, `pkg/journal`, `pkg/sdnotify`, daemonkit. 4. Supervisor, service socket,
+`show system processes`, `restart`. 5. cer-lldpd. 6. cer-syslogd (+ journal on tmpfs). 7. cer-ntpd. 8. cer-dhcpcd
+(leases -> switchd, which adds the addresses). 9. cer-lacpd. 10. cer-mclagd. 11. cer-rstpd. 12. cer-ribd (routes
+leave the data plane). 13. cer-bfdd. Then OSPF continues as cer-ospfd, BGP as cer-bgpd.
+
 ### Phase 9b: BGP (EVPN) via GoBGP
 BGP is not written from scratch: GoBGP is embedded as a Go library in switchd (no external daemon; FRR was
 considered and rejected as less predictable to drive). `protocols bgp …` configures it; routes it learns are
