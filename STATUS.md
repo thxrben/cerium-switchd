@@ -184,8 +184,24 @@ Last updated: 2026-10-01 (evening).
   the questions for the user.
 
 ## Requested 2026-10-03 (added to the routing plan of 2026-10-01)
-- **One program per protocol** (decided 2026-10-03, PLAN.md Phase 9a, reference 1.9): in progress, before OSPF
-  continues.
+- **One program per protocol** (decided 2026-10-03, PLAN.md Phase 9a, reference 1.9): done 2026-10-03, unit-tested,
+  NOT yet run on the lab switches. switchd writes and starts the units (cer-<name>.service: nice/real-time,
+  OOM score, capability bounding set, watchdog 10 s, Restart=always 100-200 ms), checks them every second, reports
+  failures/recoveries to every CLI session of the stack; `show system processes`, `restart <daemon>`.
+  Daemons: cer-lacpd, cer-mclagd, cer-rstpd, cer-lldpd, cer-syslogd (journal -> syslog, kernel messages included),
+  cer-ntpd, cer-dhcpcd (leases only; switchd adds addresses), cer-ribd (every route; the data plane installs none
+  now), cer-bfdd (real-time, on demand). IPC: pkg/ipc (calls + state topics with resync), internal/svc (protocol),
+  internal/daemonkit; stacking messages are relayed by switchd under their old names (mixed versions work).
+  Hitless restarts by design: LACP (lacp.json, waits for MC-LAG holds), MC-LAG (no delay-restore when legs are up,
+  maintenance as a topic), RSTP (rstp.json), DHCP (leases in /run, resumed), routes (nothing removed before a
+  source reported), switchd (daemons keep running; it waits up to 5 s for the leases). test/daemons runs every
+  program against a fake switchd. Image: all programs installed, journal volatile (tmpfs, 64 MB).
+  Fixed on the way: LACP partner choice depended on PDU arrival order (TestWrongPartner flaked 29/200); the CLI
+  session test's notice race (2/40); ipc listeners unlinked their successor's socket.
+  Open (first lab run): check every unit's capability set and `show system processes` on all members (a too narrow
+  bounding set shows as a failing daemon); /sbin/bridge-stp on the read-only image root (EnsureSTPHelper writes it);
+  BFD interval commit checks (W below 100 ms, E below 50 ms) are not in the model yet; route replication from the
+  master for the routing protocols comes with cer-ospfd/cer-bgpd.
 - **Modular code base.** Reusable libraries, and separate modules for the programs, so each one builds on its own:
   - Libraries (pure, documented APIs, no switchd types): network devices through netlink (links, bonds/teams,
     bridge ports and VLANs, VRFs, routes with protocol ids, FDB, neighbours), nftables tables, hardware state

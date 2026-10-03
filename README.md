@@ -103,7 +103,10 @@ servers described in `lab/README.md`.
 | `cmd/swcli`, `cmd/switchd-update` | the CLI client (login shell); the update daemon |
 | `cmd/cer-*` | the protocol and service daemons (reference 1.9), each built on its own |
 | `cmd/rtest` | runs the routing protocols without a switch (test/interop) |
-| `pkg/` | reusable libraries: no imports from `internal/` (checked by `test/layout`) |
+| `pkg/` | reusable libraries: no imports from `internal/` (checked by `test/layout`): `ipc` (calls and state topics between programs), `journal`, `sdnotify`, `netdev` (devices, teams, bridge, routes), and the protocols `lacp`, `rstp`, `lldp`, `bfd`, `ospf`, `rib`, `dhcp`, `ntp`, `syslog` |
+| `internal/svc`, `internal/daemonkit`, `internal/supervise` | the service protocol between switchd and the daemons, the daemons' common main, switchd's supervisor |
+| `internal/mclag`, `internal/stp`, `internal/ribd`, `internal/bfdd` | the logic of cer-mclagd, cer-rstpd, cer-ribd and cer-bfdd |
+| `test/daemons`, `test/layout` | every daemon against a fake switchd; the layering rules |
 | `internal/schema`, `internal/config`, `internal/model` | configuration schema, parser/formats, typed model and commit checks |
 | `internal/commit` | candidates, commit, confirmation, rollback |
 | `internal/cli`, `internal/swcli`, `internal/rpc`, `internal/rpcserver` | the CLI, its client, the session protocol and its server |

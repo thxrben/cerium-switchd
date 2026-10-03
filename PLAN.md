@@ -569,7 +569,7 @@ Design:
   built on its own (`make switchd`, `make cer-lldpd`, ...). Separate Go modules/repositories later are a mechanical
   step once the layering holds.
 
-Stages (each one commit, all tests green, the system works after every stage):
+Stages (each one commit, all tests green, the system works after every stage; all done 2026-10-03, see STATUS.md):
 1. Spec (1.9, os-image), plan. 2. Module path, `pkg/`, separate swcli and switchd-update binaries, Makefile, image
 and lab install. 3. `pkg/ipc`, `pkg/journal`, `pkg/sdnotify`, daemonkit. 4. Supervisor, service socket,
 `show system processes`, `restart`. 5. cer-lldpd. 6. cer-syslogd (+ journal on tmpfs). 7. cer-ntpd. 8. cer-dhcpcd
