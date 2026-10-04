@@ -224,18 +224,26 @@ func TestPlannedRestartsAreNoFailures(t *testing.T) {
 }
 
 func TestUnit(t *testing.T) {
-	u := Unit(testDaemons[0], "/usr/local/sbin/cer-lacpd", []string{"-member", "2"})
+	u := Unit(testDaemons[0], "/usr/local/sbin/cer-lacpd", []string{"-member", "2"}, Limits{})
+	if strings.Contains(u, "Memory") || strings.Contains(u, "GOMEMLIMIT") {
+		t.Errorf("limits without slots:\n%s", u)
+	}
 	for _, want := range []string{"ExecStart=/usr/local/sbin/cer-lacpd -member 2 -stop-timeout 3s\n", "TimeoutStopSec=5s\n", "Before=switchd.service\n", "Nice=-10\n", "OOMScoreAdjust=-900\n",
 		"RestartSec=100ms\n", "WatchdogSec=10s\n", "Type=notify\n", "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW\n"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %q:\n%s", want, u)
 		}
 	}
-	u = Unit(testDaemons[1], "/x/cer-bfdd", nil)
+	u = Unit(testDaemons[1], "/x/cer-bfdd", nil, Limits{GoLimit: 100, Max: 150, Min: 64})
+	for _, want := range []string{"Environment=GOMEMLIMIT=100\n", "MemoryMax=150\n", "MemoryMin=64\n", "LimitCORE=0\n"} {
+		if !strings.Contains(u, want) {
+			t.Errorf("unit lacks %q:\n%s", want, u)
+		}
+	}
 	if !strings.Contains(u, "CPUSchedulingPolicy=fifo\nCPUSchedulingPriority=50\n") || strings.Contains(u, "Nice=") {
 		t.Errorf("real-time unit:\n%s", u)
 	}
-	if u := Unit(testDaemons[2], "/x/cer-syslogd", nil); !strings.Contains(u, "Nice=10\nIOSchedulingClass=idle\n") {
+	if u := Unit(testDaemons[2], "/x/cer-syslogd", nil, Limits{}); !strings.Contains(u, "Nice=10\nIOSchedulingClass=idle\n") {
 		t.Errorf("idle unit:\n%s", u)
 	}
 }

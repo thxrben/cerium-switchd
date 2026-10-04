@@ -487,10 +487,32 @@ func (p *peer) stop(code, sub uint8) {
 
 func (p *peer) dropPaths() {
 	for pf := range p.in {
-		p.sp.dirty[pf] = true
+		p.delIn(pf)
 	}
-	p.in = map[netip.Prefix]*inPath{}
 	p.stale = false
+}
+
+// delIn removes a received path.
+func (p *peer) delIn(pf netip.Prefix) {
+	if _, ok := p.in[pf]; !ok {
+		return
+	}
+	delete(p.in, pf)
+	p.sp.dirty[pf] = true
+	p.sp.received(pf, -1)
+}
+
+// addIn stores a received path; a new prefix or path beyond the memory
+// slots' capacity is not stored (as if withdrawn; reference 5.1).
+func (p *peer) addIn(pf netip.Prefix, ip *inPath) {
+	if _, ok := p.in[pf]; !ok {
+		if !p.sp.room(pf) {
+			return
+		}
+		p.sp.received(pf, 1)
+	}
+	p.in[pf] = ip
+	p.sp.dirty[pf] = true
 }
 
 // endStale removes the paths still stale after a graceful restart.
@@ -498,8 +520,7 @@ func (p *peer) endStale() {
 	p.stale = false
 	for pf, ip := range p.in {
 		if ip.raw.Stale {
-			delete(p.in, pf)
-			p.sp.dirty[pf] = true
+			p.delIn(pf)
 		}
 	}
 }
@@ -514,8 +535,7 @@ func (p *peer) update(u *bgp.BGPUpdate, withdrawAll bool) {
 			// stale of this family is gone.
 			for pf, ip := range p.in {
 				if ip.raw.Stale && FamilyOf(pf) == f {
-					delete(p.in, pf)
-					p.sp.dirty[pf] = true
+					p.delIn(pf)
 				}
 			}
 			if p.allEOR() {
@@ -524,10 +544,7 @@ func (p *peer) update(u *bgp.BGPUpdate, withdrawAll bool) {
 		}
 	}
 	for _, pf := range d.Withdrawn {
-		if _, ok := p.in[pf]; ok {
-			delete(p.in, pf)
-			p.sp.dirty[pf] = true
-		}
+		p.delIn(pf)
 	}
 	if len(d.Reach) == 0 {
 		return
@@ -550,8 +567,7 @@ func (p *peer) update(u *bgp.BGPUpdate, withdrawAll bool) {
 			}
 			continue
 		}
-		p.in[r.Prefix] = &inPath{raw: raw, accepted: p.importPath(raw)}
-		p.sp.dirty[r.Prefix] = true
+		p.addIn(r.Prefix, &inPath{raw: raw, accepted: p.importPath(raw)})
 	}
 }
 

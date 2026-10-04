@@ -35,6 +35,9 @@ type Speaker struct {
 	// runs on the event loop and must not block.
 	OnRoutes    func(rs []Route, converged bool)
 	RoutesDelay time.Duration
+	// Limits are the memory slots' capacities (nil: none; shared by the
+	// instances' speakers).
+	Limits *Limits
 
 	events chan func()
 	pol    Policy
@@ -51,6 +54,7 @@ type Speaker struct {
 	routesDirty   bool
 	lastConverged bool
 	clusterIDs    map[netip.Addr]bool
+	refs          map[netip.Prefix]int // received paths per prefix (Limits)
 }
 
 // Route is one usable path of a prefix: Rank 0 for the best path and the

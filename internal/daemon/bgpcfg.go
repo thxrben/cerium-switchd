@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"net/netip"
 	"slices"
 
@@ -11,8 +12,11 @@ import (
 
 // bgpConfig is cer-bgpd's configuration (reference 5.14): every BGP
 // instance with its neighbours' effective settings.
-func bgpConfig(cfg *model.Config) bgpd.Config {
+func bgpConfig(cfg *model.Config, capacity func(memslots.Purpose) int) bgpd.Config {
 	c := bgpd.Config{Policies: cfg.Policies}
+	if capacity != nil {
+		c.Limits = bgpd.Limits{IPv4: capacity(memslots.BGPv4), IPv6: capacity(memslots.BGPv6), Paths: capacity(memslots.BGPPaths)}
+	}
 	for _, r := range cfg.AllRouting() {
 		if r.BGP == nil || r.BGP.Disabled || r.AS == 0 {
 			continue

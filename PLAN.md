@@ -805,6 +805,11 @@ while it writes. Missing:
    and `request system zeroize` are refused while an update runs (they name it); a shell's `reboot` still works.
 4. The update daemon persists "busy" over the reboot it causes (already in its state file) and answers it in status.
 
+### show system limits: always "used of available" (requested 2026-10-04, later)
+Every "n of m" line counts the same thing on both sides. E.g. `MACsec offload: 0 of 5 ports` is wrong when none of
+the 5 ports can offload: it must be `0 of 0` (ports using offload of the ports able to). Go through every line of
+the page (and `show system offload`) for the same mistake.
+
 ### Order (2026-10-04)
 Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) and 17b → Phase 15
 (memory slots, with the structure optimization first) → Phase 16 (reload) → Phase 17.4 (USB) → Phase 10 (MACsec).

@@ -60,6 +60,7 @@ type ops struct {
 	// svc reaches the cer- daemons (reference 1.9).
 	svc     *service
 	updater *updater
+	mem     *memoryCtl
 	// web and webServer are the REST API (nil: not set up, dry run).
 	web       *webSoftware
 	webServer *webapi.Server

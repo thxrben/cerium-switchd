@@ -28,6 +28,15 @@ import (
 type Config struct {
 	Instances []Instance      `json:"instances,omitempty"`
 	Policies  *model.Policies `json:"policies,omitempty"`
+	// Limits are the memory slots' capacities (0: none; reference 5.1).
+	Limits Limits `json:"limits,omitzero"`
+}
+
+// Limits are BGP's capacities: prefixes per family, further paths.
+type Limits struct {
+	IPv4  int `json:"ipv4,omitempty"`
+	IPv6  int `json:"ipv6,omitempty"`
+	Paths int `json:"paths,omitempty"`
 }
 
 // Instance is BGP of one routing instance.
@@ -99,6 +108,9 @@ type Daemon struct {
 	// standalone).
 	Member    int
 	StackCall func(ctx context.Context, member int, method string, req, resp any) error
+	// Full is told when a memory slot purpose becomes full or has room
+	// again (nil: nobody).
+	Full func(purpose string, full bool)
 
 	rel   relay
 	owned map[string]*ownerListener
@@ -119,6 +131,7 @@ type Daemon struct {
 	masterID int
 	insts    map[string]*instance
 	ctx      context.Context
+	limits   *bgp.Limits // shared by the instances
 }
 
 type instance struct {
@@ -229,6 +242,10 @@ func (d *Daemon) apply() {
 	if d.ctx == nil {
 		return
 	}
+	if d.limits == nil {
+		d.limits = &bgp.Limits{OnFull: d.Full}
+	}
+	d.limits.SetMax(d.cfg.Limits.IPv4, d.cfg.Limits.IPv6, d.cfg.Limits.Paths)
 	// Owner listeners first: a member that became master listens itself.
 	d.ownerListen(d.cfg, d.masterID)
 	want := map[string]Instance{}
@@ -273,6 +290,7 @@ func (d *Daemon) start(c Instance, eng *policy.Engine) (*instance, error) {
 	in.pol = &policyAdapter{eng: eng, chains: chains(c)}
 	in.sp = bgp.New(dialer{d: d, instance: c.Name, vrf: c.VRF}, in.pol.policy(), d.Log.With("instance", instName(c.Name)))
 	in.sp.OnRoutes = in.onRoutes
+	in.sp.Limits = d.limits
 	go in.sp.Run(ctx)
 	in.sp.Configure(speakerConfig(c))
 	go func() {

@@ -149,6 +149,15 @@ Nice={{.D.Nice}}
 IOSchedulingClass=idle
 {{- end}}
 OOMScoreAdjust={{.D.OOM}}
+{{- if .Lim.GoLimit}}
+# Memory slots (reference 5.1): Go's limit, the hard limit, and memory
+# kept for the daemon under pressure.
+Environment=GOMEMLIMIT={{.Lim.GoLimit}}
+MemoryMax={{.Lim.Max}}
+{{- end}}
+{{- if .Lim.Min}}
+MemoryMin={{.Lim.Min}}
+{{- end}}
 # No core dumps (reference 1.9): the stack trace is in the log.
 LimitCORE=0
 CapabilityBoundingSet={{.Caps}}
@@ -157,8 +166,13 @@ ProtectHome=yes
 PrivateTmp=yes
 `))
 
+// Limits are a daemon's memory limits from the memory slots (zero: none).
+type Limits struct {
+	GoLimit, Max, Min uint64
+}
+
 // Unit renders a daemon's unit for the program at path with args.
-func Unit(d Daemon, path string, args []string) string {
+func Unit(d Daemon, path string, args []string, lim Limits) string {
 	delay := d.RestartDelay
 	if delay == 0 {
 		delay = 200 * time.Millisecond
@@ -167,11 +181,12 @@ func Unit(d Daemon, path string, args []string) string {
 	args = append(slices.Clone(args), "-stop-timeout", d.stopTimeout().String())
 	unitTemplate.Execute(&b, struct {
 		D         Daemon
+		Lim       Limits
 		Exec      string
 		RestartMs int64
 		Caps      string
 		StopSec   int
-	}{d, strings.Join(append([]string{path}, args...), " "), delay.Milliseconds(), strings.Join(d.Caps, " "),
+	}{d, lim, strings.Join(append([]string{path}, args...), " "), delay.Milliseconds(), strings.Join(d.Caps, " "),
 		int((d.stopTimeout() + 2*time.Second + time.Second - 1) / time.Second)})
 	return b.String()
 }
@@ -253,6 +268,9 @@ type Supervisor struct {
 	StoppedFile string
 	// Alarms gets the daemons' faults (show system alarms; nil: none).
 	Alarms *alarms.Set
+	// Limits are a daemon's memory limits (nil: none). They must not
+	// change while switchd runs: a changed unit restarts the daemon.
+	Limits func(program string) Limits
 
 	mu       sync.Mutex
 	tracked  map[string]*tracked
@@ -353,7 +371,11 @@ func (s *Supervisor) Step(now time.Time) {
 		} else {
 			s.clear("stopped " + d.Program)
 		}
-		content := Unit(d, s.path(d), s.Args)
+		var lim Limits
+		if s.Limits != nil {
+			lim = s.Limits(d.Program)
+		}
+		content := Unit(d, s.path(d), s.Args, lim)
 		if s.units[d.Unit()] != content {
 			ch, err := s.Backend.WriteUnit(d.Unit(), content)
 			if err != nil {

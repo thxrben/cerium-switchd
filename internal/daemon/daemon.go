@@ -180,6 +180,7 @@ func Run(ctx context.Context, o Options) error {
 	// so that the data plane's first apply can use it; it serves once
 	// switchd is set up (below).
 	services := newService(member, nil, nil, nil, log)
+	mem := newMemoryCtl(member, log, services.alarms, names.LinuxNames)
 	// family inet dhcp (reference 5.3.2): cer-dhcpcd runs the clients of the
 	// data plane's DHCP interfaces and reports the leases; switchd adds the
 	// addresses and default routes. A lease change reconciles.
@@ -266,7 +267,7 @@ func Run(ctx context.Context, o Options) error {
 		// BGP (reference 5.14): cer-bgpd runs where configured (the
 		// protocol on the master only).
 		if !o.DryRun {
-			services.setConfig("cer-bgpd", bgpConfig(cfg))
+			services.setConfig("cer-bgpd", bgpConfig(cfg, mem.Capacity))
 		}
 	}
 	// The management services run on the master (reference 1.8).
@@ -393,6 +394,9 @@ func Run(ctx context.Context, o Options) error {
 	}
 	var sup *supervise.Supervisor
 	if !o.DryRun {
+		// The memory slots of this run (reference 5.1), before any daemon
+		// starts: their limits come from them.
+		mem.start(engine.Active().Active())
 		if err := services.start(ctx, ""); err != nil {
 			log.Error("service socket", "err", err)
 		}
@@ -403,7 +407,7 @@ func Run(ctx context.Context, o Options) error {
 				Beat: func() { live.Beat("daemon supervisor") },
 				// request daemon stop lasts until the reboot (/run is a tmpfs).
 				StoppedFile: "/run/switchd/stopped-daemons",
-				Alarms:      services.alarms}
+				Alarms:      services.alarms, Limits: mem.limits}
 			supRef.Store(sup)
 			go sup.Run(ctx)
 		}
@@ -463,7 +467,9 @@ func Run(ctx context.Context, o Options) error {
 		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
 		maint.Store(liveOps.maint)
 		liveOps.sup = sup
-		upd := &updater{member: member, store: newBundleStore(log), vc: vc, ctl: ctl, log: log,
+		store := newBundleStore(log)
+		store.slot = mem.UpdateRoom
+		upd := &updater{member: member, store: store, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
 			mgmtVRF: func() string {
 				if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
@@ -472,6 +478,13 @@ func Run(ctx context.Context, o Options) error {
 				return ""
 			}}
 		liveOps.updater = upd
+		liveOps.mem = mem
+		mem.onChange = func() {
+			if cfg := liveOps.model(); cfg != nil {
+				services.setConfig("cer-bgpd", bgpConfig(cfg, mem.Capacity))
+			}
+		}
+		go mem.watchStack(ctx, ctl)
 		liveOps.web = &webSoftware{u: upd}
 		liveOps.webServer = mgmt.web
 		mgmt.mu.Lock()

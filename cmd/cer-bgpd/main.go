@@ -47,6 +47,14 @@ func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := bgpd.New(bgpd.LinuxNet{}, rc, k.Log)
 	d.Member, d.StackCall = k.Member, k.StackCall
+	d.Full = func(purpose string, full bool) {
+		id := "cer-bgpd/memory " + purpose
+		if full {
+			k.Alarm(id, "Major", "memory slots of "+purpose+" are full: further routes are not stored (system memory)")
+		} else {
+			k.ClearAlarm(id)
+		}
+	}
 	// Sessions to routed ports of other members (reference 5.8).
 	k.HandleStack(bgpd.StackRelayOpen, func(_ context.Context, from int, raw json.RawMessage) (any, error) {
 		var o bgpd.RelayOpen
