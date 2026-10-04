@@ -75,6 +75,10 @@ type peer struct {
 	since     time.Time // state change
 	lastError string
 	stats     Stats
+
+	// BFD (RFC 5882): bfdWasUp once the session was up; bfdHold after it
+	// went down: no session until it is up again.
+	bfdWasUp, bfdHold bool
 }
 
 func newPeer(sp *Speaker, n Neighbor) *peer {
@@ -151,7 +155,7 @@ func (p *peer) tick(now time.Time) {
 		p.est.send(bgp.NewBGPKeepAliveMessage())
 		p.keepAt = now.Add(p.hold / 3)
 	}
-	if p.n.Disabled || p.n.Passive || p.dialing || len(p.sessions) > 0 || now.Before(p.retryAt) {
+	if p.n.Disabled || p.n.Passive || p.bfdHold || p.dialing || len(p.sessions) > 0 || now.Before(p.retryAt) {
 		return
 	}
 	p.dial()

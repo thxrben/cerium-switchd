@@ -55,15 +55,32 @@ func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpd.
 	case m.Multihop:
 		n.TTL = 64
 	}
-	n.NextHop4, n.NextHop6 = selfAddrs(cfg, instance, m.Addr, m.LocalAddress)
-	return bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export}
+	var connected bool
+	n.NextHop4, n.NextHop6, connected = selfAddrs(cfg, instance, m.Addr, m.LocalAddress)
+	out := bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export}
+	if b := m.BFD; b != nil {
+		bc := &bgpd.BFDConfig{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg, AuthKeyID: b.AuthKeyID,
+			AuthKey: b.AuthKey, Multihop: m.Multihop || !connected}
+		if bc.Multihop {
+			bc.Local = m.LocalAddress
+			if !bc.Local.IsValid() {
+				bc.Local = n.NextHop4
+				if m.Addr.Is6() {
+					bc.Local = n.NextHop6
+				}
+			}
+		}
+		out.BFDCfg = bc
+	}
+	return out
 }
 
 // selfAddrs are this switch's IPv4 and IPv6 addresses towards a
 // neighbour, for next hop self in the other family than the session's:
 // those of the unit whose subnet has the neighbour (or that has the local
-// address), stack-wide addresses only.
-func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, v6 netip.Addr) {
+// address), stack-wide addresses only. connected: a unit's subnet has the
+// neighbour.
+func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, v6 netip.Addr, connected bool) {
 	for _, name := range sortedKeysOf(cfg.L3) {
 		u := cfg.L3[name]
 		if u.Disabled || u.Instance != instance {
@@ -71,7 +88,10 @@ func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, 
 		}
 		on := false
 		for _, p := range u.Addrs {
-			if p.Contains(peer) || p.Addr() == local {
+			if p.Contains(peer) {
+				on, connected = true, true
+			}
+			if p.Addr() == local {
 				on = true
 			}
 		}
@@ -89,9 +109,9 @@ func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, 
 				v6 = p.Addr()
 			}
 		}
-		return v4, v6
+		return v4, v6, connected
 	}
-	return v4, v6
+	return v4, v6, connected
 }
 
 func sortedKeysOf[V any](m map[string]V) []string {

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/policy"
 	"github.com/thxrben/cerium-switchd/internal/ribd"
@@ -38,11 +39,25 @@ type Instance struct {
 	Neighbors []Neighbor `json:"neighbors,omitempty"`
 }
 
-// Neighbor is a neighbour with its policies.
+// Neighbor is a neighbour with its policies and BFD.
 type Neighbor struct {
 	bgp.Neighbor
-	Import []string `json:"import,omitempty"`
-	Export []string `json:"export,omitempty"`
+	Import []string   `json:"import,omitempty"`
+	Export []string   `json:"export,omitempty"`
+	BFDCfg *BFDConfig `json:"bfd,omitempty"`
+}
+
+// BFDConfig is a neighbour's bfd-liveness-detection (reference 5.12).
+type BFDConfig struct {
+	IntervalMs int    `json:"interval_ms"`
+	Multiplier int    `json:"multiplier"`
+	AuthType   string `json:"auth_type,omitempty"`
+	AuthKeyID  int    `json:"auth_key_id,omitempty"`
+	AuthKey    string `json:"auth_key,omitempty"`
+	// Multihop (UDP 4784, RFC 5883) from Local: eBGP multihop and iBGP to
+	// a neighbour that is not directly connected.
+	Multihop bool       `json:"multihop,omitempty"`
+	Local    netip.Addr `json:"local,omitempty"`
 }
 
 // Net is the sockets of an instance (the Linux implementation is in
@@ -74,6 +89,14 @@ type Daemon struct {
 	Log *slog.Logger
 	// Replicate gives the routes to the other members (nil: standalone).
 	Replicate func(sr ribd.SetRoutes)
+	// BFD is cer-bfdd on this member (nil: no BFD).
+	BFD BFD
+
+	bfdMu    sync.Mutex
+	bfdKeys  map[string]bfdRef // cer-bfdd key -> neighbour
+	bfdSpecs []bfdd.SessionSpec
+	bfdSent  bool
+	bfdQ     chan []bfdd.SessionSpec
 
 	mu     sync.Mutex
 	cfg    Config
@@ -84,7 +107,8 @@ type Daemon struct {
 
 type instance struct {
 	d      *Daemon
-	cfg    Instance
+	name   string   // the routing instance (never changes)
+	cfg    Instance // guarded by d.mu (config())
 	sp     *bgp.Speaker
 	lis    Listener
 	cancel context.CancelFunc
@@ -205,6 +229,7 @@ func (d *Daemon) apply() {
 		}
 		in.configure(w, eng)
 	}
+	d.syncBFD(want)
 }
 
 func (d *Daemon) start(c Instance, eng *policy.Engine) (*instance, error) {
@@ -213,7 +238,7 @@ func (d *Daemon) start(c Instance, eng *policy.Engine) (*instance, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
-	in := &instance{d: d, cfg: c, lis: lis, cancel: cancel, sources: map[string]bool{}}
+	in := &instance{d: d, name: c.Name, cfg: c, lis: lis, cancel: cancel, sources: map[string]bool{}}
 	in.pol = &policyAdapter{eng: eng, chains: chains(c)}
 	in.sp = bgp.New(dialer{d.Net, c.VRF}, in.pol.policy(), d.Log.With("instance", instName(c.Name)))
 	in.sp.OnRoutes = in.onRoutes
@@ -270,7 +295,7 @@ func (in *instance) stop() {
 	in.sources = map[string]bool{}
 	in.mu.Unlock()
 	for s := range srcs {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.cfg.Name, Protocol: rib.BGP, Source: s})
+		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s})
 	}
 }
 
@@ -306,7 +331,9 @@ func samePolicies(a, b Instance) bool {
 func speakerConfig(c Instance) bgp.Config {
 	sc := bgp.Config{AS: c.AS, RouterID: c.RouterID}
 	for _, n := range c.Neighbors {
-		sc.Neighbors = append(sc.Neighbors, n.Neighbor)
+		bn := n.Neighbor
+		bn.BFD = n.BFDCfg != nil
+		sc.Neighbors = append(sc.Neighbors, bn)
 	}
 	return sc
 }
@@ -370,13 +397,13 @@ func (in *instance) give(by map[string][]rib.Route, full bool) {
 	}
 	in.mu.Unlock()
 	for _, s := range sortedKeys(by) {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.cfg.Name, Protocol: rib.BGP, Source: s, Routes: by[s], Full: full})
+		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Routes: by[s], Full: full})
 	}
 	for _, s := range gone {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.cfg.Name, Protocol: rib.BGP, Source: s, Full: full})
+		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Full: full})
 	}
 	if len(by) == 0 && full {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.cfg.Name, Protocol: rib.BGP, Full: true})
+		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Full: true})
 	}
 	in.mu.Lock()
 	in.full = full
@@ -430,7 +457,7 @@ func ribRoute(r bgp.Route) rib.Route {
 func (in *instance) refreshExports(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	es, err := in.d.RIB.Active(cctx, in.cfg.Name)
+	es, err := in.d.RIB.Active(cctx, in.name)
 	if err != nil {
 		return
 	}
@@ -581,7 +608,7 @@ type InstanceStatus struct {
 func (d *Daemon) Status(instance *string) []InstanceStatus {
 	var out []InstanceStatus
 	for _, in := range d.instances() {
-		if instance != nil && *instance != in.cfg.Name {
+		if instance != nil && *instance != in.name {
 			continue
 		}
 		ns := in.sp.Status()
@@ -594,7 +621,7 @@ func (d *Daemon) Status(instance *string) []InstanceStatus {
 			n := byAddr[ns[i].Addr]
 			ns[i].Group, ns[i].Import, ns[i].Export = n.Group, n.Import, n.Export
 		}
-		out = append(out, InstanceStatus{Instance: in.cfg.Name, AS: in.cfg.AS, RouterID: in.cfg.RouterID, Neighbors: ns})
+		out = append(out, InstanceStatus{Instance: in.name, AS: cfg.AS, RouterID: cfg.RouterID, Neighbors: ns})
 	}
 	return out
 }
@@ -609,7 +636,7 @@ type AdjRequest struct {
 // Adj answers an AdjRequest.
 func (d *Daemon) Adj(q AdjRequest) ([]bgp.InPath, error) {
 	for _, in := range d.instances() {
-		if in.cfg.Name != q.Instance {
+		if in.name != q.Instance {
 			continue
 		}
 		if q.Out {
@@ -634,7 +661,7 @@ type ClearRequest struct {
 // Clear answers a ClearRequest with the number of neighbours.
 func (d *Daemon) Clear(q ClearRequest) (int, error) {
 	for _, in := range d.instances() {
-		if in.cfg.Name == q.Instance {
+		if in.name == q.Instance {
 			return in.sp.Clear(q.Neighbor, q.Mode), nil
 		}
 	}
@@ -653,7 +680,7 @@ func (d *Daemon) Resend() {
 			continue
 		}
 		for _, s := range sortedKeys(last) {
-			d.Replicate(ribd.SetRoutes{Instance: in.cfg.Name, Protocol: rib.BGP, Source: s, Routes: last[s], Full: full})
+			d.Replicate(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Routes: last[s], Full: full})
 		}
 	}
 }

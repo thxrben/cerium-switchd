@@ -352,8 +352,14 @@ Last updated: 2026-10-03 (evening).
   passive, graceful-restart (spec updated: graceful-restart is in the OPEN), and for a changed autonomous-system or
   router-id (every session of the instance); model.ChangeWarnings(active, candidate), called by the commit engine.
   Route-reflector client status changes in place (no reset).
-- Next: step 5 BFD client for BGP (placement as OSPF; BGP connects only after BFD is up once it was configured);
-  step 6 relay of BGP sessions to routed ports of other members.
+- Step 5 done 2026-10-04: BFD for BGP. The master's cer-bfdd runs a session per neighbour with
+  bfd-liveness-detection (client "bgp"): single-hop for a connected neighbour, multihop (UDP 4784) from the local
+  address for eBGP multihop and iBGP beyond the connected subnets. Up -> down ends the BGP session at once (Cease,
+  subcode 10 BFD down) and no new session starts (dial or accept) until BFD is up again; a BFD session that never
+  came up changes nothing; BFD removed from the configuration releases the neighbour. Tests: speaker and daemon.
+  Found by the race detector on the way: the instance name was read without the lock (now immutable).
+- Next: step 6, relay of BGP sessions to routed ports of other members (TCP stream to the master); BFD for those
+  then runs on the owner like OSPF's.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

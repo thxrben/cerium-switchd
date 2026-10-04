@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
@@ -210,4 +211,73 @@ func TestLinuxMD5(t *testing.T) {
 	if err := dial(""); err == nil {
 		t.Fatal("no key connected")
 	}
+}
+
+// fakeBFD records cer-bfdd's session list.
+type fakeBFD struct {
+	mu sync.Mutex
+	ss []bfdd.SessionSpec
+	n  int
+}
+
+func (f *fakeBFD) Set(_ context.Context, s bfdd.Set) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ss, f.n = s.Sessions, f.n+1
+	return nil
+}
+
+func (f *fakeBFD) get() []bfdd.SessionSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ss
+}
+
+// BFD for a neighbour: the session is set in cer-bfdd; its failure ends
+// the BGP session; without BFD configured the session goes.
+func TestDaemonBFD(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ports := &sync.Map{}
+	me, peer := netip.MustParseAddr("127.0.0.81"), netip.MustParseAddr("127.0.0.82")
+	rn := loNet{local: peer, ports: ports}
+	rl, _ := rn.Listen("", nil)
+	router := bgp.New(rn.Transport(), bgp.Policy{}, quiet)
+	go router.Run(ctx)
+	router.Configure(bgp.Config{AS: 65002, RouterID: peer, ConnectRetry: 200 * time.Millisecond, Neighbors: []bgp.Neighbor{{
+		Addr: me, PeerAS: 65001, LocalAS: 65002, HoldTime: 9, Families: []bgp.Family{bgp.IPv4Unicast}}}})
+	go func() {
+		for {
+			c, err := rl.Accept()
+			if err != nil {
+				return
+			}
+			router.Accept(c)
+		}
+	}()
+	fb := &fakeBFD{}
+	d := New(loNet{local: me, ports: ports}, &fakeRIB{sets: map[string]ribd.SetRoutes{}}, quiet)
+	d.BFD = fb
+	go d.Run(ctx)
+	nb := Neighbor{Neighbor: bgp.Neighbor{Addr: peer, PeerAS: 65002, LocalAS: 65001, HoldTime: 9, Families: []bgp.Family{bgp.IPv4Unicast}},
+		BFDCfg: &BFDConfig{IntervalMs: 300, Multiplier: 3}}
+	cfg := Config{Instances: []Instance{{AS: 65001, RouterID: me, Neighbors: []Neighbor{nb}}}}
+	d.SetConfig(cfg)
+	d.SetMaster(true)
+	waitFor(t, "BFD session set", func() bool { return len(fb.get()) == 1 })
+	s := fb.get()[0]
+	if s.Key.Peer != peer || s.Key.Multihop || s.IntervalMs != 300 || s.Multiplier != 3 {
+		t.Fatalf("BFD session %+v", s)
+	}
+	state := func() bgp.NeighborStatus { return d.Status(nil)[0].Neighbors[0] }
+	waitFor(t, "established", func() bool { return state().State == "Established" })
+	d.BFDChanged(s.Key.String(), true, false)
+	d.BFDChanged(s.Key.String(), false, false)
+	waitFor(t, "down by BFD", func() bool { return state().LastError == "BFD session down" && state().State != "Established" })
+	// BFD removed from the configuration: the session ends in cer-bfdd and
+	// BGP comes back.
+	nb.BFDCfg = nil
+	cfg.Instances[0].Neighbors = []Neighbor{nb}
+	d.SetConfig(cfg)
+	waitFor(t, "BFD session removed, BGP back", func() bool { return len(fb.get()) == 0 && state().State == "Established" })
 }

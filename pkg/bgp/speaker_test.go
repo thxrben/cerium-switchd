@@ -336,3 +336,32 @@ func TestBadPeerAS(t *testing.T) {
 		t.Fatal("established with the wrong AS")
 	}
 }
+
+// BFD: a session down after it was up ends the BGP session, which stays
+// down until BFD is up again; a session never up changes nothing.
+func TestBFD(t *testing.T) {
+	n := newNet(t)
+	bn := nbr("127.0.0.72", 65002, false)
+	bn.BFD = true
+	a, _ := n.speaker(n.ctx, "127.0.0.71", 65001, exportAll, bn)
+	n.speaker(n.ctx, "127.0.0.72", 65002, exportAll, nbr("127.0.0.71", 65001, false))
+	peer := netip.MustParseAddr("127.0.0.72")
+	waitFor(t, "established", func() bool { return state(a, "127.0.0.72").State == "Established" })
+	a.SetBFD(peer, false) // never up: the neighbour may not run BFD
+	time.Sleep(300 * time.Millisecond)
+	if st := state(a, "127.0.0.72"); st.State != "Established" {
+		t.Fatalf("BFD that never came up ended the session: %+v", st)
+	}
+	a.SetBFD(peer, true)
+	a.SetBFD(peer, false)
+	waitFor(t, "down by BFD", func() bool {
+		st := state(a, "127.0.0.72")
+		return st.State != "Established" && st.LastError == "BFD session down"
+	})
+	time.Sleep(time.Second) // several retry intervals: no new session
+	if st := state(a, "127.0.0.72"); st.State == "Established" {
+		t.Fatal("BGP came back before BFD")
+	}
+	a.SetBFD(peer, true)
+	waitFor(t, "back with BFD", func() bool { return state(a, "127.0.0.72").State == "Established" })
+}

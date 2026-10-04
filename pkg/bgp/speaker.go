@@ -161,6 +161,9 @@ func (s *Speaker) configure(c Config) {
 		}
 		old := p.n
 		p.n = n
+		if !n.BFD && (p.bfdHold || p.bfdWasUp) {
+			p.bfdWasUp, p.bfdHold = false, false // BFD no longer configured
+		}
 		switch {
 		case n.Disabled:
 			p.stop(6, 2)
@@ -240,6 +243,30 @@ func (s *Speaker) SetLocal(paths []Path, inactive []netip.Prefix) {
 	})
 }
 
+// SetBFD reports the state of the neighbour's BFD session: going down
+// after it was up ends the BGP session at once (Cease, BFD down, RFC 9384)
+// and no new one starts until BFD is up again. A BFD session that never
+// came up changes nothing (the neighbour may not run BFD).
+func (s *Speaker) SetBFD(nbr netip.Addr, up bool) {
+	s.do(func() {
+		p := s.peers[nbr]
+		if p == nil {
+			return
+		}
+		switch {
+		case up:
+			p.bfdWasUp, p.bfdHold = true, false
+			p.retryAt = time.Time{}
+		case p.bfdWasUp && !p.bfdHold:
+			p.bfdHold = true
+			p.lastError = "BFD session down"
+			p.stop(6, 10) // Cease, BFD down
+			p.dropPaths()
+			p.lastError = "BFD session down"
+		}
+	})
+}
+
 // Accept takes an incoming connection; it is closed when no enabled
 // neighbour has its address.
 func (s *Speaker) Accept(c net.Conn) {
@@ -249,7 +276,7 @@ func (s *Speaker) Accept(c net.Conn) {
 			ra = addrOf(a.IP)
 		}
 		p := s.peers[ra.WithZone("")]
-		if p == nil || p.n.Disabled {
+		if p == nil || p.n.Disabled || p.bfdHold {
 			c.Close()
 			return
 		}

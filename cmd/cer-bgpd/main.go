@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/ribd"
@@ -35,9 +36,31 @@ func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, er
 	return out, err
 }
 
+// bfdClient calls cer-bfdd on this member.
+type bfdClient struct{ c *ipc.Client }
+
+func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
+	return b.c.Call(ctx, bfdd.MethodSet, s, nil)
+}
+
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := bgpd.New(bgpd.LinuxNet{}, rc, k.Log)
+	// BFD for the neighbours (cer-bfdd runs while BFD is configured; the
+	// sessions are set again whenever it (re)starts).
+	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
+	d.BFD = bfdClient{bc}
+	bc.OnConnect(func(*ipc.Conn) { d.ResendBFD() })
+	bc.Subscribe(bfdd.TopicSessions, "", func(ev ipc.Event) {
+		if ev.Sync {
+			return
+		}
+		var st bfdd.State
+		if !ev.Deleted && json.Unmarshal(ev.Value, &st) != nil {
+			return
+		}
+		d.BFDChanged(ev.Key, st.Up, ev.Deleted)
+	})
 	// The master's routes for the other members.
 	d.Replicate = func(sr ribd.SetRoutes) {
 		r, ok := k.Role()

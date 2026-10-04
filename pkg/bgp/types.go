@@ -61,6 +61,8 @@ type Neighbor struct {
 	Multipath       bool
 	MultipleAS      bool
 	Disabled        bool
+	// BFD: a BFD session watches the neighbour (SetBFD reports it).
+	BFD bool
 	// NextHop4/6: the address announced as next hop self in the other
 	// family than the session's (invalid: the session's own address).
 	NextHop4, NextHop6 netip.Addr
