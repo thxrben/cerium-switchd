@@ -1935,7 +1935,9 @@ of the protocol's hold time (OSPF 40 s, BGP 90 s by default). The statement goes
 * `minimum-interval` 50–60000 ms (both directions); both sides use the slower of the two intervals.
 * `authentication`: optional keyed SHA-1 or MD5 (RFC 5880 §6.7); the neighbour must use the same key.
 * A BFD session going down takes the OSPF adjacency or BGP session down at once; it comes back through the protocol's
-  normal start (BGP waits for BFD to be up before it connects again).
+  normal start (BGP waits for BFD to be up before it connects again). Only a session that was up counts: a neighbour
+  that does not answer BFD keeps its adjacency (RFC 5882). OSPF asks for a session per neighbour in state 2-Way or
+  higher.
 * BFD runs with real-time scheduling priority on the member that owns the interface (5.8, virtual chassis).
 * Values below 100 ms can cause false detections on small ARM boards (W at commit for `minimum-interval` < 100 on a
   member with fewer than 4 CPU cores that runs the session: the member of a routed port, or, for irb interfaces,

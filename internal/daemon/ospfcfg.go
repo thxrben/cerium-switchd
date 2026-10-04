@@ -54,6 +54,10 @@ func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
 						ic.Device = dev
 					}
 					ic.Owners, ic.IRB = unitOwners(cfg, u)
+					if b := oi.BFD; b != nil {
+						ic.BFD = &ospfd.BFDSpec{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg,
+							AuthKeyID: b.AuthKeyID, AuthKey: b.AuthKey}
+					}
 					for _, p := range u.Addrs {
 						if _, perMember := u.AddrMember[p]; perMember || p.Addr().Is4() == o.V3 {
 							continue

@@ -163,3 +163,46 @@ func (r *Router) ClearNeighbors(nbr netip.Addr, now time.Time) int {
 	}
 	return n
 }
+
+// NeighborRef names a neighbour on an interface.
+type NeighborRef struct {
+	Iface string
+	ID    ID
+	Addr  netip.Addr // its source address (OSPFv3: link-local)
+}
+
+// TwoWayNeighbors lists the neighbours in state 2-Way or higher: those a
+// BFD session watches (RFC 5882 §4.1, sorted by interface and router id).
+func (r *Router) TwoWayNeighbors() []NeighborRef {
+	var out []NeighborRef
+	for _, i := range r.sortedIfaces() {
+		for _, n := range i.sortedNbrs() {
+			if n.state >= NbrTwoWay {
+				out = append(out, NeighborRef{Iface: i.cfg.Name, ID: n.id, Addr: n.addr})
+			}
+		}
+	}
+	return out
+}
+
+// NeighborFailed takes a neighbour down at once (its BFD session went
+// down, RFC 5882 §4.1): the adjacency ends as after the dead interval and
+// starts again with its next hello. It reports whether there was one.
+func (r *Router) NeighborFailed(iface string, addr netip.Addr, now time.Time) bool {
+	r.now = now
+	defer r.settle()
+	for _, i := range r.sortedIfaces() {
+		if i.cfg.Name != iface {
+			continue
+		}
+		for _, nb := range i.sortedNbrs() {
+			if nb.addr == addr && nb.state >= NbrTwoWay {
+				r.Log.Info("ospf neighbor down: BFD", "version", r.v, "interface", iface, "neighbor", nb.id)
+				nb.kill()
+				delete(i.nbrs, i.nbrKey(nb.addr, nb.id))
+				return true
+			}
+		}
+	}
+	return false
+}

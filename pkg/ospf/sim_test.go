@@ -552,3 +552,36 @@ func TestMD5(t *testing.T) {
 		t.Fatalf("route despite the wrong key (auth failures %d)", n.routers["r1"].r.Stats.AuthFailures)
 	}
 }
+
+func TestNeighborFailed(t *testing.T) {
+	versions(t, func(t *testing.T, v Version) {
+		n := newSim(t, v)
+		n.router("r1", "1.1.1.1")
+		n.router("r2", "2.2.2.2")
+		n.connect("l12", []string{"r1", "r2"}, p2p)
+		n.stub("r2", "lo", v4v6(v, "192.0.2.2/32", "2001:db8:ff::2/128"))
+		n.start()
+		n.run(5 * time.Second)
+		r1 := n.routers["r1"].r
+		nbrs := r1.TwoWayNeighbors()
+		peer := netip.MustParseAddr(v4v6(v, "10.1.0.2", "fe80::1:2"))
+		if len(nbrs) != 1 || nbrs[0] != (NeighborRef{Iface: "l12", ID: id("2.2.2.2"), Addr: peer}) {
+			t.Fatalf("2-Way neighbours %+v", nbrs)
+		}
+		// The link fails; BFD notices long before the dead interval.
+		n.segs["l12"].down = true
+		if !r1.NeighborFailed("l12", peer, n.now) || r1.NeighborFailed("l12", peer, n.now) {
+			t.Fatal("NeighborFailed must take the neighbour down once")
+		}
+		n.run(2 * time.Second) // the SPF delay, far below the dead interval
+		if len(r1.TwoWayNeighbors()) != 0 || n.route("r1", v4v6(v, "192.0.2.2/32", "2001:db8:ff::2/128")) != nil {
+			t.Fatalf("after BFD down: neighbours %v\n%s", r1.TwoWayNeighbors(), n.dump("r1"))
+		}
+		// The link returns: the adjacency forms again.
+		n.segs["l12"].down = false
+		n.run(15 * time.Second)
+		if st := n.nbrStates("r1", "l12"); st[id("2.2.2.2")] != NbrFull {
+			t.Fatalf("r1's neighbours after recovery %v", st)
+		}
+	})
+}

@@ -64,6 +64,8 @@ type Iface struct {
 	// every member, its frames reach the master in their VLAN).
 	Owners []int `json:"owners,omitempty"`
 	IRB    bool  `json:"irb,omitempty"`
+	// BFD: bfd-liveness-detection (nil: none).
+	BFD *BFDSpec `json:"bfd,omitempty"`
 }
 
 func (i Instance) key() string { return fmt.Sprintf("%s/v%d", i.Name, i.Version) }
@@ -115,6 +117,8 @@ type Daemon struct {
 	// standalone).
 	Member    int
 	StackCall func(ctx context.Context, member int, method string, req, resp any) error
+	// BFD is cer-bfdd on this member (nil: no BFD).
+	BFD BFD
 
 	events  chan func()
 	started time.Time
@@ -128,6 +132,7 @@ type Daemon struct {
 	insts  map[string]*instance
 	rel    relayState                   // a non-master's relay sockets
 	remote map[string]map[int]RelayLink // the master's view of relayed devices (key|unit -> member)
+	bfd    bfdState
 }
 
 type instance struct {
@@ -137,6 +142,7 @@ type instance struct {
 	ports map[string]Port // unit -> I/O
 	links map[string]LinkInfo
 	ifcfg map[string]ospf.IfaceConfig
+	owner map[string]int // unit -> the member sending for it (0: this one)
 	// sent: the routes last given to the RIB; full: they were complete.
 	sent    []rib.Route
 	full    bool
@@ -204,6 +210,7 @@ func (d *Daemon) Run(ctx context.Context) {
 			for _, k := range d.sortedKeys() {
 				d.insts[k].r.Tick(now)
 			}
+			d.syncBFD(now)
 		case <-links.C:
 			d.refreshLinks()
 		case <-export.C:
@@ -238,6 +245,7 @@ func (d *Daemon) apply() {
 		me = masterID
 	}
 	d.relay(cfg, me, masterID)
+	d.relayRole(master, masterID)
 	want := map[string]Instance{}
 	if master {
 		for _, in := range cfg.Instances {
@@ -262,7 +270,8 @@ func (d *Daemon) apply() {
 	}) {
 		in := d.insts[k]
 		if in == nil {
-			in = &instance{d: d, ports: map[string]Port{}, links: map[string]LinkInfo{}, ifcfg: map[string]ospf.IfaceConfig{}, started: now}
+			in = &instance{d: d, ports: map[string]Port{}, links: map[string]LinkInfo{}, ifcfg: map[string]ospf.IfaceConfig{},
+				owner: map[string]int{}, started: now}
 			in.r = ospf.New(want[k].Version, (*ioAdapter)(in), d.Log.With("instance", want[k].Name), now)
 			in.r.OnRoutes = in.onRoutes
 			d.insts[k] = in
@@ -336,6 +345,7 @@ func (in *instance) configure(now time.Time) {
 			li, owner, ok = d.remoteLink(c.key(), ic)
 		}
 		in.links[ic.Unit] = li
+		in.owner[ic.Unit] = owner
 		ifID := uint32(li.Index)
 		if owner != 0 {
 			ifID = uint32(owner)<<24 | uint32(li.Index)&0xffffff // unique among this router's interfaces

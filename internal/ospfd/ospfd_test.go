@@ -202,7 +202,7 @@ func TestExports(t *testing.T) {
 // fakeStack delivers stack calls between daemons (JSON as on the wire).
 type fakeStack struct{ ds map[int]*Daemon }
 
-func (s *fakeStack) call(_ context.Context, member int, method string, req, _ any) error {
+func (s *fakeStack) call(_ context.Context, member int, method string, req, resp any) error {
 	d := s.ds[member]
 	if d == nil {
 		return errors.New("not reachable")
@@ -221,6 +221,17 @@ func (s *fakeStack) call(_ context.Context, member int, method string, req, _ an
 		var l RelayLink
 		json.Unmarshal(raw, &l)
 		d.LinkReported(l)
+	case StackBFDSet:
+		var r RelayBFD
+		json.Unmarshal(raw, &r)
+		out, _ := json.Marshal(d.SetRelayedBFD(1, r))
+		if resp != nil {
+			json.Unmarshal(out, resp)
+		}
+	case StackBFDState:
+		var st RelayBFDState
+		json.Unmarshal(raw, &st)
+		d.RelayedBFDState(st)
 	}
 	return nil
 }
@@ -228,54 +239,9 @@ func (s *fakeStack) call(_ context.Context, member int, method string, req, _ an
 // A routed port of member 2: the master (member 1, no such device) runs
 // the adjacency with the router behind it through member 2's socket.
 func TestRelayedInterface(t *testing.T) {
-	w := &wire{ports: map[string][]*fakePort{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	st := &fakeStack{ds: map[int]*Daemon{}}
-	port := iface("2/0/1.0", "", "10.0.0.1/30", "2001:db8::1/64")
-	port.Owners = []int{2}
-	lo := iface("lo0.0", "lo1", "192.0.2.1/32", "2001:db8:ff::1/128")
-	lo.Passive, lo.Owners = true, []int{1}
-	cfg := Config{Instances: []Instance{
-		{Version: ospf.V2, RouterID: 0x01010101, ReferenceBW: 100e9, Interfaces: []Iface{port, lo}},
-		{Version: ospf.V3, RouterID: 0x01010101, ReferenceBW: 100e9, Interfaces: []Iface{port, lo}},
-	}}
-	// Member 1, the master.
-	r1 := &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
-	d1 := New(fakeKernel{"lo1": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::99")}}, fakeNet{w: w}, r1, quiet)
-	d1.Member, d1.StackCall, d1.Settle = 1, st.call, time.Second
-	// Member 2 has the port's device ("link", joined to the router).
-	cfg2 := cfg
-	cfg2.Instances = []Instance{cfg.Instances[0], cfg.Instances[1]}
-	for k := range cfg2.Instances {
-		ifs := append([]Iface(nil), cfg2.Instances[k].Interfaces...)
-		ifs[0].Device = "link"
-		cfg2.Instances[k].Interfaces = ifs
-	}
-	d2 := New(fakeKernel{"link": {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::1")}}, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}, quiet)
-	d2.Member, d2.StackCall = 2, st.call
-	st.ds[1], st.ds[2] = d1, d2
-	for _, d := range []*Daemon{d1, d2} {
-		go d.Run(ctx)
-	}
-	d1.SetConfig(cfg)
-	d2.SetConfig(cfg2)
-	d1.SetRole(true, 1)
-	d2.SetRole(false, 1)
-	// The router behind member 2's port.
-	rr := &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
-	dr := New(fakeKernel{"link": {Index: 3, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::2")},
-		"lo": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::98")}}, fakeNet{w: w}, rr, quiet)
-	dr.Settle = time.Second
-	rp := iface("e0", "link", "10.0.0.2/30", "2001:db8::2/64")
-	rlo := iface("lo", "lo", "192.0.2.2/32", "2001:db8:ff::2/128")
-	rlo.Passive = true
-	dr.SetConfig(Config{Instances: []Instance{
-		{Version: ospf.V2, RouterID: 0x02020202, ReferenceBW: 100e9, Interfaces: []Iface{rp, rlo}},
-		{Version: ospf.V3, RouterID: 0x02020202, ReferenceBW: 100e9, Interfaces: []Iface{rp, rlo}},
-	}})
-	dr.SetMaster(true)
-	go dr.Run(ctx)
+	_, _, r1, rr := relaySetup(ctx, nil, nil, nil)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		s4, ok4 := r1.get(rib.OSPF)
@@ -298,6 +264,59 @@ func TestRelayedInterface(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// relaySetup runs a stack of two members, the master 1 and member 2 with
+// the routed port 2/0/1.0 (BFD bfd on it when not nil; b1/b2 are the
+// members' cer-bfdd), and a router behind that port.
+func relaySetup(ctx context.Context, bfd *BFDSpec, b1, b2 BFD) (d1, d2 *Daemon, r1, rr *fakeRIB) {
+	w := &wire{ports: map[string][]*fakePort{}}
+	st := &fakeStack{ds: map[int]*Daemon{}}
+	port := iface("2/0/1.0", "", "10.0.0.1/30", "2001:db8::1/64")
+	port.Owners, port.BFD = []int{2}, bfd
+	lo := iface("lo0.0", "lo1", "192.0.2.1/32", "2001:db8:ff::1/128")
+	lo.Passive, lo.Owners = true, []int{1}
+	cfg := Config{Instances: []Instance{
+		{Version: ospf.V2, RouterID: 0x01010101, ReferenceBW: 100e9, Interfaces: []Iface{port, lo}},
+		{Version: ospf.V3, RouterID: 0x01010101, ReferenceBW: 100e9, Interfaces: []Iface{port, lo}},
+	}}
+	// Member 1, the master.
+	r1 = &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+	d1 = New(fakeKernel{"lo1": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::99")}}, fakeNet{w: w}, r1, quiet)
+	d1.Member, d1.StackCall, d1.Settle, d1.BFD = 1, st.call, time.Second, b1
+	// Member 2 has the port's device ("link", joined to the router).
+	cfg2 := cfg
+	cfg2.Instances = []Instance{cfg.Instances[0], cfg.Instances[1]}
+	for k := range cfg2.Instances {
+		ifs := append([]Iface(nil), cfg2.Instances[k].Interfaces...)
+		ifs[0].Device = "link"
+		cfg2.Instances[k].Interfaces = ifs
+	}
+	d2 = New(fakeKernel{"link": {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::1")}}, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}, quiet)
+	d2.Member, d2.StackCall, d2.BFD = 2, st.call, b2
+	st.ds[1], st.ds[2] = d1, d2
+	for _, d := range []*Daemon{d1, d2} {
+		go d.Run(ctx)
+	}
+	d1.SetConfig(cfg)
+	d2.SetConfig(cfg2)
+	d1.SetRole(true, 1)
+	d2.SetRole(false, 1)
+	// The router behind member 2's port.
+	rr = &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+	dr := New(fakeKernel{"link": {Index: 3, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::2")},
+		"lo": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::98")}}, fakeNet{w: w}, rr, quiet)
+	dr.Settle = time.Second
+	rp := iface("e0", "link", "10.0.0.2/30", "2001:db8::2/64")
+	rlo := iface("lo", "lo", "192.0.2.2/32", "2001:db8:ff::2/128")
+	rlo.Passive = true
+	dr.SetConfig(Config{Instances: []Instance{
+		{Version: ospf.V2, RouterID: 0x02020202, ReferenceBW: 100e9, Interfaces: []Iface{rp, rlo}},
+		{Version: ospf.V3, RouterID: 0x02020202, ReferenceBW: 100e9, Interfaces: []Iface{rp, rlo}},
+	}})
+	dr.SetMaster(true)
+	go dr.Run(ctx)
+	return d1, d2, r1, rr
 }
 
 func TestRelayedDecision(t *testing.T) {

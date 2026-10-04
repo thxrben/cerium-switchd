@@ -266,7 +266,14 @@ Last updated: 2026-10-03 (evening).
    reliable-stream messages OPEN2..PROBE2 the dissector does not know yet): postponed by the user 2026-10-04.
 2. **BFD**: interval check at commit: done 2026-10-04 (W below 100 ms on a member with fewer than 4 CPUs; each
    member checks the sessions it runs or, as a possible master, may run: routed ports by owner, irb/MC-LAG/BGP on
-   every non-witness member; model.CPUCounter, kernelInventory.CPUs, checkBFD; E below 50 ms is the schema's range). BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
+   every non-witness member; model.CPUCounter, kernelInventory.CPUs, checkBFD; E below 50 ms is the schema's range).
+   BFD for OSPF/OSPFv3 and the relay for routed interfaces of other members: done 2026-10-04, unit-tested. The master's
+   cer-ospfd asks for a session per 2-Way neighbour on interfaces with bfd-liveness-detection (OSPFv3: link-local
+   peer with the device as zone), in its own cer-bfdd when it has the device (irb, own port, MC-LAG with a master
+   leg), else in the relaying member's (ospf-bfd-set, whole list, every 10 s; answered with the states). Up -> down
+   takes the neighbour down at once (pkg/ospf NeighborFailed); a session never up changes nothing. Relayed states go
+   to the master in order with a count of failures (a lost report is repaired). Open: lab run, interop with FRR's
+   bfdd; BGP's BFD client comes with cer-bgpd. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
    for routed interfaces of other members.
 3. **ECMP**: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8).
 4. **LACP with the UniFi (physw4)**: investigated 2026-10-03. cerOS behaves correctly: tcpdump shows well-formed
@@ -282,7 +289,7 @@ Last updated: 2026-10-03 (evening).
 6. **Applying `request system diagnose` hints** (proposal, confirm with the user first): configuration statements
    for what a hint recommends (interfaces <port> ether-options rx-ring/tx-ring/offload, system performance rps),
    the hint names the `set` command, `request system diagnose apply` loads them into a candidate.
-7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), BFD client, lab interop with FRR (v2 and
+7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), lab interop with FRR (v2 and
    v3, broadcast and p2p), the punt frame test and OSPFv3 sockets in the lab.
 
 8. **physw4 field issues (2026-10-03)**: RSTP did not run because the image cc68085 lacks /sbin/bridge-stp (fixed in

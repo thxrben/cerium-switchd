@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/ospfd"
 	"github.com/thxrben/cerium-switchd/internal/ribd"
@@ -36,11 +37,51 @@ func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, er
 	return out, err
 }
 
+// bfdClient calls cer-bfdd on this member.
+type bfdClient struct{ c *ipc.Client }
+
+func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
+	return b.c.Call(ctx, bfdd.MethodSet, s, nil)
+}
+
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := ospfd.New(ospfd.LinuxKernel{}, ospfd.LinuxNet{}, rc, k.Log)
 	d.Member = k.Member
 	d.StackCall = k.StackCall
+	// BFD for the neighbours (cer-bfdd runs while BFD is configured; the
+	// sessions are set again whenever it (re)starts).
+	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
+	d.BFD = bfdClient{bc}
+	bc.OnConnect(func(*ipc.Conn) { d.ResendBFD() })
+	bc.Subscribe(bfdd.TopicSessions, "", func(ev ipc.Event) {
+		if ev.Sync {
+			return
+		}
+		var st bfdd.State
+		if !ev.Deleted && json.Unmarshal(ev.Value, &st) != nil {
+			return
+		}
+		d.BFDChanged(ev.Key, st.Up, ev.Deleted)
+	})
+	k.HandleStack(ospfd.StackBFDSet, func(_ context.Context, from int, raw json.RawMessage) (any, error) {
+		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
+			return nil, nil // only the master's sessions count
+		}
+		var r ospfd.RelayBFD
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, err
+		}
+		return d.SetRelayedBFD(from, r), nil
+	})
+	k.HandleStack(ospfd.StackBFDState, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var st ospfd.RelayBFDState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return nil, err
+		}
+		d.RelayedBFDState(st)
+		return nil, nil
+	})
 	// The relay of routed interfaces of other members (reference 5.8).
 	k.HandleStack(ospfd.StackRx, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
 		var p ospfd.RelayPacket
