@@ -564,6 +564,8 @@ vlans {
 | `show vxlan [remote-vtep]` | VNIs, remote VTEPs and their reachability (5.7). |
 | `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
 | `show system services web-management` | Whether the REST API runs (on which member, address and port), the certificate (its file, or `temporary self-signed`, generated when), its SHA-256 fingerprint and public-key pin (`sha256//…`), and the uploaded bundle (version, size, uploaded by whom and when). |
+| `show system memory [member <id>\|all-members]` | How the member's memory is divided (`system memory`): RAM, the fixed part (kernel, NIC rings, daemons, management reserve, margin), the slots (size, count), the system area, the update slots, and per purpose its slots, capacity, entries now and how full it is; then the dynamic area and what is in use now (per daemon and the kernel's tables). Without slots it says so and shows the use. When the configuration was changed since the last start or reload, the configured values are shown next to the applied ones. |
+| `request system memory setup` | Interactive (super-user): shows this stack's slots (the smallest member's), asks per purpose for a percentage or a number of slots, shows the resulting capacities after each answer, and writes `system memory` into the candidate configuration; it commits nothing. `?` at a question lists the purposes with their bytes per entry; an empty answer keeps the current value; `-` removes a purpose. |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version (with every member's two system slots, read from the disks: version, active or backup, `unreadable: …` when a slot's partition cannot be read, and a missing or damaged boot state). |
@@ -577,12 +579,18 @@ vlans {
 One page with the limits of the switch and the current use of each, so nobody has to read the reference to know
 whether a configuration fits. Every range comes from the same definitions as the configuration parser (they cannot
 differ from what `commit` accepts); hardware facts are those of the member the command runs on (with a member
-target, 3.5, those of that member). Sections and lines (a `-` means no limit applies):
+target, 3.5, those of that member).
+
+Every line has two columns: **Applied**, the limit in force now because of the memory slots (`system memory`,
+5.1), and **Supported**, what the software and the hardware support (with the use, as before). Lines without a slot
+purpose, and every line when memory is not allocated in slots, show `-` as Applied. Sections and lines (a `-` in
+Supported means no limit applies):
 
 | Section | Lines |
 |---|---|
 | **Frame sizes** (frame size incl. the Ethernet header, without VLAN tags, 1.3) | configurable `mtu` range and default; the largest configured `mtu` and where it is set (and the host MTU that fits it); the extra bytes the stack tunnels need (58); the largest `mtu` the stack carries (`show virtual-chassis mtu` has the details per stacking port); the hardware maximum of this member's ports (lowest and highest, with the port) |
-| **Switching** | VLAN ids (1–4094) and how many are configured; VXLAN VNIs; learned MAC addresses now, the aging range and default, the `mac-limit` range per port |
+| **Switching** | VLAN ids (1–4094) and how many are configured; VXLAN VNIs; MAC addresses (Applied: the `mac` capacity; Supported: what all slots would hold, and how many are learned now), the aging range and default, the `mac-limit` range per port |
+| **Tables** | BGP IPv4 routes, BGP IPv6 routes, further BGP paths, OSPF routes, ARP entries, NDP entries, multicast memberships: Applied is the purpose's capacity (`n of max` with the entries now); Supported is what this member would hold if all its slots went to that one table (without slots: `-`, and the entries now). The kernel's neighbour table size (`gc_thresh3`) is shown with ARP and NDP. Last, the software bundle size: Applied the update slot, Supported the room in memory now (3.6). |
 | **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
 | **MC-LAG** | members per MC-LAG bundle (2), peers per member (1); the configured MC-LAG bundles and pairs |
 | **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
@@ -940,8 +948,8 @@ interfaces; it moves with mastership. It runs while `system services web-managem
   A request without valid credentials gets 401; too many failures from one address (10 per minute) get 429.
   Permissions are those of the user's class (4.3): reading needs any class, changes need `super-user` (403
   otherwise). Every change is logged with the user (facility `change-log`).
-* `upload-limit <size>`: the largest bundle an upload may have (default `1g`). E when it is larger than the `update`
-  slot of `system memory`.
+* `upload-limit <size>`: the largest bundle an upload may have (default `1g`). With memory slots (`system memory`), the
+  update slot limits it too: the smaller one applies.
 * **Endpoints** (JSON; errors are `{"error": "<text>"}` with a 4xx/5xx status):
 
 | Method and path | Class | Does |
@@ -1039,6 +1047,70 @@ every member; a change takes effect at once (running operations keep the value t
 * `config-check` (default 120, 10..1800): the new version's check of the configuration before an update.
 * The update daemon and every member read the values from the active configuration; a value raised for an update is
   in effect for the whole update, the reboot included.
+
+#### `system memory { allocation <purpose> (percent <n> | slots <n>); update-size <size>; management-reserve <size>; }`
+Fixed memory for the tables that must always fit (a cerOS extension). **Without `allocation` memory is dynamic**, as
+on any Linux system: every table grows until memory runs out (only the kernel's neighbour tables are given a size
+that suits a switch: 1/64 of the RAM, in entries of 512 bytes, instead of Linux's 1024 entries). With `allocation`,
+every table named there has a guaranteed capacity, and `show system limits` shows what this switch holds when
+**every table is full at the same time**.
+
+**How the memory is divided** (on every member, from its own RAM):
+1. **Fixed part**, not in slots: the kernel (1.6 % of the RAM for its page bookkeeping, plus 128 MB), the receive and
+   transmit rings of the NICs (ring size × queues × buffer size of every port, as set), the base memory of switchd and
+   every daemon (measured for each release), the management reserve (below), and a margin of 5 % of the RAM (at least
+   three times the kernel's `min_free_kbytes`) for bursts of packets.
+2. The rest is cut into **slots of 4 MiB** (1024 pages). A slot belongs to exactly one purpose and holds a whole number
+   of entries.
+3. The **system area** comes first: as many slots as the tables need that the configuration bounds (interfaces,
+   VLANs and VNIs, the virtual chassis' members, keys and stacking ports, the Raft log, the configuration with its
+   rollbacks, static routes, DHCP pools, MACsec, RSTP, LACP, MC-LAG, BFD sessions, LLDP neighbours (8 per port),
+   alarms). It grows with the configuration and is recalculated at every start.
+4. The **update** slots hold a software bundle in memory (3.6): `update-size` (default `512m`, 64m..16g) plus one slot.
+   A bundle (also an upload, whatever `upload-limit` says) can be at most this large.
+5. The **allocated** purposes, then the **dynamic area**: the slots no purpose has. Configuration archival, USB
+   transfers, CLI output and the like use it, without a guarantee.
+
+**Purposes** (bytes per entry of this release; one entry counts everything it takes: protocol, routing table and
+kernel; `show system memory` lists the values of the running version):
+
+| Purpose | One entry is | Bytes | Per slot |
+|---|---|---|---|
+| `bgp-ipv4` | an IPv4 prefix learned by BGP with its best path | 2100 | 1997 |
+| `bgp-ipv6` | an IPv6 prefix learned by BGP with its best path | 2340 | 1792 |
+| `bgp-paths` | every further path to a BGP prefix (a second neighbour, multipath, a backup) | 1500 | 2796 |
+| `ospf` | an OSPF or OSPFv3 route with its share of the link-state database | 1150 | 3647 |
+| `arp` | an IPv4 neighbour | 512 | 8192 |
+| `ndp` | an IPv6 neighbour | 512 | 8192 |
+| `mac` | a MAC address (learned, or synchronised by MC-LAG or VXLAN) | 250 | 16777 |
+| `multicast` | an IGMP or MLD snooping membership (group and port) | 300 | 13981 |
+
+* `percent <n>` (1..100): that share of the slots left after the system area and the update slots, rounded down.
+  `slots <n>` (1..1048576): that many. One of the two per purpose (setting one replaces the other; E with
+  neither). E: percentages above 100 % in total.
+* A purpose that is not listed has no guarantee: it takes what is free (dynamic), and is not limited either.
+* **Stack**: every member computes its slots from its own RAM. Counts (`slots`) must fit every member; a member
+  where the allocation does not fit uses dynamic memory and raises a Major alarm (`switchd/memory`) naming what is
+  missing. Since any member can become master, a purpose's capacity in the stack is the smallest of the members'.
+* **When it applies**: at start and at `request system reload` (and a reboot), never while running: a commit that
+  changes `system memory` warns that it takes effect at the next reload. `show system memory` shows the configured
+  values next to the applied ones until then.
+* **A full purpose** refuses new entries and raises a Major alarm (`switchd/memory <purpose>`), cleared below 95 %;
+  existing entries are never removed for new ones:
+  * `bgp-ipv4`, `bgp-ipv6`, `bgp-paths`: a new prefix or path is not stored (as if it had been withdrawn);
+    the neighbours stay up. A route that goes away makes room for the next one.
+  * `ospf`: the link-state database stops growing (RFC 1765 "database overflow": external routes beyond it are
+    neither stored nor originated), and the routes beyond the capacity are not installed.
+  * `arp`, `ndp`: the kernel's neighbour table has this size (`gc_thresh3`; old entries that are not in use make room
+    first, as in Linux).
+  * `mac`: the bridge learns no more addresses (`fdb_max_learned`); synchronised ones count too.
+  * `multicast`: no further memberships are snooped (`mcast_hash_max`); the groups flood instead.
+* switchd and the daemons get memory limits from the slots (the base plus their purposes, with room for Go's garbage
+  collector): a daemon that exceeds its limit by half is ended and restarted alone, not the switch. The daemons whose
+  timing the network depends on (switchd, `cer-lacpd`, `cer-bfdd`, `cer-rstpd`, `cer-mclagd`, `cer-ribd`) keep their
+  program code in memory under pressure (without swap, code is the only thing the kernel could take from them).
+* `management-reserve <size>` (default `384m`, 128m..4g): memory kept for logins (SSH, CLI sessions), the
+  journal, `cer-syslogd` and the other system services, in the fixed part. It is never used for slots.
 
 ### 5.2 virtual-chassis
 
@@ -2469,6 +2541,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system archival configuration transfer-interval` | leaf | &lt;minutes&gt; 15..2880 |  | Send a copy every n minutes |
 | `system archival configuration archive-sites <url>` | list | &lt;url&gt; |  | Where the copies go (tried in order) |
 | `system archival configuration archive-sites <url> password` | leaf | &lt;password&gt; |  | Login password |
+| `system memory` | container |  |  | Fixed memory for tables that must always fit (slots) |
+| `system memory allocation <purpose>` | list | bgp-ipv4 \\| bgp-ipv6 \\| bgp-paths \\| ospf \\| arp \\| ndp \\| mac \\| multicast |  | Slots of one purpose |
+| `system memory allocation <purpose> percent` | leaf (excl. amount) | &lt;percent&gt; 1..100 |  | Share of the slots |
+| `system memory allocation <purpose> slots` | leaf (excl. amount) | &lt;count&gt; 1..1048576 |  | Number of slots |
+| `system memory update-size` | leaf | &lt;size&gt; 64m..16g | 512m | Largest software bundle held in memory |
+| `system memory management-reserve` | leaf | &lt;size&gt; 128m..4g | 384m | Memory kept for logins and system services |
 | `system timeouts` | container |  |  | How long cerOS waits for disks, the kernel and update steps |
 | `system timeouts disk-operation` | leaf | &lt;seconds&gt; 1..600 | 10 | One file operation on a disk |
 | `system timeouts kernel-call` | leaf | &lt;seconds&gt; 1..120 | 5 | One netlink, ioctl or sysfs call |

@@ -152,6 +152,23 @@ func build() *Node {
 				),
 			),
 		),
+		C("memory", "Fixed memory for tables that must always fit (slots)",
+			L("allocation", "Slots of one purpose", named("<purpose>", Enum(
+				E("bgp-ipv4", "IPv4 prefixes learned by BGP"),
+				E("bgp-ipv6", "IPv6 prefixes learned by BGP"),
+				E("bgp-paths", "Further BGP paths to a prefix"),
+				E("ospf", "OSPF and OSPFv3 routes"),
+				E("arp", "IPv4 neighbours"),
+				E("ndp", "IPv6 neighbours"),
+				E("mac", "MAC addresses"),
+				E("multicast", "IGMP and MLD snooping memberships"),
+			)), Grouped("amount",
+				V("percent", "Share of the slots", Uint("<percent>", 1, 100)),
+				V("slots", "Number of slots", Uint("<count>", 1, 1048576)),
+			)...),
+			VD("update-size", "Largest software bundle held in memory", Size(64<<20, 16<<30), "512m"),
+			VD("management-reserve", "Memory kept for logins and system services", Size(128<<20, 4<<30), "384m"),
+		),
 		C("timeouts", "How long cerOS waits for disks, the kernel and update steps",
 			VD("disk-operation", "One file operation on a disk", Uint("<seconds>", 1, 600), "10"),
 			VD("kernel-call", "One netlink, ioctl or sysfs call", Uint("<seconds>", 1, 120), "5"),
@@ -366,4 +383,10 @@ func build() *Node {
 	return C("", "",
 		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd, PolicyOptions(),
 	)
+}
+
+// named is t under another name.
+func named(name string, t *Type) *Type {
+	t.Name = name
+	return t
 }
