@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/thxrben/cerium-switchd/internal/software"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
@@ -141,6 +143,11 @@ type Daemon struct {
 	Timeout time.Duration
 	// Delay before a reboot (switchd answers its caller first).
 	RebootDelay time.Duration
+	// RetryDelay is the pause before a failed boot state write or reboot
+	// is tried again (0: 10 s); Uptime the time since the boot (nil: the
+	// kernel's). Tests set them.
+	RetryDelay time.Duration
+	Uptime     func() time.Duration
 
 	mu      sync.Mutex
 	state   string
@@ -244,13 +251,21 @@ func (d *Daemon) boot(ctx context.Context) {
 		// restarted: the boot loader then still guards the slot).
 		d.busy = true
 		d.healthy = make(chan struct{})
-		go d.watchNew(ctx, st, d.timeout())
+		// The time counts from the boot: a restart of this daemon does not
+		// extend it (at least a minute is left for switchd to report).
+		go d.watchNew(ctx, st, healthWithin(d.timeout(), d.uptime()))
 	case st.FromSlot:
 		// The old slot runs again: the new one failed (the boot loader or
-		// our own rollback brought us back).
+		// our own rollback brought us back), or the update never got to
+		// the reboot (the boot state was not switched: a power loss or a
+		// crash while installing).
 		why := "the new system did not start (the boot loader returned to slot " + active + ")"
 		if !st.Booted {
 			why = "the new system did not start (kernel or boot failure; the boot loader returned to slot " + active + ")"
+		}
+		if env, err := d.P.ReadEnv(); err == nil && !st.Rollback && !st.Booted && env.Slot(st.Slot).Version != st.To {
+			why = "the update was interrupted before the reboot (power loss or crash while installing); nothing was changed"
+			st.Revision = "" // the configuration was never touched: nothing to put back
 		}
 		d.failed(st, why)
 		d.healthy = make(chan struct{})
@@ -479,9 +494,7 @@ func (d *Daemon) handle(ctx context.Context, r Request, rep *Reply) error {
 		go func() {
 			time.Sleep(d.RebootDelay)
 			d.setState("rebooting into " + rep.Version)
-			if err := d.P.Reboot(); err != nil {
-				d.setState("failed: reboot: " + err.Error())
-			}
+			d.reboot()
 		}()
 	default:
 		return fmt.Errorf("unknown request %q", r.Op)
@@ -677,14 +690,24 @@ func (d *Daemon) watchNew(ctx context.Context, st *State, within time.Duration) 
 		d.rollback(st, fmt.Sprintf("switchd was not healthy within %s", within))
 		return
 	}
-	env, err := d.P.ReadEnv()
-	if err == nil {
-		env.Confirm(st.Slot)
-		err = d.P.WriteEnv(env)
-	}
-	if err != nil {
-		d.setState("failed: confirming slot " + st.Slot + ": " + err.Error())
-		return
+	// Confirm the slot; a slow or hanging disk is retried (an unconfirmed
+	// slot would be rolled back by the boot loader at the next reboot).
+	for attempt := 1; ; attempt++ {
+		env, err := d.P.ReadEnv()
+		if err == nil {
+			env.Confirm(st.Slot)
+			err = d.P.WriteEnv(env)
+		}
+		if err == nil {
+			break
+		}
+		d.setState(fmt.Sprintf("confirming slot %s failed (attempt %d, retrying): %v", st.Slot, attempt, err))
+		d.Log.Error("switchd-update: confirming the new slot", "slot", st.Slot, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(d.retryDelay()):
+		}
 	}
 	cur := d.Load()
 	if cur != nil {
@@ -718,9 +741,47 @@ func (d *Daemon) rollback(st *State, why string) {
 	st.Done = "rolled back: " + st.To + " " + why
 	d.save(st)
 	d.setState("rolled back: " + st.To + " " + why + "; rebooting into " + st.From)
-	if err := d.P.Reboot(); err != nil {
-		d.setState("failed: reboot: " + err.Error())
+	d.reboot()
+}
+
+// healthWithin is what is left of the health time after the boot (at
+// least a minute, or the whole time when it is shorter, for switchd to
+// report).
+func healthWithin(timeout, uptime time.Duration) time.Duration {
+	return max(timeout-uptime, min(timeout, time.Minute))
+}
+
+// reboot reboots, retrying until the machine goes down (a failed reboot
+// would leave a broken version running, or block every later update).
+func (d *Daemon) reboot() {
+	for attempt := 1; ; attempt++ {
+		err := d.P.Reboot()
+		if err == nil {
+			return
+		}
+		d.Log.Error("switchd-update: reboot failed; retrying", "attempt", attempt, "err", err)
+		d.setState(fmt.Sprintf("reboot failed (attempt %d, retrying): %v", attempt, err))
+		time.Sleep(d.retryDelay())
 	}
+}
+
+func (d *Daemon) retryDelay() time.Duration {
+	if d.RetryDelay > 0 {
+		return d.RetryDelay
+	}
+	return 10 * time.Second
+}
+
+// uptime is the time since the boot.
+func (d *Daemon) uptime() time.Duration {
+	if d.Uptime != nil {
+		return d.Uptime()
+	}
+	var si unix.Sysinfo_t
+	if unix.Sysinfo(&si) != nil {
+		return 0
+	}
+	return time.Duration(si.Uptime) * time.Second
 }
 
 // watchPlain confirms a boot without an update once switchd is healthy.

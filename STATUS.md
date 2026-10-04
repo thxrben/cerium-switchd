@@ -301,6 +301,15 @@ Last updated: 2026-10-03 (evening).
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
 9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
    USB system disk.
+11. **Update resiliency review** (requested 2026-10-04), fixed and unit-tested: (a) confirming a healthy new slot
+   is retried while the disk does not answer (before: given up, the boot loader rolled the healthy version back at
+   the next reboot, and the member stayed "updating"); (b) a failed reboot (rollback or install) is retried, and
+   System.Reboot falls back to `systemctl reboot --force` and then the kernel's reboot after a sync (before: a
+   broken new version kept running and every later update was refused as "in progress"); (c) the health time
+   counts from the boot, not from the update daemon's (re)start; (d) an install interrupted after the update
+   record but before the boot state (power loss) is reported as such and puts no configuration back (before:
+   "the new system did not start"). Reviewed, no change needed: slot invalidated before it is written, record
+   before boot state, boot state last; switchd's rolling update stops on every error, master last.
 10. **System timeouts** (requested 2026-10-04): done, `system timeouts { disk-operation; kernel-call; slot-write;
    software-transfer; software-install; member-update; health-check; config-check }` (reference 5.1, defaults as
    before). switchd applies them on every commit (hwio deadlines atomic now, slot writes, update waits); the update

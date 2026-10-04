@@ -201,7 +201,19 @@ func (s *System) CheckConfig(slot string, m *software.BundleManifest) (string, e
 	return s.Check(filepath.Join(dir, "usr/local/sbin/switchd"), f.Name())
 }
 
-func (s *System) Reboot() error { _, err := sysexec.CombinedOutput("systemctl", "reboot"); return err }
+// Reboot reboots through systemd (switchd drains first); when systemd
+// cannot (it hangs, or refuses), the kernel reboots after a sync.
+func (s *System) Reboot() error {
+	_, err := sysexec.Command("systemctl", "reboot").WithTimeout(time.Minute).CombinedOutput(context.Background())
+	if err == nil {
+		return nil
+	}
+	if _, ferr := sysexec.Command("systemctl", "reboot", "--force").WithTimeout(time.Minute).CombinedOutput(context.Background()); ferr == nil {
+		return nil
+	}
+	unix.Sync()
+	return errors.Join(err, unix.Reboot(unix.LINUX_REBOOT_CMD_RESTART))
+}
 
 // RunCheck runs a switchd program's configuration check: exit 0 accepts
 // (output = warnings), 1 rejects.

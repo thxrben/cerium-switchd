@@ -39,6 +39,9 @@ type fakeMachine struct {
 	broken map[string]bool
 	// writeErr fails the slot write.
 	writeErr error
+	// envErrs: the next writes of the boot state fail; rebootErrs: the
+	// next reboots fail (attempts counts every reboot request).
+	envErrs, rebootErrs, attempts int
 }
 
 type fakePlatform struct{ m *fakeMachine }
@@ -73,6 +76,10 @@ func (p fakePlatform) SlotStatus() ([]software.SlotInfo, string, error) {
 func (p fakePlatform) WriteEnv(e software.Env) error {
 	p.m.mu.Lock()
 	defer p.m.mu.Unlock()
+	if p.m.envErrs > 0 {
+		p.m.envErrs--
+		return errors.New("disk does not answer")
+	}
 	p.m.env = software.Env{}
 	for k, v := range e {
 		p.m.env[k] = v
@@ -103,8 +110,13 @@ func (p fakePlatform) CheckConfig(slot string, m *software.BundleManifest) (stri
 }
 func (p fakePlatform) Reboot() error {
 	p.m.mu.Lock()
+	defer p.m.mu.Unlock()
+	p.m.attempts++
+	if p.m.rebootErrs > 0 {
+		p.m.rebootErrs--
+		return errors.New("systemd is busy")
+	}
 	p.m.reboots++
-	p.m.mu.Unlock()
 	return nil
 }
 func (p fakePlatform) Keys() ([]software.PublicKey, error) { return p.m.keys, nil }
@@ -191,7 +203,8 @@ func (m *fakeMachine) bundle(t *testing.T, v string) string {
 func (m *fakeMachine) start(t *testing.T, timeout time.Duration) (*Daemon, func()) {
 	d := &Daemon{P: fakePlatform{m}, ConfigDir: filepath.Join(m.dir, "update"), SwitchdDir: filepath.Join(m.dir, "switchd"),
 		BackupDir: filepath.Join(m.dir, "backup"), Socket: filepath.Join(m.dir, "s", "sock"), Timeout: timeout,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), RetryDelay: 10 * time.Millisecond,
+		Uptime: func() time.Duration { return 0 }}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { d.Run(ctx); close(done) }()
@@ -423,5 +436,88 @@ func TestPlainBootConfirmed(t *testing.T) {
 	}
 	if m.e()["A_TRY"] != "0" {
 		t.Fatal(m.env)
+	}
+}
+
+// A healthy new version is confirmed even when the disk does not answer
+// at first (an unconfirmed slot would be rolled back at the next reboot).
+func TestConfirmRetried(t *testing.T) {
+	m := newMachine(t)
+	d, stop := m.start(t, time.Minute)
+	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
+		t.Fatal(err)
+	}
+	m.waitReboots(t, 1)
+	stop()
+	m.boot()
+	d, stop = m.start(t, time.Minute)
+	defer stop()
+	m.mu.Lock()
+	m.envErrs = 3
+	m.mu.Unlock()
+	Call(d.Socket, Request{Op: "healthy", Version: "v2"})
+	for i := 0; i < 200 && d.Load().Done != "ok"; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if d.Load().Done != "ok" || m.e()["B_TRY"] != "0" {
+		t.Fatalf("not confirmed after disk errors: %+v %v", d.Load(), m.e())
+	}
+}
+
+// A reboot that fails is tried again (a rollback must not leave a broken
+// version running).
+func TestRebootRetried(t *testing.T) {
+	m := newMachine(t)
+	m.rebootErrs = 2
+	d, stop := m.start(t, time.Minute)
+	defer stop()
+	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
+		t.Fatal(err)
+	}
+	m.waitReboots(t, 1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.attempts != 3 {
+		t.Fatalf("%d reboot attempts, want 3", m.attempts)
+	}
+}
+
+// Power lost after the update record, before the boot state: the old
+// version runs on; the note says so, and no configuration is put back.
+func TestInterruptedInstall(t *testing.T) {
+	m := newMachine(t)
+	d, stop := m.start(t, time.Minute)
+	Call(d.Socket, Request{Op: "healthy", Version: "v1"}) // slot A confirmed
+	time.Sleep(50 * time.Millisecond)
+	// The install had marked slot B not bootable and written the record.
+	e := m.e()
+	e.Invalidate("B")
+	fakePlatform{m}.WriteEnv(e)
+	st := &State{From: "v1", To: "v2", FromSlot: "A", Slot: "B", Since: time.Now(), Revision: "000000000001.json", Standalone: true}
+	if err := d.save(st); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	m.boot()
+	d, stop = m.start(t, time.Minute)
+	defer stop()
+	got := d.Load()
+	if !strings.Contains(got.Done, "interrupted before the reboot") || strings.Contains(got.Done, "put back") || !got.Recorded {
+		t.Fatalf("record %+v", got)
+	}
+	if m.e()["B_OK"] != "0" || m.e().Order()[0] != "A" {
+		t.Fatalf("the half-written slot must not boot: %v", m.e())
+	}
+}
+
+func TestHealthTimeFromBoot(t *testing.T) {
+	if w := healthWithin(5*time.Minute, 2*time.Minute); w != 3*time.Minute {
+		t.Fatalf("within %v", w)
+	}
+	if w := healthWithin(5*time.Minute, 10*time.Minute); w != time.Minute {
+		t.Fatalf("late daemon start: %v", w)
+	}
+	if w := healthWithin(200*time.Millisecond, 0); w != 200*time.Millisecond {
+		t.Fatalf("a short health time (image tests): %v", w)
 	}
 }
