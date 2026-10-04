@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
 )
 
 // allOps implements every optional interface of Ops (RIB, BGP, OSPF and
@@ -19,6 +20,10 @@ type allOps struct {
 func (allOps) BFDSessions() ([]BFDSession, error) { return bfdOps{}.BFDSessions() }
 
 func (allOps) Optics(iface string) ([]OpticsPort, error) { return opticsOps{}.Optics(iface) }
+
+func (allOps) Environment() ([]EnvSensor, error) {
+	return []EnvSensor{{Member: 1, Sensor: inventory.Sensor{Class: "Temp", Chip: "coretemp", Label: "Core 0", Value: 40, Status: "OK"}}}, nil
+}
 
 func (allOps) Alarms() ([]Alarm, error) {
 	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil

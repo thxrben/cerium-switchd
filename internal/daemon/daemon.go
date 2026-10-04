@@ -359,6 +359,9 @@ func Run(ctx context.Context, o Options) error {
 		srv.Notify(context.Background(), text)
 	}
 	watchHangs(member, log, notifyStack, services.alarms)
+	if !o.DryRun {
+		go watchSensors(ctx, member, log, notifyStack, services.alarms)
+	}
 	if ctl != nil {
 		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {
 			var text string

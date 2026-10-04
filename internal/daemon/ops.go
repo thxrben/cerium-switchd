@@ -1008,12 +1008,13 @@ func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.O
 
 // The optional CLI interfaces ops implements.
 var (
-	_ cli.RIB    = (*ops)(nil)
-	_ cli.OSPF   = (*ops)(nil)
-	_ cli.BGP    = (*ops)(nil)
-	_ cli.BFD    = (*ops)(nil)
-	_ cli.Alarms = (*ops)(nil)
-	_ cli.Optics = (*ops)(nil)
+	_ cli.RIB         = (*ops)(nil)
+	_ cli.OSPF        = (*ops)(nil)
+	_ cli.BGP         = (*ops)(nil)
+	_ cli.BFD         = (*ops)(nil)
+	_ cli.Alarms      = (*ops)(nil)
+	_ cli.Optics      = (*ops)(nil)
+	_ cli.Environment = (*ops)(nil)
 )
 
 // BGPStatus is show bgp … (cer-bgpd on this member, the master).
@@ -1069,6 +1070,15 @@ func (o *ops) Optics(iface string) ([]cli.OpticsPort, error) {
 			r.Optics = &op
 		}
 		out = append(out, r)
+	}
+	return out, nil
+}
+
+// Environment is show chassis environment (this member's sensors).
+func (o *ops) Environment() ([]cli.EnvSensor, error) {
+	var out []cli.EnvSensor
+	for _, s := range inventory.ReadSensors("/sys") {
+		out = append(out, cli.EnvSensor{Member: o.member, Sensor: s})
 	}
 	return out, nil
 }

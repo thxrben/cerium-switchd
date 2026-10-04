@@ -194,7 +194,7 @@ func markPerMember() {
 		"show lldp neighbors", "show lldp local-information", "show lldp statistics", "show mclag",
 		"show igmp snooping membership", "show igmp snooping vlans", "show mld snooping membership", "show mld snooping vlans",
 		"show vxlan", "show vxlan remote-vtep", "show bfd session", "show system alarms",
-		"show interfaces diagnostics optics"} {
+		"show interfaces diagnostics optics", "show chassis environment"} {
 		findCmd(operational, strings.Fields(path)).stackWide = true
 	}
 }

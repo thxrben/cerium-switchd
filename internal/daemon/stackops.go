@@ -82,6 +82,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.Alarms()
 	case "optics":
 		return o.Optics(r.Iface)
+	case "environment":
+		return o.Environment()
 	}
 	return nil, fmt.Errorf("unknown listing %q", r.Method)
 }
@@ -260,6 +262,12 @@ func (s *stackOps) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 // Optics reads the transceivers of every member's ports (iface: one).
 func (s *stackOps) Optics(iface string) ([]cli.OpticsPort, error) {
 	by, err := each[[]cli.OpticsPort](s, opsRequest{Method: "optics", Iface: iface})
+	return rows(by), err
+}
+
+// Environment lists every member's sensors.
+func (s *stackOps) Environment() ([]cli.EnvSensor, error) {
+	by, err := each[[]cli.EnvSensor](s, opsRequest{Method: "environment"})
 	return rows(by), err
 }
 

@@ -1373,6 +1373,7 @@ func registerOperational() {
 				}},
 				&command{name: "chassis", help: "Show chassis information", class: commit.ReadOnly, sub: []*command{
 					{name: "hardware", help: "Show the physical ports and their NICs", class: commit.ReadOnly, run: (*Shell).showHardware},
+					{name: "environment", help: "Show temperatures, fans, voltages and power supplies", class: commit.ReadOnly, run: (*Shell).showEnvironment},
 				}},
 				&command{name: "log", help: "Show recent log messages", class: commit.ReadOnly, run: (*Shell).showLog},
 				&command{name: "mclag", help: "Show the MC-LAG pairs and their bundles", class: commit.ReadOnly, run: (*Shell).showMCLAG,

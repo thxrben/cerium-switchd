@@ -301,6 +301,10 @@ Last updated: 2026-10-03 (evening).
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
 9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
    USB system disk.
+15. **Phase 11: `show chassis environment`** (done 2026-10-04): hwmon sensors (temperatures, fans, voltages, power)
+   with OK/Warning/Critical from the sensors' max/crit/min; stack-wide; switchd checks every 30 s and raises a Minor
+   (Warning) or Major (Critical, a stopped fan) alarm, cleared when back. No fan control (left to the firmware; a
+   fan curve needs real hardware to test). Unit-tested with a sysfs fixture.
 14. **Phase 11: `show interfaces diagnostics optics [<if>]`** (done 2026-10-04): module EEPROM through ethtool
    (GMODULEINFO/GMODULEEEPROM); SFF-8472 SFP/SFP+ (identity, temperature, voltage, bias, TX/RX power, A2
    thresholds and which are crossed) and SFF-8636 QSFP (identity, per-lane values); stack-wide (each member reads
