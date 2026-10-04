@@ -132,6 +132,19 @@ func (c *conn) send(m rpc.Msg) error {
 	return c.enc.Encode(m)
 }
 
+// drain drops a reply left over from an earlier question that was given
+// up (Ctrl-C cancelled the command before the client answered): it must
+// not answer the next one.
+func (c *conn) drain() {
+	for {
+		select {
+		case <-c.replies:
+		default:
+			return
+		}
+	}
+}
+
 // wait blocks for the client's reply to a question.
 func (c *conn) wait(ctx context.Context) (rpc.Msg, error) {
 	select {
@@ -154,6 +167,7 @@ type term struct {
 }
 
 func (t *term) Ask(prompt string, echo bool) (string, error) {
+	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "ask", Prompt: prompt, Echo: echo}); err != nil {
 		return "", err
 	}
@@ -167,6 +181,7 @@ func (t *term) Print(text string) error {
 }
 
 func (t *term) ReadText(prompt string) (string, error) {
+	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "readtext", Prompt: prompt}); err != nil {
 		return "", err
 	}
@@ -175,6 +190,7 @@ func (t *term) ReadText(prompt string) (string, error) {
 }
 
 func (t *term) ReadFile(name string) ([]byte, error) {
+	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "readfile", Name: name}); err != nil {
 		return nil, err
 	}
@@ -183,6 +199,7 @@ func (t *term) ReadFile(name string) ([]byte, error) {
 }
 
 func (t *term) WriteFile(name string, data []byte) error {
+	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "writefile", Name: name, Data: data}); err != nil {
 		return err
 	}

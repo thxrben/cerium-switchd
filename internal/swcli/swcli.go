@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/thxrben/cerium-switchd/internal/rpc"
@@ -104,6 +105,12 @@ type ui struct {
 	wasConfig  bool // the lost session was in configuration mode
 	class      string
 	report     *os.File // tells the supervisor the session's class
+	// wakeR/wakeW: the SIGINT handler writes to wakeW while asking is set,
+	// so that a question waiting for input gives up (readInput).
+	// Raw descriptors (os.File.Fd would make them blocking again); -1:
+	// none.
+	wakeR, wakeW int
+	asking       atomic.Bool
 	// nextLine is set in batch mode: questions are answered by the next
 	// input line (stdin is read ahead, so it cannot be read directly).
 	nextLine func() (string, bool)
@@ -339,16 +346,87 @@ func (u *ui) Ask(prompt string, echo bool) (string, error) {
 	var err error
 	u.cooked(func() {
 		fmt.Fprint(u.out, prompt)
-		if !echo && u.tty {
-			var b []byte
-			b, err = term.ReadPassword(int(u.in.Fd()))
+		line, err = u.readInput(true, !echo && u.tty)
+		if errors.Is(err, errInterrupted) {
 			fmt.Fprintln(u.out)
-			line = string(b)
-			return
 		}
-		line, err = readLine(u.in)
 	})
 	return line, err
+}
+
+// errInterrupted: Ctrl-C at a question or while text is read.
+var errInterrupted = errors.New("interrupted")
+
+// readInput reads an answer (up to a newline) or text (up to end of
+// input) in cooked mode. Ctrl-C ends it with errInterrupted: the signal
+// handler wakes the poll through u.wake (a blocked read would keep the
+// prompt waiting for Enter while the command was already cancelled).
+// hidden turns the echo off (passwords).
+func (u *ui) readInput(line, hidden bool) (string, error) {
+	fd := int(u.in.Fd())
+	if hidden {
+		if tio, err := unix.IoctlGetTermios(fd, unix.TCGETS); err == nil {
+			old := *tio
+			tio.Lflag &^= unix.ECHO
+			_ = unix.IoctlSetTermios(fd, unix.TCSETS, tio)
+			defer func() {
+				_ = unix.IoctlSetTermios(fd, unix.TCSETS, &old)
+				fmt.Fprintln(u.out)
+			}()
+		}
+	}
+	u.drainWake()
+	u.asking.Store(true)
+	defer u.asking.Store(false)
+	var b []byte
+	var c [1]byte
+	for {
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		if u.wakeR > 0 {
+			fds = append(fds, unix.PollFd{Fd: int32(u.wakeR), Events: unix.POLLIN})
+		}
+		if _, err := unix.Poll(fds, -1); err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return string(b), err
+		}
+		if len(fds) > 1 && fds[1].Revents != 0 {
+			u.drainWake()
+			return "", errInterrupted
+		}
+		if fds[0].Revents == 0 {
+			continue
+		}
+		// One byte at a time: nothing beyond the answer is taken from the
+		// input (the line editor reads the rest).
+		n, err := unix.Read(fd, c[:])
+		switch {
+		case errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN):
+			continue
+		case err != nil:
+			return string(b), err
+		case n == 0:
+			return string(b), io.EOF
+		}
+		if line && c[0] == '\n' {
+			return strings.TrimSuffix(string(b), "\r"), nil
+		}
+		b = append(b, c[0])
+	}
+}
+
+// drainWake empties the wake pipe (a Ctrl-C from before the question).
+func (u *ui) drainWake() {
+	if u.wakeR <= 0 {
+		return
+	}
+	var buf [64]byte
+	for {
+		if n, err := unix.Read(u.wakeR, buf[:]); n <= 0 || err != nil {
+			return
+		}
+	}
 }
 
 func (u *ui) ReadText(prompt string) (string, error) {
@@ -356,29 +434,16 @@ func (u *ui) ReadText(prompt string) (string, error) {
 	var err error
 	u.cooked(func() {
 		fmt.Fprintln(u.out, prompt)
-		var b []byte
-		b, err = io.ReadAll(u.in) // until Ctrl-D (EOF on a terminal is not sticky)
-		text = string(b)
+		// Until Ctrl-D (EOF on a terminal is not sticky), or Ctrl-C.
+		text, err = u.readInput(false, false)
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		if errors.Is(err, errInterrupted) {
+			fmt.Fprintln(u.out)
+		}
 	})
 	return text, err
-}
-
-// readLine reads up to a newline without buffering beyond it.
-func readLine(f *os.File) (string, error) {
-	var b []byte
-	var c [1]byte
-	for {
-		n, err := f.Read(c[:])
-		if n == 1 {
-			if c[0] == '\n' {
-				return strings.TrimSuffix(string(b), "\r"), nil
-			}
-			b = append(b, c[0])
-		}
-		if err != nil {
-			return string(b), err
-		}
-	}
 }
 
 // Print shows output of a command that is still running.
@@ -430,11 +495,18 @@ func (u *ui) interactive() int {
 	// Ctrl-C in cooked mode (while a command runs, or at a question)
 	// interrupts the command; a second one while the same command still
 	// runs drops a switchd that does not react.
+	var p [2]int
+	if err := unix.Pipe2(p[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err == nil {
+		u.wakeR, u.wakeW = p[0], p[1]
+	}
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, os.Interrupt)
 	defer signal.Stop(sig)
 	go func() {
 		for range sig {
+			if u.asking.Load() && u.wakeW > 0 {
+				_, _ = unix.Write(u.wakeW, []byte{0})
+			}
 			c := u.cl()
 			if n := u.interrupts.Add(1); n >= 2 && u.running.Load() {
 				c.Abort()

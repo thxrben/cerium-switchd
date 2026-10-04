@@ -1,15 +1,24 @@
 package swcli
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 // openPTY returns the terminal side of a new pseudo terminal.
 func openPTY(t *testing.T) *os.File {
+	_, s := openPTYPair(t)
+	return s
+}
+
+// openPTYPair returns both sides: the master (the user's keyboard and
+// screen) and the terminal.
+func openPTYPair(t *testing.T) (*os.File, *os.File) {
 	t.Helper()
 	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {
@@ -28,7 +37,7 @@ func openPTY(t *testing.T) *os.File {
 		t.Skip("pts:", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s
+	return m, s
 }
 
 func canonical(t *testing.T, f *os.File) bool {
@@ -65,5 +74,66 @@ func TestQuestionsStayCooked(t *testing.T) {
 		if canonical(t, pty) {
 			t.Fatalf("line editor not raw after command %d", i+1)
 		}
+	}
+}
+
+// Ctrl-C at a question ends it at once (the prompt hung until Enter, and
+// the late answer went to the next question); a typed answer is returned.
+func TestQuestionInterrupted(t *testing.T) {
+	m, pty := openPTYPair(t)
+	u := &ui{in: pty, out: pty, tty: true}
+	var p [2]int
+	if err := unix.Pipe2(p[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	u.wakeR, u.wakeW = p[0], p[1]
+	go func() { // the screen: keep the pty's output flowing
+		var b [256]byte
+		for {
+			if _, err := m.Read(b[:]); err != nil {
+				return
+			}
+		}
+	}()
+	type res struct {
+		a   string
+		err error
+	}
+	ask := func(echo bool) chan res {
+		ch := make(chan res, 1)
+		go func() {
+			a, err := u.Ask("Continue? [yes,no] (no) ", echo)
+			ch <- res{a, err}
+		}()
+		for !u.asking.Load() {
+			time.Sleep(time.Millisecond)
+		}
+		return ch
+	}
+	// Answered.
+	ch := ask(true)
+	m.Write([]byte("yes\n"))
+	if r := <-ch; r.err != nil || r.a != "yes" {
+		t.Fatalf("answer %+v", r)
+	}
+	// Ctrl-C: the signal handler writes the wake pipe.
+	ch = ask(true)
+	unix.Write(u.wakeW, []byte{0})
+	select {
+	case r := <-ch:
+		if !errors.Is(r.err, errInterrupted) {
+			t.Fatalf("interrupted question returned %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the question did not give up on Ctrl-C")
+	}
+	// The next question works, also hidden (password).
+	ch = ask(false)
+	m.Write([]byte("secret\n"))
+	if r := <-ch; r.err != nil || r.a != "secret" {
+		t.Fatalf("hidden answer %+v", r)
+	}
+	if !canonical(t, pty) {
+		t.Fatal("echo not restored after a hidden answer")
 	}
 }
