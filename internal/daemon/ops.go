@@ -46,8 +46,12 @@ import (
 // ops implements cli.Operational from the kernel and the active
 // configuration of this member.
 type ops struct {
-	kernel   *dataplane.Netlink
-	engine   *commit.Engine
+	kernel *dataplane.Netlink
+	engine *commit.Engine
+	// applier knows the MACsec devices of secured ports (nil: none); mka
+	// runs their key agreement.
+	applier  *kernelApplier
+	mka      *mkaManager
 	names    *inventory.Naming
 	member   int
 	vc       *stack.Manager
@@ -89,8 +93,25 @@ func (o *ops) cfgName(link string, kind dataplane.Kind) string {
 	if m := dataplane.TunnelMember(link); m > 0 {
 		return fmt.Sprintf("vc-%d", m) // stack tunnel (reference 5.2)
 	}
-	n, _ := o.names.Name(link)
+	n, ok := o.names.Name(link)
+	if !ok && o.applier != nil {
+		// A secured port's MACsec device stands for the port (5.15).
+		if port := o.applier.secPort(link); port != "" {
+			n, _ = o.names.Name(port)
+		}
+	}
 	return n
+}
+
+// dataName is the device that carries a port's traffic: the port, or its
+// MACsec device when secured (reference 5.15).
+func (o *ops) dataName(name string) (string, bool) {
+	if o.applier != nil {
+		if cfg := o.model(); cfg != nil {
+			return o.applier.dataNames(cfg)(name)
+		}
+	}
+	return o.names.Linux(name)
 }
 
 func (o *ops) Interfaces() ([]cli.IfStatus, error) {
@@ -191,7 +212,7 @@ func (o *ops) l3Units(cfg *model.Config) []cli.IfStatus {
 			if u.Member != o.member {
 				continue
 			}
-			linux, _ = o.names.Linux(u.Parent)
+			linux, _ = o.dataName(u.Parent)
 		}
 		l, err := nlx.LinkByName(linux)
 		if linux == "" || err != nil {
@@ -272,7 +293,7 @@ func (o *ops) ClearMACTable(vlan int, iface string) (int, error) {
 		port = dataplane.TunnelName(m)
 	}
 	if _, ok := schema.ParsePhysical(iface); ok {
-		l, ok := o.names.Linux(iface)
+		l, ok := o.dataName(iface)
 		if !ok {
 			return 0, fmt.Errorf("%s does not exist", iface)
 		}
@@ -915,8 +936,16 @@ func (o *ops) Multicast() ([]cli.McastStatus, error) {
 	for _, r := range rs {
 		st.Routers = append(st.Routers, cli.McastRouter{VLAN: r.VID, Interface: name(r.Port), Permanent: r.Permanent, Expires: r.Expires})
 	}
-	desired, _ := dataplane.Compute(cfg, o.member, o.names.Linux)
-	mc := dataplane.ComputeMulticast(cfg, desired, o.names.Linux)
+	data := o.names.Linux
+	var secDevs map[string]string
+	if o.applier != nil {
+		data = o.applier.dataNames(cfg)
+		o.applier.secMu.Lock()
+		secDevs = maps.Clone(o.applier.secDevs)
+		o.applier.secMu.Unlock()
+	}
+	desired, _ := dataplane.ComputeSecured(cfg, o.member, o.names.Linux, secDevs)
+	mc := dataplane.ComputeMulticast(cfg, desired, data)
 	for _, vid := range slices.Sorted(maps.Keys(mc.VLANs)) {
 		v := mc.VLANs[vid]
 		st.VLANs = append(st.VLANs, cli.McastVLAN{VLAN: int(vid), Snooping: v.Snooping, Querier: v.Snooping && v.Querier})

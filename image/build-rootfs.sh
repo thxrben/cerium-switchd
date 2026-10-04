@@ -22,6 +22,7 @@ pkgs=(
   firmware-misc-nonfree firmware-realtek firmware-bnx2x firmware-intel-misc firmware-netronome
   # what switchd uses
   iproute2 nftables ethtool openssh-server passwd login util-linux bash procps ca-certificates
+  wpasupplicant # MKA for ports secured with MACsec (reference 5.15)
   # testing and fault finding
   tcpdump iperf3 mtr-tiny iputils-ping iputils-tracepath traceroute netcat-openbsd socat curl dnsutils
   strace lsof htop pciutils usbutils i2c-tools dmidecode less vim-tiny
@@ -67,7 +68,8 @@ chroot "$root" /bin/sh -e <<'EOF'
 systemctl enable switchd.service switchd-update.service ceros-hostkeys.service
 systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service \
   ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer e2scrub_all.timer e2scrub_reap.service \
-  systemd-firstboot.service systemd-timesyncd.service systemd-machine-id-commit.service 2>/dev/null || true
+  systemd-firstboot.service systemd-timesyncd.service systemd-machine-id-commit.service \
+  wpa_supplicant.service 2>/dev/null || true
 systemctl disable ssh.service 2>/dev/null || true
 # The stable names: GRUB and the installer use these.
 kver=$(ls /lib/modules | sort -V | tail -1)

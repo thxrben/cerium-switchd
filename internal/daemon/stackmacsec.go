@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -592,32 +594,71 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 		if len(l.RxANs) > 0 {
 			c.RxSCs = []string{fmt.Sprintf("%s port 1, associations %v", l.PeerMAC, l.RxANs)}
 		}
-		if d := counters[l.Dev]; d != nil {
-			if v, ok := d["sci"].(string); ok {
-				c.TxSCI = strings.TrimPrefix(v, "0x")
-			}
-			if v, ok := d["offload"].(string); ok {
-				c.Offload = v
-			}
-			for k, v := range d {
-				if f, ok := v.(float64); ok {
-					c.Counters[k] = uint64(f)
-				}
-			}
-			// The receive counters are per receive SC.
-			if scs, ok := d["rx_sc"].([]any); ok {
-				for _, sc := range scs {
-					if m, ok := sc.(map[string]any); ok {
-						for k, v := range m {
-							if f, ok := v.(float64); ok && strings.HasPrefix(k, "In") {
-								c.Counters[k] += uint64(f)
-							}
-						}
-					}
-				}
-			}
+		macsecCounters(&c, counters[l.Dev])
+		out = append(out, c)
+	}
+	// Ports secured with MKA (reference 5.15).
+	cfg := o.model()
+	if cfg == nil {
+		return out, nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.MACsec.Ports)) {
+		ca := cfg.MACsecPort(name)
+		i := cfg.Interfaces[name]
+		if ca == nil || i == nil || i.Member != o.member {
+			continue
+		}
+		c := cli.MACsecConn{Member: o.member, Interface: name, CA: ca.Name, Cipher: ca.Cipher, TxAN: -1, Counters: map[string]uint64{}}
+		port, _ := o.names.Linux(name)
+		dev, secured := "", false
+		if o.applier != nil {
+			dev, secured = o.applier.dataNames(cfg)(name)
+		}
+		problem := ""
+		if o.mka != nil {
+			_, problem = o.mka.state(port)
+		}
+		switch {
+		case secured:
+			c.Dev, c.State = dev, "secured"
+			macsecCounters(&c, counters[dev])
+		case problem != "":
+			c.State = "failed: " + problem
+		default:
+			c.State = "negotiating (no traffic until MKA secures the link)"
 		}
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// macsecCounters fills a connection from its device's `ip -j -s macsec`
+// entry (nil: none).
+func macsecCounters(c *cli.MACsecConn, d map[string]any) {
+	if d == nil {
+		return
+	}
+	if v, ok := d["sci"].(string); ok {
+		c.TxSCI = strings.TrimPrefix(v, "0x")
+	}
+	if v, ok := d["offload"].(string); ok {
+		c.Offload = v
+	}
+	for k, v := range d {
+		if f, ok := v.(float64); ok {
+			c.Counters[k] = uint64(f)
+		}
+	}
+	// The receive counters are per receive SC.
+	if scs, ok := d["rx_sc"].([]any); ok {
+		for _, sc := range scs {
+			if m, ok := sc.(map[string]any); ok {
+				for k, v := range m {
+					if f, ok := v.(float64); ok && strings.HasPrefix(k, "In") {
+						c.Counters[k] += uint64(f)
+					}
+				}
+			}
+		}
+	}
 }

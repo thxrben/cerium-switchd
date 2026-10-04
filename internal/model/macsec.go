@@ -142,9 +142,6 @@ func (b *builder) validateMACsec() {
 			}
 		}
 	}
-	if len(c.MACsec.Ports) > 0 {
-		b.warnf("security macsec interfaces", "MACsec on switch and routed ports is not implemented yet: the ports carry their traffic unencrypted")
-	}
 	for _, port := range sortedKeys(c.MACsec.Ports) {
 		ca := c.MACsec.Ports[port]
 		at := "security macsec interfaces " + port
@@ -165,6 +162,10 @@ func (b *builder) validateMACsec() {
 			b.errorf(at, "%s is a management port", port)
 		case i.Parent != "":
 			b.errorf(at, "%s is a member of %s: MACsec on bundle members is not supported yet", port, i.Parent)
+		}
+		pp, _ := schema.ParsePhysical(port)
+		if info, present, _ := b.port(pp.Member, port); present && info.StackPort {
+			b.errorf(at, "%s is a stacking port: stacking links have their own MACsec (virtual-chassis macsec)", port)
 		}
 	}
 }

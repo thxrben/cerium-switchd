@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -125,13 +126,18 @@ func (k *Netlink) Read() (*State, error) {
 				ln.Bond = &BondOpts{Mode: "lacp", HashPolicy: netdev.TeamHashPolicy(a.Index)}
 				break
 			}
-			if l.Type() == "device" && k.physical(a.Name) {
+			switch {
+			case l.Type() == "device" && k.physical(a.Name):
 				ln.Kind = Physical
-			} else {
+			case l.Type() == "macsec" && byIndex[a.ParentIndex] != "" && !strings.HasPrefix(a.Name, "ms"):
+				// A secured port's device (MKA); the stacking links' own
+				// (ms<port>, in the stack's instance) stay untouched.
+				ln.Kind, ln.Parent = SecPort, byIndex[a.ParentIndex]
+			default:
 				ln.Kind = Other
 			}
 		}
-		if ln.Kind == Physical || ln.Kind == Bond {
+		if ln.Kind == Physical || ln.Kind == Bond || ln.Kind == SecPort {
 			ln.MaxLearned = k.maxLearned(a.Name)
 			if ln.Kind == Physical {
 				ln.FlowControl = readFlowControl(a.Name)

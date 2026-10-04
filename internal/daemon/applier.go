@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"path/filepath"
 	"sort"
@@ -58,6 +59,10 @@ type kernelApplier struct {
 	live *sdnotify.Liveness
 	// cmeMAC is the stack-wide MAC address of cme.
 	cmeMAC net.HardwareAddr
+	// secDevs are the MACsec devices of secured ports found by the last
+	// apply (port -> device; reference 5.15), guarded by secMu.
+	secMu   sync.Mutex
+	secDevs map[string]string
 	// stackPort reports whether a kernel port is a stacking port (the stack
 	// manager owns those).
 	stackPort func(linux string) bool
@@ -219,7 +224,17 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		// stored configuration that newer rules reject.
 		return fmt.Errorf("configuration is invalid:\n%s", issues)
 	}
-	desired, notes := dataplane.Compute(cfg, a.member, a.names.Linux)
+	// The MACsec devices MKA made for secured ports carry their traffic.
+	before, err := a.kernel.Read()
+	if err != nil {
+		return fmt.Errorf("reading kernel state: %w", err)
+	}
+	secDevs := dataplane.SecDevices(before)
+	a.secMu.Lock()
+	a.secDevs = secDevs
+	a.secMu.Unlock()
+	data := dataplane.DataNames(cfg, a.names.Linux, secDevs)
+	desired, notes := dataplane.ComputeSecured(cfg, a.member, a.names.Linux, secDevs)
 	for _, n := range notes {
 		a.log.Warn("data plane", "note", n)
 	}
@@ -227,7 +242,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 	if a.blocked != nil {
 		for n := range a.blocked() {
 			dev := n
-			if l, ok := a.names.Linux(n); ok {
+			if l, ok := data(n); ok {
 				dev = l
 			}
 			if l := desired.Links[dev]; l != nil {
@@ -244,10 +259,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		}
 	}
 	dataplane.Management(desired, cfg, a.member, a.names.Linux, a.master(), dataplane.Carrier, a.cmeMAC, unconf)
-	actual, err := a.kernel.Read()
-	if err != nil {
-		return fmt.Errorf("reading kernel state: %w", err)
-	}
+	actual := before // nothing changed the kernel since
 	ops := dataplane.Plan(actual, desired, owned)
 	if err := a.execute(ops, reason, actual, desired); err != nil {
 		return err
@@ -302,7 +314,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		a.log.Log(context.Background(), level, "vxlan remote VTEPs updated", "reason", reason)
 	}
 	// IGMP/MLD snooping (reference 5.5): after the ports and VLANs exist.
-	if changed, err := a.kernel.SyncMulticast(dataplane.ComputeMulticast(cfg, desired, a.names.Linux)); err != nil {
+	if changed, err := a.kernel.SyncMulticast(dataplane.ComputeMulticast(cfg, desired, data)); err != nil {
 		a.log.Error("multicast snooping", "err", err)
 	} else if changed {
 		a.log.Log(context.Background(), level, "multicast snooping updated", "reason", reason)
@@ -320,7 +332,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 		a.log.Log(context.Background(), level, "protocol redirection to the master updated", "reason", reason, "master", master)
 	}
 	// Port mirroring (forwarding-options analyzer): after the devices exist.
-	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, a.names.Linux)); err != nil {
+	if changed, err := a.kernel.SyncMirrors(dataplane.ComputeMirrors(cfg, a.member, data)); err != nil {
 		a.log.Error("port mirroring", "err", err)
 	} else if changed {
 		a.log.Log(context.Background(), level, "port mirroring updated", "reason", reason)
@@ -364,4 +376,26 @@ func newKernelApplier(kernel dataplane.Kernel, stateDir string, dryRun bool, log
 		stateFile: filepath.Join(stateDir, "dataplane-owned.json"),
 		log:       log,
 	}
+}
+
+// dataNames maps interface names to the devices carrying their traffic
+// (a secured port's MACsec device, reference 5.15), as of the last apply.
+func (a *kernelApplier) dataNames(cfg *model.Config) dataplane.PortNames {
+	a.secMu.Lock()
+	devs := maps.Clone(a.secDevs)
+	a.secMu.Unlock()
+	return dataplane.DataNames(cfg, a.names.Linux, devs)
+}
+
+// secPort returns the port of a secured port's MACsec device ("": not
+// one).
+func (a *kernelApplier) secPort(dev string) string {
+	a.secMu.Lock()
+	defer a.secMu.Unlock()
+	for port, d := range a.secDevs {
+		if d == dev {
+			return port
+		}
+	}
+	return ""
 }

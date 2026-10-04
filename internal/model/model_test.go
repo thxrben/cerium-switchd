@@ -680,3 +680,22 @@ func TestSystemTimeouts(t *testing.T) {
 		t.Fatalf("timeouts %+v", to)
 	}
 }
+
+// Secured ports (reference 5.15): 32 bytes more on the port; a stacking
+// port cannot be one.
+func TestMACsecPortChecks(t *testing.T) {
+	ca := "set security macsec connectivity-association ca1 pre-shared-key ckn 01\n" +
+		"set security macsec connectivity-association ca1 pre-shared-key cak 0123456789abcdef0123456789abcdef\n"
+	inv := fakeInv{"1/0/3": 9216, "1/9/9": -1}
+	_, issues := build(t, valid+ca+"set security macsec interfaces 1/0/3 connectivity-association ca1\nset interfaces 1/0/3 mtu 9200\n", inv)
+	if !strings.Contains(issues.String(), "MTU 9200 with MACsec needs 9232 on 1/0/3, but its hardware maximum is 9230; the largest mtu with MACsec is 9198") {
+		t.Errorf("MACsec MTU:\n%s", issues)
+	}
+	if _, issues := build(t, valid+ca+"set security macsec interfaces 1/0/3 connectivity-association ca1\nset interfaces 1/0/3 mtu 9198\n", inv); issues.HasErrors() {
+		t.Errorf("9198 must fit:\n%s", issues)
+	}
+	_, issues = build(t, valid+ca+"set interfaces 1/9/9 disable\nset security macsec interfaces 1/9/9 connectivity-association ca1\n", inv)
+	if !strings.Contains(issues.String(), "1/9/9 is a stacking port") || strings.Contains(issues.String(), "not implemented") {
+		t.Errorf("stacking port:\n%s", issues)
+	}
+}

@@ -242,13 +242,23 @@ func Run(ctx context.Context, o Options) error {
 	mclag := mclagClient{services}
 	sysMAC := lacpSystemMAC(vc.StackID())
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
+	var mka *mkaManager
+	if !o.DryRun {
+		mka = newMKAManager(&supervise.Systemd{UnitDir: "/etc/systemd/system", BusPath: supervise.SystemdPrivate, Log: log}, log, services.alarms)
+	}
 	applier.afterApply = func(cfg *model.Config) {
 		setTimeouts(cfg.System.Timeouts) // reference 5.1
+		// MKA for ports secured with MACsec (reference 5.15): its devices
+		// reach the data plane with the next apply (a link event).
+		if mka != nil {
+			mka.sync(cfg, member, names.Linux)
+			mka.check()
+		}
 		// Routing (reference 5.8): cer-ribd has the routing table and
 		// installs every route; the management instance only on the master
 		// (after mastership changes, a reconcile runs).
 		if !o.DryRun {
-			rc := ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State()))
+			rc := ribConfig(cfg, member, applier.dataNames(cfg), applier.master(), dhcpLeasesOf(dhcpLeases.State()))
 			rc.OSPFLimit = mem.Capacity(memslots.OSPF)
 			services.setConfig("cer-ribd", rc)
 		}
@@ -264,12 +274,12 @@ func Run(ctx context.Context, o Options) error {
 			services.setConfig("cer-mclagd", mclagConfig(cfg, member))
 		}
 		if !o.DryRun {
-			services.setConfig("cer-rstpd", stpConfig(cfg, member, names.Linux, vc.StackID()))
+			services.setConfig("cer-rstpd", stpConfig(cfg, member, applier.dataNames(cfg), vc.StackID()))
 		}
 		// OSPF and OSPFv3 (reference 5.13): cer-ospfd runs where configured
 		// (the protocol itself on the master only).
 		if !o.DryRun {
-			oc := ospfConfig(cfg, names.Linux)
+			oc := ospfConfig(cfg, applier.dataNames(cfg))
 			oc.ExtLimit = mem.Capacity(memslots.OSPF)
 			services.setConfig("cer-ospfd", oc)
 		}
@@ -464,7 +474,7 @@ func Run(ctx context.Context, o Options) error {
 		ctl.servePorts(localPorts)
 		ports = func() []string { return append(localPorts(), ctl.remotePorts()...) }
 	}
-	liveOps := &ops{restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
+	liveOps := &ops{applier: applier, mka: mka, restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
 		liveOps.mclag = &mclag
@@ -496,10 +506,10 @@ func Run(ctx context.Context, o Options) error {
 			// configuration (cer-bgpd, cer-ribd).
 			if cfg := liveOps.model(); cfg != nil {
 				services.setConfig("cer-bgpd", bgpConfig(cfg, mem.Capacity))
-				rc := ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State()))
+				rc := ribConfig(cfg, member, applier.dataNames(cfg), applier.master(), dhcpLeasesOf(dhcpLeases.State()))
 				rc.OSPFLimit = mem.Capacity(memslots.OSPF)
 				services.setConfig("cer-ribd", rc)
-				oc := ospfConfig(cfg, names.Linux)
+				oc := ospfConfig(cfg, applier.dataNames(cfg))
 				oc.ExtLimit = mem.Capacity(memslots.OSPF)
 				services.setConfig("cer-ospfd", oc)
 			}

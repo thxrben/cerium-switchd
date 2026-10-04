@@ -19,6 +19,40 @@ type PortNames func(name string) (linux string, ok bool)
 // Ports that do not exist are left out; they are configured when they
 // appear (the caller recomputes on link events).
 func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
+	return ComputeSecured(cfg, m, names, nil)
+}
+
+// DataNames maps interface names to the devices that carry their traffic:
+// the port itself, or for a port secured with MACsec (reference 5.15) its
+// MACsec device; ok is false while it has none (not secured: nothing
+// passes). secDevs maps a port's kernel name to its MACsec device.
+func DataNames(cfg *model.Config, names PortNames, secDevs map[string]string) PortNames {
+	return func(name string) (string, bool) {
+		linux, ok := names(name)
+		if !ok || cfg.MACsecPort(name) == nil {
+			return linux, ok
+		}
+		dev := secDevs[linux]
+		return dev, dev != ""
+	}
+}
+
+// SecDevices returns the MACsec devices of secured ports in a kernel state
+// (port -> device).
+func SecDevices(s *State) map[string]string {
+	out := map[string]string{}
+	for _, l := range s.Links {
+		if l.Kind == SecPort && l.Parent != "" {
+			out[l.Parent] = l.Name
+		}
+	}
+	return out
+}
+
+// ComputeSecured is Compute with the MACsec devices of secured ports
+// (SecDevices): a secured port keeps its link settings (up, its mtu + 32,
+// flow control), and its device takes its switching or routing.
+func ComputeSecured(cfg *model.Config, m int, names PortNames, secDevs map[string]string) (*State, []string) {
 	if mem := cfg.Members[m]; mem != nil && mem.Witness {
 		// A witness has no data plane (reference 5.2, role witness).
 		return &State{Links: map[string]*Link{}, L3: &L3{}}, nil
@@ -31,6 +65,9 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 		s.Bridge.AgeingSeconds = 300
 	}
 	var notes []string
+	// plainPorts: secured ports (their own link carries no IP).
+	var plainPorts []string
+	data := DataNames(cfg, names, secDevs)
 
 	// Bundles present on this member: those with a member port here.
 	for _, i := range sortedIfs(cfg) {
@@ -86,6 +123,20 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			Alias:       i.Description,
 			FlowControl: i.FlowControl,
 		}
+		data := l
+		if cfg.MACsecPort(i.Name) != nil && i.Parent == "" {
+			// The port carries its MACsec device's frames only.
+			l.MTU += model.MACsecOverhead
+			plainPorts = append(plainPorts, linux)
+			s.Links[linux] = l
+			dev := secDevs[linux]
+			if dev == "" {
+				continue // not secured yet: nothing passes
+			}
+			data = &Link{Name: dev, Kind: SecPort, Parent: linux, Up: !i.Disabled, MTU: model.LinuxMTU(i.MTU), Alias: i.Description}
+			s.Links[dev] = data
+		}
+		l = data
 		switch {
 		case i.Parent != "":
 			if b := s.Links[i.Parent]; b != nil {
@@ -106,9 +157,9 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 		s.Links[l.Name] = l
 	}
 	computeTunnels(cfg, m, s)
-	s.L3 = computeL3(cfg, m, names, s)
+	s.L3 = computeL3(cfg, m, data, s)
 	computeVXLAN(cfg, s)
-	if mc := ComputeMulticast(cfg, s, names); !mc.Querier() {
+	if mc := ComputeMulticast(cfg, s, data); !mc.Querier() {
 		s.L3.NoIP = []string{BridgeName} // (an MLD querier needs its link-local address)
 	}
 	for _, n := range slices.Sorted(maps.Keys(s.Links)) {
@@ -116,6 +167,7 @@ func Compute(cfg *model.Config, m int, names PortNames) (*State, []string) {
 			s.L3.NoIP = append(s.L3.NoIP, n)
 		}
 	}
+	s.L3.NoIP = append(s.L3.NoIP, plainPorts...)
 	self := map[int]bool{}
 	for _, i := range s.L3.Ifs {
 		if i.Parent == BridgeName {

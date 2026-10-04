@@ -174,8 +174,8 @@ func (f *Fake) Apply(op Op) error {
 		b := *op.Bond
 		l.Bond = &b
 	case OpDeleteLink:
-		if l.Kind == Physical {
-			return fmt.Errorf("%s: cannot delete a physical device", l.Name)
+		if l.Kind == Physical || l.Kind == SecPort {
+			return fmt.Errorf("%s: cannot delete a %s device", l.Name, l.Kind)
 		}
 		for _, o := range f.S.Links {
 			if o.Master == l.Name {
@@ -217,6 +217,9 @@ func (f *Fake) Apply(op Op) error {
 	case OpSetMTU:
 		if l.MaxMTU != 0 && op.MTU > l.MaxMTU {
 			return fmt.Errorf("%s: mtu %d exceeds the maximum %d", l.Name, op.MTU, l.MaxMTU)
+		}
+		if p := f.S.Links[l.Parent]; l.Kind == SecPort && p != nil && op.MTU > p.MTU-32 {
+			return fmt.Errorf("%s: mtu %d exceeds its port's %d less the MACsec overhead", l.Name, op.MTU, p.MTU)
 		}
 		if l.Kind == Physical && l.Master != "" && f.S.Links[l.Master].Kind == Bond && op.MTU != f.S.Links[l.Master].MTU {
 			return fmt.Errorf("%s: mtu of a bond port must equal the bond's", l.Name)

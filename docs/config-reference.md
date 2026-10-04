@@ -2361,8 +2361,16 @@ security {
 * MTU: the port carries 32 bytes more than its `mtu` (SecTAG and ICV); E when that exceeds the NIC's maximum (1.7).
 * A change of a CA renegotiates the links that use it (a moment without traffic); adding or removing MACsec on a
   port interrupts its traffic for a moment.
-* MKA runs in `wpa_supplicant` (one per port, started and watched by switchd); `show security macsec connections`
-  shows its state.
+* MKA runs in `wpa_supplicant` (macsec_linux driver), one per port as the unit `cer-mka@<kernel-name>`, started,
+  restarted on a CA change and stopped by switchd; its configuration (with the CAK) is kept in memory only
+  (`/run/switchd/mka`, root only). A Major alarm when it does not run, or when `wpa_supplicant` is not installed.
+* **How the traffic moves**: once MKA has secured the link, wpa_supplicant makes the port's MACsec device (the
+  kernel names it `macsec<n>`). switchd puts that device where the port was: bridge port with the port's VLANs,
+  `mac-limit` and storm control, routed interface with its units, RSTP port, mirror source, IGMP/MLD port. The port
+  itself only keeps its link settings (up/down, `mtu` + 32, flow control) and carries MKA, LACP and LLDP (unprotected).
+  When MKA loses the link (the device goes away), the port carries nothing again until it is secured anew. Listings
+  (`show ethernet-switching table`, `show spanning-tree`) show the port's name, not the device's.
+* The cipher suites run in software for now (offloading client ports to the NIC follows).
 
 Operational commands:
 * `show security macsec connections [interface <if>]`: per secured interface (stacking ports too) the CA (or
@@ -2567,7 +2575,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
 | `system services web-management` | REST API: software upload and install (3.6); configuration, state and operational endpoints not implemented yet (PLAN phase 18); no web interface (by design) |
 | `virtual-chassis macsec` (stacking links) | implemented, unit-tested; not lab-tested yet |
-| `security macsec` (switch and routed ports) | not implemented yet (W at commit: the ports stay unencrypted) |
+| `security macsec` (switch and routed ports) | implemented (MKA through wpa_supplicant, software encryption), unit-tested; not lab-tested yet; no NIC offload yet; not on bundle members (E) |
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |
 | `show system bottlenecks` (3.5.2) | implemented |

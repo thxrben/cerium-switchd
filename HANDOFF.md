@@ -17,6 +17,5 @@ Branch `claude/relaxed-cori-qe4lur`, everything committed and pushed. Details: S
      /usr/local/sbin/switchd.05240a8 for rollback. Check the lab config with `go run ./cmd/switchd check-config`
      first (it passed for 51b37de). Test: daemon split, swap off (lab has /dev/sda5 swap), memory slots, reload
      (ports must come up again), stacking MACsec (needs root: real key install), REST upload.
-  3. MACsec on client ports (data plane moves bridge/L3/RSTP/MC-LAG/mac-limit/storm of a secured port to the
-     macsec device wpa_supplicant creates after MKA; MACsec per member port of a LAG, not on ae).
+  3. ~~MACsec on client ports~~: done 2026-10-04 (STATUS.md), lab test pending; open: offload, LAG member ports.
   4. USB storage (17.4), multicast count in show system memory, cer-bgpd full-table JSON transient (delta).

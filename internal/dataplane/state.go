@@ -34,10 +34,14 @@ const (
 	BridgeKind
 	Other  // any other virtual device (never touched)
 	Tunnel // a stack tunnel (VXLAN to another member, reference 5.2)
+	// SecPort is the MACsec device of a secured port (reference 5.15):
+	// made by MKA (wpa_supplicant) once the link is secured, never created
+	// or deleted by switchd; it carries the port's switching or routing.
+	SecPort
 )
 
 func (k Kind) String() string {
-	return [...]string{"physical", "bond", "bridge", "other", "tunnel"}[k]
+	return [...]string{"physical", "bond", "bridge", "other", "tunnel", "macsec"}[k]
 }
 
 // The stack tunnels and their hidden underlay instance (reference 5.2,
@@ -124,6 +128,8 @@ type Link struct {
 	StormBroadcast, StormMulticast int
 	// Tunnel: Kind == Tunnel.
 	Tunnel *TunnelOpts
+	// Parent is the physical port of a SecPort.
+	Parent string
 	// Isolated: the bridge never forwards between two isolated ports (stack
 	// tunnels).
 	Isolated bool

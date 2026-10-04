@@ -309,6 +309,9 @@ func (b *builder) validateMTU() {
 		if !i.AE {
 			if info, ok, _ := b.port(i.Member, i.Name); ok && info.MaxMTU > 0 && LinuxMTU(i.MTU) > info.MaxMTU {
 				b.errorf(path+" mtu", "MTU %d exceeds the hardware maximum of %d on %s", i.MTU, info.MaxMTU+EthHeader, i.Name)
+			} else if ok && info.MaxMTU > 0 && c.MACsecPort(i.Name) != nil && LinuxMTU(i.MTU)+MACsecOverhead > info.MaxMTU {
+				b.errorf(path+" mtu", "MTU %d with MACsec needs %d on %s, but its hardware maximum is %d; the largest mtu with MACsec is %d",
+					i.MTU, i.MTU+MACsecOverhead, i.Name, info.MaxMTU+EthHeader, info.MaxMTU+EthHeader-MACsecOverhead)
 			}
 		}
 		for _, vid := range i.VLANs {

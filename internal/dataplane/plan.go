@@ -183,8 +183,8 @@ func Plan(actual, desired *State, prev map[string]bool) []Op {
 	for _, n := range names {
 		d := desired.Links[n]
 		a := actual.Links[n]
-		if d.Kind == Physical && (a == nil || !a.Present) {
-			continue // not plugged in: applied when it appears
+		if (d.Kind == Physical || d.Kind == SecPort) && (a == nil || !a.Present) {
+			continue // not plugged in (not secured yet): applied when it appears
 		}
 		var cur *Link
 		restrict := &tighten
@@ -324,11 +324,15 @@ func kindOf(s *State, n string) Kind {
 	return Physical
 }
 
-// kindOrder sorts bonds before physical ports.
+// kindOrder sorts bonds before physical ports, and physical ports before
+// MACsec devices (a device's MTU follows its port's room).
 func kindOrder(a, b Kind) int {
 	rank := func(k Kind) int {
-		if k == Bond {
+		switch k {
+		case Bond:
 			return 0
+		case SecPort:
+			return 2
 		}
 		return 1
 	}
