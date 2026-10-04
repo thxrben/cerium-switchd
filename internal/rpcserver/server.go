@@ -37,6 +37,10 @@ type Server struct {
 	// runs there (reference 1.8). nil, nil: handle the command here. An
 	// error means the master cannot be reached.
 	Relay func() (net.Conn, error)
+	// Master returns the master's member id (0: not known, e.g. during an
+	// election): a relayed session follows a mastership change at its next
+	// command (nil: never checked).
+	Master func() int
 	// Member is this member's id (sent to the master with a relayed
 	// session: "local" and "start shell local" mean it).
 	Member int
@@ -296,6 +300,8 @@ type relay struct {
 	prompt, banner string
 	busy, cfg      bool
 	ended          bool
+	// master is the member the session was opened on (0: not known).
+	master int
 }
 
 func (r *relay) forward(m rpc.Msg) error {
@@ -352,11 +358,19 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 	// when (retried at most every relayRetry).
 	var lost time.Time
 	connect := func() (*relay, error) {
+		target := 0
+		if s.Master != nil {
+			target = s.Master()
+		}
 		nc, err := s.Relay()
 		if err != nil || nc == nil {
 			return nil, err
 		}
-		return s.startRelay(nc, name, class)
+		r, err := s.startRelay(nc, name, class)
+		if r != nil {
+			r.master = target
+		}
+		return r, err
 	}
 	hello := rpc.Msg{T: "hello", Name: class.String(), Prompt: sh.Prompt(), Banner: sh.Banner()}
 	if local && s.Relay != nil {
@@ -444,6 +458,15 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 		case m = <-reqs:
 		case <-c.done:
 			return
+		}
+		if r := current(); r != nil && m.T == "exec" && s.Master != nil {
+			// Mastership moved (request chassis routing-engine master
+			// switch, a failover): the session continues on the new master
+			// (or here) instead of staying with the old one.
+			if now := s.Master(); now != 0 && r.master != 0 && now != r.master {
+				s.moveRelay(c, sh, r, &rlMu, &rl, now)
+				lost = time.Time{}
+			}
 		}
 		if r := current(); r != nil {
 			if err := r.forward(m); err != nil {
@@ -596,6 +619,31 @@ func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **r
 		}
 	}
 	s.endRelay(c, sh, r, rlMu, rl)
+}
+
+// moveRelay ends a relayed session whose member is no longer the master;
+// the next command opens one on the new master (or runs here).
+func (s *Server) moveRelay(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **relay, master int) {
+	if !r.end() {
+		return
+	}
+	rlMu.Lock()
+	*rl = nil
+	rlMu.Unlock()
+	r.mu.Lock()
+	cfg := r.cfg
+	r.mu.Unlock()
+	text := fmt.Sprintf("mastership moved to member %d; this session continues there", master)
+	if master == s.Member {
+		text = fmt.Sprintf("mastership moved to this member (%d); this session continues here", master)
+	}
+	if cfg {
+		text += "; configuration mode ended (the shared candidate is kept)"
+	}
+	s.Log.Info("cli: relayed session follows the master", "from", r.master, "to", master)
+	c.shMu.Lock()
+	c.send(rpc.Msg{T: "notify", Text: text, Prompt: sh.Prompt(), Banner: sh.Banner()})
+	c.shMu.Unlock()
 }
 
 // endRelay reports a lost master and returns to operational mode.

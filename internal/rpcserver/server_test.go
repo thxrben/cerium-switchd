@@ -455,3 +455,69 @@ func TestRelayToMaster(t *testing.T) {
 		t.Fatalf("not on the master again: prompt %q", p)
 	}
 }
+
+// A relayed session follows a mastership change at its next command
+// (user report: it stayed on the old master until 'exit').
+func TestRelayFollowsMaster(t *testing.T) {
+	listen := func(srv *Server) *chanListener {
+		l := &chanListener{c: make(chan net.Conn), done: make(chan struct{})}
+		go srv.ServeRemote(l)
+		t.Cleanup(func() { l.Close() })
+		return l
+	}
+	_, sw1, _ := startServerHost(t, allow, "sw1")
+	_, sw3, _ := startServerHost(t, allow, "sw3")
+	ls := map[int]*chanListener{1: listen(sw1), 3: listen(sw3)}
+	var mu sync.Mutex
+	master := 1
+	path, _, _ := startServerHost(t, allow, "sw2", func(member *Server) {
+		member.Member = 2
+		member.Master = func() int { mu.Lock(); defer mu.Unlock(); return master }
+		member.Relay = func() (net.Conn, error) {
+			mu.Lock()
+			m := master
+			mu.Unlock()
+			if m == 2 {
+				return nil, nil // this member is the master
+			}
+			a, b := net.Pipe()
+			ls[m].c <- b
+			return a, nil
+		}
+	})
+	h := &handler{files: map[string][]byte{}}
+	c, err := rpc.Dial(path, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	show := func() string {
+		t.Helper()
+		m, err := c.Exec("show version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Text
+	}
+	if !strings.Contains(show(), "Hostname: sw1") {
+		t.Fatal("not on the master sw1")
+	}
+	mu.Lock()
+	master = 3
+	mu.Unlock()
+	if out := show(); !strings.Contains(out, "Hostname: sw3") {
+		t.Fatalf("stayed on the old master: %q", out)
+	}
+	h.mu.Lock()
+	notes := strings.Join(h.notes, "\n")
+	h.mu.Unlock()
+	if !strings.Contains(notes, "mastership moved to member 3; this session continues there") {
+		t.Errorf("notices: %q", notes)
+	}
+	mu.Lock()
+	master = 2
+	mu.Unlock()
+	if out := show(); !strings.Contains(out, "Hostname: sw2") {
+		t.Fatalf("this member is master now, the session must run here: %q", out)
+	}
+}

@@ -617,6 +617,7 @@ func Run(ctx context.Context, o Options) error {
 		srv.Synced = ctl.synced
 		// Every CLI session runs on the master (reference 1.8).
 		srv.Member = member
+		srv.Master = ctl.node.Master
 		srv.Relay = func() (net.Conn, error) {
 			// An election (e.g. after a stacking cable failed) takes a few
 			// seconds at most.
