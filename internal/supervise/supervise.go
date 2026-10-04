@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -251,10 +250,6 @@ type Supervisor struct {
 	Dir string
 	// Args are the arguments of every daemon (member, directories).
 	Args []string
-	// Member is this member's id (in notices).
-	Member int
-	// Notify reaches every CLI session of the stack.
-	Notify func(text string)
 	// Wanted reports which daemons that do not run always are needed now
 	// (by program).
 	Wanted func() map[string]bool
@@ -267,6 +262,7 @@ type Supervisor struct {
 	// stop) until the reboot: it is on a tmpfs (/run). "": in memory only.
 	StoppedFile string
 	// Alarms gets the daemons' faults (show system alarms; nil: none).
+	// The set's owner logs and announces them (with the member).
 	Alarms *alarms.Set
 	// Limits are a daemon's memory limits (nil: none). They must not
 	// change while switchd runs: a changed unit restarts the daemon.
@@ -322,15 +318,6 @@ func (s *Supervisor) Run(ctx context.Context) {
 	}
 }
 
-func (s *Supervisor) note(text string) {
-	if s.Member > 0 {
-		text = fmt.Sprintf("member %d: %s", s.Member, text)
-	}
-	if s.Notify != nil {
-		s.Notify(text)
-	}
-}
-
 // Step converges the units once.
 func (s *Supervisor) Step(now time.Time) {
 	s.mu.Lock()
@@ -364,7 +351,6 @@ func (s *Supervisor) Step(now time.Time) {
 				t.missingAt = now
 				s.raise("missing "+d.Program, alarms.Major, fmt.Sprintf("%s is not installed (%s): its function is missing", d.Program, s.path(d)))
 				s.Log.Error("program not installed", "program", d.Program, "path", s.path(d))
-				s.note(fmt.Sprintf("%s is not installed (%s); its function is missing", d.Program, s.path(d)))
 			}
 			continue
 		}
@@ -443,7 +429,6 @@ func (s *Supervisor) Step(now time.Time) {
 				if !t.down {
 					t.down, t.failure, t.failedAt = true, "cannot be started: "+err.Error(), now
 					s.raise("failed "+d.Program, alarms.Major, fmt.Sprintf("%s cannot be started: %v", d.Program, err))
-					s.note(fmt.Sprintf("%s cannot be started: %v", d.Program, err))
 				}
 			}
 		case !want && u.Active != "inactive" && u.Active != "failed" && u.Active != "deactivating":
@@ -475,13 +460,11 @@ func (s *Supervisor) observe(d Daemon, t *tracked, u UnitState, now time.Time) {
 		t.failure, t.failedAt, t.down = describe(u), now, true
 		s.raise("failed "+d.Program, alarms.Major, fmt.Sprintf("%s failed (%s); it is restarted", d.Program, t.failure))
 		s.Log.Error(d.Program+" failed", "reason", t.failure, "restarts_last_hour", len(t.restarts))
-		s.note(fmt.Sprintf("%s failed (%s) and is restarted", d.Program, t.failure))
 	}
 	if t.down && u.Running() && u.Sub == "running" {
 		t.down = false
 		s.clear("failed " + d.Program)
 		s.Log.Info(d.Program+" runs again", "restarts_last_hour", len(t.restarts))
-		s.note(fmt.Sprintf("%s runs again (%s in the last hour)", d.Program, plural(len(t.restarts), "restart")))
 	}
 }
 
@@ -495,13 +478,6 @@ func (s *Supervisor) clear(id string) {
 	if s.Alarms != nil {
 		s.Alarms.Clear("switchd/" + id)
 	}
-}
-
-func plural(n int, word string) string {
-	if n == 1 {
-		return "1 " + word
-	}
-	return strconv.Itoa(n) + " " + word + "s"
 }
 
 // describe explains why a daemon ended.

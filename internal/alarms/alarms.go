@@ -23,49 +23,81 @@ type Alarm struct {
 	Text   string    `json:"text"`
 	Since  time.Time `json:"since"`
 	Member int       `json:"member,omitempty"`
+
+	last time.Time // the latest Raise (ClearStale)
 }
 
 // Set is the alarms of a member.
 type Set struct {
-	mu sync.Mutex
-	m  map[string]Alarm
+	mu       sync.Mutex
+	m        map[string]Alarm
+	onChange func(a Alarm, raised bool)
+}
+
+// OnChange sets the function called for a new alarm, a class change and a
+// clear (outside the set's lock, in the raiser's goroutine): the owner
+// logs and announces it (reference 3.5).
+func (s *Set) OnChange(f func(a Alarm, raised bool)) {
+	s.mu.Lock()
+	s.onChange = f
+	s.mu.Unlock()
 }
 
 // Raise sets an alarm; it reports whether it is new (a raise with
 // another text updates it and keeps its time).
 func (s *Set) Raise(id, class, text string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.m == nil {
 		s.m = map[string]Alarm{}
 	}
 	a, ok := s.m[id]
+	changed := !ok || a.Class != class
+	now := time.Now()
 	if ok {
 		a.Class, a.Text = class, text
-		s.m[id] = a
-		return false
+	} else {
+		a = Alarm{ID: id, Class: class, Text: text, Since: now}
 	}
-	s.m[id] = Alarm{ID: id, Class: class, Text: text, Since: time.Now()}
-	return true
+	a.last = now
+	s.m[id] = a
+	f := s.onChange
+	s.mu.Unlock()
+	if changed && f != nil {
+		f(a, true)
+	}
+	return !ok
 }
 
 // Clear ends an alarm; it reports whether there was one.
 func (s *Set) Clear(id string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.m[id]
+	a, ok := s.m[id]
 	delete(s.m, id)
+	f := s.onChange
+	s.mu.Unlock()
+	if ok && f != nil {
+		f(a, false)
+	}
 	return ok
 }
 
-// ClearPrefix ends every alarm whose id starts with prefix (a daemon that
-// restarted raises again what still holds).
-func (s *Set) ClearPrefix(prefix string) {
+// ClearStale ends every alarm whose id starts with prefix and that was
+// not raised again since before (a daemon that restarted raises again
+// what still holds; the rest ends).
+func (s *Set) ClearStale(prefix string, before time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id := range s.m {
-		if strings.HasPrefix(id, prefix) {
+	var gone []Alarm
+	for id, a := range s.m {
+		if strings.HasPrefix(id, prefix) && a.last.Before(before) {
 			delete(s.m, id)
+			gone = append(gone, a)
+		}
+	}
+	f := s.onChange
+	s.mu.Unlock()
+	if f != nil {
+		for _, a := range gone {
+			f(a, false)
 		}
 	}
 }

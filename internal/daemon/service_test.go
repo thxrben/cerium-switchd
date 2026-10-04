@@ -58,7 +58,7 @@ func TestServiceWithDaemon(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	k.Notify("cer-test: hello")
-	if n := <-notes; n != "cer-test: hello" {
+	if n := <-notes; n != "member 1: cer-test: hello" { // the member is added
 		t.Fatalf("notice %q", n)
 	}
 	cctx, ccancel := context.WithTimeout(ctx, 5*time.Second)

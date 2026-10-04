@@ -396,10 +396,11 @@ func Run(ctx context.Context, o Options) error {
 		}
 		srv.Notify(context.Background(), text)
 	}
-	watchHangs(member, log, notifyStack, services.alarms)
+	announceAlarms(services.alarms, member, log, notifyStack)
+	watchHangs(services.alarms)
 	if !o.DryRun {
-		go watchSensors(ctx, member, log, notifyStack, services.alarms)
-		go newSwapGuard(member, log, notifyStack, services.alarms).loop(ctx)
+		go watchSensors(ctx, services.alarms)
+		go newSwapGuard(log, services.alarms).loop(ctx)
 	}
 	if ctl != nil {
 		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {
@@ -432,8 +433,8 @@ func Run(ctx context.Context, o Options) error {
 		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system", BusPath: supervise.SystemdPrivate, Log: log}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
-				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) },
-				Beat: func() { live.Beat("daemon supervisor") },
+				Wanted: func() map[string]bool { return wantedDaemons(engine) },
+				Beat:   func() { live.Beat("daemon supervisor") },
 				// request daemon stop lasts until the reboot (/run is a tmpfs).
 				StoppedFile: "/run/switchd/stopped-daemons",
 				Alarms:      services.alarms, Limits: mem.limits}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
@@ -15,7 +16,9 @@ import (
 // it when the call returns; switchd lists it meanwhile.
 func TestHangAlarm(t *testing.T) {
 	notes := make(chan string, 4)
-	watchHangs(3, slog.New(slog.NewTextHandler(io.Discard, nil)), func(s string) { notes <- s }, nil)
+	al := &alarms.Set{}
+	announceAlarms(al, 3, slog.New(slog.NewTextHandler(io.Discard, nil)), func(s string) { notes <- s })
+	watchHangs(al)
 	release := make(chan struct{})
 	start := time.Now()
 	err := hwio.DoErr(nlx.Resource, "link add ae1", 30*time.Millisecond, func() error { <-release; return nil })
@@ -24,7 +27,7 @@ func TestHangAlarm(t *testing.T) {
 	}
 	select {
 	case n := <-notes:
-		if !strings.Contains(n, "member 3: ALARM: the kernel's network configuration") || !strings.Contains(n, "link add ae1") {
+		if !strings.Contains(n, "member 3: ALARM (Major): the kernel's network configuration") || !strings.Contains(n, "link add ae1") {
 			t.Fatalf("notice %q", n)
 		}
 	case <-time.After(2 * time.Second):
@@ -36,7 +39,7 @@ func TestHangAlarm(t *testing.T) {
 	close(release)
 	select {
 	case n := <-notes:
-		if !strings.Contains(n, "alarm cleared") {
+		if !strings.HasPrefix(n, "member 3: alarm cleared (Major): ") {
 			t.Fatalf("notice %q", n)
 		}
 	case <-time.After(2 * time.Second):

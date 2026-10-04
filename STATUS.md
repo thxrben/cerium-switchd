@@ -375,6 +375,9 @@ Last updated: 2026-10-04 (evening).
 - Open: `show security macsec connections` Transmit/Receive empty for client ports (ip -j field names); lab tests of
   swap, memory slots, reload, stacking MACsec `mode on`, the relay/host-key fixes on the user's stack.
 
+## Requested 2026-10-04 (late)
+- `show system alarms` does not show which member of the stack an alarm belongs to (stack-wide listing).
+
 ## MACsec on client ports (2026-10-04 evening; unit-tested, NOT yet on the lab)
 - `security macsec interfaces <port>`: switchd writes `/run/switchd/mka/<port>.conf` (0600; CKN/CAK, csindex for
   gcm-aes-256, key-server priority, replay window) and runs `cer-mka@<port>.service` (wpa_supplicant -D

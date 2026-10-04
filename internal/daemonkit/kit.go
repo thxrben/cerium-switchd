@@ -344,12 +344,10 @@ func run(k *Kit, sig context.Context, setup func(*Kit) error) error {
 	hwio.WatchResources(func(c hwio.Call, raised bool) {
 		if raised {
 			k.Log.Error("ALARM: a device does not answer", "resource", c.Resource, "call", c.Op, "since", c.Since)
-			k.Notify(fmt.Sprintf("%s: ALARM: %s does not answer (%s, since %s)", k.Name, c.Resource, c.Op, c.Since.Format("15:04:05")))
 			k.Alarm("hang "+c.Resource, alarms.Major, fmt.Sprintf("%s does not answer (%s, %s)", c.Resource, c.Op, k.Name))
 			return
 		}
 		k.Log.Warn("alarm cleared: the device answers again", "resource", c.Resource)
-		k.Notify(fmt.Sprintf("%s: alarm cleared: %s answers again", k.Name, c.Resource))
 		k.ClearAlarm("hang " + c.Resource)
 	})
 	<-sig.Done()

@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -122,10 +123,19 @@ func setup(t *testing.T) (*Supervisor, *fakeSystemd, *[]string, map[string]bool)
 	f := newFake()
 	f.installed["/usr/local/sbin/cer-lacpd"] = true
 	f.installed["/usr/local/sbin/cer-bfdd"] = true
+	// notes are the alarm changes (switchd announces them, with the member).
 	notes := &[]string{}
 	wanted := map[string]bool{}
-	s := &Supervisor{Backend: f, Log: quiet, Dir: "/usr/local/sbin", Args: []string{"-member", "2"}, Member: 2,
-		Notify: func(s string) { *notes = append(*notes, s) }, Wanted: func() map[string]bool { return wanted }, Daemons: testDaemons}
+	al := &alarms.Set{}
+	al.OnChange(func(a alarms.Alarm, raised bool) {
+		word := "ALARM"
+		if !raised {
+			word = "cleared"
+		}
+		*notes = append(*notes, fmt.Sprintf("%s (%s): %s", word, a.Class, a.Text))
+	})
+	s := &Supervisor{Backend: f, Log: quiet, Dir: "/usr/local/sbin", Args: []string{"-member", "2"},
+		Alarms: al, Wanted: func() map[string]bool { return wanted }, Daemons: testDaemons}
 	return s, f, notes, wanted
 }
 
@@ -137,14 +147,14 @@ func TestStartsWhatIsNeeded(t *testing.T) {
 	if !slices.Equal(f.actions, want) {
 		t.Fatalf("actions %v, want %v", f.actions, want)
 	}
-	// cer-syslogd is needed but its program is missing: reported once a
-	// minute.
-	if len(*notes) != 1 || !strings.Contains((*notes)[0], "member 2: cer-syslogd is not installed") {
+	// cer-syslogd is needed but its program is missing: an alarm, raised
+	// once (it stays in show system alarms).
+	if len(*notes) != 1 || !strings.Contains((*notes)[0], "ALARM (Major): cer-syslogd is not installed") {
 		t.Fatalf("notes %v", *notes)
 	}
 	s.Step(now.Add(30 * time.Second))
 	s.Step(now.Add(61 * time.Second))
-	if len(*notes) != 2 {
+	if len(*notes) != 1 {
 		t.Fatalf("not-installed notices: %v", *notes)
 	}
 	// BFD is configured: started; removed: stopped without a failure.
@@ -158,7 +168,7 @@ func TestStartsWhatIsNeeded(t *testing.T) {
 	if want := []string{"start cer-bfdd.service", "stop cer-bfdd.service"}; !slices.Equal(f.actions, want) {
 		t.Fatalf("on demand: %v, want %v", f.actions, want)
 	}
-	if len(*notes) != 2 {
+	if len(*notes) != 1 {
 		t.Fatalf("a planned stop was reported: %v", *notes)
 	}
 }
@@ -171,7 +181,7 @@ func TestReportsFailureAndRecovery(t *testing.T) {
 	*notes = nil
 	f.crash("cer-lacpd.service", "signal", 11)
 	s.Step(now.Add(2 * time.Second))
-	if len(*notes) != 1 || (*notes)[0] != "member 2: cer-lacpd failed (killed by signal SEGV) and is restarted" {
+	if len(*notes) != 1 || (*notes)[0] != "ALARM (Major): cer-lacpd failed (killed by signal SEGV); it is restarted" {
 		t.Fatalf("failure: %v", *notes)
 	}
 	st := s.Status()[0]
@@ -180,7 +190,7 @@ func TestReportsFailureAndRecovery(t *testing.T) {
 	}
 	f.run("cer-lacpd.service") // systemd restarted it
 	s.Step(now.Add(3 * time.Second))
-	if len(*notes) != 2 || (*notes)[1] != "member 2: cer-lacpd runs again (1 restart in the last hour)" {
+	if len(*notes) != 2 || (*notes)[1] != "cleared (Major): cer-lacpd failed (killed by signal SEGV); it is restarted" {
 		t.Fatalf("recovery: %v", *notes)
 	}
 	// A hang ends through the watchdog.
@@ -188,7 +198,7 @@ func TestReportsFailureAndRecovery(t *testing.T) {
 	s.Step(now.Add(4 * time.Second))
 	f.run("cer-lacpd.service")
 	s.Step(now.Add(5 * time.Second))
-	if !strings.Contains((*notes)[2], "hung: no sign of life for 10 s") || !strings.Contains((*notes)[3], "2 restarts") {
+	if !strings.Contains((*notes)[2], "hung: no sign of life for 10 s") || !strings.HasPrefix((*notes)[3], "cleared") {
 		t.Fatalf("watchdog: %v", *notes)
 	}
 	// Restarts older than an hour are not counted.
@@ -333,7 +343,6 @@ func TestShutdown(t *testing.T) {
 func TestStopUntilReboot(t *testing.T) {
 	s, f, notes, _ := setup(t)
 	s.StoppedFile = t.TempDir() + "/stopped-daemons"
-	s.Alarms = &alarms.Set{}
 	now := time.Unix(1000, 0)
 	s.Step(now)
 	if l := s.Alarms.List(); len(l) != 1 || l[0].ID != "switchd/missing cer-syslogd" || l[0].Class != alarms.Major {
@@ -356,7 +365,7 @@ func TestStopUntilReboot(t *testing.T) {
 		t.Fatalf("alarms %+v", l)
 	}
 	// switchd restarts: a new supervisor keeps it stopped.
-	s2 := &Supervisor{Backend: f, Log: quiet, Dir: s.Dir, Args: s.Args, Member: 2, Wanted: s.Wanted, Daemons: testDaemons,
+	s2 := &Supervisor{Backend: f, Log: quiet, Dir: s.Dir, Args: s.Args, Wanted: s.Wanted, Daemons: testDaemons,
 		StoppedFile: s.StoppedFile}
 	s2.Step(now.Add(20 * time.Second))
 	s2.Step(now.Add(23 * time.Second))
@@ -373,7 +382,7 @@ func TestStopUntilReboot(t *testing.T) {
 	if _, err := s2.StartDaemon("lacp"); err == nil {
 		t.Fatal("starting a daemon that is not stopped must say so")
 	}
-	if len(*notes) != 1 { // only the missing cer-syslogd
+	if len(*notes) != 2 { // the missing cer-syslogd, the stopped cer-lacpd
 		t.Fatalf("notes %v", *notes)
 	}
 }

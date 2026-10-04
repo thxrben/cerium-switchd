@@ -19,9 +19,7 @@ const swapAlarm = "switchd/swap"
 // swapGuard keeps swap off (reference 1.9): a daemon whose memory was
 // swapped out misses its protocol timers.
 type swapGuard struct {
-	member int
 	log    *slog.Logger
-	notify func(string)
 	alarms *alarms.Set
 	// swaps lists the active swap areas; off turns one off (tests
 	// replace both).
@@ -31,8 +29,8 @@ type swapGuard struct {
 	failed map[string]bool // swap areas that could not be turned off
 }
 
-func newSwapGuard(member int, log *slog.Logger, notify func(string), al *alarms.Set) *swapGuard {
-	return &swapGuard{member: member, log: log, notify: notify, alarms: al, swaps: readSwaps, off: swapOff}
+func newSwapGuard(log *slog.Logger, al *alarms.Set) *swapGuard {
+	return &swapGuard{log: log, alarms: al, swaps: readSwaps, off: swapOff}
 }
 
 func (g *swapGuard) loop(ctx context.Context) {
@@ -69,14 +67,10 @@ func (g *swapGuard) step() {
 	}
 	g.failed = failed
 	if len(left) > 0 {
-		if g.alarms.Raise(swapAlarm, alarms.Major, "swap is active and cannot be turned off: "+strings.Join(left, ", ")) {
-			g.notify(fmt.Sprintf("member %d: ALARM: swap is active and cannot be turned off: %s", g.member, strings.Join(left, ", ")))
-		}
+		g.alarms.Raise(swapAlarm, alarms.Major, "swap is active and cannot be turned off: "+strings.Join(left, ", "))
 		return
 	}
-	if g.alarms.Clear(swapAlarm) {
-		g.notify(fmt.Sprintf("member %d: alarm cleared: swap is off", g.member))
-	}
+	g.alarms.Clear(swapAlarm)
 }
 
 // readSwaps lists the active swap areas (/proc/swaps).

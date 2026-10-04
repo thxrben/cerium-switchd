@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -39,31 +38,18 @@ func describeResource(res string) string {
 }
 
 // watchHangs raises an alarm when a device stops answering and clears it
-// when it answers again (log and a notice to every CLI session). Nothing
+// when it answers again (the alarm set logs and announces both). Nothing
 // reboots: the member keeps forwarding with what is set already.
-func watchHangs(member int, log *slog.Logger, notify func(string), al *alarms.Set) {
+func watchHangs(al *alarms.Set) {
 	hwio.WatchResources(func(c hwio.Call, raised bool) {
-		what := describeResource(c.Resource)
-		if al != nil {
-			if raised {
-				al.Raise("switchd/hang "+c.Resource, alarms.Major, fmt.Sprintf("%s does not answer (%s)", what, c.Op))
-			} else {
-				al.Clear("switchd/hang " + c.Resource)
-			}
-		}
 		if raised {
-			log.Error("ALARM: a device does not answer", "resource", c.Resource, "call", c.Op, "since", c.Since)
-			notify(fmt.Sprintf("member %d: ALARM: %s does not answer (%s, since %s). switchd keeps running; changes that need it fail until it answers. See show system processes.",
-				member, what, c.Op, c.Since.Format("15:04:05")))
+			al.Raise("switchd/hang "+c.Resource, alarms.Major, fmt.Sprintf("%s does not answer (%s, since %s); changes that need it fail until it answers",
+				describeResource(c.Resource), c.Op, c.Since.Format("15:04:05")))
 			return
 		}
-		log.Warn("alarm cleared: the device answers again", "resource", c.Resource, "hung", time.Since(c.Since).Round(time.Second))
-		notify(fmt.Sprintf("member %d: alarm cleared: %s answers again (it hung for %s)", member, what,
-			fmtSince(c.Since)))
+		al.Clear("switchd/hang " + c.Resource)
 	})
 }
-
-func fmtSince(t time.Time) string { return time.Since(t).Round(time.Second).String() }
 
 // Hangs lists switchd's calls that do not return (show system processes).
 func (o *ops) Hangs() []cli.Hang {
@@ -77,7 +63,7 @@ func (o *ops) Hangs() []cli.Hang {
 // watchSensors raises an alarm for a sensor beyond its limits (Minor at
 // Warning, Major at Critical) and clears it when it is back (show
 // chassis environment, reference 3.5).
-func watchSensors(ctx context.Context, member int, log *slog.Logger, notify func(string), al *alarms.Set) {
+func watchSensors(ctx context.Context, al *alarms.Set) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	raised := map[string]string{} // sensor -> status alarmed
@@ -90,8 +76,6 @@ func watchSensors(ctx context.Context, member int, log *slog.Logger, notify func
 				if raised[id] != "" {
 					delete(raised, id)
 					al.Clear(id)
-					log.Warn("sensor back to normal", "sensor", s.ID(), "value", s.Measurement())
-					notify(fmt.Sprintf("member %d: alarm cleared: %s %s is normal again (%s)", member, s.Class, s.ID(), s.Measurement()))
 				}
 				continue
 			}
@@ -104,8 +88,6 @@ func watchSensors(ctx context.Context, member int, log *slog.Logger, notify func
 				class = alarms.Major
 			}
 			al.Raise(id, class, fmt.Sprintf("%s %s %s: %s", s.Class, s.ID(), strings.ToLower(s.Status), s.Measurement()))
-			log.Error("ALARM: sensor "+strings.ToLower(s.Status), "sensor", s.ID(), "value", s.Measurement())
-			notify(fmt.Sprintf("member %d: ALARM: %s %s is %s (%s)", member, s.Class, s.ID(), strings.ToLower(s.Status), s.Measurement()))
 		}
 		for id := range raised {
 			if !seen[id] { // the sensor is gone

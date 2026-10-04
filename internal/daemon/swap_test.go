@@ -24,9 +24,10 @@ func TestParseSwaps(t *testing.T) {
 func TestSwapGuard(t *testing.T) {
 	active := []string{"/dev/sda5", "/dev/zram0"}
 	stuck := map[string]bool{"/dev/zram0": true}
-	var notes []string
+	var notes []string // the alarm changes switchd announces
 	al := &alarms.Set{}
-	g := newSwapGuard(1, slog.New(slog.DiscardHandler), func(s string) { notes = append(notes, s) }, al)
+	al.OnChange(func(a alarms.Alarm, _ bool) { notes = append(notes, a.Text) })
+	g := newSwapGuard(slog.New(slog.DiscardHandler), al)
 	g.swaps = func() ([]string, error) { return slices.Clone(active), nil }
 	g.off = func(d string) error {
 		if stuck[d] {

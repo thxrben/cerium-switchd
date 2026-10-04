@@ -120,7 +120,7 @@ func newService(member int, ctl *stackCtl, notify func(string), role func() svc.
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
 		}
-		s.notify(n.Text)
+		s.notify(memberNotice(s.member, n.Text))
 		return nil, nil
 	})
 	s.ep.Handle(svc.MethodAlarm, func(_ context.Context, c *ipc.Conn, raw json.RawMessage) (any, error) {
@@ -185,6 +185,10 @@ func (s *service) call(ctx context.Context, daemon, method string, req, resp any
 	return c.Call(ctx, method, req, resp)
 }
 
+// alarmResync is how long a reconnected daemon has to raise its alarms
+// again before the old ones end.
+const alarmResync = 10 * time.Second
+
 // connected registers the stacking-protocol methods a daemon serves.
 func (s *service) connected(c *ipc.Conn) {
 	var meta svc.Meta
@@ -194,8 +198,10 @@ func (s *service) connected(c *ipc.Conn) {
 		s.log.Warn("daemon runs another version than switchd", "daemon", c.Peer().Name, "version", c.Peer().Version, "switchd", version.Version)
 	}
 	daemon := c.Peer().Name
-	// A (re)started daemon raises again what still holds.
-	s.alarms.ClearPrefix(daemon + "/")
+	// A (re)started daemon raises again what still holds; the rest ends
+	// (not at once: a held alarm would be announced cleared and raised).
+	since := time.Now()
+	time.AfterFunc(alarmResync, func() { s.alarms.ClearStale(daemon+"/", since) })
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, m := range s.mirrors[daemon] {
