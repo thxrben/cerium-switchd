@@ -6,7 +6,8 @@ Junos-style configuration. Several machines cabled together form **one virtual c
 Virtual Chassis) that is configured, managed and seen from the outside as a single switch.
 
 The project's priorities, in this order: no dropped frames, then speed; a CLI that never leaves you without access;
-every change through commit and confirm; a web interface last.
+every change through commit and confirm; management by CLI or by an orchestrator through a REST API (no web
+interface).
 
 > Status: under active development and tested in a lab of VMs and physical machines. Not yet used in production.
 

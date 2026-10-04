@@ -314,7 +314,7 @@ Last updated: 2026-10-04 (evening).
    transfer-interval; archive-sites <url> { password } }`; the master uploads the gzipped curly-brace configuration
    with curl through the management instance (ftp, sftp, scp, http(s) PUT), sites in order; failure = Minor
    alarm, retried every 15 min, cleared on success. Unit-tested with a fake curl; NOT tried against a real server.
-   Open in Phase 11: USB storage, web UI (last), docs.
+   Open in Phase 11: USB storage, docs (web UI dropped 2026-10-04: REST API, Phase 18).
 15. **Phase 11: `show chassis environment`** (done 2026-10-04): hwmon sensors (temperatures, fans, voltages, power)
    with OK/Warning/Critical from the sensors' max/crit/min; stack-wide; switchd checks every 30 s and raises a Minor
    (Warning) or Major (Critical, a stopped fan) alarm, cleared when back. No fan control (left to the firmware; a
@@ -587,7 +587,7 @@ Unit-tested, NOT on the lab switches yet (the lab still runs 05240a8; see "Lab d
 4. ~~Kernel messages to syslog~~: done in Phase 9a (cer-syslogd forwards the journal, kernel included).
 5. Phases (2026-10-04): IGMP/MLD, VXLAN, OSPF, BGP (own core), full show route, diagnostics done; Phase 11 partly
    (alarms, optics, environment); open: Phase 10 encryption (scope to decide: the peer link no longer exists),
-   Phase 11 config archival, USB storage, web UI (last), docs; Phase 12 802.1X; everything lab-only (lab down).
+   Phase 11 config archival, USB storage, docs (no web UI: REST API, Phase 18); Phase 12 802.1X; everything lab-only (lab down).
 
 ## Questions for the user
 1. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like

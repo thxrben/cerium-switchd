@@ -218,7 +218,7 @@ The stack is managed as one switch through one address, as a Junos Virtual Chass
   * The MAC address of `cme` is derived from the stack id and is the same on every member, so a move is only a MAC
     move for the management network. The new master announces it (gratuitous ARP, unsolicited neighbour
     advertisements). Duplicate address detection is off on `cme`.
-  * **Every management function is on the master:** the CLI SSH server, the web interface, the management instance's
+  * **Every management function is on the master:** the CLI SSH server, the REST API, the management instance's
     routes, syslog forwarding, NTP and DNS. When the master fails and another member is promoted, the new master
     takes the address and all of them over.
   * In-band management (irb units in the management instance) follows the same rule: its addresses exist only on
@@ -933,7 +933,9 @@ automation access on the OS port.
 * The server is for people. The stack itself never uses it: sessions reach the master over the stacking protocol (1.8).
 
 #### `system services web-management { port <n>; certificate <file>; key <file>; upload-limit <size>; disable; }`
-The **REST API** over HTTPS (the web interface follows later). Like the CLI SSH server, it runs **on the master only
+The **REST API** over HTTPS, for an orchestrator that manages switches and virtual chassis from elsewhere. There
+is no web interface on the switch (decided 2026-10-04): everything is managed through the CLI or this API. A virtual
+chassis has one API (on the master, at the `cme` address), a single switch its own. Like the CLI SSH server, it runs **on the master only
 (1.8), inside the management instance**: it accepts connections through the management addresses, not through data
 interfaces; it moves with mastership. It runs while `system services web-management` is configured without
 `disable`; without a management instance it does not run (W).
@@ -2538,7 +2540,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `system login`, `system services ssh`, `system ports`, host names, resolver, NTP, syslog | implemented and lab tested; kernel messages not yet forwarded to syslog; `system login message` not yet on serial consoles |
 | Stacking (transport, TLS, relay, BFD, stack tunnels, join/remove, force-master, maintenance mode, software updates) | implemented, lab tested |
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
-| `system services web-management` | REST API: software upload and install (3.6); the web interface is not implemented yet |
+| `system services web-management` | REST API: software upload and install (3.6); configuration, state and operational endpoints not implemented yet (PLAN phase 18); no web interface (by design) |
 | `virtual-chassis macsec` (stacking links) | implemented, unit-tested; not lab-tested yet |
 | `security macsec` (switch and routed ports) | not implemented yet (W at commit: the ports stay unencrypted) |
 | VXLAN to remote VTEPs (5.7) | implemented |

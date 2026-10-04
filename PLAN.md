@@ -1,7 +1,7 @@
 # cerOS (Cerium) — Linux HA switch (plan)
 
 Goal: turn ordinary Linux boxes (any arch, any NIC) into a stack of HA-capable L2
-switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
+switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a REST API for an external orchestrator (no web UI, decided 2026-10-04).
 
 ## 1. Key decisions
 
@@ -142,15 +142,12 @@ switches with MC-LAG, VXLAN, a Junos-like CLI (SSH + serial), and a web UI/API.
   list/baud under `system ports console`) and starts `agetty` on them via a
   systemd template unit. Login → swcli.
 
-### 4.8 Web UI / API
-* HTTPS (self-signed or configured cert), in the mgmt VRF.
-* REST: `GET/POST /api/v1/config` (candidate, compare, commit with the same
-  semantics as the CLI), `/api/v1/state/*` (interfaces, FDB, LACP, MC-LAG, VXLAN, stack).
-* `/healthz` (liveness), `/readyz` (config applied, quorum, peer state).
-* `/metrics` Prometheus (per-port counters, drops, FDB size, peer RTT…).
-* UI: small embedded SPA (served from the binary). It shows stack overview, port
-  grid per member, live counters, FDB search, config editor with diff and commit, and alarms.
-* Auth: the same users/classes as the CLI.
+### 4.8 REST API (no web UI; decided 2026-10-04)
+* No web interface on the switch. An orchestrator running elsewhere manages single switches and virtual chassis
+  through a REST API: one API per virtual chassis (on the master, `cme` address) or per single switch.
+* HTTPS in the management instance (configured or temporary self-signed certificate with pin), the users and classes
+  of the CLI, everything the CLI can do with the same semantics (Phase 18).
+* `/healthz`, `/readyz`, `/metrics` (Prometheus) for monitoring.
 
 ### 4.9 Syslog
 * `system syslog host <ip> [port N] [transport udp|tcp|tls] [facility …] [severity …]`.
@@ -383,10 +380,7 @@ full schema, commit, roll back and compare. Good moment for you to review the CL
    privilege.
 3. **Serial**: auto-detect `ttyS*` / `ttyUSB*` / `ttyACM*`, configurable ports and baud rate, managed `serial-getty@` units.
    Tested via the Proxmox serial socket (`qm terminal`).
-4. **Web / API**: HTTPS server (self-signed or configured cert) in the mgmt VRF, login with the config users,
-   REST for config (candidate / compare / commit / rollback, with the same semantics as the CLI) and state,
-   `/healthz`, `/readyz`, `/metrics` (Prometheus).
-5. Minimal web UI: login, dashboard, interfaces, FDB search, config editor (text + diff + commit).
+4. REST API: moved to Phase 18 (no web UI, decided 2026-10-04).
 
 ### Phase 4b: Junos parity basics (VMs: sw1; hardware: physw4) — requested 2026-09-29
 In this order (the user's priorities; each step is spec first, then implementation and lab tests):
@@ -664,7 +658,7 @@ WireGuard is dropped: it would only serve remote L3 sites and road warriors, and
 6. Benchmarks (software vs offload) documented.
 
 ### Phase 11: Polish and packaging
-1. Full web UI: stack view, port grid per member, live graphs, MC-LAG/RSTP/VXLAN status, alarms.
+1. ~~Full web UI~~: dropped 2026-10-04; the REST API (Phase 18) serves an external orchestrator instead.
 2. `show system alarms`, config archival.
 3. **Software update**: `request system software add <usb:|http(s):|ftp:|file>` with signed image bundles
    (docs/os-image.md); a signature is always required. Rolling upgrade across the stack (one member at a time,
@@ -826,6 +820,19 @@ while it writes. Missing:
 Every "n of m" line counts the same thing on both sides. E.g. `MACsec offload: 0 of 5 ports` is wrong when none of
 the 5 ports can offload: it must be `0 of 0` (ports using offload of the ports able to). Go through every line of
 the page (and `show system offload`) for the same mistake.
+
+### Phase 18: REST API for orchestrators (decided 2026-10-04; replaces the web UI)
+One API per virtual chassis (master, `cme` address) or single switch, extending `system services web-management`
+(reference 5.1; spec first, endpoint by endpoint):
+1. Configuration: read (active, candidate, revisions, `json`/`set`/curly), private candidate sessions (load
+   merge/replace/override/set, delete), compare, commit check, commit (confirmed, comment), confirm, rollback;
+   the same commit engine as the CLI (locks, confirmation, per-member results).
+2. State: everything `show` gives, as JSON (interfaces, VC, LACP, MC-LAG, RSTP, routes, BGP/OSPF, alarms, processes,
+   memory, limits), `member <id>`/all-members as a parameter.
+3. Requests: the `request`/`clear` commands (reboot, reload, maintenance mode, software, daemons).
+4. Events: a stream (server-sent events) of notices, alarms, commits and link changes, so an orchestrator need not
+   poll. `/healthz`, `/readyz`, `/metrics`.
+5. Authentication: Basic as today, plus API tokens per user (for orchestrators); an OpenAPI description.
 
 ### Order (2026-10-04)
 Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) and 17b → Phase 15
