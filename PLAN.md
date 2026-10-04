@@ -641,12 +641,24 @@ Use: simple BGP routing for irbs and routed ports, later the EVPN control plane 
 * BGP routes come from cer-bgpd's Adj-RIB-In (also those not installed, e.g. inactive or rejected by policy), installed ones are
   cross-checked with the kernel. Member targets (`member <id>` / `all-members`) as for the other show commands.
 
-### Phase 10: Data-plane encryption (opt-in per link)
-1. **MACsec** on the peer link. Keys (SAKs) are generated and rotated by switchd and exchanged over the mTLS channel,
-   so no wpa_supplicant/MKA is needed. Hardware offload is used where the NIC supports it.
-2. **WireGuard** underlay for VXLAN: keys are generated per member and distributed via the stack, and VXLAN runs over WireGuard IPs.
-   Commit checks cover the MTU budget (overlay + 50 + 60).
-3. Benchmarks on x86 and one ARM board, with the numbers documented.
+### Phase 10: MACsec (decided 2026-10-04; no WireGuard)
+WireGuard is dropped: it would only serve remote L3 sites and road warriors, and costs too much per packet.
+1. **Every port** can run MACsec (switch ports, `ae` legs, stacking ports). Linux `macsec` devices on top of the
+   port; hardware offload (`offload mac|phy`) where the NIC has it, else software (AES-NI).
+2. **Stacking links: on by default** (`virtual-chassis macsec disable` turns it off). The master generates the keys
+   (SAK, GCM-AES-XPN-256: 64-bit packet numbers, so no exhaustion between rotations) and hands them to a member in
+   the join reply over the mTLS control channel; renewed every hour (and on a member leaving) over the same channel.
+   Static SAs, no MKA between members (the mTLS channel is the key agreement). A link switches over to MACsec right
+   after the join: the ring carries the traffic around the one link that changes. Both ends install the new receive SA
+   before either sends with it (rotation without loss).
+3. **Client ports: pre-shared keys in Junos syntax** (`security macsec connectivity-association <ca> { security-mode
+   static-cak; pre-shared-key { ckn …; cak …; } cipher-suite …; }`, `security macsec interfaces <if>
+   connectivity-association <ca>`), negotiated with the standard MKA protocol (802.1X-2010) through wpa_supplicant
+   (`macsec_linux` driver), one instance per port, supervised by switchd.
+4. **MTU**: the stack MTU budget grows by 32 bytes (SecTAG with SCI 16 + ICV 16) on MACsec stacking links; client
+   ports' MACsec device carries the configured mtu, the port gets 32 more (commit checks the hardware maximum).
+5. `show security macsec connections|statistics`, alarms when a secured link stops passing traffic.
+6. Benchmarks (software vs offload) documented.
 
 ### Phase 11: Polish and packaging
 1. Full web UI: stack view, port grid per member, live graphs, MC-LAG/RSTP/VXLAN status, alarms.
@@ -654,8 +666,9 @@ Use: simple BGP routing for irbs and routed ports, later the EVPN control plane 
 3. **Software update**: `request system software add <usb:|http(s):|ftp:|file>` with signed image bundles
    (docs/os-image.md); a signature is always required. Rolling upgrade across the stack (one member at a time,
    drained first), each member reboots into its backup slot and returns by itself when the new version fails.
-4. **USB storage**: `save usb:<file>` / `load … usb:<file>`, `request system storage usb eject`; automount
-   read/write only while in use.
+4. **USB storage** (Phase 17): `save usb:<file>` / `load … usb:<file>`, `file list usb:`,
+   `request system storage usb eject`; the stick is mounted only while in use, synced and unmounted right after
+   (less wear, safe to pull).
 5. **chassisd** (environment): temperatures, fans (speed control with a curve), PSUs from hwmon/IPMI/PMBus;
    `show chassis environment`, alarms and syslog on thresholds.
 6. **SFP diagnostics**: `show interfaces diagnostics optics <if>` via the ethtool module EEPROM (SFF-8472
@@ -676,6 +689,114 @@ An overall check that lists what limits the switch, with a recommendation per fi
 * NIC: offloads not active that the NIC supports, ring sizes, drops/overruns from the counters, flow control.
 * Memory and softirq load under traffic, and the throughput the forwarding path reached (from the counters).
 
+### Phase 14: No swap (decided 2026-10-04)
+A switch never swaps: a swapped-out daemon misses its protocol timers. Without swap the kernel's OOM killer acts
+when memory runs out (accepted; the memory slots, Phase 15, prevent it).
+1. switchd turns every active swap off at start (`swapoff` of each `/proc/swaps` entry) and masks systemd swap
+   units; it checks every 30 s and turns new swap off again.
+2. Major alarm `switchd/swap` while swap cannot be turned off.
+3. The image build fails when the image has a swap entry (fstab, swap units, a swap file).
+4. Core dumps limited (`systemd-coredump` off, `ulimit -c` small) so a crashing daemon cannot take the memory of a
+   full dump at the moment memory is short.
+
+### Phase 15: Memory slots (decided 2026-10-04; reference "system memory")
+Goal: `show system limits` shows what this hardware holds when every table is full **at the same time**; capacity is
+guaranteed per table and static while the switch runs; it changes only at start or `request system reload`.
+**Without `system memory allocation` nothing changes**: every table grows dynamically as today (only the kernel's
+neighbour thresholds are raised to a sane value, see 7).
+
+1. **Fixed part** (not in slots), computed at start from hardware and configuration (deterministic, not from the
+   current use): kernel (RAM not in MemTotal is already gone; 1.6 % of RAM for page bookkeeping + 128 MiB), NIC rings
+   (ring size × queues × buffer size per port, from ethtool), the daemons' base memory (per-daemon constant measured
+   per release), system services and management (sshd, journald, udev, NTP, syslog; CLI/SSH sessions × session
+   limit; `system memory management-reserve`, default 256 MiB + 24 MiB per allowed session), and a margin (5 % of
+   RAM, at least 3 × `min_free_kbytes`) for packet bursts and the kernel's free-memory minimum.
+2. **Slots**: the rest is split into slots of **4 MiB** (1024 pages). A slot belongs to exactly one purpose and holds
+   a whole number of entries. Purposes (bytes per entry measured per release, today's values):
+   `bgp-ipv4` 2,100 · `bgp-ipv6` 2,340 · `bgp-paths` 1,500 · `ospf` 1,150 · `arp` 512 · `ndp` 512 · `mac` 250 ·
+   `multicast` 300 · `update` (the bundle in RAM: max bundle size + 1 slot write buffer; default 512 MiB + 4 MiB =
+   129 slots; fixed size, never a percentage; the bundle needs no unpacking: the image is the squashfs itself).
+3. **System area** (automatic, whole slots, from what the configuration allows): interfaces and VLAN/VXLAN
+   declarations, virtual chassis (members, credentials, stacking ports, tunnel neighbours), Raft log/snapshots,
+   configuration (candidate, active, rollbacks), static routes, DHCP leases (pool sizes), MACsec, RSTP/LACP/MC-LAG,
+   BFD sessions, LLDP neighbours (new cap: 8 per port), alarms.
+4. **Configuration**: `system memory { allocation { <purpose> (percent <1..100> | slots <n>); } update-size <size>;
+   management-reserve <size>; }`. Percentages are of the slots after the system area and the update slot, rounded
+   down. Commit refuses an allocation larger than the slots of the smallest member (any member can become master, so
+   counts must fit every member); a change warns that it takes effect on `request system reload` (Phase 16) or a
+   reboot. The slots not allocated are the **dynamic area** (archival, USB transfers, temporary data; no guarantee).
+5. **Slot map**: switchd computes it at start from the active configuration and keeps it until the next start/reload
+   (`/run/switchd/memory-slots.json`, handed to every daemon at registration). Capacities are enforced stack-wide as
+   the minimum over the members (a failover never overflows).
+6. **Enforcement** (only with an allocation):
+   * cer-bgpd: a prefix beyond `bgp-ipv4`/`bgp-ipv6` is not stored (as if withdrawn), a path beyond `bgp-paths`
+     likewise; major alarm; neighbours stay up. Existing routes are never evicted.
+   * cer-ospfd: LSDB overflow as RFC 1765 (external LSAs beyond the cap are not originated/stored, the overflow
+     state is left after the exit interval); alarm.
+   * cer-ribd: refuses routes beyond the sum of the routing purposes (+ static); alarm.
+   * Kernel: `gc_thresh3` (IPv4/IPv6) = `arp`/`ndp` capacity (thresh2 = 7/8, thresh1 = 1/2), bridge
+     `fdb_max_learned` = `mac` capacity (cer-mclagd/VXLAN sync counts against it), `mcast_hash_max` = `multicast`.
+   * Daemons: `GOMEMLIMIT` = base + capacity × bytes × 1.3 (GC headroom), cgroup `memory.max` = 1.5 × that (a runaway
+     daemon is killed alone, not the switch); `memory.min` for switchd, cer-ribd, cer-lacpd, cer-bfdd, cer-mclagd,
+     cer-rstpd so their code pages are never dropped under pressure (no swap: the only thing reclaim takes).
+   * Update: a bundle larger than the update slot is refused before the transfer (size known) or the moment it
+     exceeds it.
+7. **Without an allocation**: unchanged dynamic behaviour, but the neighbour thresholds (default 1024, too small
+   for a switch) are raised to a RAM-scaled value (1/64 of RAM ÷ 512 B), and an update is accepted only when free
+   memory covers it.
+8. **Commands**: `show system memory` (fixed part, system area, per purpose: slots, capacity, use, % full; applied vs
+   configured when a reload is pending); `request system memory setup` (interactive: shows the slots of this
+   hardware, asks per purpose for a percentage or count, shows the capacities live, writes `system memory` into the
+   candidate, no commit); `show system limits` gets a column **Applied** left of the current column (now
+   **Supported**): the capacity from the slots, or `-` without an allocation; new rows for the slot purposes (Supported
+   = what all available slots would hold) and the update bundle size.
+9. **Costs per entry**: `internal/memslots` holds the table; a measuring test (`-update`) rewrites it from the real
+   structures (Go heap per entry) plus the kernel's object sizes; the test fails when the code drifts > 10 % from the
+   table, so a release never ships stale costs. An update warns when a purpose's capacity in the new version falls
+   below its current use.
+10. **Structure optimization first**: interned BGP attributes (AS paths, communities, attribute sets via Go's
+    `unique` package), RIB attributes shared between routes, compact prefixes (netip.Prefix, no strings); target ≈
+    1/3 of today's bytes per route; costs table re-measured.
+
+### Phase 16: `request system reload [member <id> | all-members]` (decided 2026-10-04)
+Restarts the whole switch software without rebooting the operating system (applies a new slot map, Phase 15).
+1. Drain as for maintenance mode (5.2): mastership moves away, stacking paths route around, MC-LAG legs leave their
+   bundles after the partners stopped sending, OSPF advertises max-metric (stub router) and waits for the neighbours
+   to move away, BGP neighbours get a Cease (administrative shutdown) NOTIFICATION after their routes were withdrawn
+   (graceful shutdown community where configured).
+2. Forwarding stops: switch ports go down.
+3. All cer-* daemons stop (reverse start order), switchd exits with the reload code; systemd starts it again; it
+   computes the new slot map, applies the kernel limits, starts the daemons, applies the configuration, brings the
+   ports up and leaves maintenance mode.
+4. `all-members`: one member at a time, each back and in sync before the next (as the rolling update); this member
+   last. A single switch asks first (it does not forward while it reloads).
+5. Super-user, `[yes,no] (no)` question, every CLI session is notified; shown in `show system uptime`
+   ("software started" vs "system booted").
+
+### Phase 17: Software upload and RAM-only bundles; USB storage (decided 2026-10-04)
+1. **Bundles never touch the disk**: every bundle (fetched by http/https/ftp/sftp, uploaded, or read from USB) is
+   received into a sealed `memfd` (RAM, in the update slot when slots are allocated; else accepted only when free
+   memory covers it); SHA-256 and signature are checked as now. Members receive it over the stack into their own
+   memfd. The update daemon gets the memfd (fd passing) and writes the image into the backup slot (as now, 4 MiB
+   chunks synced). The config check of the new version mounts the image from the memfd. A received bundle lives until
+   it is installed, replaced, 1 h unused, or the member restarts (`/var/lib/ceros/software` is no longer used).
+2. **Upload over HTTPS** (`system services web-management`: the first part of the REST API): `PUT
+   /api/v1/software/upload` (Basic auth with a local user of class super-user; others 403), `POST
+   /api/v1/software/install` (same options as the CLI), `GET /api/v1/software` (status). Listens only in the
+   management instance. Without `certificate`/`key`, a temporary self-signed certificate (ECDSA P-256) is generated
+   at start and held only in RAM; its SHA-256 fingerprint is shown by `show system services web-management` (and
+   logged). Size limit `system services web-management upload-limit` (default 1 GiB, at most the update slot).
+   CLI: `request system software add upload` installs the uploaded bundle.
+3. No FTP/SFTP server on the switch; fetching from servers stays.
+4. **USB storage**: `save usb:<file>`, `load override|merge|replace usb:<file>`, `file list usb:`, `request
+   system storage usb eject`. Mounted (vfat/exfat/ext4) only for the operation at `/run/switchd/usb`, synced and
+   unmounted right after; eject also powers the port's device off. Updates from USB read the bundle into RAM.
+
+### Order (2026-10-04)
+Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) → Phase 15
+(memory slots, with the structure optimization first) → Phase 16 (reload) → Phase 17.4 (USB) → Phase 10 (MACsec).
+Each: reference first, tests, lab.
+
 ### VM needs by phase
 | Phase | VMs needed |
 |---|---|
@@ -695,7 +816,7 @@ An overall check that lists what limits the switch, with a recommendation per fi
 
 ## 10. Decisions taken (2026-09-29)
 * SSH: system OpenSSH, with swcli as login shell for config-defined users. The serial console uses the same flow (getty → login → swcli).
-* Data-plane encryption: opt-in per link (MACsec peer link, WireGuard underlay). The control plane always uses mTLS.
+* Data-plane encryption: MACsec on any port, on by default on stacking links (Phase 10, 2026-10-04; WireGuard dropped). The control plane always uses mTLS.
 * Three separate planes: data (switch ports), stacking (dedicated 1:1 stacking ports in a ring, TLS over an L2 stream,
   multi-hop relay, plus client traffic between members in stack tunnels, 2026-09-30), and mgmt (administration only).
 * Stack control runs **only** over stacking ports. The mgmt network carries only administration.
