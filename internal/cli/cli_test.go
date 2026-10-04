@@ -550,7 +550,9 @@ func (f *fakeOps) LLDP() (LLDPStatus, error) {
 
 func (f *fakeOps) VirtualChassis() (VCStatus, error) {
 	return VCStatus{StackID: "abc", Member: 1, HostName: "sw1", Ports: []VCPort{
-		{Port: "0/1", Linux: "ens19", State: "up", Neighbor: "member 2 (sw2)", PeerPort: "0/1", UpSince: time.Now().Add(-time.Minute)},
+		{Port: "0/1", Linux: "ens19", State: "up", Neighbor: "member 2 (sw2)", PeerPort: "0/1", UpSince: time.Now().Add(-time.Minute),
+			Restarts: 3, LastEnd: time.Date(2026, 10, 4, 21, 12, 59, 0, time.Local), LastEndAfter: 2*time.Hour + 2*time.Minute + 20*time.Second,
+			LastEndReason: "stacking link lost (no frames from the peer)"},
 		{Port: "0/2", Linux: "ens20", State: "up", Neighbor: "other stack", LastError: "x"},
 	}, Control: true, Master: 2, Members: []int{1, 2, 3}, Voters: []int{1, 2, 3}, Reachable: []int{2}}, nil
 }
@@ -851,7 +853,8 @@ func TestSystemOperationalCommands(t *testing.T) {
 		"3                            linecard  128       voter      not present")
 	ts.ok("request chassis routing-engine master switch member 2")
 	contains(t, ts.run("request chassis routing-engine master switch member x"), "expecting a member id")
-	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1        ens19        up      -       member 2 (sw2)           0/1        00:01:00", "other stack")
+	contains(t, ts.ok("show virtual-chassis vc-port"), "0/1        ens19        up      -       member 2 (sw2)           0/1        00:01:00", "other stack",
+		"           last session ended 2026-10-04 21:12:59 after 02:02:20: stacking link lost (no frames from the peer); 3 session restarts in the last hour")
 	ts.ok("request virtual-chassis vc-port set pic-slot 0 port 3")
 	if len(ops.power) != 1 || ops.power[0] != "vc 0/3 true" {
 		t.Errorf("vc-port set: %v", ops.power)

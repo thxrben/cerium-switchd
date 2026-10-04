@@ -119,6 +119,29 @@ type PortStatus struct {
 	// MACsecOffload of this port and of the neighbour's port (from its
 	// hello).
 	MACsecOffload, PeerMACsecOffload bool
+	// Ends are the member sessions that ended in the last hour, oldest
+	// first.
+	Ends []SessionEnd
+}
+
+// SessionEnd is a member session on a VC port that ended.
+type SessionEnd struct {
+	At     time.Time
+	After  time.Duration // how long it was up
+	Reason string
+}
+
+// FormatUptime is d as hh:mm:ss (with days beyond a day).
+func FormatUptime(d time.Duration) string {
+	s := int(d.Round(time.Second) / time.Second)
+	if s < 0 {
+		s = 0
+	}
+	h, m, sec := s/3600, s/60%60, s%60
+	if h >= 24 {
+		return fmt.Sprintf("%dd %02d:%02d:%02d", h/24, h%24, m, sec)
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, sec)
 }
 
 // StackLink is a stacking link with an up member session.
@@ -546,7 +569,25 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 			continue
 		}
 		l.Close()
+		var up time.Duration
+		now := time.Now()
 		p.set(func(s *PortStatus) {
+			// A new slice: copies of the status (Ports) share the old one.
+			var ends []SessionEnd
+			for _, e := range s.Ends {
+				if now.Sub(e.At) <= time.Hour {
+					ends = append(ends, e)
+				}
+			}
+			if !s.UpSince.IsZero() {
+				up = now.Sub(s.UpSince)
+				reason := "ended"
+				if err != nil {
+					reason = err.Error()
+				}
+				ends = append(ends, SessionEnd{At: now, After: up, Reason: reason})
+			}
+			s.Ends = ends
 			s.State, s.Neighbor, s.PeerPort, s.UpSince = "down", "-", "", time.Time{}
 			s.NeighborID, s.NeighborMAC, s.PathMTU, s.PeerMACsecOffload = 0, nil, 0, false
 			if err != nil {
@@ -554,7 +595,8 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 			}
 		})
 		if err != nil && ctx.Err() == nil {
-			m.Log.Info("stack: session on VC port ended", "port", p.local, "err", err)
+			m.Log.Info(fmt.Sprintf("stack: session on VC port ended: %v (duration: %s)", err, FormatUptime(up)),
+				"port", p.local, "err", err, "duration", FormatUptime(up))
 			sleep(ctx, 2*time.Second)
 		}
 	}

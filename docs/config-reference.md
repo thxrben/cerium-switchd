@@ -1154,7 +1154,10 @@ working path, so a ring survives one broken cable.
   "other stack" and exchange nothing else until one of them joins the other's stack.
 * `show virtual-chassis vc-port`: per stacking port its full name (`2/1/0`), state (`up`, `down`, `absent` when the port
   does not exist), link speed, the neighbour (member id and host name, `other stack`, or `-`), the neighbour's port
-  (full name, e.g. `3/2/0`) and how long the link is up.
+  (full name, e.g. `3/2/0`) and how long the member session on it is up (not the carrier: the session restarts when
+  the liveness check misses frames). When a session ended in the last hour: when, after how long, why, and how many
+  sessions ended in the last hour. The log says the same at every end: `stack: session on VC port ended: <reason>
+  (duration: hh:mm:ss)`.
 * `show virtual-chassis`: the stack id, this member, and per member its id, host name, role (`master`, `backup`,
   `linecard`), `mastership-priority` and status (`present`, `not present`, `maintenance`).
 * **Protocol**: untagged Ethernet frames with EtherType `0x88b5`, no IP and no VLAN tag. Each stacking link carries a

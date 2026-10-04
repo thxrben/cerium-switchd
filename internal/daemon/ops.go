@@ -690,6 +690,15 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 		// port with its member id.
 		vp := cli.VCPort{Port: strconv.Itoa(st.Member) + "/" + p.Port, Linux: p.Linux, State: p.State, Neighbor: p.Neighbor,
 			PeerPort: p.PeerPort, UpSince: p.UpSince, LastError: p.LastError}
+		for _, e := range p.Ends {
+			if time.Since(e.At) <= time.Hour {
+				vp.Restarts++
+			}
+		}
+		if n := len(p.Ends); n > 0 {
+			e := p.Ends[n-1]
+			vp.LastEnd, vp.LastEndAfter, vp.LastEndReason = e.At, e.After, e.Reason
+		}
 		if p.PeerPort != "" && p.NeighborID > 0 {
 			vp.PeerPort = strconv.Itoa(p.NeighborID) + "/" + p.PeerPort
 		}

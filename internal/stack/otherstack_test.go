@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestOtherStackReason(t *testing.T) {
@@ -23,5 +24,15 @@ func TestOtherStackReason(t *testing.T) {
 	p := &vcPort{}
 	if !p.noteOtherStack("a x") || p.noteOtherStack("a x") || !p.noteOtherStack("b x") || p.noteOtherStack("") || !p.noteOtherStack("b x") {
 		t.Fatal("a neighbour of another stack must be logged once per neighbour and reason")
+	}
+}
+
+func TestFormatUptime(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		0: "00:00:00", 3742 * time.Second: "01:02:22", 26*time.Hour + 5*time.Second: "1d 02:00:05",
+	} {
+		if got := FormatUptime(d); got != want {
+			t.Errorf("%v: %q, want %q", d, got, want)
+		}
 	}
 }

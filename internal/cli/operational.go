@@ -124,6 +124,12 @@ type VCPort struct {
 	Port, Linux, State, Neighbor, PeerPort, LastError string
 	UpSince                                           time.Time
 	SpeedMbps                                         int // 0: unknown
+	// Sessions that ended in the last hour; the last one's time, duration
+	// and reason.
+	Restarts      int
+	LastEnd       time.Time
+	LastEndAfter  time.Duration
+	LastEndReason string
 }
 
 // LimitsStatus is what "show system limits" needs from this member's
@@ -965,10 +971,15 @@ func (sh *Shell) showVCPorts(c *call) error {
 		}
 		fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, speed, p.Neighbor, dash(p.PeerPort), up)
 		switch {
-		case p.LastError != "" && p.State != "up":
+		case p.LastError != "" && p.State != "up" && p.LastError != p.LastEndReason:
 			fmt.Fprintf(c.out, "           last error: %s\n", p.LastError)
 		case p.LastError != "" && p.Neighbor == "other stack":
 			fmt.Fprintf(c.out, "           detail: %s\n", p.LastError)
+		}
+		if !p.LastEnd.IsZero() {
+			fmt.Fprintf(c.out, "           last session ended %s after %s: %s; %s in the last hour\n",
+				p.LastEnd.Local().Format("2006-01-02 15:04:05"), fmtDuration(p.LastEndAfter), p.LastEndReason,
+				restartsText(p.Restarts))
 		}
 	}
 	return nil
@@ -1827,4 +1838,11 @@ func overheadParts(n int) string {
 		return "tunnel 50, VLAN tags 8, MACsec 32"
 	}
 	return "tunnel 50, VLAN tags 8"
+}
+
+func restartsText(n int) string {
+	if n == 1 {
+		return "1 session restart"
+	}
+	return fmt.Sprintf("%d session restarts", n)
 }
