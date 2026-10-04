@@ -25,6 +25,13 @@ func (allOps) Environment() ([]EnvSensor, error) {
 	return []EnvSensor{{Member: 1, Sensor: inventory.Sensor{Class: "Temp", Chip: "coretemp", Label: "Core 0", Value: 40, Status: "OK"}}}, nil
 }
 
+func (allOps) WebManagement() (WebStatus, error) {
+	st := WebStatus{Configured: true, Running: true, Member: 1, Port: 443, VRF: "mgmt", Certificate: "temporary self-signed",
+		Generated: time.Now(), Fingerprint: "AB:CD", Pin: "sha256//x"}
+	st.Upload.Version, st.Upload.Size, st.Upload.User, st.Upload.Time = "1.1", 300<<20, "admin", time.Now()
+	return st, nil
+}
+
 func (allOps) Alarms() ([]Alarm, error) {
 	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil
 }

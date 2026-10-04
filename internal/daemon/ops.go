@@ -38,6 +38,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/diag"
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/webapi"
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
 	"github.com/thxrben/cerium-switchd/pkg/ntp"
 )
@@ -59,8 +60,11 @@ type ops struct {
 	// svc reaches the cer- daemons (reference 1.9).
 	svc     *service
 	updater *updater
-	mclag   *mclagClient
-	maint   *maintCtl
+	// web and webServer are the REST API (nil: not set up, dry run).
+	web       *webSoftware
+	webServer *webapi.Server
+	mclag     *mclagClient
+	maint     *maintCtl
 	// sup starts and watches the cer- daemons (nil: not managed here).
 	sup *supervise.Supervisor
 	// restart ends switchd so that systemd starts it again.
@@ -374,10 +378,25 @@ var powerUnit = map[string]struct{ now, flag string }{
 	"reboot": {"reboot", "-r"}, "halt": {"halt", "-H"}, "power-off": {"poweroff", "-P"},
 }
 
+// updateRunning refuses what would cut into a software update (reference
+// 3.6: one update at a time, and nothing that restarts a member meanwhile).
+func (o *ops) updateRunning(what string) error {
+	if o.updater == nil {
+		return nil
+	}
+	if r := o.updater.running(); r != "" {
+		return fmt.Errorf("%s is refused while %s", what, r)
+	}
+	return nil
+}
+
 func (o *ops) Power(action string, minutes int, user string) error {
 	p, ok := powerUnit[action]
 	if !ok {
 		return fmt.Errorf("unknown action %q", action)
+	}
+	if err := o.updateRunning("system " + action); err != nil {
+		return err
 	}
 	when := "now"
 	if minutes > 0 {
@@ -823,6 +842,9 @@ func (o *ops) RemoveVCMember(id int, user string) error {
 	}
 	if len(n.Members()) <= 1 {
 		return errors.New("the last member cannot be removed")
+	}
+	if err := o.updateRunning("the removal"); err != nil {
+		return err
 	}
 	o.log.Warn("virtual chassis member removal", "facility", "change-log", "member", id, "user", user)
 	// The member drains first (its MC-LAG partners move to the peer); one

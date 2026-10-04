@@ -658,6 +658,12 @@ unpacking (the image is the compressed system itself), so it takes its own size 
   stack's majority) would be lost while it reboots. `force` updates it anyway.
 * Members that already run the version are skipped. The command can be repeated: it continues where an update
   stopped.
+* **One update at a time.** An update (or rollback) does not start while another runs: one started on the master, or
+  any member's own install in progress (writing its slot, rebooting, waiting to be healthy, rolling back), so a new
+  master after a failover cannot start a second one either. A member that does not answer (it may be restarting for
+  an update) stops it too, except for an update of single members (`member <id>`). While an update runs, the bundle
+  it uses cannot be replaced (an upload gets 409), and `request system reboot|halt|power-off` and `request
+  virtual-chassis member remove` are refused, naming the update (a shell's `reboot` still works).
 * **Failure**: a member that is not back and current within 10 minutes stops the update. It is reported, and the
   members not yet updated keep the old version. A member whose new version does not become healthy returns to the
   previous version by itself (below).

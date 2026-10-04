@@ -802,7 +802,7 @@ while it writes. Missing:
 2. **The bundle in use is locked**: an upload or a download that would replace the bundle an update is using is
    refused (409 / CLI error) until the update is done.
 3. `request system reload|reboot|halt`, `request system software rollback`, `request virtual-chassis member remove`
-   and `request system zeroize` are refused while an update runs (they name it); `force` for reboot overrides.
+   and `request system zeroize` are refused while an update runs (they name it); a shell's `reboot` still works.
 4. The update daemon persists "busy" over the reboot it causes (already in its state file) and answers it in status.
 
 ### Order (2026-10-04)

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -16,15 +17,17 @@ import (
 // Source is where a package comes from (reference 3.6).
 type Source struct {
 	Raw  string
-	Kind string // "url", "usb", "file"
+	Kind string // "url", "usb", "file", "upload" (the bundle uploaded through the REST API)
 	URL  *url.URL
 	Path string // usb: path on the stick; file: local path
 }
 
 // ParseSource checks a source: http(s)://, ftp://, sftp://user@host/path,
-// usb:<file> or an absolute local path.
+// usb:<file>, an absolute local path, or "upload".
 func ParseSource(s string) (Source, error) {
 	switch {
+	case s == "upload":
+		return Source{Raw: s, Kind: "upload"}, nil
 	case strings.HasPrefix(s, "usb:"):
 		p := strings.TrimPrefix(strings.TrimPrefix(s, "usb:"), "/")
 		if p == "" || strings.Contains(p, "..") {
@@ -55,7 +58,14 @@ type Fetcher struct {
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
 	// SysRoot is "/sys" (tests: a fake tree); MountDir a scratch directory.
 	SysRoot, MountDir string
+	// MaxSize is the largest bundle that fits (0: no limit); a larger one
+	// fails with ErrTooLarge. TempDir holds companion files ("": /tmp).
+	MaxSize int64
+	TempDir string
 }
+
+// ErrTooLarge is a bundle larger than Fetcher.MaxSize.
+var ErrTooLarge = errors.New("the bundle is larger than the room in memory")
 
 func (f *Fetcher) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if f.Run != nil {
@@ -69,7 +79,7 @@ func (f *Fetcher) run(ctx context.Context, name string, args ...string) ([]byte,
 func (f *Fetcher) Fetch(ctx context.Context, src Source, dst, password string) error {
 	switch src.Kind {
 	case "file":
-		return copyFile(src.Path, dst)
+		return copyFile(src.Path, dst, f.MaxSize)
 	case "usb":
 		return f.fromUSB(ctx, src.Path, dst)
 	}
@@ -79,7 +89,7 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source, dst, password string) e
 // FetchOptional fetches a small companion file (e.g. <package>.sha256);
 // a missing one is not an error (ok false).
 func (f *Fetcher) FetchOptional(ctx context.Context, src Source, suffix string) (string, bool) {
-	tmp, err := hwio.CreateTemp("", "ceros-*"+suffix)
+	tmp, err := hwio.CreateTemp(f.TempDir, "ceros-*"+suffix)
 	if err != nil {
 		return "", false
 	}
@@ -104,6 +114,11 @@ func (f *Fetcher) FetchOptional(ctx context.Context, src Source, suffix string) 
 
 func (f *Fetcher) curl(ctx context.Context, u *url.URL, dst, password string) error {
 	args := []string{"-fsS", "--retry", "2", "--connect-timeout", "15", "-o", dst}
+	if f.MaxSize > 0 {
+		// Refused before the transfer when the server names the size,
+		// else ended the moment it exceeds it.
+		args = append(args, "--max-filesize", strconv.FormatInt(f.MaxSize, 10))
+	}
 	if u.User != nil {
 		user := u.User.Username()
 		if p, ok := u.User.Password(); ok {
@@ -134,6 +149,10 @@ func (f *Fetcher) curl(ctx context.Context, u *url.URL, dst, password string) er
 		name = "ip"
 	}
 	if out, err := f.run(ctx, name, args...); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 63 { // curl: maximum file size exceeded
+			return fmt.Errorf("%w (%d bytes)", ErrTooLarge, f.MaxSize)
+		}
 		return fmt.Errorf("download of %s failed: %s", u.Redacted(), strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -157,7 +176,7 @@ func (f *Fetcher) fromUSB(ctx context.Context, path, dst string) error {
 		return fmt.Errorf("mounting %s: %s", dev, strings.TrimSpace(string(out)))
 	}
 	defer f.run(context.Background(), "umount", dir)
-	return copyFile(filepath.Join(dir, path), dst)
+	return copyFile(filepath.Join(dir, path), dst, f.MaxSize)
 }
 
 // usbDevice returns the first partition (or the whole disk) of the first
@@ -185,12 +204,17 @@ func (f *Fetcher) usbDevice() (string, error) {
 	return "", errors.New("no USB stick found")
 }
 
-func copyFile(src, dst string) error {
+// copyFile copies src to dst; a src larger than max (0: no limit) fails
+// with ErrTooLarge before anything is copied.
+func copyFile(src, dst string, max int64) error {
 	in, err := hwio.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	if fi, err := in.Stat(); err == nil && max > 0 && fi.Size() > max {
+		return fmt.Errorf("%w (%d bytes, the bundle has %d)", ErrTooLarge, max, fi.Size())
+	}
 	out, err := hwio.Create(dst)
 	if err != nil {
 		return err

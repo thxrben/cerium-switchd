@@ -6,6 +6,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/access"
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/webapi"
 	"github.com/thxrben/cerium-switchd/pkg/ntp"
 	"github.com/thxrben/cerium-switchd/pkg/syslog"
 )
@@ -18,6 +19,9 @@ type mgmtCtl struct {
 	member int
 	log    *slog.Logger
 	sshd   *access.SSH
+	// web is the REST API (nil: none; its Software is set once the
+	// updater exists).
+	web *webapi.Server
 	// ctl is the stack control (nil: standalone, always master).
 	ctl *stackCtl
 	// dryRun: services outside switchd are left alone.
@@ -39,6 +43,7 @@ func (m *mgmtCtl) sync(cfg *model.Config) {
 		m.cfg = cfg
 	}
 	cfg = m.cfg
+	webReady := m.web != nil && m.web.Software != nil
 	m.mu.Unlock()
 	if cfg == nil {
 		return
@@ -65,5 +70,8 @@ func (m *mgmtCtl) sync(cfg *model.Config) {
 	}
 	if err := m.sshd.Sync(cfg, master); err != nil {
 		m.log.Error("ssh", "err", err)
+	}
+	if webReady {
+		m.web.Sync(webConfig(cfg, master))
 	}
 }

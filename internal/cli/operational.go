@@ -1412,7 +1412,10 @@ func registerOperational() {
 						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits},
 						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
 						&command{name: "processes", help: "Show switchd and the daemons, their state and restarts", class: commit.ReadOnly, run: (*Shell).showProcesses},
-						&command{name: "alarms", help: "Show the active alarms of every member", class: commit.ReadOnly, run: (*Shell).showAlarms})
+						&command{name: "alarms", help: "Show the active alarms of every member", class: commit.ReadOnly, run: (*Shell).showAlarms},
+						&command{name: "services", help: "Show the management services", class: commit.ReadOnly, sub: []*command{
+							{name: "web-management", help: "Show the REST API: certificate, fingerprint, uploaded bundle", class: commit.ReadOnly, run: (*Shell).showWebManagement},
+						}})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })

@@ -36,7 +36,7 @@ import (
 // (docs/os-image.md §4).
 type updater struct {
 	member  int
-	dir     string // bundles (on the data partition)
+	store   *bundleStore // bundles, in memory only
 	vc      *stack.Manager
 	ctl     *stackCtl // nil: standalone
 	engine  func() *commit.Engine
@@ -50,9 +50,9 @@ type updater struct {
 	run *cli.SoftwareRun // the current or last update started here
 }
 
-// softwareDir keeps received bundles: on the data partition of the image
-// (they are large and can be fetched again).
-const softwareDir = "/var/lib/ceros/software"
+// oldSoftwareDir is where earlier versions kept bundles on the data
+// partition; switchd empties it.
+const oldSoftwareDir = "/var/lib/ceros/software"
 
 // The update's waits are system timeouts (reference 5.1), set from the
 // active configuration (setTimeouts).
@@ -131,6 +131,14 @@ func (u *updater) start(ctx context.Context) {
 		return
 	}
 	u.ctl.node.Handle("sw-status", func(int, json.RawMessage) (any, error) { return u.status(), nil })
+	u.ctl.node.Handle("sw-busy", func(int, json.RawMessage) (any, error) { return u.busy(), nil })
+	u.ctl.node.Handle("sw-keep", func(int, json.RawMessage) (any, error) {
+		files, _ := hwio.Glob(filepath.Join(u.store.dir, "*.bundle"))
+		for _, f := range files {
+			u.store.touch(f)
+		}
+		return nil, nil
+	})
 	u.ctl.node.Handle("sw-install", func(from int, raw json.RawMessage) (any, error) {
 		var r swInstall
 		if err := json.Unmarshal(raw, &r); err != nil {
@@ -154,6 +162,85 @@ func (u *updater) start(ctx context.Context) {
 	}()
 }
 
+// keepStore removes the bundles of earlier versions from the data
+// partition (bundles are kept in memory now) and those in memory that
+// nobody used for an hour.
+func (u *updater) keepStore(ctx context.Context) {
+	if files, _ := hwio.Glob(filepath.Join(oldSoftwareDir, "*")); len(files) > 0 {
+		for _, f := range files {
+			hwio.Remove(f)
+		}
+		hwio.Remove(oldSoftwareDir)
+		u.log.Info("software: bundles removed from the data partition (they are kept in memory only now)", "files", len(files))
+	}
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		busy := u.busy()
+		u.store.sweep(busy)
+		// The members waiting for their turn keep their bundles.
+		if busy && u.ctl != nil {
+			for _, id := range u.members() {
+				if id != u.member {
+					u.ctl.node.Call(id, "sw-keep", nil, 5*time.Second)
+				}
+			}
+		}
+	}
+}
+
+// busy: an update started here runs.
+func (u *updater) busy() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.run != nil && !u.run.Done
+}
+
+// running names an update in progress that concerns this member ("":
+// none): one the master runs, or this member's own install (writing,
+// rebooting, waiting for health). Reboots and the like wait for it.
+func (u *updater) running() string {
+	if u.busy() {
+		return "a software update runs (show system software)"
+	}
+	if st := u.status(); st.updating() {
+		return fmt.Sprintf("member %d is being updated to %s (show system software)", u.member, st.Update.To)
+	}
+	if u.ctl != nil && !u.ctl.node.IsMaster() {
+		if m := u.ctl.node.Master(); m != 0 && m != u.member {
+			var busy bool
+			if raw, err := u.ctl.node.Call(m, "sw-busy", nil, 5*time.Second); err == nil && json.Unmarshal(raw, &busy) == nil && busy {
+				return "a software update runs (show system software)"
+			}
+		}
+	}
+	return ""
+}
+
+// othersUpdating refuses a second update (reference 3.6): any member
+// with an update in progress, or one that does not answer (it may be
+// restarting for one; a targeted update skips those).
+func (u *updater) othersUpdating(req cli.SoftwareRequest) error {
+	for _, id := range u.members() {
+		st, err := u.statusOf(id)
+		if err != nil {
+			if req.Member != 0 && req.Member != id {
+				continue
+			}
+			return fmt.Errorf("member %d does not answer (%v); it may be restarting for an update: try again when it is back, or update single members ('member <id>')", id, err)
+		}
+		if st.updating() {
+			return fmt.Errorf("member %d is being updated to %s (update daemon: %s): one update at a time", id, st.Update.To, st.Daemon)
+		}
+	}
+	return nil
+}
+
 func (u *updater) status() swStatus {
 	st := swStatus{Member: u.member, Version: version.Version, Built: version.Date, Arch: software.Arch(),
 		Packages: map[string]string{}}
@@ -168,7 +255,7 @@ func (u *updater) status() swStatus {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		st.DaemonErr = err.Error()
 	}
-	files, _ := hwio.Glob(filepath.Join(u.dir, "ceros-*-"+software.Arch()+".bundle"))
+	files, _ := hwio.Glob(filepath.Join(u.store.dir, "ceros-*-"+software.Arch()+".bundle"))
 	for _, f := range files {
 		v := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "ceros-"), "-"+software.Arch()+".bundle")
 		st.Packages[v] = f
@@ -176,9 +263,7 @@ func (u *updater) status() swStatus {
 	return st
 }
 
-func (u *updater) pkgPath(v string) string {
-	return filepath.Join(u.dir, "ceros-"+v+"-"+software.Arch()+".bundle")
-}
+func (u *updater) pkgPath(v string) string { return u.store.path(v) }
 
 // verify checks a bundle file completely (signature and image) with the
 // keys this system trusts.
@@ -204,8 +289,8 @@ func (u *updater) receive(nc net.Conn) {
 		return
 	}
 	fail := func(err error) { fmt.Fprintf(nc, "error: %v\n", err) }
-	if err := hwio.MkdirAll(u.dir, 0o700); err != nil {
-		fail(err)
+	if _, err := u.store.prepare(uint64(max(h.Size, 0))); err != nil {
+		fail(fmt.Errorf("member %d: %w", u.member, err))
 		return
 	}
 	tmp := u.pkgPath(h.Version) + ".part"
@@ -214,12 +299,7 @@ func (u *updater) receive(nc net.Conn) {
 		fail(err)
 		return
 	}
-	_, err = io.CopyN(hwio.Writer(f, software.SlotIODeadline()), r, h.Size)
-	if err == nil {
-		// Written to the disk before the rename (which would otherwise
-		// write all of it at once).
-		err = hwio.WriteBack(f, software.SlotIODeadline())
-	}
+	_, err = io.CopyN(f, r, h.Size)
 	f.Close()
 	if err == nil {
 		err = checkSum(tmp, h.SHA256)
@@ -239,7 +319,7 @@ func (u *updater) receive(nc net.Conn) {
 		fail(err)
 		return
 	}
-	u.prune(h.Version)
+	u.store.touch(u.pkgPath(h.Version))
 	fmt.Fprintln(nc, "ok")
 }
 
@@ -263,24 +343,6 @@ func checkSum(path, want string) error {
 	return nil
 }
 
-// prune keeps the newest bundles (the current one and one more).
-func (u *updater) prune(keep string) {
-	files, _ := hwio.Glob(filepath.Join(u.dir, "ceros-*.bundle"))
-	slices.SortFunc(files, func(a, b string) int {
-		ia, _ := hwio.Stat(a)
-		ib, _ := hwio.Stat(b)
-		if ia == nil || ib == nil {
-			return 0
-		}
-		return ib.ModTime().Compare(ia.ModTime())
-	})
-	for i, f := range files {
-		if i >= 2 && f != u.pkgPath(keep) {
-			hwio.Remove(f)
-		}
-	}
-}
-
 // installHere updates this member: drains it (maintenance mode, kept over
 // the reboot) and hands the bundle to the update daemon, which writes the
 // backup slot and reboots; the new version leaves maintenance mode once it
@@ -293,8 +355,9 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 	if r.Rollback {
 		req = updated.Request{Op: "rollback"}
 	} else if _, err := hwio.Stat(req.Bundle); err != nil {
-		return "", fmt.Errorf("member %d does not have the bundle %s", u.member, r.Version)
+		return "", fmt.Errorf("member %d does not have the bundle %s (bundles are kept in memory only: a restarted member needs it again)", u.member, r.Version)
 	}
+	u.store.touch(req.Bundle)
 	var out strings.Builder
 	if m := u.maint(); m != nil && !r.Force {
 		if t := m.transit(); len(t) > 0 {
@@ -358,13 +421,19 @@ func (u *updater) healthy() {
 // Start begins an update (or rollback) and returns at once; progress is in
 // Status.
 func (u *updater) Start(req cli.SoftwareRequest) error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.run != nil && !u.run.Done {
-		return errors.New("an update is running (show system software)")
-	}
 	if u.ctl != nil && !u.ctl.node.IsMaster() {
 		return errors.New("updates run on the master")
+	}
+	if u.busy() {
+		return errors.New("an update is running (show system software)")
+	}
+	if err := u.othersUpdating(req); err != nil {
+		return err
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.run != nil && !u.run.Done { // started meanwhile
+		return errors.New("an update is running (show system software)")
 	}
 	u.run = &cli.SoftwareRun{Request: req, Started: time.Now()}
 	go u.do(req)
@@ -530,18 +599,33 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 	if err != nil {
 		return "", err
 	}
-	if err := hwio.MkdirAll(u.dir, 0o700); err != nil {
-		return "", err
+	tmp := filepath.Join(u.store.dir, "incoming.bundle")
+	if src.Kind == "upload" {
+		if _, err := hwio.Stat(u.pkgPath("upload")); err != nil {
+			return "", errors.New("no bundle was uploaded (PUT /api/v1/software/upload, system services web-management)")
+		}
+		if _, err := u.store.prepare(0, u.pkgPath("upload")); err != nil {
+			return "", err
+		}
+		if err := hwio.Rename(u.pkgPath("upload"), tmp); err != nil {
+			return "", err
+		}
+	} else {
+		room, err := u.store.prepare(0)
+		if err != nil {
+			return "", err
+		}
+		f := &software.Fetcher{VRF: u.mgmtVRF(), MaxSize: int64(room), TempDir: u.store.dir}
+		u.say("fetching %s into memory (room: %s)", src.Raw, mib(room))
+		if err := f.Fetch(ctx, src, tmp, req.Password); err != nil {
+			hwio.Remove(tmp)
+			return "", err
+		}
 	}
-	f := &software.Fetcher{VRF: u.mgmtVRF()}
-	tmp := filepath.Join(u.dir, "incoming.bundle")
 	defer hwio.Remove(tmp)
-	u.say("fetching %s", src.Raw)
-	if err := f.Fetch(ctx, src, tmp, req.Password); err != nil {
-		return "", err
-	}
 	sum := req.SHA256
-	if sum == "" {
+	if sum == "" && src.Kind != "upload" {
+		f := &software.Fetcher{VRF: u.mgmtVRF(), TempDir: u.store.dir}
 		if s, ok := f.FetchOptional(ctx, src, ".sha256"); ok {
 			if fs := strings.Fields(s); len(fs) > 0 {
 				sum = fs[0]
@@ -577,22 +661,17 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 			return "", fmt.Errorf("member %d does not run the cerOS image (its update daemon does not answer)", id)
 		}
 	}
-	// The download is on the disk before the rename: replacing an
-	// existing bundle makes the rename write all of it at once (ext4),
-	// past its deadline on a slow disk.
-	if err := hwio.WriteBackFile(tmp, software.SlotIODeadline()); err != nil {
-		return "", err
-	}
 	if err := hwio.Rename(tmp, u.pkgPath(v)); err != nil {
 		return "", err
 	}
-	u.prune(v)
+	u.store.touch(u.pkgPath(v))
 	// The new version must accept the active configuration.
 	if err := u.checkConfig(v, req.NoValidate); err != nil {
 		return "", err
 	}
 	// Distribute.
-	raw, err := hwio.ReadFile(u.pkgPath(v))
+	// Streamed from the file: the bundle is in memory once.
+	sum, size, err := fileSum(u.pkgPath(v))
 	if err != nil {
 		return "", err
 	}
@@ -604,27 +683,33 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 			continue
 		}
 		u.say("sending the bundle to member %d", id)
-		if err := u.send(id, v, raw); err != nil {
+		if err := u.send(id, v, u.pkgPath(v), sum, size); err != nil {
 			return "", fmt.Errorf("member %d: %v", id, err)
 		}
 	}
 	return v, nil
 }
 
-func (u *updater) send(id int, v string, raw []byte) error {
+func (u *updater) send(id int, v, path, sum string, size int64) error {
 	nc, err := u.vc.Mesh().Dial(id, "software", 10*time.Second)
 	if err != nil {
 		return err
 	}
 	defer nc.Close()
 	nc.SetDeadline(time.Now().Add(transferWait()))
-	h, _ := json.Marshal(map[string]any{"Version": v, "SHA256": software.Sum(raw), "Size": len(raw)})
+	h, _ := json.Marshal(map[string]any{"Version": v, "SHA256": sum, "Size": size})
 	if _, err := nc.Write(append(h, '\n')); err != nil {
 		return err
 	}
-	if _, err := nc.Write(raw); err != nil {
+	f, err := hwio.Open(path)
+	if err != nil {
 		return err
 	}
+	defer f.Close()
+	// The member answers before the bundle when it has no room for it.
+	go func() {
+		io.CopyN(nc, f, size)
+	}()
 	line, err := bufio.NewReader(nc).ReadString('\n')
 	if err != nil {
 		return err
@@ -633,6 +718,21 @@ func (u *updater) send(id int, v string, raw []byte) error {
 		return errors.New(strings.TrimPrefix(line, "error: "))
 	}
 	return nil
+}
+
+// fileSum is a file's SHA-256 and size.
+func fileSum(path string) (string, int64, error) {
+	f, err := hwio.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 // checkConfig has the update daemon run the new image's configuration

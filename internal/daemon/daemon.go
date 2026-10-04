@@ -36,6 +36,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/version"
+	"github.com/thxrben/cerium-switchd/internal/webapi"
 	"github.com/thxrben/cerium-switchd/packaging"
 	"github.com/thxrben/cerium-switchd/pkg/dhcp"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -273,6 +274,13 @@ func Run(ctx context.Context, o Options) error {
 		publish: func(daemon string, v any) {
 			services.setConfig(daemon, v)
 		}}
+	mgmt.web = &webapi.Server{Log: log.With("service", "web-management"),
+		Auth: func(user, pw string) (webapi.User, bool) {
+			mgmt.mu.Lock()
+			cfg := mgmt.cfg
+			mgmt.mu.Unlock()
+			return webAuth(cfg, user, pw)
+		}}
 	applier.isMaster = mgmt.master
 	applier.gatewayMAC = kernel.GatewayMAC
 	applier.stackPort = vc.IsPort
@@ -455,7 +463,7 @@ func Run(ctx context.Context, o Options) error {
 		liveOps.maint = newMaint(o.StateDir, member, vc.Mesh(), node, mclag, liveOps.model, log)
 		maint.Store(liveOps.maint)
 		liveOps.sup = sup
-		upd := &updater{member: member, dir: softwareDir, vc: vc, ctl: ctl, log: log,
+		upd := &updater{member: member, store: newBundleStore(log), vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
 			mgmtVRF: func() string {
 				if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {
@@ -464,7 +472,14 @@ func Run(ctx context.Context, o Options) error {
 				return ""
 			}}
 		liveOps.updater = upd
+		liveOps.web = &webSoftware{u: upd}
+		liveOps.webServer = mgmt.web
+		mgmt.mu.Lock()
+		mgmt.web.Software = liveOps.web
+		mgmt.mu.Unlock()
+		mgmt.sync(nil)
 		upd.start(ctx)
+		go upd.keepStore(ctx)
 		upd.started()
 		// Healthy: the configuration is applied and the stack state is
 		// current; a pending update is done then.
