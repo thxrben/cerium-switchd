@@ -234,3 +234,54 @@ func TestASPathExpressions(t *testing.T) {
 		}
 	}
 }
+
+// cpuInv is an inventory that knows only the checking member's CPU cores.
+type cpuInv struct{ member, cpus int }
+
+func (cpuInv) Ports(int) (map[string]PortInfo, bool) { return nil, false }
+func (i cpuInv) CPUs() (int, int)                    { return i.member, i.cpus }
+
+func TestBFDIntervalCheck(t *testing.T) {
+	conf := routingBase + `
+set protocols ospf area 0 interface 1/0/5.0 bfd-liveness-detection minimum-interval 50
+set protocols ospf area 0 interface irb.10 bfd-liveness-detection minimum-interval 99
+set protocols ospf area 0 interface 1/0/6.0 bfd-liveness-detection minimum-interval 100
+set protocols bgp group up neighbor 10.1.1.2 peer-as 65001
+set protocols bgp group up bfd-liveness-detection minimum-interval 60
+`
+	const msg = "BFD below 100 ms"
+	paths := func(is Issues) []string {
+		var out []string
+		for _, i := range is {
+			if strings.Contains(i.Msg, msg) {
+				if i.Severity != Warning {
+					t.Errorf("%s: severity %v, want a warning", i.Path, i.Severity)
+				}
+				out = append(out, i.Path)
+			}
+		}
+		return out
+	}
+	// Member 1 with 2 cores runs all three fast sessions.
+	_, is := build(t, conf, cpuInv{1, 2})
+	got := strings.Join(paths(is), "\n")
+	for _, want := range []string{"interface 1/0/5.0 bfd", "interface irb.10 bfd", "neighbor 10.1.1.2 bfd"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing warning for %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "1/0/6.0") {
+		t.Errorf("100 ms must not warn:\n%s", got)
+	}
+	// Member 2 does not own 1/0/5 but may become master (irb, BGP).
+	_, is = build(t, conf, cpuInv{2, 2})
+	if got := paths(is); len(got) != 2 || strings.Contains(strings.Join(got, " "), "1/0/5.0") {
+		t.Errorf("member 2 warnings = %v", got)
+	}
+	// Enough cores, or no CPU count: no warning.
+	for _, inv := range []Inventory{cpuInv{1, 4}, cpuInv{1, 0}, nil} {
+		if _, is := build(t, conf, inv); len(paths(is)) != 0 {
+			t.Errorf("%v: unexpected warnings %v", inv, paths(is))
+		}
+	}
+}

@@ -84,6 +84,12 @@ type Inventory interface {
 	Ports(member int) (ports map[string]PortInfo, known bool)
 }
 
+// CPUCounter is optionally implemented by an Inventory: the member the
+// check runs on and its CPU cores (for the BFD interval check, 5.12).
+type CPUCounter interface {
+	CPUs() (member, cpus int)
+}
+
 // portsOf returns the ports of a member; known is false if the member is
 // unknown.
 func (b *builder) portsOf(member int) (map[string]PortInfo, bool) {
@@ -111,6 +117,7 @@ func (b *builder) validate() {
 	b.validateInterfaces() // attaches bundle member ports, needed below
 	b.checkBundleSpeeds()
 	b.validateRouting()
+	b.checkBFD()
 	b.validateMembers()
 	b.validateLLDP()
 	b.validateMTU()

@@ -264,9 +264,9 @@ Last updated: 2026-10-03 (evening).
    with a port of card >= 16 or port >= 64 in an LACP bundle fails (16 bits cannot number every valid port; static
    bundles take any port), and cer-lacpd never gets an unnumbered port. Wireshark (decode Raft msgpack, and the
    reliable-stream messages OPEN2..PROBE2 the dissector does not know yet): postponed by the user 2026-10-04.
-2. **BFD**: interval check at commit (W below 100 ms on a member with fewer than 4 CPUs; E below 50 ms is the
-   schema's range already): an implementation existed in this session (model CPUCounter, kernelInventory.CPUs,
-   checkBFD) and was taken out to keep the order; redo it. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
+2. **BFD**: interval check at commit: done 2026-10-04 (W below 100 ms on a member with fewer than 4 CPUs; each
+   member checks the sessions it runs or, as a possible master, may run: routed ports by owner, irb/MC-LAG/BGP on
+   every non-witness member; model.CPUCounter, kernelInventory.CPUs, checkBFD; E below 50 ms is the schema's range). BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
    for routed interfaces of other members.
 3. **ECMP**: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8).
 4. **LACP with the UniFi (physw4)**: investigated 2026-10-03. cerOS behaves correctly: tcpdump shows well-formed

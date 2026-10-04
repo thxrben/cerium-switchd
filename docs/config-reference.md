@@ -1938,7 +1938,9 @@ of the protocol's hold time (OSPF 40 s, BGP 90 s by default). The statement goes
   normal start (BGP waits for BFD to be up before it connects again).
 * BFD runs with real-time scheduling priority on the member that owns the interface (5.8, virtual chassis).
 * Values below 100 ms can cause false detections on small ARM boards (W at commit for `minimum-interval` < 100 on a
-  member with fewer than 4 CPU cores).
+  member with fewer than 4 CPU cores that runs the session: the member of a routed port, or, for irb interfaces,
+  MC-LAG bundles and BGP, every member that can become master; each member checks itself, members that are not
+  reachable at commit are not checked).
 * `show bfd session [extensive]`: per session the neighbour, interface, state, the negotiated interval and
   multiplier, the detection time, the client (OSPF, BGP), uptime and transitions; `extensive` adds counters and the
   local and remote discriminators.

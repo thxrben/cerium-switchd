@@ -784,3 +784,76 @@ func MatchASPath(re *regexp.Regexp, path []uint32) bool {
 	b.WriteString(" ")
 	return re.MatchString(b.String())
 }
+
+// Below this BFD interval a member needs bfdMinCPUs cores, or busy CPUs can
+// delay BFD packets into false detections (reference 5.12).
+const (
+	bfdFastMs  = 100
+	bfdMinCPUs = 4
+)
+
+// checkBFD warns when this member (the inventory's) has too few CPU cores
+// for a fast BFD session it runs: sessions on its routed ports, and, as a
+// possible master, sessions over irb interfaces, MC-LAG bundles and BGP.
+func (b *builder) checkBFD() {
+	cc, ok := b.inv.(CPUCounter)
+	if !ok {
+		return
+	}
+	self, cpus := cc.CPUs()
+	if cpus <= 0 || cpus >= bfdMinCPUs {
+		return
+	}
+	c := b.cfg
+	mayMaster := c.Members[self] == nil || !c.Members[self].Witness
+	// runsHere: the member that owns a unit's interface runs its sessions;
+	// the master runs those of interfaces without a single owner.
+	runsHere := func(unit string) bool {
+		name, _, _ := strings.Cut(unit, ".")
+		if p, ok := schema.ParsePhysical(name); ok {
+			return p.Member == self
+		}
+		if i := c.Interfaces[name]; i != nil && i.AE && len(i.MemberIDs) == 1 {
+			return i.MemberIDs[0] == self
+		}
+		return mayMaster
+	}
+	warn := func(path string, bfd *NeighborBFD) {
+		if bfd != nil && bfd.IntervalMs < bfdFastMs {
+			b.warnf(path+" bfd-liveness-detection minimum-interval", "member %d has %d CPU cores: BFD below %d ms can detect false failures there (use %d ms or more)",
+				self, cpus, bfdFastMs, bfdFastMs)
+		}
+	}
+	for _, r := range c.AllRouting() {
+		base := "protocols"
+		if r.Instance != "" {
+			base = "routing-instances " + r.Instance + " protocols"
+		}
+		for _, o := range []*OSPF{r.OSPF, r.OSPF3} {
+			if o == nil || o.Disabled {
+				continue
+			}
+			name := "ospf"
+			if o.V3 {
+				name = "ospf3"
+			}
+			for _, a := range sortedAddrs(o.Areas) {
+				area := o.Areas[a]
+				for _, u := range sortedKeys(area.Interfaces) {
+					if oi := area.Interfaces[u]; !oi.Passive && runsHere(u) {
+						warn(fmt.Sprintf("%s %s area %s interface %s", base, name, a, u), oi.BFD)
+					}
+				}
+			}
+		}
+		if r.BGP != nil && !r.BGP.Disabled && mayMaster {
+			for _, g := range sortedKeys(r.BGP.Groups) {
+				for _, a := range sortedAddrs(r.BGP.Groups[g].Neighbors) {
+					if nb := r.BGP.Groups[g].Neighbors[a]; !nb.Disabled {
+						warn(fmt.Sprintf("%s bgp group %s neighbor %s", base, g, a), nb.BFD)
+					}
+				}
+			}
+		}
+	}
+}
