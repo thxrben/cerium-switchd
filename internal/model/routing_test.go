@@ -311,6 +311,7 @@ set protocols bgp group ext neighbor 10.1.1.3 peer-as 65003
 		{"set protocols bgp group ext peer-as 65009", "neighbor 10.1.1.2: this change resets the session (peer-as)"},
 		{"set routing-options autonomous-system 65010", "resets every BGP session"},
 		{"set protocols bgp group ext neighbor 10.1.1.9", ""}, // a new neighbour
+		{"set system memory allocation arp slots 4", "the memory slots change at the next 'request system reload'"},
 	}
 	for _, c := range cases {
 		cand, is := build(t, base+c.change+"\n", nil)

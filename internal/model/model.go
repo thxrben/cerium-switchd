@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
@@ -70,6 +71,8 @@ type System struct {
 	Offload      OffloadPolicy
 	Timeouts     Timeouts
 	Archival     *Archival // nil: none
+	// Memory is system memory (no allocation: dynamic memory).
+	Memory memslots.Config
 }
 
 type NTPServer struct {
@@ -560,6 +563,30 @@ func (b *builder) build() {
 		WatchdogInterval:  atoi(off.Leaf("watchdog", "interval"), 5),
 		WatchdogThreshold: atoi(off.Leaf("watchdog", "threshold"), 100),
 		WatchdogAlarmOnly: off.Has("watchdog", "alarm-only"),
+	}
+	mem := sys.Get("memory")
+	s.Memory = memslots.Config{UpdateSize: memslots.DefaultUpdateSize, MgmtReserve: memslots.DefaultMgmtReserve}
+	if v, err := schema.ParseSize(mem.Leaf("update-size")); err == nil {
+		s.Memory.UpdateSize = v
+	}
+	if v, err := schema.ParseSize(mem.Leaf("management-reserve")); err == nil {
+		s.Memory.MgmtReserve = v
+	}
+	total := 0
+	for _, e := range mem.Entries("allocation") {
+		a := memslots.Amount{Percent: atoi(e.Leaf("percent"), 0), Slots: atoi(e.Leaf("slots"), 0)}
+		if a.Percent == 0 && a.Slots == 0 {
+			b.errorf("system memory allocation "+e.Key, "give percent or slots")
+			continue
+		}
+		total += a.Percent
+		if s.Memory.Alloc == nil {
+			s.Memory.Alloc = map[memslots.Purpose]memslots.Amount{}
+		}
+		s.Memory.Alloc[memslots.Purpose(e.Key)] = a
+	}
+	if total > 100 {
+		b.errorf("system memory allocation", "the percentages add up to %d %%", total)
 	}
 	if ar := sys.Get("archival", "configuration"); ar != nil {
 		a := &Archival{OnCommit: ar.Has("transfer-on-commit"), Interval: atoi(ar.Leaf("transfer-interval"), 0)}

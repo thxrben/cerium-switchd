@@ -110,6 +110,7 @@ func TestInvalidConfigs(t *testing.T) {
 		{"remote vni unmapped", "set switch-options vxlan remote-vtep 10.9.9.9 vni 77", "vni 77 is not mapped"},
 		{"snooping unknown port", "set protocols igmp-snooping interface 1/0/9 immediate-leave", "1/0/9 is not configured"},
 		{"unknown ae", "set interfaces 1/0/5 ether-options 802.3ad ae9", "ae9 is not configured"},
+		{"memory percent over 100", "set system memory allocation bgp-ipv4 percent 70\nset system memory allocation mac percent 40", "add up to 110 %"},
 		{"web certificate without key", "set system services web-management certificate /etc/c.pem", "certificate and key must be given together"},
 		{"member with family", "set interfaces 1/0/1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},

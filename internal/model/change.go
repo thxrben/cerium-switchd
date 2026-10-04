@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -15,6 +16,10 @@ func ChangeWarnings(active, cand *Config) Issues {
 		return nil
 	}
 	var out Issues
+	if !reflect.DeepEqual(active.System.Memory, cand.System.Memory) {
+		out = append(out, Issue{Severity: Warning, Path: "system memory",
+			Msg: "the memory slots change at the next 'request system reload' (or reboot), not now"})
+	}
 	old := map[string]*Routing{}
 	for _, r := range active.AllRouting() {
 		old[r.Instance] = r
