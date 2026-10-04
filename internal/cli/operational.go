@@ -1028,8 +1028,9 @@ func dash(s string) string {
 	return s
 }
 
-// showRoute implements "show route [instance <name>]".
-func (sh *Shell) showRoute(c *call) error {
+// showKernelRoutes is "show route [instance <name>]" from the kernel (an
+// Ops without cer-ribd).
+func (sh *Shell) showKernelRoutes(c *call) error {
 	instance := ""
 	switch {
 	case len(c.args) == 0:
@@ -1064,20 +1065,6 @@ func (sh *Shell) showRoute(c *call) error {
 		fmt.Fprintf(c.out, "%-28s %-8s %-7d %s\n", r.Dest, r.Proto, r.Metric, r.Via)
 	}
 	return nil
-}
-
-func completeRoute(sh *Shell, args []config.Token, partial string) []Completion {
-	switch len(args) {
-	case 0:
-		return filter([]Completion{enter, {Text: "instance", Help: "Routing instance"}}, partial)
-	case 1:
-		var out []Completion
-		for _, e := range sh.env.Engine.Active().Root.Entries("routing-instances") {
-			out = append(out, Completion{Text: e.Key, Help: "Routing instance"})
-		}
-		return filter(out, partial)
-	}
-	return []Completion{enter}
 }
 
 func (sh *Shell) showARP(c *call) error {
@@ -1373,7 +1360,7 @@ func registerOperational() {
 					{name: "vc-port", help: "Show the stacking ports and their neighbours", class: commit.ReadOnly, run: (*Shell).showVCPorts},
 					{name: "mtu", help: "Show the frame sizes the stack tunnels carry", class: commit.ReadOnly, run: (*Shell).showStackMTU},
 				}},
-				&command{name: "route", help: "Show a routing table", class: commit.ReadOnly, run: (*Shell).showRoute, complete: completeRoute},
+				&command{name: "route", help: "Show the routing tables", class: commit.ReadOnly, run: (*Shell).showRoute, complete: completeRoute, perMember: true},
 				&command{name: "arp", help: "Show the IPv4 neighbour (ARP) table", class: commit.ReadOnly, run: (*Shell).showARP,
 					complete: words(Completion{Text: "no-resolve", Help: "Do not resolve host names"})},
 				&command{name: "ipv6", help: "Show IPv6 information", class: commit.ReadOnly, sub: []*command{

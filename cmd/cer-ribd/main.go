@@ -51,6 +51,9 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return s.Lookup(q), nil
 	})
+	k.Endpoint.Handle(svc.MethodRouteSummary, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
+		return s.RIB.Summaries(), nil
+	})
 	k.Endpoint.Handle(svc.MethodStatus, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
 		return s.Lookup(rib.Query{Active: true}), nil
 	})

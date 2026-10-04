@@ -103,8 +103,8 @@ type Route struct {
 	// protocol compares itself (BGP best path: the protocol sets 0 for its
 	// best path, higher for the others).
 	Rank int
-	// Attrs are protocol details for "show route detail" (opaque here).
-	Attrs any
+	// Attrs are protocol details for "show route detail" (nil: none).
+	Attrs *Attrs `json:",omitempty"`
 	// Since is when the route was learned (set by Set when zero).
 	Since time.Time
 	// Source distinguishes several routes of one protocol for a prefix
@@ -112,6 +112,24 @@ type Route struct {
 	Source string
 	// Stale: kept during a graceful restart, not refreshed yet.
 	Stale bool
+}
+
+// Attrs are a route's protocol details ("show route detail"); the RIB
+// does not look at them.
+type Attrs struct {
+	// OSPF: the area, the path type (intra, inter, ext1, ext2) and the tag.
+	Area     string `json:"area,omitempty"`
+	PathType string `json:"path_type,omitempty"`
+	Tag      uint32 `json:"tag,omitempty"`
+	// BGP.
+	Peer           string   `json:"peer,omitempty"`
+	PeerAS         uint32   `json:"peer_as,omitempty"`
+	ASPath         string   `json:"as_path,omitempty"` // as shown: "65001 65002 I"
+	LocalPref      *uint32  `json:"local_pref,omitempty"`
+	Communities    []string `json:"communities,omitempty"`
+	Originator     string   `json:"originator,omitempty"`
+	ClusterList    []string `json:"cluster_list,omitempty"`
+	InactiveReason string   `json:"inactive_reason,omitempty"` // the protocol's own reason (BGP best path)
 }
 
 // Table names a routing table: an instance and a family.

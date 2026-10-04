@@ -492,7 +492,8 @@ func (in *instance) push(force bool) {
 		if r.Direct {
 			continue
 		}
-		rr := rib.Route{Prefix: r.Prefix, Protocol: in.protocol(), Preference: rib.PrefOSPF, Metric: r.Cost, Attrs: r.Type.String()}
+		rr := rib.Route{Prefix: r.Prefix, Protocol: in.protocol(), Preference: rib.PrefOSPF, Metric: r.Cost,
+			Attrs: &rib.Attrs{Area: r.Area.String(), PathType: r.Type.String(), Tag: r.Tag}}
 		if r.Type >= ospf.External1 {
 			rr.Preference = rib.PrefOSPFExternal
 		}

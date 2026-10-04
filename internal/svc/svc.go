@@ -154,8 +154,10 @@ const (
 )
 
 // cer-ribd's calls: MethodRoutesSet (ribd.SetRoutes, from the routing
-// protocols) and MethodRoutes (rib.Query -> []rib.Entry, show route).
+// protocols), MethodRoutes (rib.Query -> []rib.Entry, show route) and
+// MethodRouteSummary ([]rib.Summary, show route summary).
 const (
-	MethodRoutesSet = "routes.set"
-	MethodRoutes    = "routes"
+	MethodRoutesSet    = "routes.set"
+	MethodRoutes       = "routes"
+	MethodRouteSummary = "routes.summary"
 )

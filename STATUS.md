@@ -273,8 +273,7 @@ Last updated: 2026-10-03 (evening).
    leg), else in the relaying member's (ospf-bfd-set, whole list, every 10 s; answered with the states). Up -> down
    takes the neighbour down at once (pkg/ospf NeighborFailed); a session never up changes nothing. Relayed states go
    to the master in order with a count of failures (a lost report is repaired). Open: lab run, interop with FRR's
-   bfdd; BGP's BFD client comes with cer-bgpd. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
-   for routed interfaces of other members.
+   bfdd; BGP's BFD client comes with cer-bgpd.
 3. **ECMP**: done 2026-10-04: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8)
    on every L3 sync (only written when different; skipped without IPv6); checked by the lab's TestRouting (not run
    yet). The first sync after the update re-hashes existing multipath flows once (no drops; a flow may move).
@@ -302,6 +301,17 @@ Last updated: 2026-10-03 (evening).
 9. **Proposals waiting for the user's decision**: SFTP uploads on the CLI SSH server (off by default, chroot
    /var/tmp, super-user only; today sshd has no sftp subsystem and scp lands in the CLI); a diagnose hint (and
    `show system software` line) when the system disk is a USB stick, USB 2.0 especially.
+
+## Phase 9b: BGP and the full `show route` (started 2026-10-04)
+- **`show route` in full** (reference 5.14): done 2026-10-04, unit-tested. From cer-ribd's RIB (every route, best
+  first) instead of the kernel: Junos layout per table (`inet.0: n destinations, m routes (...)`), `*` active, age,
+  metric/tag/localpref, AS path, next hops (`>`), Local/Discard; `terse`, `detail`/`extensive` (state, inactive
+  reason, OSPF area/path type/tag, BGP attributes), `summary` (cer-ribd routes.summary); filters `<address>`
+  (longest match), `<prefix> [exact|longer]`, `protocol`, `next-hop`, `active-path`, `table`, `instance <n>|all`;
+  `member <id>`/`all-members` run it on that member (its replicated RIB). Typed route attributes (rib.Attrs);
+  OSPF fills area, path type and tag. Open: `hidden` (needs BGP import rejects), `receive-protocol`/
+  `advertising-protocol bgp` (with cer-bgpd), marking routes that differ from the kernel.
+- **cer-bgpd** (GoBGP v3 embedded, reference 5.14): next.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

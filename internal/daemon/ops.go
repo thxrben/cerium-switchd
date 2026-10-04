@@ -26,6 +26,7 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
 	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/thxrben/cerium-switchd/pkg/ospf"
+	"github.com/thxrben/cerium-switchd/pkg/rib"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
@@ -1000,6 +1001,34 @@ func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.O
 		return nil, nil // not configured
 	}
 	return st, err
+}
+
+// The optional CLI interfaces ops implements.
+var (
+	_ cli.RIB  = (*ops)(nil)
+	_ cli.OSPF = (*ops)(nil)
+)
+
+// RIB is show route: cer-ribd's routes on this member.
+func (o *ops) RIB(q rib.Query) ([]rib.Entry, error) {
+	if o.svc == nil {
+		return nil, errors.New("routing information is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out []rib.Entry
+	return out, o.svc.call(ctx, "cer-ribd", svc.MethodRoutes, q, &out)
+}
+
+// RIBSummary is show route summary.
+func (o *ops) RIBSummary() ([]rib.Summary, error) {
+	if o.svc == nil {
+		return nil, errors.New("routing information is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out []rib.Summary
+	return out, o.svc.call(ctx, "cer-ribd", svc.MethodRouteSummary, nil, &out)
 }
 
 // ClearOSPF is clear ospf|ospf3 neighbor.
