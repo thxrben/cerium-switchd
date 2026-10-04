@@ -2308,9 +2308,9 @@ security {
     macsec {
         connectivity-association <ca> {
             security-mode static-cak;
-            cipher-suite gcm-aes-128 | gcm-aes-256 | gcm-aes-xpn-128 | gcm-aes-xpn-256;
+            cipher-suite gcm-aes-128 | gcm-aes-256;
             pre-shared-key { ckn <hex>; cak <hex>; }
-            mka { key-server-priority <0-255>; transmit-interval <ms>; }
+            mka { key-server-priority <0-255>; }
             replay-protect { replay-window-size <packets>; }
         }
         interfaces <interface> { connectivity-association <ca>; }
@@ -2319,13 +2319,12 @@ security {
 ```
 * `security-mode static-cak` (the only mode, and the default): the connectivity association key (CAK) and its name
   (CKN) are configured on both ends; MKA derives and renews the session keys from them.
-* `cipher-suite`: default `gcm-aes-xpn-256` (Junos: `gcm-aes-128`). The XPN suites have 64-bit packet numbers; with
-  the others MKA renews the key before the 32-bit packet number runs out. E: an XPN suite where the peer cannot do it
-  is not detectable in advance; MKA then does not secure the link (shown as such).
+* `cipher-suite`: default `gcm-aes-128` (as on Junos). MKA renews the session key before its 32-bit packet number
+  runs out. (The XPN suites with 64-bit packet numbers are used on the stacking links; the MKA implementation does not
+  offer them yet.)
 * `pre-shared-key`: `ckn` 2..64 hex digits (an even number), `cak` 32 hex digits (128-bit suites) or 64 (256-bit
   suites; E otherwise). The CAK is a secret like the other keys of the configuration.
-* `mka key-server-priority` (default 16: lower is preferred), `transmit-interval` (MKA hellos, default 2000 ms,
-  500..6000).
+* `mka key-server-priority` (default 16: lower is preferred). MKA hellos are sent every 2 s.
 * `replay-protect replay-window-size` (default 0: frames must arrive in order; up to 65535).
 * `interfaces <interface>`: a physical port of any member (a switch port, a routed port or a port with units). The
   port's traffic is carried by its MACsec device: **nothing passes until MKA has secured the link** (must-secure),
@@ -3110,13 +3109,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `security macsec` | container |  |  | MACsec (IEEE 802.1AE) on ports, keys by MKA |
 | `security macsec connectivity-association <name>` | list | &lt;name&gt; |  | A connectivity association (CAK and settings) |
 | `security macsec connectivity-association <name> security-mode` | leaf | static-cak | static-cak | How the keys are agreed |
-| `security macsec connectivity-association <name> cipher-suite` | leaf | gcm-aes-128 \\| gcm-aes-256 \\| gcm-aes-xpn-128 \\| gcm-aes-xpn-256 | gcm-aes-xpn-256 | Encryption |
+| `security macsec connectivity-association <name> cipher-suite` | leaf | gcm-aes-128 \\| gcm-aes-256 | gcm-aes-128 | Encryption |
 | `security macsec connectivity-association <name> pre-shared-key` | container |  |  | The connectivity association key and its name |
 | `security macsec connectivity-association <name> pre-shared-key ckn` | leaf | &lt;hex&gt; |  | Key name (hex) |
 | `security macsec connectivity-association <name> pre-shared-key cak` | leaf | &lt;hex&gt; |  | Key (hex: 32 digits for 128-bit, 64 for 256-bit suites) |
 | `security macsec connectivity-association <name> mka` | container |  |  | MACsec Key Agreement |
 | `security macsec connectivity-association <name> mka key-server-priority` | leaf | &lt;priority&gt; 0..255 | 16 | Key server priority (lower is preferred) |
-| `security macsec connectivity-association <name> mka transmit-interval` | leaf | &lt;ms&gt; 500..6000 | 2000 | MKA hello interval |
 | `security macsec connectivity-association <name> replay-protect` | container |  |  | Replay protection |
 | `security macsec connectivity-association <name> replay-protect replay-window-size` | leaf | &lt;packets&gt; 0..65535 | 0 | Frames that may arrive out of order |
 | `security macsec interfaces <interface-name>` | list | &lt;interface-name&gt; |  | Ports secured with MACsec |

@@ -22,10 +22,9 @@ type MACsec struct {
 // MACsecCA is a connectivity association.
 type MACsecCA struct {
 	Name              string
-	Cipher            string // gcm-aes-128, gcm-aes-256, gcm-aes-xpn-128, gcm-aes-xpn-256
+	Cipher            string // gcm-aes-128, gcm-aes-256
 	CKN, CAK          string // hex
 	KeyServerPriority int
-	TransmitMs        int
 	ReplayWindow      int
 }
 
@@ -55,10 +54,10 @@ func (b *builder) buildMACsec() {
 		Ports: map[string]string{}}
 	m := r.Get("security", "macsec")
 	for _, e := range m.Entries("connectivity-association") {
-		ca := &MACsecCA{Name: e.Key, Cipher: orDefault(e.Leaf("cipher-suite"), "gcm-aes-xpn-256"),
+		ca := &MACsecCA{Name: e.Key, Cipher: orDefault(e.Leaf("cipher-suite"), "gcm-aes-128"),
 			CKN: strings.ToLower(e.Leaf("pre-shared-key", "ckn")), CAK: strings.ToLower(e.Leaf("pre-shared-key", "cak")),
-			KeyServerPriority: atoi(e.Leaf("mka", "key-server-priority"), 16), TransmitMs: atoi(e.Leaf("mka", "transmit-interval"), 2000),
-			ReplayWindow: atoi(e.Leaf("replay-protect", "replay-window-size"), 0)}
+			KeyServerPriority: atoi(e.Leaf("mka", "key-server-priority"), 16),
+			ReplayWindow:      atoi(e.Leaf("replay-protect", "replay-window-size"), 0)}
 		c.MACsec.CAs[e.Key] = ca
 		at := "security macsec connectivity-association " + e.Key
 		switch {
