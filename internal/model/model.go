@@ -5,6 +5,7 @@ package model
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -68,6 +69,7 @@ type System struct {
 	ConsoleLogin bool
 	Offload      OffloadPolicy
 	Timeouts     Timeouts
+	Archival     *Archival // nil: none
 }
 
 type NTPServer struct {
@@ -117,6 +119,19 @@ type Console struct {
 	Device   string
 	Speed    int
 	Disabled bool
+}
+
+// Archival is system archival configuration (reference 5.1).
+type Archival struct {
+	OnCommit bool
+	Interval int // minutes (0: none)
+	Sites    []ArchiveSite
+}
+
+// ArchiveSite is one place for the copies.
+type ArchiveSite struct {
+	URL      string
+	Password string
 }
 
 // Timeouts are system timeouts (reference 5.1): how long cerOS waits for
@@ -534,6 +549,19 @@ func (b *builder) build() {
 		WatchdogThreshold: atoi(off.Leaf("watchdog", "threshold"), 100),
 		WatchdogAlarmOnly: off.Has("watchdog", "alarm-only"),
 	}
+	if ar := sys.Get("archival", "configuration"); ar != nil {
+		a := &Archival{OnCommit: ar.Has("transfer-on-commit"), Interval: atoi(ar.Leaf("transfer-interval"), 0)}
+		for _, e := range ar.Entries("archive-sites") {
+			a.Sites = append(a.Sites, ArchiveSite{URL: e.Key, Password: e.Leaf("password")})
+			if !ArchiveURLOK(e.Key) {
+				b.errorf("system archival configuration archive-sites "+e.Key, "unsupported site %q (expecting ftp://, sftp://, scp://, http:// or https:// with a host)", e.Key)
+			}
+		}
+		if !a.OnCommit && a.Interval == 0 {
+			b.errorf("system archival configuration", "set transfer-on-commit or transfer-interval")
+		}
+		s.Archival = a
+	}
 	to := sys.Get("timeouts")
 	sec := func(name string, def time.Duration) time.Duration {
 		return time.Duration(atoi(to.Leaf(name), int(def/time.Second))) * time.Second
@@ -866,4 +894,17 @@ func (b *builder) buildSnooping(n *config.Node, path string, version int) *Snoop
 		s.Ports[e.Key] = SnoopPort{ImmediateLeave: e.Has("immediate-leave"), Router: e.Has("multicast-router-interface")}
 	}
 	return s
+}
+
+// ArchiveURLOK reports whether an archive site is a supported URL.
+func ArchiveURLOK(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "ftp", "sftp", "scp", "http", "https":
+		return true
+	}
+	return false
 }

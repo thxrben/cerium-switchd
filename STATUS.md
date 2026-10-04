@@ -301,6 +301,11 @@ Last updated: 2026-10-03 (evening).
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
 9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
    USB system disk.
+16. **Phase 11: configuration archival** (done 2026-10-04): `system archival configuration { transfer-on-commit;
+   transfer-interval; archive-sites <url> { password } }`; the master uploads the gzipped curly-brace configuration
+   with curl through the management instance (ftp, sftp, scp, http(s) PUT), sites in order; failure = Minor
+   alarm, retried every 15 min, cleared on success. Unit-tested with a fake curl; NOT tried against a real server.
+   Open in Phase 11: USB storage, web UI (last), docs.
 15. **Phase 11: `show chassis environment`** (done 2026-10-04): hwmon sensors (temperatures, fans, voltages, power)
    with OK/Warning/Critical from the sensors' max/crit/min; stack-wide; switchd checks every 30 s and raises a Minor
    (Warning) or Major (Critical, a stopped fan) alarm, cleared when back. No fan control (left to the firmware; a

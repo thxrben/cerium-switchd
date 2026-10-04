@@ -424,6 +424,12 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return "switch"
 	}
+	// Configuration archival (reference 5.1), from the master.
+	if !o.DryRun {
+		arch := &archiver{active: func() (*config.Tree, uint64) { return engine.Active(), engine.ActiveSeq() },
+			isMaster: mgmt.master, hostName: hostName, alarms: services.alarms, log: log, run: runCommand, now: time.Now}
+		go arch.loop(ctx)
+	}
 	localPorts := func() []string {
 		var out []string
 		for _, p := range names.Ports() {

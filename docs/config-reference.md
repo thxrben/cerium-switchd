@@ -953,6 +953,19 @@ Hardware acceleration policy (see also `interfaces <if> offload disable`).
 * At startup, switchd also tunes NICs to avoid drops: RX/TX rings at their maximum and RSS across all queues. Pause frames are left
   at the driver default unless `ether-options flow-control` is set.
 
+#### `system archival configuration { transfer-on-commit; transfer-interval <minutes>; archive-sites { <url> { password <pw>; } } }`
+Copies of the active configuration on a server, as in Junos. The master sends them through the management instance
+(1.8); a member that becomes master takes over.
+* `transfer-on-commit`: after every commit (also a rollback or a confirmed commit's expiry).
+* `transfer-interval <15..2880>`: every n minutes (with or without `transfer-on-commit`).
+* `archive-sites <url>`: `ftp://host/dir/`, `sftp://user@host/dir/`, `scp://user@host/dir/`, `http(s)://host/dir/`
+  (HTTP PUT). Several sites are tried in order until one accepts the file. `password` for the login (sftp/scp
+  without a password use root's SSH key). The file is `<host-name>_ceros.conf.gz_<YYYYMMDD>_<HHMMSS>` (UTC),
+  the configuration in the curly-brace format, gzip-compressed.
+* A transfer that fails on every site raises a Minor alarm (`show system alarms`), cleared by the next success; it
+  is tried again at the next commit or interval (at least every 15 minutes while it fails).
+* E: an unsupported URL scheme; E: neither `transfer-on-commit` nor `transfer-interval`.
+
 #### `system timeouts { disk-operation <s>; kernel-call <s>; slot-write <s>; software-transfer <s>; software-install <s>; member-update <s>; health-check <s>; config-check <s>; }`
 How long cerOS waits before it treats a disk, the kernel or a software update step as failed (a cerOS extension; Junos
 has no equivalent). The defaults suit SSDs and eMMC; a switch that boots from a slow disk (a USB 2.0 stick, an SD card)
@@ -2394,6 +2407,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system offload watchdog interval` | leaf | &lt;seconds&gt; 1..300 | 5 | Seconds between counter checks |
 | `system offload watchdog threshold` | leaf | &lt;count&gt; 1..1000000 | 100 | Drops/errors per interval that trigger a software fallback |
 | `system offload watchdog alarm-only` | flag |  |  | Only raise alarms, never change offload settings |
+| `system archival` | container |  |  | Copies of the configuration on servers |
+| `system archival configuration` | container |  |  | Configuration archival |
+| `system archival configuration transfer-on-commit` | flag |  |  | Send a copy after every commit |
+| `system archival configuration transfer-interval` | leaf | &lt;minutes&gt; 15..2880 |  | Send a copy every n minutes |
+| `system archival configuration archive-sites <url>` | list | &lt;url&gt; |  | Where the copies go (tried in order) |
+| `system archival configuration archive-sites <url> password` | leaf | &lt;password&gt; |  | Login password |
 | `system timeouts` | container |  |  | How long cerOS waits for disks, the kernel and update steps |
 | `system timeouts disk-operation` | leaf | &lt;seconds&gt; 1..600 | 10 | One file operation on a disk |
 | `system timeouts kernel-call` | leaf | &lt;seconds&gt; 1..120 | 5 | One netlink, ioctl or sysfs call |
