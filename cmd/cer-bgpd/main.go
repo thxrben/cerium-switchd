@@ -46,6 +46,37 @@ func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := bgpd.New(bgpd.LinuxNet{}, rc, k.Log)
+	d.Member, d.StackCall = k.Member, k.StackCall
+	// Sessions to routed ports of other members (reference 5.8).
+	k.HandleStack(bgpd.StackRelayOpen, func(_ context.Context, from int, raw json.RawMessage) (any, error) {
+		var o bgpd.RelayOpen
+		if err := json.Unmarshal(raw, &o); err != nil {
+			return nil, err
+		}
+		return nil, d.RelayOpened(from, o)
+	})
+	k.HandleStack(bgpd.StackRelayDial, func(ctx context.Context, from int, raw json.RawMessage) (any, error) {
+		var q bgpd.RelayDial
+		if err := json.Unmarshal(raw, &q); err != nil {
+			return nil, err
+		}
+		return d.RelayDialed(ctx, from, q)
+	})
+	k.HandleStack(bgpd.StackRelayData, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var m bgpd.RelayData
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return nil, d.RelayedData(m)
+	})
+	k.HandleStack(bgpd.StackRelayClose, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var m bgpd.RelayClose
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		d.RelayedClose(m)
+		return nil, nil
+	})
 	// BFD for the neighbours (cer-bfdd runs while BFD is configured; the
 	// sessions are set again whenever it (re)starts).
 	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
@@ -95,7 +126,7 @@ func setup(k *daemonkit.Kit) error {
 	})
 	var lastReachable []int
 	k.OnRole(func(r svc.Role) {
-		d.SetMaster(r.Master)
+		d.SetRole(r.Master, r.MasterID)
 		if r.Master && !slices.Equal(r.Reachable, lastReachable) {
 			lastReachable = slices.Clone(r.Reachable)
 			d.Resend()

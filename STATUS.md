@@ -358,8 +358,18 @@ Last updated: 2026-10-03 (evening).
   subcode 10 BFD down) and no new session starts (dial or accept) until BFD is up again; a BFD session that never
   came up changes nothing; BFD removed from the configuration releases the neighbour. Tests: speaker and daemon.
   Found by the race detector on the way: the instance name was read without the lock (now immutable).
-- Next: step 6, relay of BGP sessions to routed ports of other members (TCP stream to the master); BFD for those
-  then runs on the owner like OSPF's.
+- Step 6 done 2026-10-04: sessions to neighbours on routed ports of other members (switchd marks the owning member:
+  routed port or single-member bundle with the neighbour's subnet; irb and MC-LAG: none). The owner's cer-bgpd
+  listens in the VRF for those neighbours (TCP MD5, TTL) and dials them for the master (bgp-relay-dial); the bytes go
+  as ordered stack calls (bgp-relay-open/data/close, 16 KiB chunks, sequence-checked); the master's speaker sees an
+  ordinary connection with the real addresses (next hop self = the owner's port address). Test: master, owner and a
+  router behind the owner's port, both directions of connection set-up. The race detector found a send on a closed
+  channel in the first version (now a done channel).
+- Open (BGP): BFD for relayed neighbours still runs in the master's cer-bfdd (single-hop from the master cannot
+  reach a neighbour behind another member's port: it must run on the owner, as OSPF's does); RFC 7606 tests with
+  malformed attributes; interop tests with FRR/GoBGP in network namespaces and in the lab (lab down since
+  2026-10-04); a route with an unresolvable next hop is not hidden in the RIB; import `then preference`; local-as
+  prepends only the local AS.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

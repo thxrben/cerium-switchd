@@ -45,6 +45,9 @@ type Neighbor struct {
 	Import []string   `json:"import,omitempty"`
 	Export []string   `json:"export,omitempty"`
 	BFDCfg *BFDConfig `json:"bfd,omitempty"`
+	// Owner: the member whose routed port reaches the neighbour (0: any,
+	// e.g. irb); another member than the master relays the session.
+	Owner int `json:"owner,omitempty"`
 }
 
 // BFDConfig is a neighbour's bfd-liveness-detection (reference 5.12).
@@ -91,6 +94,14 @@ type Daemon struct {
 	Replicate func(sr ribd.SetRoutes)
 	// BFD is cer-bfdd on this member (nil: no BFD).
 	BFD BFD
+	// Member is this member's id; StackCall calls cer-bgpd on another
+	// member (the relay of sessions to routed ports of other members; nil:
+	// standalone).
+	Member    int
+	StackCall func(ctx context.Context, member int, method string, req, resp any) error
+
+	rel   relay
+	owned map[string]*ownerListener
 
 	bfdMu    sync.Mutex
 	bfdKeys  map[string]bfdRef // cer-bfdd key -> neighbour
@@ -98,11 +109,12 @@ type Daemon struct {
 	bfdSent  bool
 	bfdQ     chan []bfdd.SessionSpec
 
-	mu     sync.Mutex
-	cfg    Config
-	master bool
-	insts  map[string]*instance
-	ctx    context.Context
+	mu       sync.Mutex
+	cfg      Config
+	master   bool
+	masterID int
+	insts    map[string]*instance
+	ctx      context.Context
 }
 
 type instance struct {
@@ -144,11 +156,21 @@ func (d *Daemon) SetConfig(c Config) {
 	d.apply()
 }
 
-// SetMaster tells whether this member is the master (BGP runs there only).
+// SetMaster tells whether this member is the master (BGP runs there
+// only); standalone or tests.
 func (d *Daemon) SetMaster(m bool) {
+	id := 0
+	if m {
+		id = d.Member
+	}
+	d.SetRole(m, id)
+}
+
+// SetRole tells whether this member is the master and which member is.
+func (d *Daemon) SetRole(m bool, masterID int) {
 	d.mu.Lock()
-	changed := d.master != m
-	d.master = m
+	changed := d.master != m || d.masterID != masterID
+	d.master, d.masterID = m, masterID
 	d.mu.Unlock()
 	if changed {
 		d.apply()
@@ -200,6 +222,8 @@ func (d *Daemon) apply() {
 	if d.ctx == nil {
 		return
 	}
+	// Owner listeners first: a member that became master listens itself.
+	d.ownerListen(d.cfg, d.masterID)
 	want := map[string]Instance{}
 	if d.master {
 		for _, in := range d.cfg.Instances {
@@ -240,7 +264,7 @@ func (d *Daemon) start(c Instance, eng *policy.Engine) (*instance, error) {
 	ctx, cancel := context.WithCancel(d.ctx)
 	in := &instance{d: d, name: c.Name, cfg: c, lis: lis, cancel: cancel, sources: map[string]bool{}}
 	in.pol = &policyAdapter{eng: eng, chains: chains(c)}
-	in.sp = bgp.New(dialer{d.Net, c.VRF}, in.pol.policy(), d.Log.With("instance", instName(c.Name)))
+	in.sp = bgp.New(dialer{d: d, instance: c.Name, vrf: c.VRF}, in.pol.policy(), d.Log.With("instance", instName(c.Name)))
 	in.sp.OnRoutes = in.onRoutes
 	go in.sp.Run(ctx)
 	in.sp.Configure(speakerConfig(c))
@@ -338,14 +362,31 @@ func speakerConfig(c Instance) bgp.Config {
 	return sc
 }
 
-// dialer is the speaker's transport for one instance.
+// dialer is the speaker's transport for one instance: directly, or through
+// the member that owns the neighbour's routed port.
 type dialer struct {
-	n   Net
-	vrf string
+	d        *Daemon
+	instance string
+	vrf      string
 }
 
 func (t dialer) Dial(ctx context.Context, n bgp.Neighbor) (net.Conn, error) {
-	return t.n.Dial(ctx, t.vrf, n)
+	d := t.d
+	var owner int
+	for _, in := range d.instances() {
+		if in.name != t.instance {
+			continue
+		}
+		for _, x := range in.config().Neighbors {
+			if x.Addr == n.Addr {
+				owner = x.Owner
+			}
+		}
+	}
+	if owner != 0 && owner != d.Member && d.StackCall != nil {
+		return d.dialRelay(ctx, owner, t.instance, t.vrf, n)
+	}
+	return d.Net.Dial(ctx, t.vrf, n)
 }
 
 // onRoutes gives the speaker's table to cer-ribd: one source per

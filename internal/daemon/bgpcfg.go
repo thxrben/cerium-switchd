@@ -57,7 +57,7 @@ func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpd.
 	}
 	var connected bool
 	n.NextHop4, n.NextHop6, connected = selfAddrs(cfg, instance, m.Addr, m.LocalAddress)
-	out := bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export}
+	out := bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export, Owner: neighborOwner(cfg, instance, m.Addr)}
 	if b := m.BFD; b != nil {
 		bc := &bgpd.BFDConfig{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg, AuthKeyID: b.AuthKeyID,
 			AuthKey: b.AuthKey, Multihop: m.Multihop || !connected}
@@ -112,6 +112,27 @@ func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, 
 		return v4, v6, connected
 	}
 	return v4, v6, connected
+}
+
+// neighborOwner is the member whose routed port (or single-member bundle)
+// has the neighbour's subnet; 0 for an irb, an MC-LAG bundle or a
+// neighbour that is not directly connected (the master reaches it).
+func neighborOwner(cfg *model.Config, instance string, peer netip.Addr) int {
+	for _, name := range sortedKeysOf(cfg.L3) {
+		u := cfg.L3[name]
+		if u.Disabled || u.Instance != instance || u.IRB() {
+			continue
+		}
+		for _, p := range u.Addrs {
+			if p.Contains(peer) {
+				if owners, _ := unitOwners(cfg, u); len(owners) == 1 {
+					return owners[0]
+				}
+				return 0
+			}
+		}
+	}
+	return 0
 }
 
 func sortedKeysOf[V any](m map[string]V) []string {

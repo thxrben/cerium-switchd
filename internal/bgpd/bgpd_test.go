@@ -49,7 +49,13 @@ func (n loNet) Dial(ctx context.Context, _ string, nb bgp.Neighbor) (net.Conn, e
 	return d.DialContext(ctx, "tcp", netip.AddrPortFrom(nb.Addr, uint16(p.(int))).String())
 }
 
-func (n loNet) Transport() bgp.Transport { return dialer{n, ""} }
+func (n loNet) Transport() bgp.Transport { return netDialer{n} }
+
+type netDialer struct{ n loNet }
+
+func (t netDialer) Dial(ctx context.Context, nb bgp.Neighbor) (net.Conn, error) {
+	return t.n.Dial(ctx, "", nb)
+}
 
 // fakeRIB records the routes per source and answers Active.
 type fakeRIB struct {
