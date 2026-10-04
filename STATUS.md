@@ -350,6 +350,23 @@ Last updated: 2026-10-04 (evening).
    the reboot: the health check of the new version). Unit-tested. Not covered: the cer- daemons keep the default
    disk/kernel deadlines (they rarely touch a disk).
 
+## Lab 2026-10-04 night (sw2 10.5.176.96, sw3 .97 on the firmware; sw1 + physw4 are the user's stack)
+- Access: CLI SSH on port 2222 (root key-only, my ed25519 key); `start shell local` for a shell (it runs in the
+  management VRF: `ip vrf exec default ...` for data addresses). Deploys: REST API (`system services web-management
+  port 8443`, user `claude`, password in the session scratchpad) through an SSH tunnel via srv1 (8443 is filtered from
+  outside the lab subnet); `image/build.sh <version>` builds the bundle; pin from `show system services web-management`.
+- Verified: RAM-only REST upload + install (273 MB in 12 s, A/B switch, health confirmed) several times; `show system
+  processes` footer; PID 1 CPU 1.8 % (9a85ef3) -> 0.5 % (no hardware watchdog in the VMs: systemd retried
+  /dev/watchdog ~100/s; supervisor ListUnitsByNames); MACsec on client ports over loop-23 (sw2 1/7/0 - sw3 1/6/0,
+  routed 192.168.77.0/30): MKA secured, macsec0 carries the address, pings encrypted, wrong CAK = no traffic.
+- Found and fixed in the lab: nft protection filter named 'ipv6-icmp' (no /etc/protocols on the image: every commit
+  with a routed interface failed); wpa_supplicant 2.10 rejects macsec_csindex; MKA unit start limit.
+- User reports fixed the same night: Ctrl-C at a question; shell needing `reset`; CLI session not following the
+  master; SSH host key changing with the master (now derived from the stack key); "leadership transfer timeout"
+  although the switch succeeded; systemd-ssh-generator errors in VMs.
+- Open: `show security macsec connections` Transmit/Receive empty for client ports (ip -j field names); lab tests of
+  swap, memory slots, reload, stacking MACsec `mode on`, the relay/host-key fixes on the user's stack.
+
 ## MACsec on client ports (2026-10-04 evening; unit-tested, NOT yet on the lab)
 - `security macsec interfaces <port>`: switchd writes `/run/switchd/mka/<port>.conf` (0600; CKN/CAK, csindex for
   gcm-aes-256, key-server priority, replay window) and runs `cer-mka@<port>.service` (wpa_supplicant -D
