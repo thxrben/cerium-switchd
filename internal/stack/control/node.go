@@ -412,6 +412,31 @@ func (n *Node) waitMaster(d time.Duration) int {
 // Transfer hands mastership to member to (0: the reachable voter with the
 // highest priority).
 func (n *Node) Transfer(to int) error {
+	err := n.transfer(to)
+	if err == nil || to == 0 {
+		return err
+	}
+	// Raft stops waiting for the transfer after its election timeout, but
+	// the target often wins the election a moment later (user report:
+	// "leadership transfer timeout", yet the switch had happened).
+	deadline := time.Now().Add(transferSettle)
+	for time.Now().Before(deadline) {
+		if n.Master() == to {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if m := n.Master(); m != 0 {
+		return fmt.Errorf("%w; member %d is master", err, m)
+	}
+	return fmt.Errorf("%w; no master elected yet", err)
+}
+
+// transferSettle is how long a transfer that raft reported as failed may
+// still complete.
+const transferSettle = 10 * time.Second
+
+func (n *Node) transfer(to int) error {
 	if !n.IsMaster() {
 		m := n.Master()
 		if m == 0 {

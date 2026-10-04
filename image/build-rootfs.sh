@@ -72,6 +72,10 @@ systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd
   systemd-firstboot.service systemd-timesyncd.service systemd-machine-id-commit.service \
   wpa_supplicant.service 2>/dev/null || true
 systemctl disable ssh.service 2>/dev/null || true
+# systemd-ssh-generator (sshd on AF_VSOCK/AF_UNIX for VMs and containers) is not used: switchd runs the CLI SSH
+# server; in VMs without vsock it fails and logs at every daemon-reload.
+mkdir -p /etc/systemd/system-generators
+ln -sf /dev/null /etc/systemd/system-generators/systemd-ssh-generator
 # The stable names: GRUB and the installer use these.
 kver=$(ls /lib/modules | sort -V | tail -1)
 ln -sf "vmlinuz-$kver" /boot/vmlinuz
