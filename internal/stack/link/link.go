@@ -108,6 +108,8 @@ type Link struct {
 	readDL, writeDL time.Time
 	upCh            chan struct{}
 	done            chan struct{}
+	// kick wakes the loop when a write changed a timer.
+	kick chan struct{}
 }
 
 // New starts a link on io. The link is usable (Write buffers, Read waits)
@@ -128,7 +130,7 @@ func New(io FrameIO, o Options) *Link {
 	if o.Multiplier == 0 {
 		o.Multiplier = 3
 	}
-	l := &Link{io: io, o: o, rto: initialRTO, upCh: make(chan struct{}), done: make(chan struct{}), peerWin: 64 << 10,
+	l := &Link{io: io, o: o, rto: initialRTO, upCh: make(chan struct{}), done: make(chan struct{}), kick: make(chan struct{}, 1), peerWin: 64 << 10,
 		interval: o.Interval, multiplier: o.Multiplier}
 	l.cond = sync.NewCond(&l.mu)
 	var b [4]byte
@@ -153,9 +155,20 @@ func (l *Link) Err() error {
 	return l.err
 }
 
+// loop handles received frames and the timers. It sleeps until the next
+// timer is due (a fixed 5 ms tick woke every link 200 times a second:
+// about 5 % of a CPU per member, more in VMs).
 func (l *Link) loop() {
-	t := time.NewTicker(tick)
+	t := time.NewTimer(tick)
 	defer t.Stop()
+	due := time.Now().Add(tick) // when t fires
+	arm := func(always bool) {
+		d := l.nextWake()
+		if at := time.Now().Add(d); always || at.Before(due) {
+			t.Reset(d)
+			due = at
+		}
+	}
 	for {
 		select {
 		case <-l.done:
@@ -165,11 +178,44 @@ func (l *Link) loop() {
 				l.fail(ErrDead)
 				return
 			}
-			l.receive(b)
+			l.receive(b) // sends what an ack allows
+			arm(false)   // only an earlier timer (a delayed ack) moves the wake-up
 		case <-t.C:
 			l.timers()
+			arm(true)
+		case <-l.kick:
+			arm(false)
 		}
 	}
+}
+
+// nextWake is how long until the next timer is due (at least 1 ms).
+func (l *Link) nextWake() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	next := now.Add(time.Second)
+	at := func(t time.Time) {
+		if !t.IsZero() && t.Before(next) {
+			next = t
+		}
+	}
+	if !l.up {
+		at(l.lastHello.Add(l.o.HelloInterval))
+	} else {
+		at(l.lastRecv.Add(l.interval*time.Duration(l.multiplier) + time.Millisecond))
+		at(l.lastSent.Add(l.interval - tick))
+		at(l.rtoAt)
+		if l.ackPending > 0 {
+			at(l.ackAt)
+		}
+		if !l.probeEnd.IsZero() {
+			at(l.probeEnd.Add(time.Millisecond))
+		} else {
+			at(l.probeAt)
+		}
+	}
+	return max(next.Sub(now), time.Millisecond)
 }
 
 // fail ends the link. Caller must not hold l.mu.
@@ -505,6 +551,10 @@ func (l *Link) Write(p []byte) (int, error) {
 		l.sbuf = append(l.sbuf, p[written:written+n]...)
 		written += n
 		l.transmit(time.Now())
+	}
+	select { // the retransmission timer may have been set
+	case l.kick <- struct{}{}:
+	default:
 	}
 	return written, nil
 }

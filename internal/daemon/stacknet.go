@@ -132,9 +132,14 @@ func stackUnderlay(vc *stack.Manager) dataplane.StackUnderlay {
 func macsecLinks(cfg *model.Config, member int, links []stack.StackLink) []stackLinkSpec {
 	var specs []stackLinkSpec
 	for _, l := range links {
+		// The index names the MACsec device only when "ms<port>" is too long
+		// (devName); net.InterfaceByName dumps every interface, too much
+		// for every 100 ms.
 		idx := 0
-		if i, err := net.InterfaceByName(l.Linux); err == nil {
-			idx = i.Index
+		if len("ms"+l.Linux) > 15 {
+			if i, err := net.InterfaceByName(l.Linux); err == nil {
+				idx = i.Index
+			}
 		}
 		specs = append(specs, decideLink(cfg, member, l, idx))
 	}

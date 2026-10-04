@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net"
 	"regexp"
 	"slices"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/macsec"
 )
 
@@ -546,17 +546,19 @@ func (s *stackMACsec) status() []StackSecStatus {
 	return out
 }
 
-// portMAC and portMTU of the kernel.
+// portMAC and portMTU of the kernel, from sysfs (net.InterfaceByName
+// dumps every interface; this runs every second per stacking link).
 func kernelPortMAC(port string) string {
-	if i, err := net.InterfaceByName(port); err == nil {
-		return i.HardwareAddr.String()
+	if raw, err := hwio.ReadFile("/sys/class/net/" + port + "/address"); err == nil {
+		return strings.TrimSpace(string(raw))
 	}
 	return ""
 }
 
 func kernelPortMTU(port string) int {
-	if i, err := net.InterfaceByName(port); err == nil {
-		return i.MTU
+	if raw, err := hwio.ReadFile("/sys/class/net/" + port + "/mtu"); err == nil {
+		n, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+		return n
 	}
 	return 0
 }

@@ -1,6 +1,7 @@
 package swcli
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -102,5 +103,18 @@ func TestFilterCrash(t *testing.T) {
 		if _, crashed := exitStatus(exec.Command("sh", "-c", script).Run()); crashed != want {
 			t.Errorf("%s: crashed = %v", script, crashed)
 		}
+	}
+}
+
+// The key reader takes nothing from the input beyond the key it returns
+// (type-ahead before 'start shell' must reach the shell).
+func TestKeyReaderNoReadAhead(t *testing.T) {
+	r := strings.NewReader("start shell\rhostname\r")
+	k := newKeyReader(r)
+	for range len("start shell\r") {
+		k.next()
+	}
+	if rest, _ := io.ReadAll(r); string(rest) != "hostname\r" {
+		t.Fatalf("read ahead: %q left", rest)
 	}
 }

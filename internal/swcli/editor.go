@@ -44,7 +44,21 @@ type keyReader struct {
 	r *bufio.Reader
 }
 
-func newKeyReader(in io.Reader) *keyReader { return &keyReader{r: bufio.NewReader(in)} }
+// newKeyReader reads keys from in one byte per read: nothing typed ahead
+// is taken from the terminal beyond the key being handled, so what was
+// typed while a shell started reaches the shell (it stayed in this buffer
+// and went to the CLI after the shell).
+func newKeyReader(in io.Reader) *keyReader { return &keyReader{r: bufio.NewReader(oneByte{in})} }
+
+// oneByte limits every read to one byte.
+type oneByte struct{ r io.Reader }
+
+func (o oneByte) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return o.r.Read(p)
+}
 
 func (k *keyReader) next() key {
 	for {
