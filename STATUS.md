@@ -311,7 +311,25 @@ Last updated: 2026-10-03 (evening).
   `member <id>`/`all-members` run it on that member (its replicated RIB). Typed route attributes (rib.Attrs);
   OSPF fills area, path type and tag. Open: `hidden` (needs BGP import rejects), `receive-protocol`/
   `advertising-protocol bgp` (with cer-bgpd), marking routes that differ from the kernel.
-- **cer-bgpd** (GoBGP v3 embedded, reference 5.14): next.
+- **BGP: own core, GoBGP's packet codec only** (decided 2026-10-04, PLAN Phase 9b; the GoBGP server was rejected:
+  Junos policy semantics, hitless changes, gRPC/memory). Step 1 done 2026-10-04: `pkg/bgp` (deps: the codec only).
+  Sessions over any net.Conn (reader/writer goroutines, one event loop), FSM with collision resolution (RFC 4271
+  §6.8, also against an established session the neighbour decided against: replaced without a flap, paths kept
+  until End-of-RIB), capabilities (4-byte AS with AS_TRANS/AS4_PATH for 2-byte neighbours, IPv4/IPv6 unicast,
+  route refresh, graceful restart), RFC 7606 error handling (treat-as-withdraw / attribute discard), Adj-RIB-In
+  (as received + after import policy: hidden), decision process (localpref, AS path length, origin, MED within
+  the neighbour AS, eBGP over iBGP, router/originator id, cluster list, address), multipath per neighbour
+  (+multiple-as, 16 paths), route reflection (originator id, cluster list, loop checks), eBGP rules (prepend
+  local-as, next hop self, no localpref, MED not passed on unless set by policy, remove-private),
+  no-export/no-advertise, only active routes announced (SetLocal inactive list), originated routes need an export
+  policy, graceful restart helper (stale until End-of-RIB or restart time) and R bit when restarting, End-of-RIB,
+  hitless Configure (only neighbours whose session settings changed are reset), SetPolicy without route refresh,
+  show/clear data (Status, AdjIn, AdjOut, Clear hard/soft/soft-inbound). Tests: real TCP on 127.0.0.x (eBGP,
+  route reflection, import policy and hidden, multipath and AS loop, hitless changes, graceful restart, bad peer
+  AS), codec round trips. Differences from Junos so far: local-as prepends only the local-as (Junos also the
+  global AS unless `private`); IGP metric to the next hop is not compared.
+- Next: step 2, cer-bgpd (Linux sockets with MD5/TTL in the instance VRF, configuration from switchd, policies
+  through internal/policy, routes to cer-ribd and replicated, exports from the RIB).
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

@@ -612,11 +612,25 @@ broadcast and p2p networks of several routers; (4) origination; (5) SPF with ECM
 tests); (6) cer-ospfd with Linux I/O, configuration from switchd, routes to cer-ribd, show/clear commands, smoke
 test; (7) graceful restart, overload, BFD; (8) lab: interop with FRR on srv1 (v2 and v3, broadcast and p2p).
 
-### Phase 9b: BGP (EVPN) via GoBGP
-BGP is not written from scratch: GoBGP is embedded as a Go library in switchd (no external daemon; FRR was
-considered and rejected as less predictable to drive). `protocols bgp …` configures it; routes it learns are
-installed via netlink in the right VRF. Use: EVPN control plane for VXLAN towards non-stack VTEPs, and simple BGP
-routing for irbs.
+### Phase 9b: BGP (EVPN): own core, GoBGP's packet codec (decided 2026-10-04)
+BGP is our own core (`pkg/bgp`, like `pkg/ospf`) in the program **cer-bgpd**; only GoBGP's message codec
+(`github.com/osrg/gobgp/v3/pkg/packet/bgp`: standard library only, no server, no gRPC) is used. The GoBGP server
+was considered and rejected (2026-10-04): its own RIB and policy engine cannot express Junos policy semantics
+(`next policy`, advertising only active routes, `from protocol` export, per-group multipath, hidden routes),
+policy changes are global and many peer changes reset sessions (against hitless reconfiguration), and it brings
+gRPC/protobuf and a large memory footprint. FRR was rejected earlier as less predictable to drive.
+* Core: session FSM and timers (RFC 4271), capabilities (4-byte AS, multiprotocol IPv4/IPv6 unicast, route refresh,
+  graceful restart), Adj-RIB-In/Out, best path (RFC 4271 plus the Junos tie-breakers), multipath per group, route
+  reflection (RFC 4456), graceful restart (RFC 4724, helper and restarting), remove-private, local-as.
+* Policy through our engine (internal/policy) on import and export, exactly as Junos; routes to cer-ribd (replicated
+  to the members like OSPF's), exports from the RIB; TCP MD5 and TTL on the sockets.
+* On the master like OSPF: irb/MC-LAG sessions reach it as frames; routed ports of other members are relayed as a TCP
+  stream; BFD through cer-bfdd (placement as for OSPF).
+* Steps: (1) core with in-process tests (two and more speakers over pipes); (2) cer-bgpd: Linux sockets, VRFs,
+  config from switchd, routes to cer-ribd, exports; (3) show/clear commands, receive/advertising-protocol, hidden;
+  (4) hitless changes and commit warnings; (5) BFD client; (6) relay for routed ports of other members;
+  (7) tests in network namespaces, interop with GoBGP/FRR (lab: FRR on srv1).
+Use: simple BGP routing for irbs and routed ports, later the EVPN control plane for VXLAN towards non-stack VTEPs.
 
 **`show route` in full (requested 2026-09-30)**, Junos layout, built on the basic `show route` of Phase 4b:
 * IPv4 and IPv6 (`inet.0` / `inet6.0`, per routing instance `<name>.inet.0`), every source with its protocol and
@@ -624,7 +638,7 @@ routing for irbs.
 * Filters: `show route <prefix>` (longest match / `exact`), `protocol <p>`, `table <t>`, `instance <name>`,
   `terse`, `detail`/`extensive` (BGP attributes: AS path, local preference, MED, communities, originator),
   `summary` (counts per table and protocol), `advertising-protocol bgp <peer>` / `receive-protocol bgp <peer>`.
-* BGP routes come from GoBGP's RIB (also those not installed, e.g. inactive or rejected by policy), installed ones are
+* BGP routes come from cer-bgpd's Adj-RIB-In (also those not installed, e.g. inactive or rejected by policy), installed ones are
   cross-checked with the kernel. Member targets (`member <id>` / `all-members`) as for the other show commands.
 
 ### Phase 10: Data-plane encryption (opt-in per link)
@@ -672,7 +686,7 @@ An overall check that lists what limits the switch, with a recommendation per fi
 | 8–9 | all five |
 
 ## 9. Known limits / non-goals
-* Routing is basic: irb and routed ports, static routes, and (Phase 9b) BGP via GoBGP. No other routing
+* Routing is basic: irb and routed ports, static routes, OSPF/OSPFv3 (Phase 9c) and BGP (Phase 9b, own core). No other routing
   protocols, no policy routing, no MPLS.
 * Throughput is bounded by the host/NIC (kernel bridge). Expect roughly 10–40 Gbit/s on decent x86 with large frames, and lower with small packets. Hardware offload is only available where switchdev drivers exist.
 * Target scale: 2–4 members typical, **up to 16** supported (Raft: up to 7 voters, the rest are non-voting

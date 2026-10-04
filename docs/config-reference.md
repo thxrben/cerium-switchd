@@ -2007,7 +2007,9 @@ Operational commands:
 ### 5.14 protocols bgp
 
 BGP-4 (RFC 4271) with 4-byte AS numbers, IPv4 and IPv6 unicast, route refresh, graceful restart and route
-reflection, in the default instance and in routing instances. switchd embeds the GoBGP implementation.
+reflection, in the default instance and in routing instances. The program cer-bgpd runs it on the master (5.8); the
+protocol is cerOS's own implementation (only the message encoding is GoBGP's), so policies behave exactly as
+described in 5.11.
 
 #### `protocols bgp { group <name> { type internal|external; peer-as <asn>; neighbor <ip> { … } … } }`
 Neighbours are configured in groups; a neighbour inherits everything from its group and can override it.
