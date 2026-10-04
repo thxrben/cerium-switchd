@@ -1461,6 +1461,9 @@ func registerOperational() {
 			power("power-off", "Power off this member"),
 			swRequest,
 			{name: "diagnose", help: "Check what limits forwarding (as show system bottlenecks)", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
+			{name: "memory", help: "Memory slots", class: commit.SuperUser, sub: []*command{
+				{name: "setup", help: "Allocate the memory slots interactively (writes the candidate)", class: commit.SuperUser, run: (*Shell).memorySetup},
+			}},
 			{name: "maintenance-mode", help: "Take this member out of service without losing traffic", class: commit.SuperUser, sub: []*command{
 				{name: "enter", help: "Drain this member (mastership, stack transit, MC-LAG legs)", class: commit.SuperUser,
 					run:      func(sh *Shell, c *call) error { return sh.maintenance(c, true) },

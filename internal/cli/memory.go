@@ -4,6 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+
+	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
 // MemoryPurpose is one purpose of the memory slots.
@@ -110,5 +115,132 @@ func (sh *Shell) showMemory(c *call) error {
 	}
 	fmt.Fprintf(c.out, "\nKernel neighbour tables: IPv4 %d, IPv6 %d entries\n", m.NeighV4, m.NeighV6)
 	fmt.Fprintf(c.out, "Room for a software bundle now: %s\n", mb(m.UpdateRoom))
+	return nil
+}
+
+// memorySetup is "request system memory setup" (reference 3.5): it asks
+// per purpose for a percentage or a number of slots, shows the resulting
+// capacities, and writes system memory into the shared candidate.
+func (sh *Shell) memorySetup(c *call) error {
+	if err := noArgs(c); err != nil {
+		return err
+	}
+	o, ok := sh.env.Ops.(Memory)
+	if sh.env.Ops == nil || !ok {
+		return errors.New("memory information is not available")
+	}
+	m, err := o.Memory()
+	if err != nil {
+		return err
+	}
+	if m.Allocatable <= 0 {
+		return fmt.Errorf("this member has no slots to allocate (%d slots, system area %d, update %d)", m.Slots, m.System, m.Update)
+	}
+	type choice struct{ percent, slots int }
+	cur := map[string]choice{}
+	if cfg, _ := model.Build(sh.env.Engine.Active(), nil); cfg != nil {
+		for p, a := range cfg.System.Memory.Alloc {
+			cur[string(p)] = choice{a.Percent, a.Slots}
+		}
+	}
+	slotsOf := func(ch choice) int {
+		if ch.percent > 0 {
+			return m.Allocatable * ch.percent / 100
+		}
+		return ch.slots
+	}
+	show := func(ch choice) string {
+		switch {
+		case ch.percent > 0:
+			return strconv.Itoa(ch.percent) + "%"
+		case ch.slots > 0:
+			return strconv.Itoa(ch.slots)
+		}
+		return "-"
+	}
+	fmt.Fprintf(c.out, "Member %d: %d slots of 4 MiB to allocate (after the system area and the update slots).\n", m.Member, m.Allocatable)
+	c.out.WriteString("Answer per purpose: a percentage (30%), a number of slots (120), '-' for none, '?' for help, or nothing to keep.\n\n")
+	for _, p := range m.Purposes {
+		for {
+			a, err := c.term.Ask(fmt.Sprintf("%-10s (%d bytes, %d per slot) [%s]: ", p.Name, p.Bytes, p.PerSlot, show(cur[p.Name])), true)
+			if err != nil {
+				return nil // interrupted: nothing written
+			}
+			a = strings.TrimSpace(a)
+			var ch choice
+			switch {
+			case a == "":
+				ch = cur[p.Name]
+			case a == "-":
+			case a == "?":
+				for _, q := range m.Purposes {
+					fmt.Fprintf(c.out, "  %-10s %5d bytes per entry, %6d per slot, %d with every slot\n", q.Name, q.Bytes, q.PerSlot, q.AllSlots)
+				}
+				continue
+			case strings.HasSuffix(a, "%"):
+				n, err := strconv.Atoi(strings.TrimSuffix(a, "%"))
+				if err != nil || n < 1 || n > 100 {
+					c.out.WriteString("  a percentage is 1% to 100%\n")
+					continue
+				}
+				ch.percent = n
+			default:
+				n, err := strconv.Atoi(a)
+				if err != nil || n < 1 {
+					c.out.WriteString("  expecting a percentage (30%), a number of slots, '-' or nothing\n")
+					continue
+				}
+				ch.slots = n
+			}
+			if ch == (choice{}) {
+				delete(cur, p.Name)
+			} else {
+				cur[p.Name] = ch
+			}
+			n, total := slotsOf(ch), 0
+			for _, x := range cur {
+				total += slotsOf(x)
+			}
+			if n > 0 {
+				fmt.Fprintf(c.out, "  -> %d slots, %d entries; %d of %d slots left\n", n, n*p.PerSlot, m.Allocatable-total, m.Allocatable)
+			}
+			break
+		}
+	}
+	total, percent := 0, 0
+	for _, x := range cur {
+		total += slotsOf(x)
+		percent += x.percent
+	}
+	if total > m.Allocatable || percent > 100 {
+		fmt.Fprintf(c.out, "\nThe allocation needs %d slots, this member has %d: nothing written.\n", total, m.Allocatable)
+		return nil
+	}
+	lines := "delete system memory allocation\n"
+	for _, p := range m.Purposes {
+		ch, ok := cur[p.Name]
+		switch {
+		case !ok:
+		case ch.percent > 0:
+			lines += fmt.Sprintf("set system memory allocation %s percent %d\n", p.Name, ch.percent)
+		default:
+			lines += fmt.Sprintf("set system memory allocation %s slots %d\n", p.Name, ch.slots)
+		}
+	}
+	fmt.Fprintf(c.out, "\n%s", lines)
+	a, err := c.term.Ask("Write this into the candidate configuration? [yes,no] (no) ", true)
+	if err != nil || !isYes(a) {
+		return nil
+	}
+	s, _, err := sh.env.Engine.Configure(sh.env.User, sh.env.Class, commit.Shared)
+	if err != nil {
+		return err
+	}
+	err = s.Modify(func(t *config.Tree) error { return config.ApplySetLines(t, lines) })
+	s.Close()
+	if err != nil {
+		return err
+	}
+	c.out.WriteString("Written into the candidate configuration: 'configure', 'show | compare', 'commit'. It applies at the next 'request system reload'.\n")
 	return nil
 }
