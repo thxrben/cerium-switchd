@@ -418,6 +418,37 @@ Last updated: 2026-10-03 (evening).
   received routes get the local AS in front).
 - Open (BGP): interop with FRR in the lab (lab down since 2026-10-04).
 
+## Requested 2026-10-04 (PLAN phases 10, 14-17, 17b)
+Unit-tested, NOT on the lab switches yet (the lab still runs 05240a8; see "Lab deploy" below).
+- Done: Phase 14 no swap (switchd turns swap off every 30 s, Major alarm `switchd/swap`; image masks swap.target and
+  the build fails with a swap; LimitCORE=0 everywhere).
+- Done: Phase 17.1-3 bundles in memory only (`/run/ceros-software` tmpfs sized to the room before each transfer:
+  update slot, or MemAvailable - 256 MB; streamed to members; `/var/lib/ceros/software` emptied at start; unused
+  bundles swept after an hour, kept while an update runs). REST API (`internal/webapi`, system services
+  web-management): PUT /api/v1/software/upload, POST /api/v1/software/install, GET /api/v1/software; temporary
+  self-signed ECDSA certificate in RAM, fingerprint and pin in `show system services web-management`; Basic auth with
+  system login (super-user for changes, root per root-login allow), 10 failures/min -> 429. `request system software
+  add upload`.
+- Done: Phase 17b one update at a time (every member's update daemon asked; unreachable member refuses unless
+  `member <id>`; upload refused while an update runs; reboot/halt/power-off and member remove refused).
+- Done: Phase 15 memory slots, first part: `internal/memslots` (plan, costs measured by pkg/rib and pkg/bgp tests,
+  system area, daemon base), `system memory` in schema/model with checks and reload warning, switchd plan per run in
+  `/run/switchd/memory-slots.json`, stack-wide minimum capacities, kernel gc_thresh (always: RAM/64/512, at least
+  1024), bridge fdb_max_learned / mcast_hash_max, daemon units GOMEMLIMIT/MemoryMax/MemoryMin, BGP prefix and path
+  capacities (shared `bgp.Limits`, Major alarm `cer-bgpd/memory <purpose>`), `show system memory`, `show system
+  limits` Applied/Supported columns and Tables section, `request system memory setup`.
+- Open in Phase 15: OSPF enforcement (RFC 1765 LSDB overflow in cer-ospfd, route cap in cer-ribd); counts of BGP/OSPF/
+  NDP/multicast entries in show system memory (now "-"); setup across members (uses this member's slots); the
+  structure optimization (interned BGP/RIB attributes, target 1/3 of today's bytes) and a re-measure.
+- Done: Phase 16 `request system reload [member <id>|all-members]` (drain, ordered daemon stop, switch ports down,
+  plan file removed, switchd restarts; waitBack between members). Needs a lab test: ports must come up again.
+- Open: Phase 17.4 USB storage (save/load usb:, file list usb:, request system storage usb eject); Phase 10 MACsec;
+  show system limits "used of available" fix (MACsec offload shows n of all ports, must be of capable ports).
+- Lab deploy: the lab VMs still run the pre-image single-binary install (/usr/local/sbin/switchd, swcli symlink).
+  The new build needs every program in /usr/local/sbin; members 1 and 3 are reachable from the master only over the
+  stack VRF (`ip vrf exec swstack ssh` with agent forwarding). Installing that way was blocked by the permission
+  check; the binaries are in /var/tmp/ceros-51b37de-bin.tgz on all three. Waiting for the user.
+
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in
   the mesh LSAs (0 byte; transit avoided where another path exists, never master), mastership handed on, MC-LAG legs
