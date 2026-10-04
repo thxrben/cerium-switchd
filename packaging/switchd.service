@@ -25,6 +25,8 @@ TimeoutStopSec=150
 # (reference 1.9).
 Nice=-10
 OOMScoreAdjust=-900
+# No core dumps (reference 1.9): the stack trace is in the log.
+LimitCORE=0
 # The cer- daemons are units of their own (switchd writes and starts them):
 # they keep running while switchd restarts.
 RuntimeDirectory=switchd

@@ -82,6 +82,17 @@ passwd -d root
 # No package management in the image.
 rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/cache/debconf/*-old /var/log/*
 EOF
+# No swap (reference 1.9): nothing may turn one on, and the build fails
+# when the image brings one.
+chroot "$root" systemctl mask swap.target >/dev/null
+swaps=$( { awk '$1 !~ /^#/ && $3 == "swap"' "$root/etc/fstab" 2>/dev/null
+  find "$root/etc/systemd" "$root/usr/lib/systemd" -name '*.swap' ! -lname /dev/null 2>/dev/null
+  ls "$root"/swapfile "$root"/usr/lib/systemd/zram-generator.conf "$root"/etc/systemd/zram-generator.conf 2>/dev/null; } || true)
+if [ -n "$swaps" ]; then
+	echo "the image has swap (a switch must not swap):" >&2
+	echo "$swaps" >&2
+	exit 1
+fi
 # apt and dpkg go last (the chroot steps above use them).
 rm -rf "$root"/usr/bin/apt* "$root"/usr/bin/dpkg* "$root"/usr/lib/apt "$root"/etc/apt "$root"/var/lib/apt
 rm -rf "$root"/usr/share/doc "$root"/usr/share/man "$root"/usr/share/locale "$root"/usr/share/info

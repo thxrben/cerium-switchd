@@ -361,6 +361,7 @@ func Run(ctx context.Context, o Options) error {
 	watchHangs(member, log, notifyStack, services.alarms)
 	if !o.DryRun {
 		go watchSensors(ctx, member, log, notifyStack, services.alarms)
+		go newSwapGuard(member, log, notifyStack, services.alarms).loop(ctx)
 	}
 	if ctl != nil {
 		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {

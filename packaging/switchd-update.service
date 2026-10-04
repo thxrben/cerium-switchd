@@ -8,6 +8,7 @@ Type=exec
 ExecStart=/usr/local/sbin/switchd-update
 Restart=always
 RestartSec=2
+LimitCORE=0
 RuntimeDirectory=switchd-update
 RuntimeDirectoryMode=0700
 

@@ -149,6 +149,8 @@ Nice={{.D.Nice}}
 IOSchedulingClass=idle
 {{- end}}
 OOMScoreAdjust={{.D.OOM}}
+# No core dumps (reference 1.9): the stack trace is in the log.
+LimitCORE=0
 CapabilityBoundingSet={{.Caps}}
 NoNewPrivileges=yes
 ProtectHome=yes

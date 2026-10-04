@@ -76,6 +76,10 @@ UEFI firmware → GRUB (ceros-esp) → picks slot A or B (§4) → kernel + init
 flash wear out). `cer-syslogd` forwards the journal to the configured syslog servers (config reference 1.9, 5.1),
 which is where logs are kept. The log of a boot ends with it; crash reports are still written to `/var`.
 
+**No swap.** The image has no swap partition, swap file or zram; `swap.target` is masked and the build fails when
+the image brings a swap (fstab entry, swap unit, zram generator). switchd turns off any swap that appears anyway
+(config reference 1.9).
+
 **`/etc` is not kept across a reboot.** Every boot starts with the image's `/etc`, and switchd writes what the
 configuration says: host name, `/etc/hosts`, `resolv.conf`, the accounts of `system login user` and
 `system root-authentication`, its own SSH server and console units. The configuration is the only source of truth,
