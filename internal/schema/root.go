@@ -181,10 +181,18 @@ func build() *Node {
 		),
 	)
 
+	stackMACsecMode := Enum(
+		E("auto", "Encrypt where both ends offload MACsec to the NIC"),
+		E("on", "Encrypt, in software where a NIC cannot offload"),
+		E("off", "Never encrypt"),
+	)
 	stack := C("virtual-chassis", "Stack members and stacking (like a Junos Virtual Chassis)",
 		bfd("bfd", "BFD on stacking ports (IP-less)", "100"),
-		C("macsec", "MACsec on the stacking links (on by default)",
-			F("disable", "Do not encrypt the stacking links"),
+		C("macsec", "MACsec on the stacking links",
+			VD("mode", "Default for every stacking port", stackMACsecMode, "auto"),
+			L("interface", "Setting of one stacking port", Interface,
+				VD("mode", "MACsec on this stacking port", stackMACsecMode, "auto"),
+			),
 		),
 		L("member", "Stack member", MemberID,
 			V("host-name", "Host name of this member", Hostname),

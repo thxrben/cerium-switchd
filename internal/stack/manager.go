@@ -45,6 +45,9 @@ type Manager struct {
 	Linux func(local string) (string, bool)
 	// HostName is this member's host name (shown to neighbours).
 	HostName func() string
+	// MACsecOffload reports whether a port's NIC encrypts MACsec in
+	// hardware (told to the neighbour in the handshake; nil: no).
+	MACsecOffload func(linux string) bool
 	// ActiveConfig returns the active configuration (JSON) for a joining
 	// member.
 	ActiveConfig func() json.RawMessage
@@ -111,6 +114,9 @@ type PortStatus struct {
 	// PathMTU is the largest frame (Ethernet payload) the cable carried in
 	// the last probe round (0: not known yet; docs/stack-protocol.md).
 	PathMTU int
+	// MACsecOffload of this port and of the neighbour's port (from its
+	// hello).
+	MACsecOffload, PeerMACsecOffload bool
 }
 
 // StackLink is a stacking link with an up member session.
@@ -118,6 +124,10 @@ type StackLink struct {
 	Linux       string
 	Neighbor    int
 	NeighborMAC net.HardwareAddr
+	// Port is this end ("<card>/<port>"), PeerPort the neighbour's; with
+	// the ends' MACsec offload (reference 5.2).
+	Port, PeerPort       string
+	Offload, PeerOffload bool
 }
 
 // Links returns the stacking links whose member sessions are up.
@@ -125,7 +135,8 @@ func (m *Manager) Links() []StackLink {
 	var out []StackLink
 	for _, p := range m.Ports() {
 		if p.State == "up" && p.NeighborID > 0 && p.Linux != "" && len(p.NeighborMAC) == 6 {
-			out = append(out, StackLink{Linux: p.Linux, Neighbor: p.NeighborID, NeighborMAC: p.NeighborMAC})
+			out = append(out, StackLink{Linux: p.Linux, Neighbor: p.NeighborID, NeighborMAC: p.NeighborMAC,
+				Port: p.Port, PeerPort: p.PeerPort, Offload: p.MACsecOffload, PeerOffload: p.PeerMACsecOffload})
 		}
 	}
 	return out
@@ -195,6 +206,9 @@ type hello struct {
 	Member int    `json:"member"`
 	Host   string `json:"host"`
 	Port   string `json:"port"`
+	// MACsecOffload: the sender's port encrypts MACsec in hardware
+	// (reference 5.2; versions without it count as not offloading).
+	MACsecOffload bool `json:"macsec_offload,omitempty"`
 }
 
 func (m *Manager) path(n string) string { return filepath.Join(m.Dir, n) }
@@ -485,7 +499,10 @@ func (m *Manager) runPort(ctx context.Context, p *vcPort) {
 		m.sessions(ctx, p, pio, linux)
 		pio.Close()
 	}
-	p.set(func(s *PortStatus) { s.State, s.Neighbor, s.NeighborID, s.NeighborMAC = "down", "-", 0, nil })
+	p.set(func(s *PortStatus) {
+		s.State, s.Neighbor, s.NeighborID, s.NeighborMAC = "down", "-", 0, nil
+		s.PeerMACsecOffload = false
+	})
 }
 
 // sessions runs link + TLS sessions on an open port until ctx ends or the
@@ -529,7 +546,7 @@ func (m *Manager) sessions(ctx context.Context, p *vcPort, pio *link.PacketIO, l
 		l.Close()
 		p.set(func(s *PortStatus) {
 			s.State, s.Neighbor, s.PeerPort, s.UpSince = "down", "-", "", time.Time{}
-			s.NeighborID, s.NeighborMAC, s.PathMTU = 0, nil, 0
+			s.NeighborID, s.NeighborMAC, s.PathMTU, s.PeerMACsecOffload = 0, nil, 0, false
 			if err != nil {
 				s.LastError = err.Error()
 			}
@@ -605,7 +622,8 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	if m.HostName != nil {
 		host = m.HostName()
 	}
-	out, _ := json.Marshal(hello{Member: me, Host: host, Port: p.local})
+	offload := m.MACsecOffload != nil && m.MACsecOffload(linux)
+	out, _ := json.Marshal(hello{Member: me, Host: host, Port: p.local, MACsecOffload: offload})
 	if _, err := conn.Write(append(out, '\n')); err != nil {
 		return err
 	}
@@ -631,6 +649,7 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 	conn.SetDeadline(time.Time{})
 	p.set(func(s *PortStatus) {
 		s.State, s.PeerPort, s.UpSince, s.LastError = "up", h.Port, time.Now(), ""
+		s.MACsecOffload, s.PeerMACsecOffload = offload, h.MACsecOffload
 		s.NeighborID, s.NeighborMAC = h.Member, slices.Clone(pio.Peer())
 		s.Neighbor = fmt.Sprintf("member %d", h.Member)
 		if h.Host != "" {

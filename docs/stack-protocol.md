@@ -76,7 +76,8 @@ Minimal on purpose (nothing expires, nothing depends on the clock):
 
 When a link is up, each side first writes one byte: `M` (member session) or `J` (this switch is joining with a token).
 * `M`/`M`: TLS 1.3 between members; the side with the lower MAC address is the TLS client. Then each side sends a
-  hello (JSON line: member id, host name, local port). Stack messages follow on the same connection.
+  hello (JSON line: member id, host name, local port, and `macsec_offload` when the port encrypts MACsec in
+  hardware: config reference 5.2 decides each link from both ends' values; absent counts as false). Stack messages follow on the same connection.
 * `J`/`M`: the joining side is the TLS client with its self-signed certificate; the stack side presents the stack
   certificate. The join exchange of "Keys and joining" follows (JSON lines). Afterwards the link is closed; the new
   member reconnects with `M` once switchd has restarted with its new identity.

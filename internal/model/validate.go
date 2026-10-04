@@ -67,6 +67,9 @@ type PortInfo struct {
 	MTU       int    // current kernel (Linux) MTU
 	MaxMTU    int    // kernel (Linux) maximum MTU, 0 = unknown
 	StackPort bool   // designated stacking port (never a data port)
+	// MACsecOffload: the NIC encrypts MACsec in hardware
+	// (macsec-hw-offload).
+	MACsecOffload bool
 	// PathMTU is the frame size (Ethernet header included) that probe frames
 	// verified on a stacking port's cable; 0: not known.
 	PathMTU int
@@ -336,7 +339,7 @@ func (b *builder) validateStackMTU() {
 			if !p.StackPort || p.MaxMTU <= 0 {
 				continue
 			}
-			over := b.cfg.StackOverheadOf()
+			over := b.cfg.StackPortOverhead(name, p.MACsecOffload)
 			if max := min(p.MaxMTU, MaxStackPortMTU) + EthHeader; mtu+over > max {
 				b.errorf(where, "frames of %d bytes need %d on the stacking links, but stacking port %s of member %d carries at most %d; the largest mtu the stack can carry is %d",
 					mtu, mtu+over, name, m, max, max-over)

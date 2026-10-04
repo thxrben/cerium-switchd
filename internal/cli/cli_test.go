@@ -616,7 +616,7 @@ func (f *fakeOps) Limits() (LimitsStatus, error) {
 
 func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
 	return StackMTUStatus{Member: 1, DataMTU: 9014, Where: "vlans storage mtu", Stack: true, Ports: []StackMTUPort{
-		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216, PathMTU: 9202}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058},
+		{Port: "1/5/0", MTU: 9216, MaxMTU: 9216, PathMTU: 9202, Overhead: 90}, {Port: "1/5/1", MTU: 1514, MaxMTU: 16058},
 		{Port: "1/5/2", MTU: 9000, MaxMTU: 9050}, {Port: "1/5/3", MTU: 9216, MaxMTU: 9216, PathMTU: 1500}}}, nil
 }
 
@@ -1071,8 +1071,9 @@ func TestShowStackMTU(t *testing.T) {
 	ts.sh.env.Ops = &fakeOps{}
 	contains(t, ts.ok("show virtual-chassis mtu"),
 		"Largest data mtu in the stack:  9014 (vlans storage mtu; hosts up to MTU 9000)",
-		"Needed on the stacking links:   9104 (+90: tunnel 50, VLAN tags 8, MACsec 32)",
-		"The stacking ports allow data mtu up to 8960 (hosts up to MTU 8946)",
+		"Needed on the stacking links:   9072 (+58: tunnel 50, VLAN tags 8)",
+		"  on ports that may encrypt:    9104 (+90: tunnel 50, VLAN tags 8, MACsec 32)",
+		"The stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
 		"  1/5/0    9216    9216     9216      ok",
 		"  1/5/1    1514    16058    -         too small (set to the maximum when switchd starts)",
 		"  1/5/2    9000    9050     -         too small: the NIC carries at most 9050",

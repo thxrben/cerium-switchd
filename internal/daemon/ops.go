@@ -757,7 +757,10 @@ func (o *ops) StackMTU() (cli.StackMTUStatus, error) {
 		if l == nil {
 			continue
 		}
-		sp := cli.StackMTUPort{Port: fmt.Sprintf("%d/%s", o.member, p.Port), MTU: l.MTU + model.EthHeader, PathMTU: p.PathMTU}
+		name := fmt.Sprintf("%d/%s", o.member, p.Port)
+		offload := inventory.ReadCaps("/sys", p.Linux).Features["macsec-hw-offload"] != ""
+		sp := cli.StackMTUPort{Port: name, MTU: l.MTU + model.EthHeader, PathMTU: p.PathMTU,
+			Overhead: cfg.StackPortOverhead(name, offload)}
 		if l.MaxMTU > 0 {
 			sp.MaxMTU = min(l.MaxMTU, model.MaxStackPortMTU) + model.EthHeader
 		}

@@ -231,8 +231,8 @@ func TestInventoryChecks(t *testing.T) {
 // stacking port (reference 5.2, stack MTU).
 func TestStackMTU(t *testing.T) {
 	inv := fakeInv{"1/0/1": 9216, "1/0/2": 9216, "1/0/3": 9216, "1/0/4": 9216, "1/9/0": 9000, "1/9/8": -3, "1/9/9": -1}
-	// Without MACsec on the stacking links: 58 bytes on top.
-	valid := valid + "set virtual-chassis macsec disable\n"
+	// Plain stacking links (auto, the default, on NICs without MACsec
+	// offload): 58 bytes on top.
 	// Hosts with MTU 9000 (mtu 9014) and the reference config's 9000: fine
 	// with stacking NICs limited to 9216-byte frames.
 	_, issues := build(t, valid+"set interfaces 1/0/3 mtu 9014\n", inv)
@@ -265,14 +265,68 @@ func TestStackMTU(t *testing.T) {
 	if _, issues := build(t, valid+"set interfaces 1/0/3 mtu 9158\n", inv); issues.HasErrors() {
 		t.Errorf("mtu 9158 must fit:\n%s", issues)
 	}
-	// With MACsec (the default) 32 more: 9126 is the limit.
-	if _, issues := build(t, strings.Replace(valid, "set virtual-chassis macsec disable\n", "", 1)+"set interfaces 1/0/3 mtu 9127\n", inv); !strings.Contains(issues.String(), "the largest mtu the stack can carry is 9126") {
-		t.Errorf("with MACsec:\n%s", issues)
+	// MACsec on one port (32 more there): 9126 is the limit at 1/9/8,
+	// the 16044 port still suffices.
+	on := valid + "set virtual-chassis macsec interface 1/9/8 mode on\nset interfaces 1/0/3 mtu 9127\n"
+	if _, issues := build(t, on, inv); !strings.Contains(issues.String(), "stacking port 1/9/8 of member 1 carries at most 9216; the largest mtu the stack can carry is 9126") ||
+		strings.Contains(issues.String(), "1/9/9") {
+		t.Errorf("with MACsec on 1/9/8:\n%s", issues)
+	}
+	// auto counts the MACsec overhead only on a port that can offload it.
+	oinv := offloadInv{fakeInv: inv}
+	if _, issues := build(t, valid+"set interfaces 1/0/3 mtu 9127\n", oinv); !strings.Contains(issues.String(), "the largest mtu the stack can carry is 9126") {
+		t.Errorf("auto with offload:\n%s", issues)
+	}
+	// off: plain even where the NIC could offload.
+	if _, issues := build(t, valid+"set virtual-chassis macsec mode off\nset interfaces 1/0/3 mtu 9158\n", oinv); issues.HasErrors() {
+		t.Errorf("off with offload:\n%s", issues)
+	}
+	// A per-port setting for a port that is not a stacking port: a warning.
+	if _, issues := build(t, valid+"set virtual-chassis macsec interface 1/0/3 mode on\n", inv); !strings.Contains(issues.String(), "1/0/3 is not a stacking port") {
+		t.Errorf("not a stacking port:\n%s", issues)
 	}
 	// A standalone switch has no stack tunnels.
 	one := "set interfaces 1/0/3 mtu 9216\nset interfaces 1/0/3 unit 0 family ethernet-switching vlan members v\nset vlans v vlan-id 5\n"
 	if _, issues := build(t, one, inv); issues.HasErrors() {
 		t.Errorf("standalone: %s", issues)
+	}
+}
+
+// offloadInv: the stacking ports' NICs offload MACsec.
+type offloadInv struct{ fakeInv }
+
+func (o offloadInv) Ports(member int) (map[string]PortInfo, bool) {
+	ports, ok := o.fakeInv.Ports(member)
+	for n, p := range ports {
+		if p.StackPort {
+			p.MACsecOffload = true
+			ports[n] = p
+		}
+	}
+	return ports, ok
+}
+
+// The decision per stacking link (reference 5.2).
+func TestStackLinkMACsec(t *testing.T) {
+	cfg, _ := build(t, valid+"set virtual-chassis macsec interface 2/0/1 mode on\nset virtual-chassis macsec interface 3/0/1 mode off\n", nil)
+	for _, c := range []struct {
+		a, b       string
+		aOff, bOff bool
+		enc        bool
+		why        string
+	}{
+		{"1/0/1", "2/0/2", true, true, true, ""},
+		{"1/0/1", "2/0/2", true, false, false, "auto: 2/0/2 cannot offload"},
+		{"1/0/1", "2/0/2", false, false, false, "auto: neither NIC can offload"},
+		{"1/0/1", "2/0/1", false, false, true, ""}, // on: software
+		{"2/0/1", "3/0/1", true, true, false, "off on 3/0/1"},
+		{"3/0/1", "1/0/1", true, true, false, "off on 3/0/1"},
+	} {
+		enc, why := cfg.StackLinkMACsec(c.a, c.b, c.aOff, c.bOff)
+		enc2, _ := cfg.StackLinkMACsec(c.b, c.a, c.bOff, c.aOff)
+		if enc != c.enc || why != c.why || enc2 != enc {
+			t.Errorf("%s-%s offload %v/%v: %v %q (other end %v), want %v %q", c.a, c.b, c.aOff, c.bOff, enc, why, enc2, c.enc, c.why)
+		}
 	}
 }
 

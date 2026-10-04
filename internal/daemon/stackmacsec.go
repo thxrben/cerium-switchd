@@ -19,8 +19,9 @@ import (
 )
 
 // stackMACsec encrypts the stacking links (virtual-chassis macsec,
-// reference 5.2): a MACsec device per stacking port carries the stack
-// tunnels. Each member makes the key of its own transmit direction and
+// reference 5.2): a MACsec device per encrypted stacking port carries the
+// stack tunnels; which links are encrypted is decided per link
+// (decideLink: both ends' modes and NIC offload). Each member makes the key of its own transmit direction and
 // pushes it to the neighbour over the stacking protocol (mutually
 // authenticated TLS); it sends with a key only after the neighbour has
 // installed it for receiving, so a new key loses no frame.
@@ -40,23 +41,22 @@ type stackMACsec struct {
 	members     func() int
 	lastMembers int
 
-	mu      sync.Mutex
-	enabled bool
-	links   map[string]*secLink // by port
+	mu    sync.Mutex
+	links map[string]*secLink // encrypted links by port
+	plain []stackLinkSpec     // the other links (show security macsec)
 
 	// The links the stack loop wants (want), taken by run: the key
 	// exchange waits for neighbours and must not hold up that loop.
 	wantMu    sync.Mutex
 	wantLinks []stackLinkSpec
-	wantOn    bool
 	wantNew   chan struct{}
 }
 
-// want records the stacking links and whether MACsec is on.
-func (s *stackMACsec) want(links []stackLinkSpec, on bool) {
+// want records the stacking links and their decisions.
+func (s *stackMACsec) want(links []stackLinkSpec) {
 	s.wantMu.Lock()
-	changed := on != s.wantOn || fmt.Sprint(links) != fmt.Sprint(s.wantLinks)
-	s.wantLinks, s.wantOn = links, on
+	changed := fmt.Sprint(links) != fmt.Sprint(s.wantLinks)
+	s.wantLinks = links
 	if s.wantNew == nil {
 		s.wantNew = make(chan struct{}, 1)
 	}
@@ -89,7 +89,7 @@ func (s *stackMACsec) run(ctx context.Context) {
 		case <-ch:
 		}
 		s.wantMu.Lock()
-		links, on := s.wantLinks, s.wantOn
+		links := s.wantLinks
 		s.wantMu.Unlock()
 		if s.members != nil {
 			if n := s.members(); n < s.lastMembers {
@@ -99,7 +99,7 @@ func (s *stackMACsec) run(ctx context.Context) {
 				s.lastMembers = n
 			}
 		}
-		s.sync(links, on)
+		s.sync(links)
 	}
 }
 
@@ -129,6 +129,17 @@ type secLink struct {
 	lastTry  time.Time
 	plain    bool // the neighbour's version has no MACsec
 	filtered bool
+	// name, peerName: the ends' interface names; offload the NIC's
+	// ("mac", "phy" or "": software); software: encryption in software is
+	// allowed (an end is "on"); refused: the driver refused the offload
+	// and software is not allowed (the link stays plain until refusedAt +
+	// 10 min).
+	name, peerName string
+	nicOffload     bool
+	offload        string
+	software       bool
+	refused        bool
+	refusedAt      time.Time
 }
 
 // secPush is a key for the neighbour's receive direction.
@@ -164,37 +175,48 @@ func devName(port string, index int) string {
 func (s *stackMACsec) DataDev(port string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l := s.links[port]; l != nil && s.enabled && l.secured() {
+	if l := s.links[port]; l != nil && l.secured() {
 		return l.dev
 	}
 	return ""
 }
 
-// stackLinkSpec is a stacking link to encrypt.
+// stackLinkSpec is a stacking link and its MACsec decision.
 type stackLinkSpec struct {
 	Port     string
 	Index    int
 	Neighbor int
 	PeerMAC  string
+	// Name and PeerName are the ends' interface names; Offload: this end's
+	// NIC encrypts MACsec.
+	Name, PeerName string
+	Offload        bool
+	// Encrypt: the link is encrypted; Software: in software where the NIC
+	// cannot (an end is "on"); Why explains a plain link.
+	Encrypt, Software bool
+	Why               string
 }
 
-// sync converges with the stacking links and the configuration; it runs
-// with the stack underlay (every 100 ms).
-func (s *stackMACsec) sync(links []stackLinkSpec, enabled bool) {
+// sync converges with the stacking links and their decisions; it runs
+// every second and on every change.
+func (s *stackMACsec) sync(links []stackLinkSpec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.links == nil {
 		s.links = map[string]*secLink{}
 	}
-	s.enabled = enabled
 	want := map[string]stackLinkSpec{}
-	if enabled {
-		for _, l := range links {
+	s.plain = nil
+	for _, l := range links {
+		if l.Encrypt {
 			want[l.Port] = l
+		} else {
+			s.plain = append(s.plain, l)
 		}
 	}
 	for port, l := range s.links {
-		if w, ok := want[port]; !ok || w.Neighbor != l.neighbor || !strings.EqualFold(w.PeerMAC, l.peerMAC) {
+		if w, ok := want[port]; !ok || w.Neighbor != l.neighbor || !strings.EqualFold(w.PeerMAC, l.peerMAC) ||
+			w.Offload != l.nicOffload || w.Software != l.software {
 			s.remove(l)
 			delete(s.links, port)
 		}
@@ -202,7 +224,8 @@ func (s *stackMACsec) sync(links []stackLinkSpec, enabled bool) {
 	for port, w := range want {
 		l := s.links[port]
 		if l == nil {
-			l = &secLink{port: port, dev: devName(port, w.Index), neighbor: w.Neighbor, peerMAC: strings.ToLower(w.PeerMAC)}
+			l = &secLink{port: port, dev: devName(port, w.Index), neighbor: w.Neighbor, peerMAC: strings.ToLower(w.PeerMAC),
+				name: w.Name, peerName: w.PeerName, nicOffload: w.Offload, software: w.Software}
 			s.links[port] = l
 		}
 		s.step(l)
@@ -247,6 +270,12 @@ func (s *stackMACsec) ssci(neighbor int) uint32 {
 
 func (s *stackMACsec) step(l *secLink) {
 	now := s.now()
+	if l.refused {
+		if now.Sub(l.refusedAt) < 10*time.Minute {
+			return
+		}
+		l.refused = false // the driver may take it now (e.g. after an update)
+	}
 	if !s.create(l, now) {
 		return
 	}
@@ -274,7 +303,13 @@ func (s *stackMACsec) step(l *secLink) {
 // create makes the link's device (true: it exists).
 func (s *stackMACsec) create(l *secLink, now time.Time) bool {
 	if !l.created {
-		err := macsec.Create(s.k, macsec.Device{Name: l.dev, Parent: l.port, Cipher: stackCipher})
+		err := s.createDevice(l)
+		if errors.Is(err, errOffloadRefused) {
+			l.refused, l.refusedAt = true, now
+			s.alarms.Raise(stackMACsecAlarm+l.port, alarms.Minor, fmt.Sprintf("stacking port %s is not encrypted: its driver refused the MACsec offload (mode auto: no software encryption)", l.name))
+			s.log.Warn("stack macsec: the driver refused the offload; the link stays plain", "port", l.port)
+			return false
+		}
 		if err != nil && strings.Contains(err.Error(), "File exists") {
 			// switchd restarted: the device and its keys are still there
 			// (traffic keeps flowing); new keys in both directions replace
@@ -295,6 +330,36 @@ func (s *stackMACsec) create(l *secLink, now time.Time) bool {
 		l.created = true
 	}
 	return true
+}
+
+var errOffloadRefused = errors.New("the driver refused the MACsec offload")
+
+// createDevice makes the link's MACsec device: offloaded to the NIC (mac,
+// else phy) where it can; in software when it cannot, or when the driver
+// refuses and software is allowed (reference 5.2).
+func (s *stackMACsec) createDevice(l *secLink) error {
+	d := macsec.Device{Name: l.dev, Parent: l.port, Cipher: stackCipher}
+	if !l.nicOffload {
+		l.offload = ""
+		return macsec.Create(s.k, d)
+	}
+	var errs []error
+	for _, mode := range []string{"mac", "phy"} {
+		d.Offload = mode
+		err := macsec.Create(s.k, d)
+		if err == nil || strings.Contains(err.Error(), "File exists") {
+			l.offload = mode
+			return err
+		}
+		errs = append(errs, err)
+		macsec.Delete(s.k, l.dev) // a device left half made by the failed offload
+	}
+	if !l.software {
+		return fmt.Errorf("%w: %v", errOffloadRefused, errors.Join(errs...))
+	}
+	s.alarms.Raise(stackMACsecAlarm+l.port, alarms.Minor, fmt.Sprintf("stacking port %s encrypts in software: its driver refused the MACsec offload", l.name))
+	d.Offload, l.offload = "", ""
+	return macsec.Create(s.k, d)
 }
 
 // rekey hands a new transmit key to the neighbour and sends with it once
@@ -342,7 +407,9 @@ func (s *stackMACsec) rekey(l *secLink, now time.Time) {
 	}
 	first := l.tx == nil
 	l.tx, l.txSince, l.repush = &sak, now, false
-	s.alarms.Clear(stackMACsecAlarm + l.port)
+	if l.offload != "" || !l.nicOffload {
+		s.alarms.Clear(stackMACsecAlarm + l.port) // keeps a software fallback's alarm
+	}
 	if first {
 		s.log.Info("stack macsec: link encrypted (sending)", "port", l.port, "neighbor", l.neighbor)
 	}
@@ -364,8 +431,8 @@ func (s *stackMACsec) receive(from int, req secPush) (secReply, error) {
 			l = x
 		}
 	}
-	if l == nil || !s.enabled {
-		return secReply{}, errors.New("no such stacking link (yet)")
+	if l == nil || l.refused {
+		return secReply{}, errors.New("MACsec is not used on this stacking link (reference 5.2: mode, offload)")
 	}
 	if !s.create(l, s.now()) {
 		return secReply{}, errors.New("the MACsec device is not ready")
@@ -433,6 +500,8 @@ type StackSecStatus struct {
 	KeySince   time.Time
 	PeerMAC    string
 	Offloading bool
+	// Name and PeerName are the ends' interface names.
+	Name, PeerName string
 }
 
 // status lists the links.
@@ -442,12 +511,16 @@ func (s *stackMACsec) status() []StackSecStatus {
 	var out []StackSecStatus
 	for _, l := range s.links {
 		st := StackSecStatus{Port: l.port, Dev: l.dev, Neighbor: l.neighbor, TxAN: -1, RxANs: append([]uint8(nil), l.rx...),
-			PeerMAC: l.peerMAC, KeySince: l.txSince}
+			PeerMAC: l.peerMAC, KeySince: l.txSince, Offloading: l.offload != "", Name: l.name, PeerName: l.peerName}
 		switch {
+		case l.refused:
+			st.State, st.Dev = "plain (the driver refused the offload)", ""
 		case l.plain:
 			st.State = "plain (neighbour without MACsec)"
+		case l.secured() && l.offload != "":
+			st.State = "secured (hardware)"
 		case l.secured():
-			st.State = "secured"
+			st.State = "secured (software)"
 		default:
 			st.State = "negotiating"
 		}
@@ -455,6 +528,10 @@ func (s *stackMACsec) status() []StackSecStatus {
 			st.TxAN = int(l.tx.AN)
 		}
 		out = append(out, st)
+	}
+	for _, p := range s.plain {
+		out = append(out, StackSecStatus{Port: p.Port, Neighbor: p.Neighbor, TxAN: -1, PeerMAC: strings.ToLower(p.PeerMAC),
+			Name: p.Name, PeerName: p.PeerName, State: "plain (" + p.Why + ")"})
 	}
 	return out
 }
@@ -502,9 +579,16 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 		if n, ok := o.names.Name(l.Port); ok {
 			name = n
 		}
-		c := cli.MACsecConn{Member: o.member, Interface: name, Dev: l.Dev, CA: "stack", Cipher: stackCipher, State: l.State,
-			TxAN: l.TxAN, KeySince: l.KeySince, Neighbour: fmt.Sprintf("member %d (%s)", l.Neighbor, l.PeerMAC),
-			Counters: map[string]uint64{}}
+		peer := fmt.Sprintf("member %d (%s)", l.Neighbor, l.PeerMAC)
+		if l.PeerName != "" {
+			peer = fmt.Sprintf("member %d, port %s (%s)", l.Neighbor, l.PeerName, l.PeerMAC)
+		}
+		cipher := stackCipher
+		if l.Dev == "" {
+			cipher = "-" // plain
+		}
+		c := cli.MACsecConn{Member: o.member, Interface: name, Dev: l.Dev, CA: "stack", Cipher: cipher, State: l.State,
+			TxAN: l.TxAN, KeySince: l.KeySince, Neighbour: peer, Counters: map[string]uint64{}}
 		if len(l.RxANs) > 0 {
 			c.RxSCs = []string{fmt.Sprintf("%s port 1, associations %v", l.PeerMAC, l.RxANs)}
 		}

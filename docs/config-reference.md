@@ -1270,9 +1270,10 @@ configured; they follow from the member list and the stacking cables.
     fragmented. The MTU rule below makes sure that this never happens to a frame a data port accepted.
 * **Stack MTU.** A frame between members carries 58 bytes on top of its own size on the stacking link: the tunnel
   (outer Ethernet 14, IPv4 20, UDP 8, VXLAN 8 = 50), the VLAN tag inside the tunnel (4) and one more VLAN tag of the
-  frame itself (4: a QinQ customer tag or a host's own tag, which every port also accepts, 1.3). With MACsec on the
-  stacking links (the default, `virtual-chassis macsec`) 32 more: **90 bytes** (SecTAG with SCI 16, ICV 16). The
-  numbers below are those without MACsec; with it, every "58" is "90".
+  frame itself (4: a QinQ customer tag or a host's own tag, which every port also accepts, 1.3). On a stacking link
+  that may be encrypted (`virtual-chassis macsec`) 32 more: **90 bytes** (SecTAG with SCI 16, ICV 16). The overhead is
+  **per stacking port**: 90 where its setting is `on`, or `auto` and the port's NIC can encrypt MACsec in hardware;
+  58 otherwise. The numbers below are those of a plain link; on such a port every "58" is "90".
   * switchd sets every stacking port to the largest MTU its NIC supports (up to a frame size of 16058) when the port is
     designated, and never changes it because of a commit (an MTU change can restart a link). Ports designated by an
     older version are set once when the new version starts.
@@ -1306,27 +1307,51 @@ configured intervals (they announce theirs in the handshake), so a slow member i
 * Values below 100 ms can still cause false detections on small ARM boards. A false detection makes stacking paths
   re-route, but never drops data traffic by itself.
 
-#### `virtual-chassis macsec { disable; }`
-**Stacking links are encrypted with MACsec by default** (IEEE 802.1AE, GCM-AES-XPN-256): the stack tunnels, and
-with them every frame of the clients that crosses a stacking link, cannot be read or changed on the cable. The
-stacking protocol itself (membership, Raft, the key exchange) is TLS already and stays outside MACsec.
+#### `virtual-chassis macsec { mode auto|on|off; interface <interface-name> mode auto|on|off; }`
+MACsec (IEEE 802.1AE, GCM-AES-XPN-256) on the stacking links: the stack tunnels, and with them every frame of the
+clients that crosses a stacking link, cannot be read or changed on the cable. The stacking protocol itself
+(membership, Raft, the key exchange) is TLS already and stays outside MACsec. Software encryption costs CPU on every
+frame between members, so **MACsec is used by default only where the NICs do it** (decided 2026-10-04).
+* **Setting per stacking port**: `interface <interface-name> mode` (a stacking port of any member, e.g. `2/0/1`)
+  overrides the stack-wide `mode` (default `auto`):
+  * `auto`: encrypted when **both ends** of the link encrypt MACsec in hardware (`show system offload`:
+    `macsec-hw-offload`; each end reports its port in the stacking handshake), plain otherwise.
+  * `on`: encrypted, in software where a NIC cannot offload (AES-NI on x86; small ARM boards are much slower).
+  * `off`: never encrypted.
+* **A link** (two stacking ports, one per member) is encrypted when neither end is `off` and either end is `on`, or
+  both ends are `auto` and both NICs offload. Both members decide the same way from the same facts (the replicated
+  configuration and the two ports' offload), so they always agree. An `on` end facing an `off` end stays plain;
+  `show security macsec connections` names the reason.
+* **Mixed links**: several stacking links between the same two members may differ (some encrypted, some plain, e.g.
+  an encrypted link over an untrusted path next to a plain local cable). The stack tunnels use all of them (equal
+  paths), so a member pair's traffic is encrypted only on its encrypted links; set `on` (or `off`) consistently where
+  that matters.
+* **Migration** to an offloading link without losing the stack: designate the new port on both members (`request
+  virtual-chassis vc-port set`, cable it); it comes up encrypted (`auto`) next to the old one and carries traffic
+  with it; then delete the old port's designation (`vc-port delete`): its traffic moves to the new link within the
+  BFD detection time. The MTU check (above) uses each port's own overhead, so the stack MTU is checked for both.
 * **Keys.** No configuration and no MKA: the two members of a link agree on the keys over the stacking protocol's
   mutually authenticated TLS channel. Each member makes the key of its own transmit direction (a random 256-bit SAK,
   a random salt) and hands it to the neighbour; a member that joins gets its links' keys right after the join (it
   is authenticated by its stack certificate then). With 64-bit packet numbers (XPN) a key never runs out; it is
   renewed **every hour** and whenever a member leaves the stack. A new key is installed for receiving on the
   neighbour before it is used for sending, so the change loses no frame.
-* **Switching a link over** (at the join, after `disable` is removed, or after a member restarts) takes the link out
-  of the stack tunnels for a moment: the stack routes around it where another path exists (a ring), else that
-  member pair loses frames for well under a second.
-* Each stacking port gets a MACsec device (`ms<port>`, in the stack's hidden routing instance); frames without
-  valid protection from the neighbour are dropped (`validate strict`) and counted. NICs that encrypt MACsec in
-  hardware (`show system offload`: `macsec-hw-offload`) are used for it, others encrypt in software (AES-NI on x86;
-  `show system limits` counts the ports that can offload).
-* **Mixed versions**: a link to a member whose version has no MACsec stays unencrypted (both ends must support it);
-  `show security macsec connections` shows it as `plain (neighbour without MACsec)`, and a Minor alarm names it.
-* `disable`: the stacking links are not encrypted (the stack MTU overhead is 58 then). A change applies one link at
-  a time.
+* **Switching a link over** (at the join, after a mode change, or after a member restarts) takes the link out of the
+  stack tunnels for a moment: the stack routes around it where another path exists (a ring, a second link), else
+  that member pair loses frames for well under a second. A mode change applies one link at a time.
+* Each encrypted stacking port gets a MACsec device (`ms<port>`, in the stack's hidden routing instance), offloaded
+  to the NIC (`offload mac`, else `phy`) where the port can. Frames without valid protection from the neighbour are
+  dropped (`validate strict`) and counted. If the driver refuses the offload, an `auto` link stays plain and an
+  `on` link encrypts in software; a Minor alarm names the port in both cases.
+* **Mixed versions**: a link to a member whose version has no MACsec stays plain (a Minor alarm names it when the
+  link is to be encrypted). A member of a version that does not report its port's offload counts as not offloading.
+  A member of the previous version (MACsec on by default) offers keys on every link; a link this member decides to
+  keep plain refuses them, and both ends stay plain.
+* `show security macsec connections` shows per stacking link the mode of both ends, the state (`secured (hardware)`,
+  `secured (software)`, `negotiating`, `plain (off)`, `plain (auto: <who> cannot offload)`, `plain (neighbour without
+  MACsec)`) and the keys.
+* Stored configurations with `virtual-chassis macsec disable` (earlier versions, where MACsec was on by default) are
+  converted to `mode off`.
 
 #### `virtual-chassis member <1-16> { … }`
 Declares a stack member and its per-member settings. Configuration for a member that has not joined yet is kept and
@@ -2641,8 +2666,10 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `virtual-chassis bfd` | container |  |  | BFD on stacking ports (IP-less) |
 | `virtual-chassis bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
 | `virtual-chassis bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
-| `virtual-chassis macsec` | container |  |  | MACsec on the stacking links (on by default) |
-| `virtual-chassis macsec disable` | flag |  |  | Do not encrypt the stacking links |
+| `virtual-chassis macsec` | container |  |  | MACsec on the stacking links |
+| `virtual-chassis macsec mode` | leaf | auto \\| on \\| off | auto | Default for every stacking port |
+| `virtual-chassis macsec interface <interface-name>` | list | &lt;interface-name&gt; |  | Setting of one stacking port |
+| `virtual-chassis macsec interface <interface-name> mode` | leaf | auto \\| on \\| off | auto | MACsec on this stacking port |
 | `virtual-chassis member <member-id>` | list | &lt;member-id&gt; 1..16 |  | Stack member |
 | `virtual-chassis member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
 | `virtual-chassis member <member-id> mastership-priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |

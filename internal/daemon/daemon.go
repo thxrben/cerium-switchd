@@ -143,6 +143,9 @@ func Run(ctx context.Context, o Options) error {
 	var engine *commit.Engine
 	vc := &stack.Manager{Dir: filepath.Join(o.StateDir, "stack"), Log: log,
 		HostName: func() string { return hostName() },
+		MACsecOffload: func(linux string) bool {
+			return inventory.ReadCaps("/sys", linux).Features["macsec-hw-offload"] != ""
+		},
 		ActiveConfig: func() json.RawMessage {
 			raw, _ := json.Marshal(config.ToJSON(engine.Active().Root))
 			return raw
@@ -567,17 +570,10 @@ func Run(ctx context.Context, o Options) error {
 			}
 			liveOps.stackSec = sec
 			go sec.run(ctx)
-			go runStackNet(ctx, vc, func() int {
+			go runStackNet(ctx, vc, func() *model.Config {
 				cfg, _ := model.Build(engine.Active().Active(), nil)
-				if cfg == nil || len(cfg.SwitchMembers()) < 2 {
-					return 0
-				}
-				mtu, _ := cfg.MaxDataMTU()
-				return mtu + cfg.StackOverheadOf()
-			}, sec, func() bool {
-				cfg, _ := model.Build(engine.Active().Active(), nil)
-				return cfg == nil || !cfg.MACsec.StackDisabled
-			}, log)
+				return cfg
+			}, sec, log)
 		}
 	}
 	srv.Env = func(name string, class commit.Class) cli.Env {

@@ -17,29 +17,31 @@ import (
 // step with the stacking links and the stack topology: it recomputes every
 // 100 ms and on every topology change, applies only when something
 // differs, and checks the kernel fully every 10 s.
-func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, sec *stackMACsec, macsecOn func() bool, log *slog.Logger) {
+func runStackNet(ctx context.Context, vc *stack.Manager, active func() *model.Config, sec *stackMACsec, log *slog.Logger) {
 	warned := map[string]string{}
+	// The active configuration, built at most once a second (a commit
+	// reaches the stacking links within a second).
+	var cfg *model.Config
+	var built time.Time
 	var last string
 	var lastFull time.Time
 	failing := false
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
 	for {
+		if now := time.Now(); cfg == nil || now.Sub(built) >= time.Second {
+			if c := active(); c != nil {
+				cfg = c
+			}
+			built = now
+		}
 		mesh := vc.Mesh()
 		var changed <-chan struct{}
 		if mesh != nil {
 			changed = mesh.Changed()
 			// MACsec first: an encrypted link's traffic goes through its
 			// device (reference 5.2).
-			var specs []stackLinkSpec
-			for _, l := range vc.Links() {
-				idx := 0
-				if i, err := net.InterfaceByName(l.Linux); err == nil {
-					idx = i.Index
-				}
-				specs = append(specs, stackLinkSpec{Port: l.Linux, Index: idx, Neighbor: l.Neighbor, PeerMAC: l.NeighborMAC.String()})
-			}
-			sec.want(specs, macsecOn())
+			sec.want(macsecLinks(cfg, vc.Member(), vc.Links()))
 			u := stackUnderlay(vc)
 			for i := range u.Links {
 				u.Links[i].Dev = sec.DataDev(u.Links[i].Port)
@@ -65,11 +67,13 @@ func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, sec *s
 		}
 		// A cable that verifiably cannot carry the largest data frame + the
 		// tunnel overhead loses those frames (reference 5.2, stack MTU).
-		if n := need(); n > 0 {
+		if cfg != nil && len(cfg.SwitchMembers()) > 1 {
+			mtu, _ := cfg.MaxDataMTU()
 			for _, p := range vc.Ports() {
 				if p.PathMTU == 0 || p.State != "up" {
 					continue
 				}
+				n := mtu + cfg.StackPortOverhead(fmt.Sprintf("%d/%s", vc.Member(), p.Port), p.MACsecOffload)
 				msg := ""
 				if p.PathMTU+model.EthHeader < n {
 					msg = fmt.Sprintf("%d/%d", p.PathMTU+model.EthHeader, n)
@@ -120,4 +124,32 @@ func stackUnderlay(vc *stack.Manager) dataplane.StackUnderlay {
 		slices.Sort(h)
 	}
 	return u
+}
+
+// macsecLinks decides MACsec for every stacking link (reference 5.2): both
+// ends' modes from the configuration, both ports' offload from the
+// stacking handshake.
+func macsecLinks(cfg *model.Config, member int, links []stack.StackLink) []stackLinkSpec {
+	var specs []stackLinkSpec
+	for _, l := range links {
+		idx := 0
+		if i, err := net.InterfaceByName(l.Linux); err == nil {
+			idx = i.Index
+		}
+		specs = append(specs, decideLink(cfg, member, l, idx))
+	}
+	return specs
+}
+
+func decideLink(cfg *model.Config, member int, l stack.StackLink, idx int) stackLinkSpec {
+	local, peer := fmt.Sprintf("%d/%s", member, l.Port), fmt.Sprintf("%d/%s", l.Neighbor, l.PeerPort)
+	spec := stackLinkSpec{Port: l.Linux, Index: idx, Neighbor: l.Neighbor, PeerMAC: l.NeighborMAC.String(),
+		Name: local, PeerName: peer, Offload: l.Offload}
+	if cfg == nil {
+		spec.Why = "no valid configuration"
+		return spec
+	}
+	spec.Encrypt, spec.Why = cfg.StackLinkMACsec(local, peer, l.Offload, l.PeerOffload)
+	spec.Software = cfg.StackMACsecMode(local) == "on" || cfg.StackMACsecMode(peer) == "on"
+	return spec
 }

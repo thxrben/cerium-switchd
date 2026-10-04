@@ -31,7 +31,8 @@ func (k *kernelInventory) Ports(member int) (map[string]model.PortInfo, bool) {
 	for _, p := range k.names.Ports() {
 		caps := inventory.ReadCaps("/sys", p.Linux)
 		info := model.PortInfo{Linux: p.Linux, StackPort: k.vc != nil && k.vc.IsPort(p.Linux), MaxSpeedMbps: caps.MaxSpeedMbps,
-			NoPause: caps.Pause == inventory.No, VlanChallenged: caps.Features["vlan-challenged"] == "on"}
+			NoPause: caps.Pause == inventory.No, VlanChallenged: caps.Features["vlan-challenged"] == "on",
+			MACsecOffload: caps.Features["macsec-hw-offload"] != ""}
 		if l := st.Links[p.Linux]; l != nil {
 			info.MTU, info.MaxMTU = l.MTU, l.MaxMTU
 		}

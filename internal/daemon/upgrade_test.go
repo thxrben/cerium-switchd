@@ -213,3 +213,20 @@ func TestUpgradeMCLAGDomains(t *testing.T) {
 		}
 	}
 }
+
+// MACsec on the stacking links was on by default with a disable flag; now
+// it is a mode (auto by default, reference 5.2).
+func TestUpgradeStackMACsec(t *testing.T) {
+	tr := upgrade(t, `{"virtual-chassis": {"macsec": {"disable": true}}}`)
+	if got := tr.Root.Leaf("virtual-chassis", "macsec", "mode"); got != "off" {
+		t.Errorf("disable -> mode %q:\n%s", got, config.FormatSet(tr))
+	}
+	tr = upgrade(t, `{"virtual-chassis": {"macsec": {"disable": true, "@inactive:disable": true}}}`)
+	if n := tr.Root.Get("virtual-chassis", "macsec", "mode"); n == nil || !n.Inactive || tr.Root.Leaf("virtual-chassis", "macsec", "mode") != "off" {
+		t.Errorf("inactive disable:\n%s", config.FormatSet(tr))
+	}
+	tr = upgrade(t, `{"virtual-chassis": {"macsec": {}}}`)
+	if got := tr.Root.Leaf("virtual-chassis", "macsec", "mode"); got != "" {
+		t.Errorf("no disable: mode %q", got)
+	}
+}

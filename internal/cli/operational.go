@@ -161,6 +161,17 @@ type StackMTUPort struct {
 	// PathMTU is what probe frames verified the cable carries (0: not
 	// known: the link is down or the first probe round is running).
 	PathMTU int
+	// Overhead is what the stack tunnels add on this port: 58, or 90 where
+	// MACsec may encrypt (reference 5.2).
+	Overhead int
+}
+
+// overheadOf is a port's overhead (the plain one when not reported).
+func (p StackMTUPort) overheadOf() int {
+	if p.Overhead > 0 {
+		return p.Overhead
+	}
+	return model.StackOverhead
 }
 
 // MCLAGStatus is "show mclag".
@@ -977,32 +988,40 @@ func (sh *Shell) showStackMTU(c *call) error {
 	}
 	st.Ports = slices.DeleteFunc(st.Ports, func(p StackMTUPort) bool { return !c.shows(p.Port) })
 	sort.SliceStable(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i].Port, st.Ports[j].Port) })
-	cfg, _ := model.Build(sh.env.Engine.Active(), nil)
-	over := cfg.StackOverheadOf()
-	need := st.DataMTU + over
+	lo, hi := model.StackOverhead, model.StackOverhead
+	for i, p := range st.Ports {
+		if i == 0 || p.overheadOf() < lo {
+			lo = p.overheadOf()
+		}
+		hi = max(hi, p.overheadOf())
+	}
 	fmt.Fprintf(c.out, "Frame sizes including the Ethernet header, without VLAN tags (reference 1.3)\n")
 	fmt.Fprintf(c.out, "  Largest data mtu in the stack:  %d (%s; hosts up to MTU %d)\n", st.DataMTU, st.Where, st.DataMTU-model.EthHeader)
 	if !st.Stack {
 		c.out.WriteString("  No other switch member: no stack tunnels.\n")
 	} else {
-		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: %s)\n", need, over, overheadParts(over))
+		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: %s)\n", st.DataMTU+lo, lo, overheadParts(lo))
+		if hi != lo {
+			fmt.Fprintf(c.out, "    on ports that may encrypt:    %d (+%d: %s)\n", st.DataMTU+hi, hi, overheadParts(hi))
+		}
 	}
 	if len(st.Ports) == 0 {
 		c.out.WriteString("\nNo stacking ports.\n")
 		return nil
 	}
-	limit := 0
+	carry := 0
 	for _, p := range st.Ports {
-		if p.MaxMTU > 0 && (limit == 0 || p.MaxMTU < limit) {
-			limit = p.MaxMTU
+		if c := p.MaxMTU - p.overheadOf(); p.MaxMTU > 0 && (carry == 0 || c < carry) {
+			carry = c
 		}
 	}
-	if limit > 0 {
-		carry := min(limit-over, 16000) // the largest configurable mtu
+	if carry > 0 {
+		carry = min(carry, 16000) // the largest configurable mtu
 		fmt.Fprintf(c.out, "  The stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", carry, carry-model.EthHeader)
 	}
 	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %-9s %s\n", "Port", "MTU", "Maximum", "Verified", "Status")
 	for _, p := range st.Ports {
+		need := st.DataMTU + p.overheadOf()
 		status := "ok"
 		switch {
 		case !st.Stack:
@@ -1614,15 +1633,16 @@ func (sh *Shell) showLimits(c *call) error {
 	}
 	line("Largest mtu configured", fmt.Sprintf("%d (%s; hosts up to MTU %d)", mtu, orDash(where), mtu-model.EthHeader))
 	if len(cfg.SwitchMembers()) > 1 {
-		line("Added by the stack tunnels", fmt.Sprintf("%d bytes (%s)", cfg.StackOverheadOf(), overheadParts(cfg.StackOverheadOf())))
-		limit := 0
+		line("Added by the stack tunnels", fmt.Sprintf("%d bytes (%s); %d where MACsec may encrypt", model.StackOverhead,
+			overheadParts(model.StackOverhead), model.StackOverhead+model.MACsecOverhead))
+		carry := 0
 		for _, p := range stack.Ports {
-			if p.MaxMTU > 0 && (limit == 0 || p.MaxMTU < limit) {
-				limit = p.MaxMTU
+			if c := p.MaxMTU - p.overheadOf(); p.MaxMTU > 0 && (carry == 0 || c < carry) {
+				carry = c
 			}
 		}
-		if limit > 0 {
-			carry := min(limit-cfg.StackOverheadOf(), schema.MaxMTU)
+		if carry > 0 {
+			carry = min(carry, schema.MaxMTU)
 			line("Largest mtu the stack carries", fmt.Sprintf("%d (hosts up to MTU %d; 'show virtual-chassis mtu')", carry, carry-model.EthHeader))
 		}
 	} else {

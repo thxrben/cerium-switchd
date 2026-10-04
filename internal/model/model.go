@@ -197,7 +197,7 @@ const EthHeader = 14
 // The stack tunnels (reference 5.2): a frame between members needs
 // StackOverhead bytes more on a stacking link (tunnel 50, the VLAN tag
 // inside the tunnel 4, one more tag of the frame 4), without MACsec
-// (Config.StackOverheadOf adds it). switchd sets stacking ports to their
+// (Config.StackPortOverhead adds it). switchd sets stacking ports to their
 // NIC maximum, at most MaxStackPortMTU (kernel MTU).
 const (
 	StackOverhead   = 58

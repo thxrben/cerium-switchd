@@ -11,10 +11,11 @@ import (
 // MACsec is security macsec and virtual-chassis macsec (reference 5.15,
 // 5.2).
 type MACsec struct {
-	// StackDisabled: virtual-chassis macsec disable (the stacking links
-	// are encrypted by default).
-	StackDisabled bool
-	CAs           map[string]*MACsecCA
+	// StackMode is virtual-chassis macsec mode (auto, on, off); StackPorts
+	// the per-port modes by interface name.
+	StackMode  string
+	StackPorts map[string]string
+	CAs        map[string]*MACsecCA
 	// Ports: the secured ports and their CA.
 	Ports map[string]string
 }
@@ -32,13 +33,60 @@ type MACsecCA struct {
 // (16) and the ICV (16).
 const MACsecOverhead = 32
 
-// StackOverheadOf is what a frame between members needs on a stacking
-// link (reference 5.2): the tunnel and tags, and MACsec unless disabled.
-func (c *Config) StackOverheadOf() int {
-	if c == nil || !c.MACsec.StackDisabled {
+// StackMACsecMode is the MACsec mode of a stacking port (its interface
+// name, e.g. 2/0/1): its own setting, else the stack-wide one (reference
+// 5.2; default auto).
+func (c *Config) StackMACsecMode(port string) string {
+	if c == nil {
+		return "auto"
+	}
+	if m := c.MACsec.StackPorts[port]; m != "" {
+		return m
+	}
+	if c.MACsec.StackMode != "" {
+		return c.MACsec.StackMode
+	}
+	return "auto"
+}
+
+// StackPortOverhead is what a frame between members needs on a stacking
+// port (reference 5.2): the tunnel and tags, and MACsec where the port may
+// encrypt (on, or auto with an offloading NIC).
+func (c *Config) StackPortOverhead(port string, offload bool) int {
+	switch c.StackMACsecMode(port) {
+	case "on":
 		return StackOverhead + MACsecOverhead
+	case "auto":
+		if offload {
+			return StackOverhead + MACsecOverhead
+		}
 	}
 	return StackOverhead
+}
+
+// StackLinkMACsec decides whether a stacking link between local and peer
+// (interface names) is encrypted, from both ends' modes and NIC offload
+// (reference 5.2). Both members decide the same way. why explains a plain
+// link ("" when encrypted).
+func (c *Config) StackLinkMACsec(local, peer string, localOffload, peerOffload bool) (encrypt bool, why string) {
+	lm, pm := c.StackMACsecMode(local), c.StackMACsecMode(peer)
+	switch {
+	case lm == "off" && pm == "off":
+		return false, "off"
+	case lm == "off":
+		return false, "off on " + local
+	case pm == "off":
+		return false, "off on " + peer
+	case lm == "on" || pm == "on":
+		return true, ""
+	case localOffload && peerOffload:
+		return true, ""
+	case !localOffload && !peerOffload:
+		return false, "auto: neither NIC can offload"
+	case !localOffload:
+		return false, "auto: " + local + " cannot offload"
+	}
+	return false, "auto: " + peer + " cannot offload"
 }
 
 // Bits256: the cipher suite has a 256-bit key.
@@ -50,8 +98,12 @@ func (ca *MACsecCA) XPN() bool { return strings.Contains(ca.Cipher, "-xpn-") }
 func (b *builder) buildMACsec() {
 	c := b.cfg
 	r := b.root
-	c.MACsec = MACsec{StackDisabled: r.Get("virtual-chassis", "macsec").Has("disable"), CAs: map[string]*MACsecCA{},
-		Ports: map[string]string{}}
+	vm := r.Get("virtual-chassis", "macsec")
+	c.MACsec = MACsec{StackMode: orDefault(vm.Leaf("mode"), "auto"), StackPorts: map[string]string{},
+		CAs: map[string]*MACsecCA{}, Ports: map[string]string{}}
+	for _, e := range vm.Entries("interface") {
+		c.MACsec.StackPorts[e.Key] = orDefault(e.Leaf("mode"), "auto")
+	}
 	m := r.Get("security", "macsec")
 	for _, e := range m.Entries("connectivity-association") {
 		ca := &MACsecCA{Name: e.Key, Cipher: orDefault(e.Leaf("cipher-suite"), "gcm-aes-128"),
@@ -77,8 +129,21 @@ func (b *builder) buildMACsec() {
 // validateMACsec checks the secured ports (reference 5.15).
 func (b *builder) validateMACsec() {
 	c := b.cfg
+	for _, port := range sortedKeys(c.MACsec.StackPorts) {
+		at := "virtual-chassis macsec interface " + port
+		pp, ok := schema.ParsePhysical(port)
+		if !ok {
+			b.errorf(at, "%s is not a physical port", port)
+			continue
+		}
+		if ports, known := b.portsOf(pp.Member); known {
+			if info, present := ports[port]; present && !info.StackPort {
+				b.warnf(at, "%s is not a stacking port (the setting applies once it is designated: request virtual-chassis vc-port set)", port)
+			}
+		}
+	}
 	if len(c.MACsec.Ports) > 0 {
-		b.warnf("security macsec interfaces", "MACsec on switch and routed ports is not implemented yet: the ports carry their traffic unencrypted (the stacking links are encrypted)")
+		b.warnf("security macsec interfaces", "MACsec on switch and routed ports is not implemented yet: the ports carry their traffic unencrypted")
 	}
 	for _, port := range sortedKeys(c.MACsec.Ports) {
 		ca := c.MACsec.Ports[port]

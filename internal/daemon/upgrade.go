@@ -46,7 +46,9 @@ type portNames interface {
 //     "aggregated-ether-options mclag" flag are removed,
 //   - VXLAN became one VTEP for the stack (reference 5.7): the members'
 //     vtep-address and underlay, and switch-options vxlan mode and
-//     encryption, are removed.
+//     encryption, are removed,
+//   - "virtual-chassis macsec disable" (MACsec was on by default) became
+//     "virtual-chassis macsec mode off" (reference 5.2: auto by default).
 //
 // A name that cannot be converted (its port no longer exists) would make the
 // whole configuration unreadable, so that statement is dropped and logged.
@@ -77,6 +79,7 @@ func (u *upgrader) Upgrade(raw json.RawMessage) json.RawMessage {
 	u.removeMCLAGDomains(m)
 	u.removeMemberVXLAN(m)
 	u.dropManagementFlag(m)
+	convertStackMACsec(m)
 	u.walk(schema.Root(), m, "")
 	// A newer member (e.g. the master during a software update) may know
 	// statements this version does not: they are left out here and applied
@@ -324,6 +327,25 @@ func (u *upgrader) walk(sn *schema.Node, m map[string]any, stackMember string) {
 			}
 			m[name] = out
 		}
+	}
+}
+
+// convertStackMACsec turns "virtual-chassis macsec disable" into "mode
+// off".
+func convertStackMACsec(m map[string]any) {
+	ms := lookup(m, "virtual-chassis", "macsec")
+	if ms == nil {
+		return
+	}
+	if v, ok := ms["disable"]; ok {
+		delete(ms, "disable")
+		if b, _ := v.(bool); b {
+			ms["mode"] = "off"
+		}
+	}
+	if v, ok := ms["@inactive:disable"]; ok {
+		delete(ms, "@inactive:disable")
+		ms["@inactive:mode"] = v
 	}
 }
 

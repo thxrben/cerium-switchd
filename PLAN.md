@@ -699,6 +699,10 @@ An overall check that lists what limits the switch, with a recommendation per fi
    check uses each link's own value.
 4. The spec (5.2 `virtual-chassis macsec`) and the code (internal/daemon/stackmacsec.go: `enabled` is stack-wide
    today; model.StackOverheadOf is stack-wide) must be changed accordingly.
+Status 2026-10-04: done, unit-tested (`virtual-chassis macsec { mode auto|on|off; interface <if> mode …; }`, offload
+in the stacking hello, decision per link in model.StackLinkMACsec, devices offloaded mac/phy with software fallback
+only for `on`, per-port overhead in the MTU check and `show virtual-chassis mtu`; `disable` converted to `mode off`).
+Lab: the VMs' virtio NICs cannot offload, so `auto` keeps them plain; `mode on` tests software MACsec there.
 
 ### Phase 14: No swap (decided 2026-10-04)
 A switch never swaps: a swapped-out daemon misses its protocol timers. Without swap the kernel's OOM killer acts
@@ -858,7 +862,7 @@ Each: reference first, tests, lab.
 
 ## 10. Decisions taken (2026-09-29)
 * SSH: system OpenSSH, with swcli as login shell for config-defined users. The serial console uses the same flow (getty → login → swcli).
-* Data-plane encryption: MACsec on any port, on by default on stacking links (Phase 10, 2026-10-04; WireGuard dropped). The control plane always uses mTLS.
+* Data-plane encryption: MACsec on any port; on stacking links per link, by default only where both NICs offload (Phase 10b, 2026-10-04; WireGuard dropped). The control plane always uses mTLS.
 * Three separate planes: data (switch ports), stacking (dedicated 1:1 stacking ports in a ring, TLS over an L2 stream,
   multi-hop relay, plus client traffic between members in stack tunnels, 2026-09-30), and mgmt (administration only).
 * Stack control runs **only** over stacking ports. The mgmt network carries only administration.

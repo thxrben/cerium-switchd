@@ -8,9 +8,7 @@ Branch `claude/relaxed-cori-qe4lur`, everything committed and pushed. Details: S
   time (17b), memory slots incl. OSPF/BGP enforcement and smaller routes (15), `request system reload` (16),
   `show system limits` used/available fix, MACsec on stacking links (10, stack-wide on by default - to be changed).
 - Open, in this order:
-  1. **MACsec rework per PLAN 10b**: off by default; auto-on per stacking link only when both ends offload;
-     optional software MACsec; per-link setting, mixed links between the same members; per-link MTU overhead;
-     migration to a new offloading VC port. Spec first (reference 5.2), then stackmacsec.go/model/stacknet.
+  1. ~~MACsec rework per PLAN 10b~~: done 2026-10-04 (STATUS.md "MACsec rework"), lab test pending.
   2. **Lab deploy + tests** (the user allowed free deploys; never touch physw4). The lab VMs run the old
      single-binary install (/usr/local/sbin/switchd + swcli symlink, 05240a8). Deploy: `make build`, tar bin/,
      copy to the master (`ssh root@10.5.176.95`), from there to sw1/sw3 with agent forwarding
