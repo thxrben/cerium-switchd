@@ -665,6 +665,8 @@ const (
 	MethodStatus = "bgp.status"
 	MethodAdj    = "bgp.adj"
 	MethodClear  = "bgp.clear"
+	// MethodCounts is the received prefixes and further paths (Counts).
+	MethodCounts = "bgp.counts"
 	// StackRoutes is the master's routes for the other members.
 	StackRoutes = "bgp-routes"
 )
@@ -756,4 +758,24 @@ func (d *Daemon) Resend() {
 			d.Replicate(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Routes: last[s], Full: full})
 		}
 	}
+}
+
+// Counts are the received IPv4 and IPv6 prefixes and further paths of
+// every instance (the memory slots' entries, reference 5.1).
+type Counts struct {
+	IPv4  int `json:"ipv4"`
+	IPv6  int `json:"ipv6"`
+	Paths int `json:"paths"`
+}
+
+// Counts counts what the instances hold.
+func (d *Daemon) Counts() Counts {
+	d.mu.Lock()
+	l := d.limits
+	d.mu.Unlock()
+	if l == nil {
+		return Counts{}
+	}
+	v4, v6, paths := l.Counts()
+	return Counts{IPv4: v4, IPv6: v6, Paths: paths}
 }

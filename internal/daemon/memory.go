@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
@@ -22,7 +23,9 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/names"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
+	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
 
 // memoryPlanFile keeps the applied plan while the member runs: a restart of
@@ -360,6 +363,29 @@ func (o *ops) memoryUse() map[memslots.Purpose]int {
 	out := map[memslots.Purpose]int{}
 	if b, err := hwio.ReadFile("/proc/net/arp"); err == nil {
 		out[memslots.ARP] = max(strings.Count(string(b), "\n")-1, 0)
+	}
+	if n, err := o.Neighbors(true); err == nil {
+		out[memslots.NDP] = len(n)
+	}
+	if o.svc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		// BGP: what cer-bgpd holds (it runs on the master).
+		var c bgpd.Counts
+		if err := o.svc.call(ctx, "cer-bgpd", bgpd.MethodCounts, nil, &c); err == nil {
+			out[memslots.BGPv4], out[memslots.BGPv6], out[memslots.BGPPaths] = c.IPv4, c.IPv6, c.Paths
+		} else if strings.Contains(err.Error(), "not running") {
+			out[memslots.BGPv4], out[memslots.BGPv6], out[memslots.BGPPaths] = 0, 0, 0
+		}
+		// OSPF: the routes in cer-ribd.
+		var sums []rib.Summary
+		if err := o.svc.call(ctx, "cer-ribd", svc.MethodRouteSummary, nil, &sums); err == nil {
+			n := 0
+			for _, s := range sums {
+				n += s.PerProtocol[rib.OSPF][0]
+			}
+			out[memslots.OSPF] = n
+		}
 	}
 	if o.kernel != nil {
 		if fdb, err := o.kernel.FDB(); err == nil {

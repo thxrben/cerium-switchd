@@ -157,6 +157,9 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return d.Status(inst), nil
 	})
+	k.Endpoint.Handle(bgpd.MethodCounts, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
+		return d.Counts(), nil
+	})
 	k.Endpoint.Handle(bgpd.MethodAdj, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
 		var q bgpd.AdjRequest
 		if err := json.Unmarshal(raw, &q); err != nil {
