@@ -181,3 +181,37 @@ func TestBGPNextHopResolution(t *testing.T) {
 		t.Error("a next hop reachable only through BGP must not be installed")
 	}
 }
+
+// A BGP route whose next hop cannot be resolved is hidden: the static
+// route for the same prefix is used; once the next hop is reachable, BGP
+// (if better) wins again.
+func TestBGPUnresolvableHidden(t *testing.T) {
+	f := &fakeKernel{}
+	now := time.Unix(1000, 0)
+	s := New(f.install, quiet, now)
+	s.SetConfig(&Config{Instances: map[string]Instance{
+		"": {Devices: map[string]string{"irb.10": "irb.10"}, Routes: []rib.Route{
+			{Prefix: pfx("10.1.0.0/24"), Protocol: rib.Direct, NextHops: []rib.NextHop{{Interface: "irb.10"}}},
+			{Prefix: pfx("203.0.113.0/24"), Protocol: rib.Static, Preference: 200, NextHops: []rib.NextHop{{Gateway: ip("10.1.0.9"), Interface: "irb.10"}}},
+		}},
+	}})
+	s.SetRoutes(SetRoutes{Protocol: rib.BGP, Source: "10.9.9.9", Full: true, Routes: []rib.Route{
+		{Prefix: pfx("203.0.113.0/24"), Protocol: rib.BGP, Preference: rib.PrefBGP, NextHops: []rib.NextHop{{Gateway: ip("192.0.2.1")}}}}})
+	es := s.Lookup(rib.Query{Prefix: pfx("203.0.113.0/24"), Match: "exact"})
+	if len(es) != 1 || es[0].Active != 0 || es[0].Routes[0].Protocol != rib.Static {
+		t.Fatalf("with an unresolvable BGP next hop: %+v", es)
+	}
+	if h := s.Lookup(rib.Query{Hidden: true}); len(h) != 1 || h[0].Routes[0].Protocol != rib.BGP {
+		t.Fatalf("hidden routes %+v", h)
+	}
+	if sum := s.RIB.Summaries(); sum[0].Hidden != 1 {
+		t.Fatalf("summary %+v", sum)
+	}
+	// OSPF learns the next hop: the BGP route is usable and wins (170 < 200).
+	s.SetRoutes(SetRoutes{Protocol: rib.OSPF, Full: true, Routes: []rib.Route{
+		{Prefix: pfx("192.0.2.0/24"), Protocol: rib.OSPF, Preference: rib.PrefOSPF, NextHops: []rib.NextHop{{Gateway: ip("10.1.0.2"), Interface: "irb.10"}}}}})
+	es = s.Lookup(rib.Query{Prefix: pfx("203.0.113.0/24"), Match: "exact"})
+	if len(es) != 1 || es[0].Routes[es[0].Active].Protocol != rib.BGP {
+		t.Fatalf("after the next hop became reachable: %+v", es)
+	}
+}

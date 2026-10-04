@@ -214,7 +214,22 @@ func (sh *Shell) showRoute(c *call) error {
 		writeRouteSummary(c.out, sums, a)
 		return nil
 	}
-	if a.adj != "" || a.hidden {
+	if a.hidden && a.adj == "" {
+		// The routing table's hidden routes (BGP next hop unresolvable),
+		// then what BGP's import policies rejected.
+		q := a.q
+		q.Hidden, q.Active = true, false
+		es, err := r.RIB(q)
+		if err != nil {
+			return err
+		}
+		writeRoutes(c.out, es, sums, a.view, time.Now())
+		if _, err := sh.bgp(); err == nil {
+			return sh.showBGPRoutes(c, a, sums)
+		}
+		return nil
+	}
+	if a.adj != "" {
 		return sh.showBGPRoutes(c, a, sums)
 	}
 	es, err := r.RIB(a.q)
@@ -229,7 +244,7 @@ func (sh *Shell) showRoute(c *call) error {
 func tableHeader(t rib.Table, sums []rib.Summary, es []rib.Entry) string {
 	for _, s := range sums {
 		if s.Table == t {
-			return fmt.Sprintf("%s: %d destinations, %d routes (%d active, 0 holddown, 0 hidden)", t.Name(), s.Destinations, s.Routes, s.Active)
+			return fmt.Sprintf("%s: %d destinations, %d routes (%d active, 0 holddown, %d hidden)", t.Name(), s.Destinations, s.Routes, s.Active, s.Hidden)
 		}
 	}
 	routes, active := 0, 0
@@ -548,7 +563,7 @@ func writeRouteSummary(out *strings.Builder, sums []rib.Summary, a routeArgs) {
 		if len(a.q.Tables) > 0 && !slices.Contains(a.q.Tables, s.Table) {
 			continue
 		}
-		fmt.Fprintf(out, "\n%s: %d destinations, %d routes (%d active, 0 holddown, 0 hidden)\n", s.Table.Name(), s.Destinations, s.Routes, s.Active)
+		fmt.Fprintf(out, "\n%s: %d destinations, %d routes (%d active, 0 holddown, %d hidden)\n", s.Table.Name(), s.Destinations, s.Routes, s.Active, s.Hidden)
 		protos := make([]rib.Protocol, 0, len(s.PerProtocol))
 		for p := range s.PerProtocol {
 			protos = append(protos, p)

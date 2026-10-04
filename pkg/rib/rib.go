@@ -112,6 +112,10 @@ type Route struct {
 	Source string
 	// Stale: kept during a graceful restart, not refreshed yet.
 	Stale bool
+	// Hidden: not usable (a BGP next hop that cannot be resolved): never
+	// active, shown by "show route hidden" only. Set by the RIB's owner
+	// (SetHidden), kept across Set.
+	Hidden bool `json:",omitempty"`
 }
 
 // Attrs are a route's protocol details ("show route detail"); the RIB
@@ -249,6 +253,8 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 			if old := d.routes[k]; old != nil && sameRoute(old, rt) {
 				old.Attrs, old.Stale = rt.Attrs, rt.Stale
 				continue
+			} else if old != nil {
+				rt.Hidden = old.Hidden // the owner re-evaluates it
 			}
 			if rt.Since.IsZero() {
 				rt.Since = r.now()
@@ -332,11 +338,13 @@ func better(a, b *Route) int {
 	)
 }
 
-// candidates returns the destination's routes, best first.
+// candidates returns the destination's usable routes, best first.
 func (d *dest) candidates() []*Route {
 	out := make([]*Route, 0, len(d.routes))
 	for _, rt := range d.routes {
-		out = append(out, rt)
+		if !rt.Hidden {
+			out = append(out, rt)
+		}
 	}
 	slices.SortFunc(out, better)
 	return out
@@ -455,6 +463,7 @@ type Query struct {
 	Protocol *Protocol
 	NextHop  netip.Addr
 	Active   bool // active routes only
+	Hidden   bool // the hidden routes instead of the usable ones
 }
 
 // Lookup returns the destinations matching q, sorted.
@@ -506,14 +515,24 @@ func (r *RIB) Lookup(q Query) []Entry {
 		for _, p := range keys {
 			d := ds[p]
 			e := Entry{Table: t, Prefix: p, Active: -1}
-			for i, c := range d.candidates() {
+			cands := d.candidates()
+			if q.Hidden {
+				cands = nil
+				for _, rt := range d.routes {
+					if rt.Hidden {
+						cands = append(cands, rt)
+					}
+				}
+				slices.SortFunc(cands, better)
+			}
+			for i, c := range cands {
 				if q.Protocol != nil && c.Protocol != *q.Protocol {
 					continue
 				}
 				if q.NextHop.IsValid() && !slices.ContainsFunc(c.NextHops, func(h NextHop) bool { return h.Gateway == q.NextHop }) {
 					continue
 				}
-				isActive := i == 0 && d.active != nil
+				isActive := i == 0 && d.active != nil && !q.Hidden
 				if q.Active && !isActive {
 					continue
 				}
@@ -534,12 +553,47 @@ func (r *RIB) Lookup(q Query) []Entry {
 	return out
 }
 
+// SetHidden marks a route (by protocol and source) hidden or usable; it
+// reports whether that changed.
+func (r *RIB) SetHidden(t Table, p netip.Prefix, proto Protocol, source string, hidden bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.tables[t][p]
+	if d == nil {
+		return false
+	}
+	rt := d.routes[key{proto, source}]
+	if rt == nil || rt.Hidden == hidden {
+		return false
+	}
+	rt.Hidden = hidden
+	r.markDirty(t, p)
+	return true
+}
+
+// Each calls f for every route of a protocol (a copy; under the lock: f
+// must not call the RIB).
+func (r *RIB) Each(proto Protocol, f func(t Table, rt Route)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for t, ds := range r.tables {
+		for _, d := range ds {
+			for k, rt := range d.routes {
+				if k.proto == proto {
+					f(t, *rt)
+				}
+			}
+		}
+	}
+}
+
 // Summary counts destinations and routes per table and protocol.
 type Summary struct {
 	Table        Table
 	Destinations int
 	Routes       int
 	Active       int
+	Hidden       int
 	PerProtocol  map[Protocol][2]int // routes, active
 }
 
@@ -555,9 +609,15 @@ func (r *RIB) Summaries() []Summary {
 				continue
 			}
 			s.Destinations++
-			best := d.candidates()[0]
+			var best *Route
+			if cs := d.candidates(); len(cs) > 0 {
+				best = cs[0]
+			}
 			for _, rt := range d.routes {
 				s.Routes++
+				if rt.Hidden {
+					s.Hidden++
+				}
 				c := s.PerProtocol[rt.Protocol]
 				c[0]++
 				if rt == best && d.active != nil {

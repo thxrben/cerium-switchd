@@ -94,6 +94,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func lp(v uint32) *uint32 { return &v }
 
+func pref(v int) *int { return &v }
+
 // The daemon against a router: its routes reach the routing table per
 // neighbour (import policy applied: a rejected prefix is missing, local
 // preference set), the switch's static route is announced by the export
@@ -140,7 +142,7 @@ func TestDaemon(t *testing.T) {
 			"in": {Name: "in", Terms: []*model.PolicyTerm{
 				{Name: "no", From: model.PolicyFrom{RouteFilters: []model.RouteFilter{{Prefix: netip.MustParsePrefix("198.51.100.0/24"), Match: "exact"}}},
 					Then: model.PolicyThen{Flow: "reject"}},
-				{Name: "lp", Then: model.PolicyThen{LocalPref: lp(200), Flow: "accept"}},
+				{Name: "lp", Then: model.PolicyThen{LocalPref: lp(200), Preference: pref(20), Flow: "accept"}},
 			}},
 			"out": {Name: "out", Terms: []*model.PolicyTerm{
 				{Name: "st", From: model.PolicyFrom{Protocols: []string{"static"}}, Then: model.PolicyThen{Flow: "accept"}},
@@ -157,7 +159,7 @@ func TestDaemon(t *testing.T) {
 	waitFor(t, "routes in the RIB", func() bool { return len(r.routes(src)) == 1 })
 	rr := r.routes(src)[0]
 	if rr.Prefix != netip.MustParsePrefix("203.0.113.0/24") || rr.Protocol != rib.BGP || rr.NextHops[0].Gateway != peer ||
-		rr.Attrs == nil || *rr.Attrs.LocalPref != 200 || rr.Attrs.ASPath != "65002 I" || rr.Preference != rib.PrefBGP {
+		rr.Attrs == nil || *rr.Attrs.LocalPref != 200 || rr.Attrs.ASPath != "65002 I" || rr.Preference != 20 {
 		t.Fatalf("route %+v attrs %+v", rr, rr.Attrs)
 	}
 	adj, err := d.Adj(AdjRequest{Neighbor: peer})

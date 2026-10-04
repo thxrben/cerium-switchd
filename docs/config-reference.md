@@ -2045,7 +2045,9 @@ Neighbours are configured in groups; a neighbour inherits everything from its gr
 * `local-address <ip>`: the source address of the session (an address of the instance). Default: the address of the
   interface the neighbour is reached through. Needed for iBGP between irb addresses with `member` or loopback-like
   addresses.
-* `local-as <asn>`: a different local AS for this group/neighbour (AS migration).
+* `local-as <asn>`: a different local AS for this group/neighbour (AS migration). As in Junos by default, routes
+  sent to the neighbour carry the local AS and then the global AS (`65010 65000 …`), and routes received from it
+  get the local AS prepended before they are sent to other neighbours.
 * `description <text>`.
 * `authentication-key <secret>`: TCP MD5 signatures (RFC 2385). Changing it resets the session.
 * `hold-time <0|3-65535>` (default 90; 0 disables keepalives), `passive` (never connect, only accept),

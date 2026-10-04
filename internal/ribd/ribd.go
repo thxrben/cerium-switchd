@@ -108,6 +108,8 @@ func (s *Server) SetConfig(c *Config) {
 			s.RIB.Set(inst, p, "", by[p])
 		}
 	}
+	s.RIB.Changes() // settle the active routes the resolution reads
+	s.revalidate()
 	s.RIB.Changes() // (the installation reads the whole table)
 	s.poke()
 }
@@ -115,6 +117,8 @@ func (s *Server) SetConfig(c *Config) {
 // SetRoutes takes a routing protocol's routes.
 func (s *Server) SetRoutes(sr SetRoutes) {
 	s.RIB.Set(sr.Instance, sr.Protocol, sr.Source, sr.Routes)
+	s.RIB.Changes() // settle the active routes the resolution reads
+	s.revalidate()
 	s.RIB.Changes()
 	if sr.Full {
 		s.mu.Lock()
@@ -207,6 +211,31 @@ func (s *Server) FIB(protos map[int]bool) []netdev.Route {
 		out = append(out, nr)
 	}
 	return out
+}
+
+// revalidate hides the BGP routes whose next hops cannot be resolved (and
+// shows them again once they can): a hidden route is never active, so a
+// route of another protocol (or another BGP path) is used instead, as in
+// Junos. Resolution never goes through BGP, so one pass suffices.
+func (s *Server) revalidate() {
+	type ref struct {
+		t      rib.Table
+		prefix netip.Prefix
+		source string
+		hops   []rib.NextHop
+		hidden bool
+	}
+	var rs []ref
+	s.RIB.Each(rib.BGP, func(t rib.Table, rt rib.Route) {
+		rs = append(rs, ref{t, rt.Prefix, rt.Source, rt.NextHops, rt.Hidden})
+	})
+	cache := map[rib.Table]map[netip.Addr][]rib.NextHop{}
+	for _, r := range rs {
+		hidden := len(r.hops) > 0 && len(s.resolveAll(r.t, r.hops, cache)) == 0
+		if hidden != r.hidden {
+			s.RIB.SetHidden(r.t, r.prefix, rib.BGP, r.source, hidden)
+		}
+	}
 }
 
 // resolveAll resolves BGP next hops (cache: per table and next hop).

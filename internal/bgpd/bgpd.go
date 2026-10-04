@@ -471,7 +471,11 @@ func (d *Daemon) setRoutes(sr ribd.SetRoutes) {
 
 // ribRoute converts a BGP path (its next hop is resolved by cer-ribd).
 func ribRoute(r bgp.Route) rib.Route {
-	out := rib.Route{Prefix: r.Prefix, Protocol: rib.BGP, Preference: rib.PrefBGP, Rank: r.Rank, Since: r.Since, Stale: r.Stale,
+	pref := rib.PrefBGP
+	if r.Preference > 0 {
+		pref = r.Preference
+	}
+	out := rib.Route{Prefix: r.Prefix, Protocol: rib.BGP, Preference: pref, Rank: r.Rank, Since: r.Since, Stale: r.Stale,
 		NextHops: []rib.NextHop{{Gateway: r.NextHop}}}
 	if r.MED != nil {
 		out.Metric = *r.MED
@@ -622,6 +626,9 @@ func fromPolicy(r *policy.Route, p *bgp.Path) {
 		if _, err := fmt.Sscanf(c, "large:%d:%d:%d", &l[0], &l[1], &l[2]); err == nil {
 			p.Large = append(p.Large, l)
 		}
+	}
+	if r.Preference >= 0 {
+		p.Preference = r.Preference
 	}
 	switch nh := r.NextHop; {
 	case nh == "self":

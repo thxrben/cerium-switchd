@@ -394,10 +394,11 @@ Last updated: 2026-10-03 (evening).
   IPv4 with MED, communities, large communities, IPv6 over an IPv4 session (next hop of the other family),
   withdrawals both ways, route refresh without reset. FuzzUpdate: received UPDATE bodies through GoBGP's parser and
   our decoder (RFC 7606 handling) without panics (~750k inputs, none found).
-- Open (BGP): RFC 7606 tests with
-  malformed attributes; interop tests with FRR/GoBGP in network namespaces and in the lab (lab down since
-  2026-10-04); a route with an unresolvable next hop is not hidden in the RIB; import `then preference`; local-as
-  prepends only the local AS.
+- Done 2026-10-04 (later): BGP routes whose next hop cannot be resolved are hidden in the RIB (never active: another
+  route takes over; `show route hidden`, hidden counts in the table headers; cer-ribd re-checks after every change);
+  an import policy's `then preference` reaches the RIB; `local-as` as Junos by default (sent: local AS, global AS;
+  received routes get the local AS in front).
+- Open (BGP): interop with FRR in the lab (lab down since 2026-10-04).
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

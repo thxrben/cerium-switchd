@@ -577,6 +577,9 @@ func (p *peer) importPath(raw *Path) *Path {
 	a.Attrs = raw.Attrs.Clone()
 	if p.ebgp() {
 		a.LocalPref = nil // not accepted from another AS
+		if p.n.LocalAS != sp.cfg.AS && p.n.LocalAS != 0 {
+			a.Prepend(p.n.LocalAS) // local-as: other neighbours see it in the path
+		}
 	}
 	if sp.pol.Import != nil && !sp.pol.Import(&p.n, &a) {
 		return nil
@@ -681,7 +684,11 @@ func (p *peer) outgoing(pf netip.Prefix) *Path {
 			path = removePrivate(path)
 		}
 		o.ASPath = path
-		o.Prepend(p.n.LocalAS)
+		if p.n.LocalAS != p.sp.cfg.AS && p.n.LocalAS != 0 {
+			o.Prepend(p.n.LocalAS, p.sp.cfg.AS) // local-as, then the global AS
+		} else {
+			o.Prepend(p.sp.cfg.AS)
+		}
 		o.LocalPref = nil
 		if !x.Local() && !o.PolicyMED {
 			o.MED = nil // a MED is not passed on to another AS

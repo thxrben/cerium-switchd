@@ -365,3 +365,25 @@ func TestBFD(t *testing.T) {
 	a.SetBFD(peer, true)
 	waitFor(t, "back with BFD", func() bool { return state(a, "127.0.0.72").State == "Established" })
 }
+
+// local-as (Junos default): the neighbour sees the local AS and then the
+// global AS; its routes reach other neighbours with the local AS in front.
+func TestLocalAS(t *testing.T) {
+	n := newNet(t)
+	bn := nbr("127.0.0.112", 65002, false)
+	bn.LocalAS = 65010
+	cn := nbr("127.0.0.113", 65003, false)
+	a, _ := n.speaker(n.ctx, "127.0.0.111", 65000, exportAll, bn, cn)
+	bs, rb := n.speaker(n.ctx, "127.0.0.112", 65002, exportAll, nbr("127.0.0.111", 65010, false))
+	_, rc := n.speaker(n.ctx, "127.0.0.113", 65003, exportAll, nbr("127.0.0.111", 65000, false))
+	a.SetLocal([]Path{local("10.11.0.0/16")}, nil)
+	waitFor(t, "a's route at b", func() bool { return len(rb.get("10.11.0.0/16")) == 1 })
+	if p := rb.get("10.11.0.0/16")[0].PathString(); p != "65010 65000 I" {
+		t.Fatalf("path at the local-as neighbour: %s", p)
+	}
+	bs.SetLocal([]Path{local("10.12.0.0/16")}, nil)
+	waitFor(t, "b's route at c", func() bool { return len(rc.get("10.12.0.0/16")) == 1 })
+	if p := rc.get("10.12.0.0/16")[0].PathString(); p != "65000 65010 65002 I" {
+		t.Fatalf("path at another neighbour: %s", p)
+	}
+}

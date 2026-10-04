@@ -228,6 +228,9 @@ type Path struct {
 	Stale  bool // kept while the neighbour restarts (graceful restart)
 	Since  time.Time
 
+	// Preference: an import policy's route preference (0: BGP's default).
+	Preference int
+
 	// Set by an export policy: next-hop self, an explicit next hop
 	// (NextHop), a MED (MED; else a MED is not sent to another AS).
 	NextHopSelf   bool
