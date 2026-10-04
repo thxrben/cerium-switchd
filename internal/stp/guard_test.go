@@ -10,9 +10,8 @@ import (
 )
 
 type fakeGuardIO struct {
-	mu  sync.Mutex
-	rx  map[string]func([]byte)
-	err error
+	mu sync.Mutex
+	rx map[string]func([]byte)
 }
 
 func (f *fakeGuardIO) Listen(dev string, rx func([]byte)) (func(), error) {

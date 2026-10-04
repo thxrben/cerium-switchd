@@ -1,9 +1,9 @@
 package model
 
 import (
-	"time"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
 )

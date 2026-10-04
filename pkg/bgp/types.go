@@ -78,8 +78,6 @@ func (n *Neighbor) resetKey() string {
 		n.Families, n.LocalAddress, n.GracefulRestart, n.TTL, n.AuthKey, n.RestartTime)
 }
 
-func (n *Neighbor) carries(f Family) bool { return slices.Contains(n.Families, f) }
-
 // Config is the speaker's configuration.
 type Config struct {
 	AS        uint32

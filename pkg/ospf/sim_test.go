@@ -36,10 +36,9 @@ type simRouter struct {
 }
 
 type simPkt struct {
-	from     *simPort
-	dst      netip.Addr
-	raw      []byte
-	unicastP *simPort
+	from *simPort
+	dst  netip.Addr
+	raw  []byte
 }
 
 type simNet struct {
@@ -80,11 +79,9 @@ func (n *simNet) router(name string, id string) *simRouter {
 
 type ifOpt func(*IfaceConfig)
 
-func p2p(c *IfaceConfig)     { c.P2P = true }
-func passive(c *IfaceConfig) { c.Passive = true }
-func cost(n uint16) ifOpt    { return func(c *IfaceConfig) { c.Cost = n } }
-func prio(n uint8) ifOpt     { return func(c *IfaceConfig) { c.Priority = n } }
-func areaOf(id ID) ifOpt     { return func(c *IfaceConfig) { c.Area = id } }
+func p2p(c *IfaceConfig)  { c.P2P = true }
+func cost(n uint16) ifOpt { return func(c *IfaceConfig) { c.Cost = n } }
+func areaOf(id ID) ifOpt  { return func(c *IfaceConfig) { c.Area = id } }
 
 // connect joins routers to a new segment; every router gets an interface
 // "<seg>" with address .<k> (v2 10.<seg>.0.k/24, v3 fe80::k and

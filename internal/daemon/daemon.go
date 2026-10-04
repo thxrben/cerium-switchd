@@ -404,8 +404,6 @@ func Run(ctx context.Context, o Options) error {
 	engine.Start(ctx)
 	go applier.watch(ctx)
 	if !o.DryRun {
-	}
-	if !o.DryRun {
 		go kernel.EnforceMACLimits(ctx, log)
 	}
 

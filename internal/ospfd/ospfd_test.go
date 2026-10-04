@@ -35,7 +35,6 @@ type fakePort struct {
 	w   *wire
 	dev string
 	rx  func(src, dst netip.Addr, pkt []byte)
-	src netip.Addr
 }
 
 type fakeNet struct {

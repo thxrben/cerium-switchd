@@ -91,10 +91,8 @@ func TestBundleTamper(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if i < imgStart-512 {
-			// Tar padding and header fields that do not change the content
-			// may still open; the content must then be unchanged.
-		}
+		// Tar padding and header fields that do not change the content may
+		// still open; the content must then be unchanged.
 		r, err := b.Image()
 		if err != nil {
 			continue

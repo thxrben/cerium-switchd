@@ -276,7 +276,7 @@ func TestUpdateNotHealthyRollsBack(t *testing.T) {
 	m.boot()
 	// The new version changes the configuration on reading (not committed).
 	os.WriteFile(filepath.Join(m.dir, "switchd", "config", "rev", "000000000001.json"), []byte(`{"seq":1,"config":{"converted":{}}}`), 0o600)
-	d, stop = m.start(t, 200*time.Millisecond)
+	_, stop = m.start(t, 200*time.Millisecond)
 	m.waitReboots(t, 2) // never healthy: the daemon rolls back
 	stop()
 	if m.e()["B_OK"] != "0" || m.e().Order()[0] != "A" {

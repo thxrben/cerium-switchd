@@ -21,6 +21,7 @@ cover.html
 .idea/
 .vscode/
 *.swp
+*.kate-swp
 *~
 .DS_Store
 /switchd

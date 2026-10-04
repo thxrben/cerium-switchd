@@ -42,13 +42,6 @@ func newSession(p *peer, c net.Conn, incoming bool) *session {
 	return &session{p: p, conn: c, incoming: incoming, wake: make(chan struct{}, 1)}
 }
 
-func (s *session) remote() netip.Addr {
-	if a, ok := s.conn.RemoteAddr().(*net.TCPAddr); ok {
-		return addrOf(a.IP)
-	}
-	return netip.Addr{}
-}
-
 func (s *session) local() netip.Addr {
 	if a, ok := s.conn.LocalAddr().(*net.TCPAddr); ok {
 		return addrOf(a.IP)
