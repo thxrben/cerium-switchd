@@ -32,6 +32,12 @@ func (allOps) WebManagement() (WebStatus, error) {
 	return st, nil
 }
 
+func (allOps) Memory() (MemoryStatus, error) {
+	return MemoryStatus{Member: 1, Slotted: true, RAM: 6 << 30, Slots: 1167, System: 9, Update: 129, Allocatable: 1029,
+		Purposes: []MemoryPurpose{{Name: "bgp-ipv4", Bytes: 2100, PerSlot: 1997, Slots: 300, Capacity: 599100, AllSlots: 2000000, Used: 10},
+			{Name: "ndp", Bytes: 512, PerSlot: 8192, Used: -1}}}, nil
+}
+
 func (allOps) Alarms() ([]Alarm, error) {
 	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil
 }

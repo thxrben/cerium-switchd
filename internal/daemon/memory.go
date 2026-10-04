@@ -3,16 +3,19 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/memslots"
@@ -312,4 +315,71 @@ func (m *memoryCtl) watchStack(ctx context.Context, ctl *stackCtl) {
 		case <-t.C:
 		}
 	}
+}
+
+// Memory is show system memory (reference 5.1).
+func (o *ops) Memory() (cli.MemoryStatus, error) {
+	st := cli.MemoryStatus{Member: o.member, Available: meminfo("MemAvailable")}
+	if o.mem == nil {
+		return st, errors.New("memory slots are not set up")
+	}
+	a := o.mem.current()
+	if a == nil {
+		return st, errors.New("memory slots are not set up")
+	}
+	p := a.Plan
+	st.Slotted, st.RAM, st.Kernel, st.NICRings, st.Daemons, st.Mgmt, st.Margin = a.slotted(), p.RAM, p.Kernel, p.NICRings, p.Daemons, p.Mgmt, p.Margin
+	st.Slots, st.System, st.Update, st.Allocatable, st.Dynamic = p.Slots, p.System, p.Update, p.Allocatable, p.Dynamic
+	if a.Config.Enabled() {
+		st.Problem = p.Problem
+	}
+	if cfg := o.model(); cfg != nil {
+		st.Pending = !reflect.DeepEqual(cfg.System.Memory, a.Config)
+	}
+	counts := o.memoryUse()
+	for _, pu := range memslots.Purposes {
+		mp := cli.MemoryPurpose{Name: string(pu), Bytes: memslots.Costs[pu], PerSlot: memslots.PerSlot(pu),
+			AllSlots: p.AllFor(pu), Used: -1, Capacity: o.mem.Capacity(pu)}
+		if st.Slotted {
+			mp.Slots = p.Purposes[pu].Slots
+		}
+		if n, ok := counts[pu]; ok {
+			mp.Used = n
+		}
+		st.Purposes = append(st.Purposes, mp)
+	}
+	st.NeighV4, st.NeighV6 = sysctlInt("/proc/sys/net/ipv4/neigh/default/gc_thresh3"), sysctlInt("/proc/sys/net/ipv6/neigh/default/gc_thresh3")
+	if o.updater != nil {
+		st.UpdateRoom, _ = o.updater.store.room()
+	}
+	return st, nil
+}
+
+// memoryUse counts the entries of the purposes this member can count.
+func (o *ops) memoryUse() map[memslots.Purpose]int {
+	out := map[memslots.Purpose]int{}
+	if b, err := hwio.ReadFile("/proc/net/arp"); err == nil {
+		out[memslots.ARP] = max(strings.Count(string(b), "\n")-1, 0)
+	}
+	if o.kernel != nil {
+		if fdb, err := o.kernel.FDB(); err == nil {
+			n := 0
+			for _, e := range fdb {
+				if !e.Static {
+					n++
+				}
+			}
+			out[memslots.MAC] = n
+		}
+	}
+	return out
+}
+
+func sysctlInt(path string) int {
+	b, err := hwio.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return n
 }

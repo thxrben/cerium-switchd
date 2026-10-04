@@ -473,6 +473,7 @@ func FuzzShell(f *testing.F) {
 type fakeOps struct {
 	cleared []string
 	power   []string
+	memory  *MemoryStatus
 }
 
 func (f *fakeOps) Neighbors(ipv6 bool) ([]Neighbor, error) {
@@ -610,7 +611,7 @@ func (f *fakeOps) Multicast() ([]McastStatus, error) {
 
 func (f *fakeOps) Limits() (LimitsStatus, error) {
 	return LimitsStatus{Member: 1, Ports: 9, StackPorts: 2, LowestMaxMTU: 9014, LowestMaxPort: "1/1/0", HighestMaxMTU: 16014, HighestMaxPort: "1/3/0",
-		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12}, nil
+		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12, Memory: f.memory}, nil
 }
 
 func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
@@ -1043,16 +1044,25 @@ func TestShowLimits(t *testing.T) {
 	ts := newTester(t, e, "alice", commit.ReadOnly)
 	ts.sh.env.Ops = &fakeOps{}
 	out := ts.ok("show system limits")
-	contains(t, out, "Limits of member 1",
-		"  Configurable mtu:                256..16000 (default 1514)",
-		"  Largest mtu configured:          1514 (default; hosts up to MTU 1500)",
-		"  Hardware maximum of the ports:   9014 (1/1/0) .. 16014 (1/3/0)",
-		"  VLAN ids:                        1..4094; 0 of 4094",
-		"  MAC addresses learned now:       12",
-		"  Bundles (ae0..ae4095):           0 of 4096",
-		"  Members:                         1 of 16",
-		"  Stacking ports:                  2",
-		"  Fastest port:                    10G (1/3/0)")
+	contains(t, out, "Limits of member 1", "Applied (slots)        Supported",
+		"  Configurable mtu:                -                      256..16000 (default 1514)",
+		"  Largest mtu configured:          -                      1514 (default; hosts up to MTU 1500)",
+		"  Hardware maximum of the ports:   -                      9014 (1/1/0) .. 16014 (1/3/0)",
+		"  VLAN ids:                        -                      1..4094; 0 of 4094",
+		"  MAC addresses learned now:       -                      12",
+		"  Bundles (ae0..ae4095):           -                      0 of 4096",
+		"  Members:                         -                      1 of 16",
+		"  Stacking ports:                  -                      2",
+		"  Fastest port:                    -                      10G (1/3/0)")
+	// With memory slots: the Applied column and the tables.
+	ts.sh.env.Ops = &fakeOps{memory: &MemoryStatus{Slotted: true, Update: 129, UpdateRoom: 512 << 20, NeighV4: 32768, NeighV6: 4096,
+		Purposes: []MemoryPurpose{{Name: "bgp-ipv4", Capacity: 199700, AllSlots: 2000000, Used: 1000},
+			{Name: "arp", Capacity: 32768, AllSlots: 8000000, Used: -1}, {Name: "mac", AllSlots: 9000000, Used: 12}}}}
+	contains(t, ts.ok("show system limits"),
+		"  BGP IPv4 routes:                 1000 of 199700         2000000 with every slot; 1000 now",
+		"  ARP entries:                     32768                  8000000 with every slot",
+		"  MAC addresses:                   -                      9000000 with every slot; 12 now",
+		"  Software bundle:                 512 MB                 512 MB free in memory now")
 }
 
 func TestShowStackMTU(t *testing.T) {

@@ -139,6 +139,8 @@ type LimitsStatus struct {
 	// MACsecOffload: ports whose NIC encrypts MACsec in hardware.
 	MACsecOffload int
 	MACEntries    int
+	// Memory: the memory slots (nil: unknown).
+	Memory *MemoryStatus
 }
 
 // StackMTUStatus is "show virtual-chassis mtu" of one member (frame sizes,
@@ -1413,6 +1415,7 @@ func registerOperational() {
 						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
 						&command{name: "processes", help: "Show switchd and the daemons, their state and restarts", class: commit.ReadOnly, run: (*Shell).showProcesses},
 						&command{name: "alarms", help: "Show the active alarms of every member", class: commit.ReadOnly, run: (*Shell).showAlarms},
+						&command{name: "memory", help: "Show how memory is divided (system memory slots)", class: commit.ReadOnly, run: (*Shell).showMemory},
 						&command{name: "services", help: "Show the management services", class: commit.ReadOnly, sub: []*command{
 							{name: "web-management", help: "Show the REST API: certificate, fingerprint, uploaded bundle", class: commit.ReadOnly, run: (*Shell).showWebManagement},
 						}})
@@ -1554,10 +1557,41 @@ func (sh *Shell) showLimits(c *call) error {
 		}
 		return s
 	}
-	line := func(name, value string) { fmt.Fprintf(c.out, "  %-32s %s\n", name+":", value) }
+	// Two columns (reference 3.5.1): Applied, the limit the memory slots
+	// put in force ("-": none), and Supported.
+	line2 := func(name, applied, value string) { fmt.Fprintf(c.out, "  %-32s %-22s %s\n", name+":", applied, value) }
+	line := func(name, value string) { line2(name, "-", value) }
 	head := func(title string) { fmt.Fprintf(c.out, "\n%s\n", title) }
+	mem := hw.Memory
+	// applied is a purpose's capacity in force with its entries now.
+	applied := func(p string) string {
+		mp := mem.Purpose(p)
+		if mp == nil || !mem.Slotted || mp.Capacity == 0 {
+			return "-"
+		}
+		if mp.Used < 0 {
+			return strconv.Itoa(mp.Capacity)
+		}
+		return use(mp.Used, mp.Capacity)
+	}
+	// supported is what every slot would hold, and the entries now.
+	supported := func(p string) string {
+		mp := mem.Purpose(p)
+		if mp == nil {
+			return "-"
+		}
+		s := "-"
+		if mem.Slotted {
+			s = fmt.Sprintf("%d with every slot", mp.AllSlots)
+		}
+		if mp.Used >= 0 {
+			s += fmt.Sprintf("; %d now", mp.Used)
+		}
+		return s
+	}
 
 	fmt.Fprintf(c.out, "Limits of member %d (frame sizes include the Ethernet header, no VLAN tags)\n", hw.Member)
+	fmt.Fprintf(c.out, "  %-32s %-22s %s\n", "", "Applied (slots)", "Supported")
 
 	head("Frame sizes")
 	line("Configurable mtu", fmt.Sprintf("%d..%d (default %d)", schema.MinMTU, schema.MaxMTU, schema.DefaultMTU))
@@ -1597,9 +1631,29 @@ func (sh *Shell) showLimits(c *call) error {
 	line("VLAN ids", fmt.Sprintf("%d..%d; %s", schema.MinVLANID, schema.MaxVLANID,
 		use(len(cfg.VLANs), schema.MaxVLANID-schema.MinVLANID+1)))
 	line("VXLAN VNIs", fmt.Sprintf("1..%d; %d in use", schema.MaxVNI, vnis))
-	line("MAC addresses learned now", strconv.Itoa(hw.MACEntries))
+	if mem != nil {
+		line2("MAC addresses", applied("mac"), supported("mac"))
+	} else {
+		line("MAC addresses learned now", strconv.Itoa(hw.MACEntries))
+	}
 	line("MAC aging time", fmt.Sprintf("%d..%d seconds (default %d)", schema.MinMACAging, schema.MaxMACAging, schema.DefaultMACAging))
 	line("mac-limit per interface", fmt.Sprintf("%d..%d", schema.MinMACLimit, schema.MaxMACLimit))
+
+	if mem != nil {
+		head("Tables")
+		for _, r := range []struct{ name, purpose string }{
+			{"BGP IPv4 routes", "bgp-ipv4"}, {"BGP IPv6 routes", "bgp-ipv6"}, {"Further BGP paths", "bgp-paths"},
+			{"OSPF routes", "ospf"}, {"ARP entries", "arp"}, {"NDP entries", "ndp"}, {"Multicast memberships", "multicast"},
+		} {
+			line2(r.name, applied(r.purpose), supported(r.purpose))
+		}
+		line("Kernel neighbour tables", fmt.Sprintf("IPv4 %d, IPv6 %d entries", mem.NeighV4, mem.NeighV6))
+		up := "-"
+		if mem.Slotted {
+			up = mb(uint64(max(mem.Update-1, 0)) * 4 << 20)
+		}
+		line2("Software bundle", up, mb(mem.UpdateRoom)+" free in memory now")
+	}
 
 	head("Aggregation")
 	bundles, largest := 0, 0

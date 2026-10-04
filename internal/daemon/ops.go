@@ -699,6 +699,9 @@ func (o *ops) VirtualChassis() (cli.VCStatus, error) {
 // Limits gathers the hardware facts of "show system limits".
 func (o *ops) Limits() (cli.LimitsStatus, error) {
 	st := cli.LimitsStatus{Member: o.member}
+	if m, err := o.Memory(); err == nil {
+		st.Memory = &m
+	}
 	ks, err := o.kernel.Read()
 	if err != nil {
 		return st, err
