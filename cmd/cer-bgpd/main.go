@@ -69,6 +69,14 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return nil, d.RelayedData(m)
 	})
+	k.HandleStack(bgpd.StackBFDState, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
+		var st bgpd.RelayBFDState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			return nil, err
+		}
+		d.RelayedBFDState(st)
+		return nil, nil
+	})
 	k.HandleStack(bgpd.StackRelayClose, func(_ context.Context, _ int, raw json.RawMessage) (any, error) {
 		var m bgpd.RelayClose
 		if err := json.Unmarshal(raw, &m); err != nil {

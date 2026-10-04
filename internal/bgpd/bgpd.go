@@ -103,11 +103,15 @@ type Daemon struct {
 	rel   relay
 	owned map[string]*ownerListener
 
-	bfdMu    sync.Mutex
-	bfdKeys  map[string]bfdRef // cer-bfdd key -> neighbour
-	bfdSpecs []bfdd.SessionSpec
-	bfdSent  bool
-	bfdQ     chan []bfdd.SessionSpec
+	bfdMu      sync.Mutex
+	bfdKeys    map[string]bfdRef // cer-bfdd key -> neighbour
+	bfdSpecs   []bfdd.SessionSpec
+	bfdSent    bool
+	bfdQ       chan []bfdd.SessionSpec
+	bfdUp      map[string]bool   // an owner's relayed sessions: state
+	bfdDowns   map[string]uint64 // and failures
+	bfdReports chan func()
+	bfdSeen    map[string]uint64 // the master: the owners' failure counts
 
 	mu       sync.Mutex
 	cfg      Config
@@ -174,6 +178,9 @@ func (d *Daemon) SetRole(m bool, masterID int) {
 	d.mu.Unlock()
 	if changed {
 		d.apply()
+		if !m && masterID != 0 {
+			d.resendBFDStates() // the new master learns the states
+		}
 	}
 }
 

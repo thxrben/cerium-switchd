@@ -365,8 +365,10 @@ Last updated: 2026-10-03 (evening).
   ordinary connection with the real addresses (next hop self = the owner's port address). Test: master, owner and a
   router behind the owner's port, both directions of connection set-up. The race detector found a send on a closed
   channel in the first version (now a done channel).
-- Open (BGP): BFD for relayed neighbours still runs in the master's cer-bfdd (single-hop from the master cannot
-  reach a neighbour behind another member's port: it must run on the owner, as OSPF's does); RFC 7606 tests with
+- BFD for relayed neighbours (done 2026-10-04): the owner runs the session in its cer-bfdd (it has the same
+  configuration) and reports state changes to the master in order with a failure count (bgp-bfd-state; resent to a
+  new master); the master runs BFD only for neighbours it reaches itself.
+- Open (BGP): RFC 7606 tests with
   malformed attributes; interop tests with FRR/GoBGP in network namespaces and in the lab (lab down since
   2026-10-04); a route with an unresolvable next hop is not hidden in the RIB; import `then preference`; local-as
   prepends only the local AS.

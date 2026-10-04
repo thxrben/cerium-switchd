@@ -47,6 +47,10 @@ func (s *fakeStack) call(ctx context.Context, from int) func(context.Context, in
 			var m RelayClose
 			json.Unmarshal(raw, &m)
 			d.RelayedClose(m)
+		case StackBFDState:
+			var m RelayBFDState
+			json.Unmarshal(raw, &m)
+			d.RelayedBFDState(m)
 		}
 		if err == nil && resp != nil && out != nil {
 			b, _ := json.Marshal(out)
@@ -88,9 +92,12 @@ func TestRelayedSession(t *testing.T) {
 	d2 := New(loNet{local: m2, ports: ports}, &fakeRIB{sets: map[string]ribd.SetRoutes{}}, quiet)
 	d1.Member, d1.StackCall = 1, st.call(ctx, 1)
 	d2.Member, d2.StackCall = 2, st.call(ctx, 2)
+	b1, b2 := &fakeBFD{}, &fakeBFD{}
+	d1.BFD, d2.BFD = b1, b2
 	st.ds[1], st.ds[2] = d1, d2
 	cfg := Config{Instances: []Instance{{AS: 65001, RouterID: m1, Neighbors: []Neighbor{{Owner: 2,
-		Neighbor: bgp.Neighbor{Addr: router, PeerAS: 65002, LocalAS: 65001, HoldTime: 9, Families: []bgp.Family{bgp.IPv4Unicast}}}}}}}
+		Neighbor: bgp.Neighbor{Addr: router, PeerAS: 65002, LocalAS: 65001, HoldTime: 9, Families: []bgp.Family{bgp.IPv4Unicast}},
+		BFDCfg:   &BFDConfig{IntervalMs: 300, Multiplier: 3}}}}}}
 	for _, d := range []*Daemon{d1, d2} {
 		go d.Run(ctx)
 		d.SetConfig(cfg)
@@ -109,10 +116,25 @@ func TestRelayedSession(t *testing.T) {
 	if len(d2.Status(nil)) != 0 {
 		t.Fatal("member 2 runs BGP itself")
 	}
+	// BFD runs on the owner, not on the master; its failure ends the
+	// master's session.
+	waitFor(t, "BFD on the owner", func() bool { return len(b2.get()) == 1 })
+	if len(b1.get()) != 0 {
+		t.Fatalf("the master runs BFD for a neighbour behind member 2: %+v", b1.get())
+	}
+	key := b2.get()[0].Key.String()
+	d2.BFDChanged(key, true, false)
+	d2.BFDChanged(key, false, false)
+	waitFor(t, "down by the owner's BFD", func() bool {
+		n := d1.Status(nil)[0].Neighbors[0]
+		return n.State != "Established" && n.LastError == "BFD session down"
+	})
+	d2.BFDChanged(key, true, false)
+	waitFor(t, "back", func() bool { return d1.Status(nil)[0].Neighbors[0].State == "Established" })
 	// A soft clear sends everything again: the session stays.
 	d1.Clear(ClearRequest{Neighbor: router, Mode: bgp.ClearSoft})
 	time.Sleep(300 * time.Millisecond)
-	if n := d1.Status(nil)[0].Neighbors[0]; n.State != "Established" || n.Stats.Flaps != 0 {
+	if n := d1.Status(nil)[0].Neighbors[0]; n.State != "Established" {
 		t.Fatalf("after a soft clear: %+v", n)
 	}
 }
