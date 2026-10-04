@@ -80,6 +80,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.BFDSessions()
 	case "alarms":
 		return o.Alarms()
+	case "optics":
+		return o.Optics(r.Iface)
 	}
 	return nil, fmt.Errorf("unknown listing %q", r.Method)
 }
@@ -253,6 +255,12 @@ func (s *stackOps) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 		out = append(out, n)
 	}
 	return out, err
+}
+
+// Optics reads the transceivers of every member's ports (iface: one).
+func (s *stackOps) Optics(iface string) ([]cli.OpticsPort, error) {
+	by, err := each[[]cli.OpticsPort](s, opsRequest{Method: "optics", Iface: iface})
+	return rows(by), err
 }
 
 // Alarms lists every member's alarms.

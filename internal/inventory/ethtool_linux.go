@@ -220,3 +220,33 @@ func ReadRings(linux string) (Rings, bool) {
 	u := func(i int) int { return int(le.Uint32(buf[4*i:])) }
 	return Rings{RXMax: u(1), TXMax: u(4), RX: u(5), TX: u(8)}, true
 }
+
+const (
+	ethtoolGModuleInfo   = 0x42
+	ethtoolGModuleEEPROM = 0x43
+)
+
+// ReadOptics reads a port's transceiver (ErrNoModule: none, or the driver
+// cannot read it).
+func ReadOptics(linux string) (Optics, error) {
+	info := make([]byte, 44) // cmd, type, eeprom_len, reserved[8]
+	binary.LittleEndian.PutUint32(info, ethtoolGModuleInfo)
+	if err := ethtool(linux, info); err != nil {
+		if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EIO) || errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EINVAL) {
+			return Optics{}, ErrNoModule
+		}
+		return Optics{}, err
+	}
+	typ := int(binary.LittleEndian.Uint32(info[4:]))
+	n := int(binary.LittleEndian.Uint32(info[8:]))
+	if n <= 0 || n > 640 {
+		return Optics{}, ErrNoModule
+	}
+	buf := make([]byte, 16+n) // cmd, magic, offset, len, data
+	binary.LittleEndian.PutUint32(buf, ethtoolGModuleEEPROM)
+	binary.LittleEndian.PutUint32(buf[12:], uint32(n))
+	if err := ethtool(linux, buf); err != nil {
+		return Optics{}, ErrNoModule
+	}
+	return ParseModule(typ, buf[16:])
+}

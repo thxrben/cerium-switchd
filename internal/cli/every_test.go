@@ -18,6 +18,8 @@ type allOps struct {
 
 func (allOps) BFDSessions() ([]BFDSession, error) { return bfdOps{}.BFDSessions() }
 
+func (allOps) Optics(iface string) ([]OpticsPort, error) { return opticsOps{}.Optics(iface) }
+
 func (allOps) Alarms() ([]Alarm, error) {
 	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil
 }

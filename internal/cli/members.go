@@ -193,7 +193,8 @@ func markPerMember() {
 		"show lacp interfaces", "show lacp statistics interfaces", "show dhcp client binding", "clear ethernet-switching table",
 		"show lldp neighbors", "show lldp local-information", "show lldp statistics", "show mclag",
 		"show igmp snooping membership", "show igmp snooping vlans", "show mld snooping membership", "show mld snooping vlans",
-		"show vxlan", "show vxlan remote-vtep", "show bfd session", "show system alarms"} {
+		"show vxlan", "show vxlan remote-vtep", "show bfd session", "show system alarms",
+		"show interfaces diagnostics optics"} {
 		findCmd(operational, strings.Fields(path)).stackWide = true
 	}
 }

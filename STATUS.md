@@ -301,6 +301,10 @@ Last updated: 2026-10-03 (evening).
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
 9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
    USB system disk.
+14. **Phase 11: `show interfaces diagnostics optics [<if>]`** (done 2026-10-04): module EEPROM through ethtool
+   (GMODULEINFO/GMODULEEEPROM); SFF-8472 SFP/SFP+ (identity, temperature, voltage, bias, TX/RX power, A2
+   thresholds and which are crossed) and SFF-8636 QSFP (identity, per-lane values); stack-wide (each member reads
+   its ports). Parser unit-tested with EEPROM fixtures; NOT yet read from a real module (lab down).
 13. **Phase 11: `show system alarms`** (done 2026-10-04): alarm registry per member (internal/alarms) in switchd;
    daemons raise/clear through svc "alarm" (Kit.Alarm, Kit.ClearAlarm; a reconnecting daemon's alarms are dropped,
    it raises again what holds). Sources: hanging devices (switchd and daemons, Major), daemons failed / not

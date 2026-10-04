@@ -540,6 +540,7 @@ vlans {
 | Command | Shows / does |
 |---|---|
 | `show interfaces [terse\|extensive] [<interface>]` | Status, role, VLANs and counters of the ports and bundles. |
+| `show interfaces diagnostics optics [<interface>]` | The pluggable transceivers' digital diagnostics (SFF-8472 SFP/SFP+, SFF-8636 QSFP), read from the module EEPROM through the NIC driver: vendor, part and serial number, wavelength; module temperature and supply voltage, laser bias current, transmit and receive power (mW and dBm, per lane for QSFP); for SFPs with thresholds the high/low alarm and warning limits and which of them are crossed now. Ports without a module, with a copper module or with a driver that cannot read the EEPROM say so. Every member's ports (the port's member reads its module). |
 | `show chassis hardware` | Every physical port with Linux name, bus address, driver and MAC address (1.6). |
 | `show system offload` | Hardware capabilities and acceleration per port (1.7). |
 | `show system limits` | What this switch can carry and how much of it is used (3.5.1). |

@@ -1350,7 +1350,12 @@ func registerOperational() {
 		case "show":
 			cmd.sub = append(cmd.sub,
 				&command{name: "interfaces", help: "Show interface status and counters", class: commit.ReadOnly,
-					run: (*Shell).showInterfaces, complete: completeIfArgs},
+					run: (*Shell).showInterfaces, complete: completeIfArgs, sub: []*command{
+						{name: "diagnostics", help: "Show transceiver diagnostics", class: commit.ReadOnly, sub: []*command{
+							{name: "optics", help: "Show the optical modules' digital diagnostics", class: commit.ReadOnly,
+								run: (*Shell).showOptics, complete: completeIfArgs},
+						}},
+					}},
 				&command{name: "ethernet-switching", help: "Show switching information", class: commit.ReadOnly, sub: []*command{
 					{name: "table", help: "Show the MAC address table", class: commit.ReadOnly, run: (*Shell).showMACTable, complete: completeMACArgs},
 				}},

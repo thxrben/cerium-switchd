@@ -1013,6 +1013,7 @@ var (
 	_ cli.BGP    = (*ops)(nil)
 	_ cli.BFD    = (*ops)(nil)
 	_ cli.Alarms = (*ops)(nil)
+	_ cli.Optics = (*ops)(nil)
 )
 
 // BGPStatus is show bgp … (cer-bgpd on this member, the master).
@@ -1050,6 +1051,26 @@ func (o *ops) ClearBGP(q bgpd.ClearRequest) (int, error) {
 	defer cancel()
 	var n int
 	return n, o.svc.call(ctx, "cer-bgpd", bgpd.MethodClear, q, &n)
+}
+
+// Optics is show interfaces diagnostics optics: this member's ports (all,
+// or the one named).
+func (o *ops) Optics(iface string) ([]cli.OpticsPort, error) {
+	var out []cli.OpticsPort
+	for _, p := range o.names.Ports() {
+		if iface != "" && p.Name != iface {
+			continue
+		}
+		r := cli.OpticsPort{Name: p.Name}
+		op, err := inventory.ReadOptics(p.Linux)
+		if err != nil {
+			r.Err = err.Error()
+		} else {
+			r.Optics = &op
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // Alarms is show system alarms (this member's).
