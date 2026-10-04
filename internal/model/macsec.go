@@ -117,6 +117,8 @@ func (b *builder) buildMACsec() {
 			b.errorf(at+" pre-shared-key", "ckn and cak are required")
 		case ca.Bits256() && len(ca.CAK) != 64:
 			b.errorf(at+" pre-shared-key cak", "%s needs a 256-bit cak (64 hex digits), this one has %d", ca.Cipher, len(ca.CAK))
+		case ca.Bits256():
+			b.errorf(at+" cipher-suite", "%s: the MKA of this release (wpa_supplicant 2.10) offers gcm-aes-128 only", ca.Cipher)
 		case !ca.Bits256() && len(ca.CAK) != 32:
 			b.errorf(at+" pre-shared-key cak", "%s needs a 128-bit cak (32 hex digits), this one has %d", ca.Cipher, len(ca.CAK))
 		}

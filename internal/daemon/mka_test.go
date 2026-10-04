@@ -61,8 +61,7 @@ func (f *fakeUnits) Kill(string) error                    { return nil }
 func mkaCfg(t *testing.T, cak string, ports ...string) *model.Config {
 	t.Helper()
 	text := "set virtual-chassis member 1\n" +
-		"set security macsec connectivity-association ca1 cipher-suite gcm-aes-256\n" +
-		"set security macsec connectivity-association ca1 pre-shared-key ckn 0a0b\n" +
+				"set security macsec connectivity-association ca1 pre-shared-key ckn 0a0b\n" +
 		"set security macsec connectivity-association ca1 pre-shared-key cak " + cak + "\n" +
 		"set security macsec connectivity-association ca1 mka key-server-priority 7\n"
 	for _, p := range ports {
@@ -85,7 +84,7 @@ func TestMKAManager(t *testing.T) {
 	m := newMKAManager(f, slog.New(slog.DiscardHandler), &alarms.Set{})
 	m.dir = t.TempDir()
 	linux := func(n string) (string, bool) { return "eth" + n[len(n)-1:], true }
-	cak1 := strings.Repeat("11", 32)
+	cak1 := strings.Repeat("11", 16)
 	m.sync(mkaCfg(t, cak1, "1/0/1", "1/0/2"), 1, linux)
 	if !slices.Equal(f.actions, []string{"reload", "start cer-mka@eth1.service", "start cer-mka@eth2.service"}) {
 		t.Fatalf("actions %v", f.actions)
@@ -97,10 +96,13 @@ func TestMKAManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"macsec_policy=1", "macsec_csindex=1", "mka_priority=7", "mka_ckn=0a0b", "mka_cak=" + cak1, "macsec_replay_window=0"} {
+	for _, want := range []string{"macsec_policy=1", "mka_priority=7", "mka_ckn=0a0b", "mka_cak=" + cak1, "macsec_replay_window=0"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("configuration lacks %q:\n%s", want, raw)
 		}
+	}
+	if strings.Contains(string(raw), "macsec_csindex") {
+		t.Error("wpa_supplicant 2.10 rejects macsec_csindex: written for gcm-aes-128")
 	}
 	if fi, _ := os.Stat(filepath.Join(m.dir, "eth1.conf")); fi.Mode().Perm() != 0o600 {
 		t.Errorf("the CAK is readable by others: %v", fi.Mode())
@@ -112,7 +114,7 @@ func TestMKAManager(t *testing.T) {
 		t.Fatalf("unchanged: %v", f.actions)
 	}
 	// A new CAK: both renegotiate; a port removed: stopped, file gone.
-	m.sync(mkaCfg(t, strings.Repeat("22", 32), "1/0/1"), 1, linux)
+	m.sync(mkaCfg(t, strings.Repeat("22", 16), "1/0/1"), 1, linux)
 	if !slices.Equal(f.actions, []string{"stop cer-mka@eth2.service", "restart cer-mka@eth1.service"}) {
 		t.Fatalf("change: %v", f.actions)
 	}
@@ -123,7 +125,7 @@ func TestMKAManager(t *testing.T) {
 	m2 := newMKAManager(f, slog.New(slog.DiscardHandler), &alarms.Set{})
 	m2.dir = m.dir
 	f.actions = nil
-	m2.sync(mkaCfg(t, strings.Repeat("22", 32), "1/0/1"), 1, linux)
+	m2.sync(mkaCfg(t, strings.Repeat("22", 16), "1/0/1"), 1, linux)
 	if len(f.actions) != 0 {
 		t.Fatalf("after a switchd restart: %v", f.actions)
 	}

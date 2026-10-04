@@ -2350,7 +2350,8 @@ security {
 ```
 * `security-mode static-cak` (the only mode, and the default): the connectivity association key (CAK) and its name
   (CKN) are configured on both ends; MKA derives and renews the session keys from them.
-* `cipher-suite`: default `gcm-aes-128` (as on Junos). MKA renews the session key before its 32-bit packet number
+* `cipher-suite`: default `gcm-aes-128` (as on Junos). E for `gcm-aes-256` in this release: the MKA it ships
+  (wpa_supplicant 2.10 of Debian 13) offers GCM-AES-128 only. MKA renews the session key before its 32-bit packet number
   runs out. (The XPN suites with 64-bit packet numbers are used on the stacking links; the MKA implementation does not
   offer them yet.)
 * `pre-shared-key`: `ckn` 2..64 hex digits (an even number), `cak` 32 hex digits (128-bit suites) or 64 (256-bit

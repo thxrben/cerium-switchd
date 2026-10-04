@@ -47,12 +47,12 @@ func (m *mkaManager) mkaUnit() string {
 [Unit]
 Description=cerOS MACsec key agreement on %%i
 After=switchd.service
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=%s -D macsec_linux -i %%i -c %s/%%i.conf
 Restart=always
 RestartSec=1
-StartLimitIntervalSec=0
 Nice=-5
 OOMScoreAdjust=-900
 LimitCORE=0
@@ -63,9 +63,12 @@ func mkaUnitName(port string) string { return "cer-mka@" + port + ".service" }
 
 // mkaConfig is a port's wpa_supplicant configuration.
 func mkaConfig(ca *model.MACsecCA, dir string) string {
-	csindex := 0 // GCM-AES-128
+	// macsec_csindex selects GCM-AES-256; wpa_supplicant 2.10 (Debian 13)
+	// does not know the field, so it is written only for that suite (which
+	// the commit check refuses while the image has 2.10).
+	csindex := ""
 	if ca.Bits256() {
-		csindex = 1
+		csindex = "\tmacsec_csindex=1\n"
 	}
 	return fmt.Sprintf(`# Written by switchd (reference 5.15): connectivity association %s
 ctrl_interface=%s
@@ -77,8 +80,7 @@ network={
 	macsec_policy=1
 	macsec_integ_only=0
 	macsec_port=1
-	macsec_csindex=%d
-	macsec_replay_protect=1
+%s	macsec_replay_protect=1
 	macsec_replay_window=%d
 	mka_priority=%d
 	mka_ckn=%s
