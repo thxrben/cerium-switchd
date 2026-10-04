@@ -287,7 +287,9 @@ Last updated: 2026-10-03 (evening).
    VLAN 5 and VLAN 1; ports 23/24 have native VLAN 5, so every untagged frame from physw4 (BPDUs, LACPDUs on 0/23,
    LLDP) is dropped (counted as "Unacceptable Frame Type"; "RSTP BPDUs Received" stays at 11). The UniFi never sees
    our RSTP agreement, keeps proposing, and every LAG restart (our 3 s LACP timeout, a change of periodic) blocks 3/1
-   for 2 x forward-delay ("STP Port Blocked"). Fix on the UniFi (native VLAN not denied by the ACL). Possible
+   for 2 x forward-delay ("STP Port Blocked"). Confirmed: a CLI rule `permit 01:80:C2:00:00:00 mask
+   00:00:00:00:00:0F vlan 5` before the denies -> 0/23 got its partner, 1/0/2 and 1/0/3 both collecting
+   distributing, the UniFi stopped proposing. Permanent fix belongs in the UniFi controller (it rewrites the ACL). Possible
    cerOS diagnostics: cer-lacpd's deaf-partner warning could name "partner drops untagged frames"; cer-rstpd could
    warn when the designated partner keeps the Proposal flag although we answer with an Agreement.
    Done on the way: cer-lacpd warns when a send fails (d12f6bd) and reports a partner that does not receive our
