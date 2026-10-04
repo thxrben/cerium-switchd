@@ -725,7 +725,7 @@ func (o *ops) Limits() (cli.LimitsStatus, error) {
 			st.FastestMbps, st.FastestPort = c.MaxSpeedMbps, p.Name
 		}
 		if c.Features["macsec-hw-offload"] != "" {
-			st.MACsecOffload++
+			st.MACsecCapable++
 		}
 	}
 	if fdb, err := o.kernel.FDB(); err == nil {

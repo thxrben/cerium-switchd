@@ -595,9 +595,9 @@ Supported means no limit applies):
 | **Aggregation** | `ae` numbers (`ae0`–`ae4095`) and how many bundles are configured; the largest bundle (ports) |
 | **MC-LAG** | members per MC-LAG bundle (2), peers per member (1); the configured MC-LAG bundles and pairs |
 | **Stack** | members (1–16) and how many are configured; voters (at most 7 of the members); this member's stacking ports and whether the stack is a ring |
-| **Ports** | physical ports of this member, the fastest port speed, stacking ports, the ports whose NIC encrypts MACsec in hardware (`MACsec offload: n of m ports`; the others encrypt in software) |
+| **Ports** | physical ports of this member, the fastest port speed, stacking ports, MACsec offload: the ports encrypting MACsec in hardware now of the ports whose NIC can (`MACsec offload: 0 of 2 ports able to`; the others encrypt in software) |
 
-Use of a limit is shown as `n of max`. A line whose limit is reached is marked `(full)`; a configured value above a
+Use of a limit is shown as `n of max`: always what is used of what is available, counting the same thing on both sides. A line whose limit is reached is marked `(full)`; a configured value above a
 hardware limit cannot exist (commit refuses it), so the page never shows one.
 
 #### 3.5.2 `show system bottlenecks`

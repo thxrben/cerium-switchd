@@ -136,8 +136,9 @@ type LimitsStatus struct {
 	LowestMaxPort, HighestMaxPort string
 	FastestMbps                   int
 	FastestPort                   string
-	// MACsecOffload: ports whose NIC encrypts MACsec in hardware.
-	MACsecOffload int
+	// MACsecCapable: ports whose NIC can encrypt MACsec in hardware;
+	// MACsecOffloaded: of those, the ones doing it now.
+	MACsecCapable, MACsecOffloaded int
 	MACEntries    int
 	// Memory: the memory slots (nil: unknown).
 	Memory *MemoryStatus
@@ -1556,7 +1557,7 @@ func (sh *Shell) showLimits(c *call) error {
 
 	use := func(n, max int) string {
 		s := fmt.Sprintf("%d of %d", n, max)
-		if n >= max {
+		if max > 0 && n >= max {
 			s += " (full)"
 		}
 		return s
@@ -1706,7 +1707,9 @@ func (sh *Shell) showLimits(c *call) error {
 	if hw.FastestMbps > 0 {
 		line("Fastest port", fmt.Sprintf("%s (%s)", fmtSpeed(hw.FastestMbps), hw.FastestPort))
 	}
-	line("MACsec offload", fmt.Sprintf("%d of %d ports (the others encrypt in software)", hw.MACsecOffload, hw.Ports))
+	// Used of available: the ports encrypting in hardware now, of those
+	// whose NIC can.
+	line("MACsec offload", fmt.Sprintf("%s ports able to (the others encrypt in software)", use(hw.MACsecOffloaded, hw.MACsecCapable)))
 	return nil
 }
 

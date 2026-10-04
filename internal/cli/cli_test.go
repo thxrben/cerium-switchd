@@ -611,7 +611,7 @@ func (f *fakeOps) Multicast() ([]McastStatus, error) {
 
 func (f *fakeOps) Limits() (LimitsStatus, error) {
 	return LimitsStatus{Member: 1, Ports: 9, StackPorts: 2, LowestMaxMTU: 9014, LowestMaxPort: "1/1/0", HighestMaxMTU: 16014, HighestMaxPort: "1/3/0",
-		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12, Memory: f.memory}, nil
+		FastestMbps: 10000, FastestPort: "1/3/0", MACEntries: 12, MACsecCapable: 2, Memory: f.memory}, nil
 }
 
 func (f *fakeOps) StackMTU() (StackMTUStatus, error) {
@@ -1044,7 +1044,7 @@ func TestShowLimits(t *testing.T) {
 	ts := newTester(t, e, "alice", commit.ReadOnly)
 	ts.sh.env.Ops = &fakeOps{}
 	out := ts.ok("show system limits")
-	contains(t, out, "Limits of member 1", "Applied (slots)        Supported",
+	contains(t, out, "Limits of member 1", "Applied (slots)        Supported", "0 of 2 ports able to",
 		"  Configurable mtu:                -                      256..16000 (default 1514)",
 		"  Largest mtu configured:          -                      1514 (default; hosts up to MTU 1500)",
 		"  Hardware maximum of the ports:   -                      9014 (1/1/0) .. 16014 (1/3/0)",
