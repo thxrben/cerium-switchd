@@ -142,6 +142,7 @@ type secLink struct {
 	software       bool
 	refused        bool
 	refusedAt      time.Time
+	lastErr        string // of the last key handover ("": it worked)
 }
 
 // secPush is a key for the neighbour's receive direction.
@@ -385,7 +386,11 @@ func (s *stackMACsec) rekey(l *secLink, now time.Time) {
 		return // removed meanwhile
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "no handler") {
+		l.lastErr = err.Error()
+		// Only a member that does not know the operation lacks MACsec
+		// (user report: "member 2 is not reachable"-like errors made a
+		// link plain for 10 minutes).
+		if strings.Contains(err.Error(), `unknown operation "stack-macsec"`) {
 			l.plain = true
 			s.alarms.Raise(stackMACsecAlarm+l.port, alarms.Minor, fmt.Sprintf("stacking port %s is not encrypted: member %d's version has no MACsec", l.port, l.neighbor))
 		} else {
@@ -396,6 +401,7 @@ func (s *stackMACsec) rekey(l *secLink, now time.Time) {
 	if !rep.OK {
 		return
 	}
+	l.lastErr = ""
 	if err := macsec.AddTx(s.k, l.dev, stackCipher, sak); err != nil {
 		s.log.Warn("stack macsec: transmit key not installed", "port", l.port, "err", err)
 		return
@@ -523,6 +529,8 @@ func (s *stackMACsec) status() []StackSecStatus {
 			st.State = "secured (hardware)"
 		case l.secured():
 			st.State = "secured (software)"
+		case l.lastErr != "":
+			st.State = "negotiating (last error: " + l.lastErr + ")"
 		default:
 			st.State = "negotiating"
 		}
@@ -586,7 +594,7 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 			peer = fmt.Sprintf("member %d, port %s (%s)", l.Neighbor, l.PeerName, l.PeerMAC)
 		}
 		cipher := stackCipher
-		if l.Dev == "" {
+		if l.Dev == "" || strings.HasPrefix(l.State, "plain") {
 			cipher = "-" // plain
 		}
 		c := cli.MACsecConn{Member: o.member, Interface: name, Dev: l.Dev, CA: "stack", Cipher: cipher, State: l.State,

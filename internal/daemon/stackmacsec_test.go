@@ -280,3 +280,18 @@ func TestStackMACsecRestart(t *testing.T) {
 		t.Fatalf("member 1 did not renew its key: %+v", a.links["ens19"].tx)
 	}
 }
+
+// A neighbour that does not answer is not one without MACsec: the link
+// keeps negotiating and shows why (user report: "plain (neighbour without
+// MACsec)" between two members of the same version).
+func TestStackMACsecNeighbourNotAnswering(t *testing.T) {
+	a, _, _, _, _ := newSecPair(t)
+	a.push = func(int, secPush) (secReply, error) { return secReply{}, errors.New("member 2 is not reachable") }
+	a.sync([]stackLinkSpec{{Port: "ens19", Neighbor: 2, PeerMAC: "02:00:00:00:02:01", Encrypt: true}})
+	if a.links["ens19"].plain || len(a.alarms.List()) != 0 {
+		t.Fatalf("marked plain: %+v", a.links["ens19"])
+	}
+	if st := a.status(); st[0].State != "negotiating (last error: member 2 is not reachable)" {
+		t.Fatalf("status %q", st[0].State)
+	}
+}
