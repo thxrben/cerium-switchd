@@ -1100,8 +1100,9 @@ kernel; `show system memory` lists the values of the running version):
   existing entries are never removed for new ones:
   * `bgp-ipv4`, `bgp-ipv6`, `bgp-paths`: a new prefix or path is not stored (as if it had been withdrawn);
     the neighbours stay up. A route that goes away makes room for the next one.
-  * `ospf`: the link-state database stops growing (RFC 1765 "database overflow": external routes beyond it are
-    neither stored nor originated), and the routes beyond the capacity are not installed.
+  * `ospf`: the routes beyond the capacity are not installed (`cer-ribd`), and the external database overflow of
+    RFC 1765 applies: when the external routes of the other routers and this switch's own would exceed the
+    capacity, this switch stops announcing its own (except a default route) until they all fit again.
   * `arp`, `ndp`: the kernel's neighbour table has this size (`gc_thresh3`; old entries that are not in use make room
     first, as in Linux).
   * `mac`: the bridge learns no more addresses (`fdb_max_learned`); synchronised ones count too.

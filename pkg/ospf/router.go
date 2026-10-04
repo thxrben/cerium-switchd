@@ -17,6 +17,13 @@ type Router struct {
 	Log *slog.Logger
 	// OnRoutes receives the complete routing table after every change.
 	OnRoutes func([]Route)
+	// ExtLimit bounds the non-default external LSAs of the database (0:
+	// none; RFC 1765, the memory slots' capacity): when they would exceed
+	// it, this router stops originating its own (overflow) until all fit
+	// again. OnOverflow is told when that starts and ends.
+	ExtLimit   int
+	OnOverflow func(overflow bool)
+	overflow   bool
 
 	cfg    Config
 	rid    ID

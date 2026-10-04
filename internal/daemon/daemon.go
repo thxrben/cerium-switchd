@@ -31,6 +31,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/rpcserver"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
@@ -243,7 +244,9 @@ func Run(ctx context.Context, o Options) error {
 		// installs every route; the management instance only on the master
 		// (after mastership changes, a reconcile runs).
 		if !o.DryRun {
-			services.setConfig("cer-ribd", ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State())))
+			rc := ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State()))
+			rc.OSPFLimit = mem.Capacity(memslots.OSPF)
+			services.setConfig("cer-ribd", rc)
 		}
 		// LACP bundles: after the data plane created their devices.
 		if !o.DryRun {
@@ -262,7 +265,9 @@ func Run(ctx context.Context, o Options) error {
 		// OSPF and OSPFv3 (reference 5.13): cer-ospfd runs where configured
 		// (the protocol itself on the master only).
 		if !o.DryRun {
-			services.setConfig("cer-ospfd", ospfConfig(cfg, names.Linux))
+			oc := ospfConfig(cfg, names.Linux)
+			oc.ExtLimit = mem.Capacity(memslots.OSPF)
+			services.setConfig("cer-ospfd", oc)
 		}
 		// BGP (reference 5.14): cer-bgpd runs where configured (the
 		// protocol on the master only).
@@ -483,8 +488,16 @@ func Run(ctx context.Context, o Options) error {
 			ctl.node.Handle("started", func(int, json.RawMessage) (any, error) { return liveOps.started, nil })
 		}
 		mem.onChange = func() {
+			// The daemons get the stack's capacities with their
+			// configuration (cer-bgpd, cer-ribd).
 			if cfg := liveOps.model(); cfg != nil {
 				services.setConfig("cer-bgpd", bgpConfig(cfg, mem.Capacity))
+				rc := ribConfig(cfg, member, names.Linux, applier.master(), dhcpLeasesOf(dhcpLeases.State()))
+				rc.OSPFLimit = mem.Capacity(memslots.OSPF)
+				services.setConfig("cer-ribd", rc)
+				oc := ospfConfig(cfg, names.Linux)
+				oc.ExtLimit = mem.Capacity(memslots.OSPF)
+				services.setConfig("cer-ospfd", oc)
 			}
 		}
 		go mem.watchStack(ctx, ctl)

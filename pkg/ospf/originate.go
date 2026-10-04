@@ -315,23 +315,67 @@ func (r *Router) desiredSummaries(w wantSet, a *area) {
 }
 
 func (r *Router) desiredExternals(w wantSet) {
-	for _, e := range r.cfg.Externals {
-		p := e.Prefix.Masked()
-		if p.Addr().Is4() != (r.v == V2) {
-			continue
+	if r.extOverflow() {
+		// Only a default route is still originated (RFC 1765 §2.1).
+		for _, e := range r.cfg.Externals {
+			if e.Prefix.Bits() == 0 {
+				r.addExternal(w, e)
+			}
 		}
-		t := V2External
-		if r.v == V3 {
-			t = V3External
-		}
-		l := r.template(t, r.lsID(t, p))
-		l.Prefix, l.Metric, l.E2, l.Tag = p, min(e.Metric, LSInfinity-1), !e.Type1, e.Tag
-		l.HasTag = r.v == V2 || e.Tag != 0
-		if e.Forward.IsValid() && !e.Forward.IsUnspecified() {
-			l.Forward = e.Forward
-		}
-		w.add(r.as, l)
+		return
 	}
+	for _, e := range r.cfg.Externals {
+		r.addExternal(w, e)
+	}
+}
+
+// extOverflow decides the database overflow (RFC 1765): the other
+// routers' non-default external LSAs and this router's own would exceed
+// ExtLimit.
+func (r *Router) extOverflow() bool {
+	over := false
+	if r.ExtLimit > 0 {
+		n := 0
+		for _, l := range r.as.db.All(r.now) {
+			if (l.Type == V2External || l.Type == V3External) && l.AdvRtr != r.rid && l.Age < MaxAge && l.Prefix.Bits() > 0 {
+				n++
+			}
+		}
+		for _, e := range r.cfg.Externals {
+			if e.Prefix.Bits() > 0 && e.Prefix.Addr().Is4() == (r.v == V2) {
+				n++
+			}
+		}
+		over = n > r.ExtLimit
+	}
+	if over != r.overflow {
+		r.overflow = over
+		if r.Log != nil {
+			r.Log.Warn("ospf: external database overflow (RFC 1765)", "overflow", over, "limit", r.ExtLimit)
+		}
+		if r.OnOverflow != nil {
+			r.OnOverflow(over)
+		}
+	}
+	return over
+}
+
+func (r *Router) addExternal(w wantSet, e External) {
+	p := e.Prefix.Masked()
+	if p.Addr().Is4() != (r.v == V2) {
+		return
+	}
+	t := V2External
+	if r.v == V3 {
+		t = V3External
+	}
+	l := r.template(t, r.lsID(t, p))
+	l.Prefix, l.Metric, l.E2, l.Tag = p, min(e.Metric, LSInfinity-1), !e.Type1, e.Tag
+	l.HasTag = r.v == V2 || e.Tag != 0
+	if e.Forward.IsValid() && !e.Forward.IsUnspecified() {
+		l.Forward = e.Forward
+	}
+	w.add(r.as, l)
 }
 
 // ---- installing ----

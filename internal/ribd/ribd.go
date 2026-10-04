@@ -21,6 +21,9 @@ import (
 // Config is what switchd gives cer-ribd.
 type Config struct {
 	Instances map[string]Instance `json:"instances"` // "" = the default instance
+	// OSPFLimit is the memory slots' capacity of OSPF routes (0: none;
+	// reference 5.1).
+	OSPFLimit int `json:"ospf_limit,omitempty"`
 }
 
 // Instance is a routing instance on this member.
@@ -61,6 +64,9 @@ type Server struct {
 	RIB     *rib.RIB
 	Log     *slog.Logger
 	Install Installer
+	// Full is told when a memory slot purpose becomes full or has room
+	// again (nil: nobody).
+	Full func(purpose string, full bool)
 
 	mu      sync.Mutex
 	cfg     *Config
@@ -68,6 +74,7 @@ type Server struct {
 	started time.Time
 	kick    chan struct{}
 	warned  string
+	full    bool // OSPF routes were refused
 }
 
 // New returns a server.
@@ -92,6 +99,7 @@ func (s *Server) SetConfig(c *Config) {
 	old := s.cfg
 	s.cfg = c
 	s.mu.Unlock()
+	s.RIB.SetLimit(rib.OSPF, c.OSPFLimit)
 	if old != nil {
 		for inst := range old.Instances {
 			if _, ok := c.Instances[inst]; !ok {
@@ -117,6 +125,9 @@ func (s *Server) SetConfig(c *Config) {
 // SetRoutes takes a routing protocol's routes.
 func (s *Server) SetRoutes(sr SetRoutes) {
 	s.RIB.Set(sr.Instance, sr.Protocol, sr.Source, sr.Routes)
+	if sr.Protocol == rib.OSPF {
+		s.checkFull()
+	}
 	s.RIB.Changes() // settle the active routes the resolution reads
 	s.revalidate()
 	s.RIB.Changes()
@@ -342,3 +353,22 @@ func (s *Server) Lookup(q rib.Query) []rib.Entry { return s.RIB.Lookup(q) }
 
 // DefaultRoute is 0.0.0.0/0.
 var DefaultRoute = netip.MustParsePrefix("0.0.0.0/0")
+
+// checkFull reports OSPF routes refused by the memory slots (full), and
+// when every route fits again.
+func (s *Server) checkFull() {
+	_, refused := s.RIB.Count(rib.OSPF)
+	s.mu.Lock()
+	changed := (refused > 0) != s.full
+	s.full = refused > 0
+	s.mu.Unlock()
+	if !changed {
+		return
+	}
+	if refused > 0 {
+		s.Log.Error("memory slots of ospf are full: routes are not installed", "refused", refused)
+	}
+	if s.Full != nil {
+		s.Full("ospf", refused > 0)
+	}
+}

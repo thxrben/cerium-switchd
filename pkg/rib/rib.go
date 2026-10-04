@@ -186,6 +186,36 @@ type RIB struct {
 	dirty map[Table]map[netip.Prefix]bool
 	// MaxPaths bounds ECMP (default 16).
 	MaxPaths int
+	// limits are the memory slots' capacities per protocol (SetLimit);
+	// counts the routes now; refused the routes not stored for it.
+	limits, counts, refused map[Protocol]int
+}
+
+// SetLimit bounds the routes of a protocol over every instance (0: no
+// limit; system memory, reference 5.1): a new route beyond it is not
+// stored, existing ones are never removed for it.
+func (r *RIB) SetLimit(proto Protocol, max int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.limits == nil {
+		r.limits = map[Protocol]int{}
+	}
+	r.limits[proto] = max
+}
+
+// Count is a protocol's routes now and those refused by its limit in the
+// last Set.
+func (r *RIB) Count(proto Protocol) (routes, refused int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts[proto], r.refused[proto]
+}
+
+func (r *RIB) count(proto Protocol, d int) {
+	if r.counts == nil {
+		r.counts = map[Protocol]int{}
+	}
+	r.counts[proto] += d
 }
 
 // New returns an empty RIB; now is the clock (time.Now if nil).
@@ -234,21 +264,36 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 		for p, d := range ds {
 			if _, ok := d.routes[k]; ok && want[t][p] == nil {
 				delete(d.routes, k)
+				r.count(proto, -1)
 				r.markDirty(t, p)
 			}
 		}
 	}
-	for t, rs := range want {
+	refused := 0
+	// Which routes a full protocol keeps must not depend on map order:
+	// sorted, but only when the limit can be reached (a full table is
+	// large).
+	ordered := r.limits[proto] > 0 && r.counts[proto]+len(routes) > r.limits[proto]
+	for _, t := range sortedTables(want, ordered) {
+		rs := want[t]
 		ds := r.tables[t]
 		if ds == nil {
 			ds = map[netip.Prefix]*dest{}
 			r.tables[t] = ds
 		}
-		for p, rt := range rs {
+		for _, p := range sortedPrefixes(rs, ordered) {
+			rt := rs[p]
 			d := ds[p]
+			if (d == nil || d.routes[k] == nil) && r.limits[proto] > 0 && r.counts[proto] >= r.limits[proto] {
+				refused++ // full: a new route is not stored
+				continue
+			}
 			if d == nil {
 				d = &dest{routes: map[key]*Route{}}
 				ds[p] = d
+			}
+			if d.routes[k] == nil {
+				r.count(proto, 1)
 			}
 			if old := d.routes[k]; old != nil && sameRoute(old, rt) {
 				old.Attrs, old.Stale = rt.Attrs, rt.Stale
@@ -263,6 +308,52 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 			r.markDirty(t, p)
 		}
 	}
+	if r.refused == nil {
+		r.refused = map[Protocol]int{}
+	}
+	if refused > 0 || r.refused[proto] > 0 {
+		r.refused[proto] = refused
+	}
+}
+
+func sortedTables(m map[Table]map[netip.Prefix]*Route, sorted bool) []Table {
+	out := make([]Table, 0, len(m))
+	for t := range m {
+		out = append(out, t)
+	}
+	if !sorted {
+		return out
+	}
+	slices.SortFunc(out, func(a, b Table) int {
+		if a.Instance != b.Instance {
+			return strings.Compare(a.Instance, b.Instance)
+		}
+		if a.V6 != b.V6 {
+			if a.V6 {
+				return 1
+			}
+			return -1
+		}
+		return 0
+	})
+	return out
+}
+
+func sortedPrefixes(m map[netip.Prefix]*Route, sorted bool) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(m))
+	for p := range m {
+		out = append(out, p)
+	}
+	if !sorted {
+		return out
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int {
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c
+		}
+		return a.Bits() - b.Bits()
+	})
+	return out
 }
 
 // MarkStale marks every route of the protocol in the instance stale
@@ -296,6 +387,7 @@ func (r *RIB) Sweep(instance string, proto Protocol) {
 			for k, rt := range d.routes {
 				if k.proto == proto && rt.Stale {
 					delete(d.routes, k)
+					r.count(proto, -1)
 					r.markDirty(t, p)
 				}
 			}
@@ -313,6 +405,9 @@ func (r *RIB) DropInstance(instance string) {
 		}
 		for p, d := range ds {
 			if len(d.routes) > 0 {
+				for k := range d.routes {
+					r.count(k.proto, -1)
+				}
 				clear(d.routes)
 				r.markDirty(t, p)
 			}

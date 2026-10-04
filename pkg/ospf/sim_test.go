@@ -582,3 +582,54 @@ func TestNeighborFailed(t *testing.T) {
 		}
 	})
 }
+
+// RFC 1765: r2 has room for 3 non-default external LSAs; r1 originates
+// 2, so r2's own 2 would exceed it: r2 originates only its default route
+// until r1 withdraws.
+func TestExternalOverflow(t *testing.T) {
+	versions(t, func(t *testing.T, v Version) {
+		n := newSim(t, v)
+		n.router("r1", "1.1.1.1")
+		n.router("r2", "2.2.2.2")
+		n.connect("x", []string{"r1", "r2"}, p2p)
+		ext := func(ps ...string) []External {
+			var out []External
+			for _, p := range ps {
+				out = append(out, External{Prefix: netip.MustParsePrefix(p), Metric: 1})
+			}
+			return out
+		}
+		if v == V2 {
+			n.routers["r1"].cfg.Externals = ext("10.1.0.0/16", "10.2.0.0/16")
+			n.routers["r2"].cfg.Externals = ext("10.3.0.0/16", "10.4.0.0/16", "0.0.0.0/0")
+		} else {
+			n.routers["r1"].cfg.Externals = ext("2001:db8:1::/48", "2001:db8:2::/48")
+			n.routers["r2"].cfg.Externals = ext("2001:db8:3::/48", "2001:db8:4::/48", "::/0")
+		}
+		var events []bool
+		n.routers["r2"].r.ExtLimit = 3
+		n.routers["r2"].r.OnOverflow = func(o bool) { events = append(events, o) }
+		n.start()
+		n.run(60 * time.Second)
+		own := v4v6(v, "10.3.0.0/16", "2001:db8:3::/48")
+		if rt := n.route("r1", own); rt != nil {
+			t.Fatalf("r1 learned %s from r2 in overflow", own)
+		}
+		if rt := n.route("r1", v4v6(v, "0.0.0.0/0", "::/0")); rt == nil {
+			t.Fatal("the default route is not originated in overflow")
+		}
+		if len(events) == 0 || !events[len(events)-1] {
+			t.Fatalf("overflow events %v", events)
+		}
+		// r1 withdraws one: 1 + 2 fit again.
+		if v == V2 {
+			n.routers["r1"].r.SetExternals(ext("10.1.0.0/16"), n.now)
+		} else {
+			n.routers["r1"].r.SetExternals(ext("2001:db8:1::/48"), n.now)
+		}
+		n.run(30 * time.Second)
+		if rt := n.route("r1", own); rt == nil {
+			t.Fatalf("r2 still in overflow: %v\n%s", events, n.dump("r1"))
+		}
+	})
+}

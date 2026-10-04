@@ -26,6 +26,14 @@ func setup(k *daemonkit.Kit) error {
 	s := ribd.New(func(want []netdev.Route, protos []int) (bool, []string, error) {
 		return netdev.SyncRoutes(want, protos, names.StackTable)
 	}, k.Log, time.Now())
+	s.Full = func(purpose string, full bool) {
+		id := "cer-ribd/memory " + purpose
+		if full {
+			k.Alarm(id, "Major", "memory slots of "+purpose+" are full: further routes are not installed (system memory)")
+		} else {
+			k.ClearAlarm(id)
+		}
+	}
 	k.OnConfig(func(raw json.RawMessage) {
 		var c ribd.Config
 		if err := json.Unmarshal(raw, &c); err != nil {

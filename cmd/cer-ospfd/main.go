@@ -47,6 +47,14 @@ func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := ospfd.New(ospfd.LinuxKernel{}, ospfd.LinuxNet{}, rc, k.Log)
+	d.Full = func(purpose string, full bool) {
+		id := "cer-ospfd/memory " + purpose
+		if full {
+			k.Alarm(id, "Major", "OSPF external database overflow (RFC 1765): the memory slots of "+purpose+" are full; own external routes are not announced (system memory)")
+		} else {
+			k.ClearAlarm(id)
+		}
+	}
 	d.Member = k.Member
 	d.StackCall = k.StackCall
 	// BFD for the neighbours (cer-bfdd runs while BFD is configured; the

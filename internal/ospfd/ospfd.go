@@ -26,6 +26,9 @@ import (
 type Config struct {
 	Instances []Instance      `json:"instances,omitempty"`
 	Policies  *model.Policies `json:"policies,omitempty"`
+	// ExtLimit is the memory slots' capacity of OSPF routes: the external
+	// database overflow limit (RFC 1765; 0: none; reference 5.1).
+	ExtLimit int `json:"ext_limit,omitempty"`
 }
 
 // Instance is OSPF or OSPFv3 of one routing instance.
@@ -119,6 +122,9 @@ type Daemon struct {
 	StackCall func(ctx context.Context, member int, method string, req, resp any) error
 	// BFD is cer-bfdd on this member (nil: no BFD).
 	BFD BFD
+	// Full is told when the external database overflows (a memory slot
+	// purpose is full) and when it fits again (nil: nobody).
+	Full func(purpose string, full bool)
 
 	events  chan func()
 	started time.Time
@@ -274,8 +280,14 @@ func (d *Daemon) apply() {
 				owner: map[string]int{}, started: now}
 			in.r = ospf.New(want[k].Version, (*ioAdapter)(in), d.Log.With("instance", want[k].Name), now)
 			in.r.OnRoutes = in.onRoutes
+			in.r.OnOverflow = func(o bool) {
+				if d.Full != nil {
+					go d.Full("ospf", o)
+				}
+			}
 			d.insts[k] = in
 		}
+		in.r.ExtLimit = cfg.ExtLimit
 		in.cfg = want[k]
 		in.configure(now)
 	}
