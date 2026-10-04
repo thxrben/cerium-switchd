@@ -267,13 +267,14 @@ Last updated: 2026-10-03 (evening).
    checkBFD) and was taken out to keep the order; redo it. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
    for routed interfaces of other members.
 3. **ECMP**: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8).
-4. **LACP with the UniFi (physw4, user report)**: ae0 = 1/0/2 + 1/0/3 to UniFi ports 0/23 and 0/24. physw4: 1/0/3
-   Current/collecting-distributing; 1/0/2 Defaulted (Rx 16, Tx 282 LACPDUs; the partner sends slow, i.e. it never
-   learned our state on that port). The UniFi shows 0/23 with an all-zero partner (ACT|AGG|LTO): our LACPDUs on 1/0/2
-   do not reach it or are refused. Check: LACPDUs are sent at the same time on all ports of a bundle (one periodic
-   timer per bundle, not per port), they really leave a port that is not enabled in the team (team tx path, source
-   MAC of that port, no VLAN tag), the frames on both ports compared byte by byte (tcpdump on the UniFi side), and
-   how the UniFi treats a partner that answers fast while it is slow.
+4. **LACP with the UniFi (physw4)**: investigated 2026-10-03. cerOS behaves correctly: tcpdump shows well-formed
+   LACPDUs leaving 1/0/2 every second (actor a6:2c:0c:23:c4:1f key 1 port 1026, partner = UniFi port 23 key 66), and
+   the UniFi's 0/23 counters show them arriving (CPU-trapped, as on the working 0/24), yet its LACP keeps an all-zero
+   partner on 0/23. Port settings of 0/23 and 0/24 are the same; STP is fine (3/1 forwarding, no BPDUs returned, no
+   loop). Periodic timers are per port, as in 802.1AX (not a cause). Remaining: user tests on the UniFi (bounce 0/23
+   or no addport/addport; swap the cables at physw4 to see whether the fault follows the UniFi port or 1/0/2).
+   Done on the way: cer-lacpd warns when a send fails (d12f6bd) and reports a partner that does not receive our
+   LACPDUs (its PDUs never name our port) instead of "configure periodic slow" (02a7717).
 5. **`request daemon restart|stop <daemon>`** instead of `restart <daemon>` (reference 1.9; decide what stop means:
    until start, a switchd restart or a reboot).
 6. **Applying `request system diagnose` hints** (proposal, confirm with the user first): configuration statements
@@ -281,6 +282,15 @@ Last updated: 2026-10-03 (evening).
    the hint names the `set` command, `request system diagnose apply` loads them into a candidate.
 7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), BFD client, lab interop with FRR (v2 and
    v3, broadcast and p2p), the punt frame test and OSPFv3 sockets in the lab.
+
+8. **physw4 field issues (2026-10-03)**: RSTP did not run because the image cc68085 lacks /sbin/bridge-stp (fixed in
+   72ce500, build check in cadfbef; physw4 must be updated). The update failed on the USB 2.0 system stick: a 64 MiB
+   slot sync exceeded 60 s and the retry's rename over the unsynced bundle hung /var for 3 min; fixed in 6cb46ae
+   (sync per 4 MiB, bundles written back before the rename). Workaround for updating from cc68085:
+   vm.dirty_bytes=8 MiB. Not yet verified on the device.
+9. **Proposals waiting for the user's decision**: SFTP uploads on the CLI SSH server (off by default, chroot
+   /var/tmp, super-user only; today sshd has no sftp subsystem and scp lands in the CLI); a diagnose hint (and
+   `show system software` line) when the system disk is a USB stick, USB 2.0 especially.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in
