@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/thxrben/cerium-switchd/internal/schema"
 )
 
 // Severity of a validation issue.
@@ -223,6 +225,14 @@ func (b *builder) validateInterfaces() {
 		i.MemberIDs = sortedKeys(members)
 		if len(i.MemberPorts) == 0 {
 			b.warnf(path, "aggregated interface has no member ports")
+		}
+		if i.LACP != nil {
+			// LACP port numbers are member × 1024 + card × 64 + port in 16 bits.
+			for _, p := range i.MemberPorts {
+				if pp, ok := schema.ParsePhysical(p); ok && (pp.Card > MaxLACPCard || pp.Port > MaxLACPPort) {
+					b.errorf("interfaces "+p+" ether-options 802.3ad", "%s cannot be in LACP bundle %s: LACP port numbers cover cards 0-%d and ports 0-%d", p, name, MaxLACPCard, MaxLACPPort)
+				}
+			}
 		}
 		if len(i.MemberPorts) > 0 && i.MinLinks > len(i.MemberPorts) {
 			b.warnf(path+" aggregated-ether-options minimum-links", "minimum-links %d exceeds the %d member ports; the bundle can never come up", i.MinLinks, len(i.MemberPorts))

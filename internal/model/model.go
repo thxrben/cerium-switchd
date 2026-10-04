@@ -135,6 +135,13 @@ type Member struct {
 // 1500 bytes payload plus the 14 byte header (Junos convention).
 const DefaultMTU = 1514
 
+// The highest card and port of an LACP bundle's port: the LACP port number
+// member × 1024 + card × 64 + port has 16 bits.
+const (
+	MaxLACPCard = 15
+	MaxLACPPort = 63
+)
+
 // EthHeader is the Ethernet header length included in configured MTUs.
 const EthHeader = 14
 

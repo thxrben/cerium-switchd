@@ -1219,7 +1219,9 @@ Only on `ae` interfaces (E on physical ports). An `ae` without member ports is W
     interfaces`). The stack is one switch, so every bundle announces the same system, whichever members its ports
     are on: a bundle that gains ports on a second member (5.6) keeps its identity.
   * Actor identity: key `N+1` for `aeN`; port number `member × 1024 + card × 64 + port` (unique in the whole stack, so
-    the two members of an MC-LAG never announce the same port); port priority 32768.
+    the two members of an MC-LAG never announce the same port); port priority 32768. The number is 16 bits, so a
+    port of an LACP bundle must be on card 0-15 with port number 0-63; a commit with any other port in an LACP
+    bundle fails (static bundles take every port).
   * A member port carries traffic only while LACP has it *collecting and distributing* (in sync with the partner). A
     port that is not receives nothing but LACPDUs (data frames on it are dropped by the switch, as IEEE 802.1AX
     requires), and nothing is sent on it. Ports whose partner differs from the bundle's partner (a cabling error) stay

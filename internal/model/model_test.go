@@ -115,6 +115,8 @@ func TestInvalidConfigs(t *testing.T) {
 		{"two peers", "set virtual-chassis member 3 host-name sw-c\nset interfaces 1/0/7 ether-options 802.3ad ae2\nset interfaces 3/0/7 ether-options 802.3ad ae2\nset interfaces ae2 aggregated-ether-options lacp", "must have the same peer"},
 		{"rstp timers", "set protocols rstp max-age 40", "timers violate"},
 		{"bpdu-block unknown", "set protocols layer2-control bpdu-block interface 1/0/9", "1/0/9 is not configured"},
+		{"lacp card 16", "set interfaces 1/16/0 ether-options 802.3ad ae1", "LACP port numbers cover cards 0-15 and ports 0-63"},
+		{"lacp port 64", "set interfaces 2/0/64 ether-options 802.3ad ae1", "2/0/64 cannot be in LACP bundle ae1"},
 		{"mclag without lacp", "delete interfaces ae1 aggregated-ether-options lacp", "which needs 'lacp'"},
 		{"analyzer same port", "set forwarding-options analyzer dbg input ingress interface 1/0/4", "both input and output"},
 		{"analyzer no output", "delete forwarding-options analyzer dbg output", "output interface is required"},
@@ -588,5 +590,13 @@ set interfaces 2/0/1 unit 0 family ethernet-switching vlan members mgmt
 	_, issues = build(t, cfg+"set interfaces irb unit 30 family inet address 10.5.0.4/24\nset vlans v30 vlan-id 30\nset vlans v30 l3-interface irb.30\n", nil)
 	if !strings.Contains(issues.String(), "overlaps 10.5.0.2/24 on irb.10") {
 		t.Errorf("overlap in the default instance:\n%s", issues)
+	}
+}
+
+func TestLACPPortRange(t *testing.T) {
+	// The edges are allowed in LACP bundles; a static bundle takes any port.
+	_, issues := build(t, valid+"set interfaces 1/15/63 ether-options 802.3ad ae1\nset interfaces 1/16/64 ether-options 802.3ad ae2\nset interfaces ae2 unit 0 family ethernet-switching vlan members users\n", nil)
+	if issues.HasErrors() {
+		t.Fatalf("unexpected errors:\n%s", issues)
 	}
 }

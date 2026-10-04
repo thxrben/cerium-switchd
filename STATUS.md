@@ -260,8 +260,10 @@ Last updated: 2026-10-03 (evening).
   path change (docs/stack-protocol.md "Mesh").
 
 ## Requested 2026-10-03 (still to do, in this order)
-1. **Other**: LACP port numbers wrap for cards >= 16 or ports >= 64 (member*1024 + card*64 + port); Wireshark: decode
-   Raft msgpack.
+1. **Other**: LACP port numbers: done 2026-10-04. The formula stays (no number changes, no flap on update); a commit
+   with a port of card >= 16 or port >= 64 in an LACP bundle fails (16 bits cannot number every valid port; static
+   bundles take any port), and cer-lacpd never gets an unnumbered port. Wireshark (decode Raft msgpack, and the
+   reliable-stream messages OPEN2..PROBE2 the dissector does not know yet): postponed by the user 2026-10-04.
 2. **BFD**: interval check at commit (W below 100 ms on a member with fewer than 4 CPUs; E below 50 ms is the
    schema's range already): an implementation existed in this session (model CPUCounter, kernelInventory.CPUs,
    checkBFD) and was taken out to keep the order; redo it. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
