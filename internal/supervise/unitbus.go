@@ -18,17 +18,26 @@ import (
 // SystemdPrivate is systemd's own D-Bus socket (no bus daemon needed).
 const SystemdPrivate = "/run/systemd/private"
 
-// unitBus reads unit properties from systemd over D-Bus, one property at
-// a time. systemctl show asks systemd for every property of a unit
-// (GetAll) and filters afterwards: for a dozen units every second that
-// costs PID 1 several percent of a CPU (drop-in directories searched for
-// NeedDaemonReload, cgroup files, rlimits and scheduling of each unit).
-// Get of the few properties the supervisor needs costs a fraction.
+// unitBus reads unit states from systemd over D-Bus. systemctl show asks
+// systemd for every property of a unit (GetAll) and filters afterwards:
+// for a dozen units every second that costs PID 1 several percent of a CPU
+// (drop-in directories searched for NeedDaemonReload, cgroup files, rlimits
+// and scheduling of each unit). Here one ListUnitsByNames gives every
+// unit's load and active state, and two Gets per unit (MainPID, NRestarts)
+// catch restarts between two polls; the details are read only when one of
+// these changed, memory and CPU every usageEvery.
 type unitBus struct {
 	path string
+	now  func() time.Time // nil: time.Now
 
-	mu   sync.Mutex
-	conn *dbus.Conn
+	mu    sync.Mutex
+	conn  *dbus.Conn
+	cache map[string]*cachedUnit
+}
+
+type cachedUnit struct {
+	st    UnitState
+	usage time.Time // memory and CPU read
 }
 
 const (
@@ -36,20 +45,19 @@ const (
 	ifaceService = "org.freedesktop.systemd1.Service"
 )
 
-// unitProps are the properties read per unit, with their interface.
-var unitProps = []struct{ iface, name string }{
-	{ifaceUnit, "LoadState"},
-	{ifaceUnit, "ActiveState"},
-	{ifaceUnit, "SubState"},
-	{ifaceUnit, "ActiveEnterTimestamp"},
-	{ifaceService, "Result"},
-	{ifaceService, "MainPID"},
-	{ifaceService, "NRestarts"},
-	{ifaceService, "ExecMainCode"},
-	{ifaceService, "ExecMainStatus"},
-	{ifaceService, "MemoryCurrent"},
-	{ifaceService, "CPUUsageNSec"},
-}
+type prop struct{ iface, name string }
+
+var (
+	// fastProps are read every poll; detailProps when the state, the main
+	// process or the restart count changed; usageProps every usageEvery.
+	fastProps   = []prop{{ifaceService, "MainPID"}, {ifaceService, "NRestarts"}}
+	detailProps = []prop{{ifaceUnit, "ActiveEnterTimestamp"}, {ifaceService, "Result"}, {ifaceService, "ExecMainCode"}, {ifaceService, "ExecMainStatus"}}
+	usageProps  = []prop{{ifaceService, "MemoryCurrent"}, {ifaceService, "CPUUsageNSec"}}
+)
+
+// usageEvery is how often memory and CPU time are read (show system
+// processes shows them; nothing acts on them).
+const usageEvery = 10 * time.Second
 
 // busTimeout bounds connecting and one round of reads.
 const busTimeout = 5 * time.Second
@@ -88,8 +96,7 @@ func (b *unitBus) drop() {
 	}
 }
 
-// Show reads the units' states. All requests are sent at once and
-// answered in one go.
+// Show reads the units' states.
 func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -99,20 +106,133 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), busTimeout)
 	defer cancel()
+	now := time.Now()
+	if b.now != nil {
+		now = b.now()
+	}
+	if b.cache == nil {
+		b.cache = map[string]*cachedUnit{}
+	}
+	// Load, active and sub state of every unit in one call.
+	var list [][]any
+	call := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").CallWithContext(ctx,
+		"org.freedesktop.systemd1.Manager.ListUnitsByNames", 0, units)
+	if call.Err != nil {
+		b.fail(conn)
+		return nil, fmt.Errorf("ListUnitsByNames: %w", call.Err)
+	}
+	if err := call.Store(&list); err != nil {
+		return nil, fmt.Errorf("ListUnitsByNames: %w", err)
+	}
+	base := map[string]UnitState{}
+	for _, row := range list {
+		if len(row) < 5 {
+			continue
+		}
+		name, _ := row[0].(string)
+		load, _ := row[2].(string)
+		active, _ := row[3].(string)
+		sub, _ := row[4].(string)
+		base[name] = UnitState{Loaded: load == "loaded", Active: active, Sub: sub}
+	}
+	var loaded []string
+	for _, u := range units {
+		if base[u].Loaded {
+			loaded = append(loaded, u)
+		}
+	}
+	fast, err := b.gets(ctx, conn, loaded, func(string) []prop { return fastProps })
+	if err != nil {
+		return nil, err
+	}
+	res := map[string]UnitState{}
+	var more []string
+	want := map[string][]prop{}
+	for _, u := range units {
+		st := base[u]
+		v := fast[u]
+		cur := unitState(v)
+		st.PID, st.NRestarts = cur.PID, cur.NRestarts
+		c := b.cache[u]
+		changed := c == nil || c.st.Active != st.Active || c.st.Sub != st.Sub || c.st.PID != st.PID || c.st.NRestarts != st.NRestarts
+		if st.Loaded && changed {
+			want[u] = append(want[u], detailProps...)
+		}
+		if st.Loaded && (changed || now.Sub(c.usage) >= usageEvery) {
+			want[u] = append(want[u], usageProps...)
+		}
+		if len(want[u]) > 0 {
+			more = append(more, u)
+		}
+		res[u] = st
+	}
+	detail, err := b.gets(ctx, conn, more, func(u string) []prop { return want[u] })
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range units {
+		st := res[u]
+		c := b.cache[u]
+		if c == nil {
+			c = &cachedUnit{}
+			b.cache[u] = c
+		}
+		if v, ok := detail[u]; ok {
+			d := unitState(v)
+			if _, read := v["Result"]; read {
+				st.Result, st.ExitCode, st.ExitStatus, st.Since = d.Result, d.ExitCode, d.ExitStatus, d.Since
+			} else {
+				st.Result, st.ExitCode, st.ExitStatus, st.Since = c.st.Result, c.st.ExitCode, c.st.ExitStatus, c.st.Since
+			}
+			if _, read := v["MemoryCurrent"]; read {
+				st.Memory, st.CPU = d.Memory, d.CPU
+				c.usage = now
+			} else {
+				st.Memory, st.CPU = c.st.Memory, c.st.CPU
+			}
+		} else {
+			st.Result, st.ExitCode, st.ExitStatus, st.Since = c.st.Result, c.st.ExitCode, c.st.ExitStatus, c.st.Since
+			st.Memory, st.CPU = c.st.Memory, c.st.CPU
+		}
+		if !st.Loaded {
+			st = UnitState{Active: st.Active, Sub: st.Sub}
+		}
+		c.st = st
+		res[u] = st
+	}
+	for u := range b.cache {
+		if _, ok := res[u]; !ok {
+			delete(b.cache, u) // no longer asked for
+		}
+	}
+	return res, nil
+}
+
+func (b *unitBus) fail(conn *dbus.Conn) {
+	if !conn.Connected() {
+		b.drop()
+	}
+}
+
+// gets reads properties of units, all requests sent at once.
+func (b *unitBus) gets(ctx context.Context, conn *dbus.Conn, units []string, props func(string) []prop) (map[string]map[string]any, error) {
 	type pending struct {
 		unit, prop string
 		call       *dbus.Call
 	}
-	ch := make(chan *dbus.Call, len(units)*len(unitProps))
 	var calls []pending
+	n := 0
+	for _, u := range units {
+		n += len(props(u))
+	}
+	ch := make(chan *dbus.Call, n)
 	for _, u := range units {
 		obj := conn.Object("org.freedesktop.systemd1", UnitPath(u))
-		for _, p := range unitProps {
+		for _, p := range props(u) {
 			c := obj.GoWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, ch, p.iface, p.name)
 			calls = append(calls, pending{u, p.name, c})
 		}
 	}
-	vals := map[string]map[string]any{}
 	for range calls {
 		select {
 		case <-ch:
@@ -121,15 +241,14 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 			return nil, fmt.Errorf("systemd did not answer within %s", busTimeout)
 		}
 	}
+	vals := map[string]map[string]any{}
 	for _, c := range calls {
 		if c.call.Err != nil {
 			var de dbus.Error
 			if errors.As(c.call.Err, &de) && (strings.HasSuffix(de.Name, ".UnknownProperty") || strings.HasSuffix(de.Name, ".UnknownInterface")) {
-				continue // e.g. no Service interface: the unit is not loaded
+				continue
 			}
-			if !conn.Connected() {
-				b.drop()
-			}
+			b.fail(conn)
 			return nil, fmt.Errorf("%s %s: %w", c.unit, c.prop, c.call.Err)
 		}
 		var v dbus.Variant
@@ -141,11 +260,7 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 		}
 		vals[c.unit][c.prop] = v.Value()
 	}
-	res := map[string]UnitState{}
-	for _, u := range units {
-		res[u] = unitState(vals[u])
-	}
-	return res, nil
+	return vals, nil
 }
 
 // unitState converts property values (D-Bus types) to a UnitState.
