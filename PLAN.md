@@ -692,6 +692,20 @@ An overall check that lists what limits the switch, with a recommendation per fi
 * NIC: offloads not active that the NIC supports, ring sizes, drops/overruns from the counters, flow control.
 * Memory and softirq load under traffic, and the throughput the forwarding path reached (from the counters).
 
+### Phase 10b: MACsec changes (decided 2026-10-04, later the same day; supersedes "on by default" above)
+1. **Off by default.** On by default only on a stacking link whose two ends both have MACsec offload in the NIC
+   (each end reports its port's `macsec-hw-offload` in the link handshake). Software MACsec on a stacking link is
+   optional (configured), because of its CPU cost.
+2. **Per link, not per member**: the setting is per stacking port (e.g. `virtual-chassis vc-port <port> macsec
+   on|off|auto`, auto = on when both ends offload; plus a stack-wide default). Several VC ports between the same
+   members may be in **mixed** operation: some encrypted, some plain (migration, or an encrypted link over an
+   untrusted path to a remote site next to a plain local one).
+3. **Migration**: adding a second VC port that offloads MACsec, moving traffic over, then removing the old one must
+   work without losing the stack; the stack MTU overhead is then per link (58 plain, 90 encrypted) and the MTU
+   check uses each link's own value.
+4. The spec (5.2 `virtual-chassis macsec`) and the code (internal/daemon/stackmacsec.go: `enabled` is stack-wide
+   today; model.StackOverheadOf is stack-wide) must be changed accordingly.
+
 ### Phase 14: No swap (decided 2026-10-04)
 A switch never swaps: a swapped-out daemon misses its protocol timers. Without swap the kernel's OOM killer acts
 when memory runs out (accepted; the memory slots, Phase 15, prevent it).
