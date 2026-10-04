@@ -9,7 +9,7 @@ ARCHES  := amd64 arm64 arm
 # switch; rtest is a test tool (test/interop).
 PROGRAMS := $(filter-out rtest,$(notdir $(wildcard cmd/*)))
 
-.PHONY: all build test fuzz vet cross image clean $(PROGRAMS) rtest
+.PHONY: all build test interop-bgp fuzz vet cross image clean $(PROGRAMS) rtest
 
 all: vet test build
 
@@ -21,6 +21,11 @@ $(PROGRAMS) rtest:
 
 test:
 	$(GO) test ./...
+
+# BGP against the GoBGP server, in one process (a module of its own: GoBGP's
+# server never becomes a dependency of cerOS).
+interop-bgp:
+	cd test/interop/gobgp && $(GO) test ./...
 
 vet:
 	$(GO) vet ./...

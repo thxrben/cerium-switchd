@@ -100,3 +100,39 @@ func TestCodecChunks(t *testing.T) {
 		t.Fatalf("%d withdrawn", n)
 	}
 }
+
+// FuzzUpdate: any UPDATE body is parsed and decoded without a panic (a
+// neighbour's malformed message must never crash the speaker).
+func FuzzUpdate(f *testing.F) {
+	a := Attrs{ASPath: []Segment{{ASNs: []uint32{65001}}}, NextHop: netip.MustParseAddr("10.0.0.1"), Communities: []uint32{1}}
+	for _, m := range updateMsgs(IPv4Unicast, &a, true, []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")}) {
+		b, _ := m.Serialize()
+		f.Add(b[bgp.BGP_HEADER_LENGTH:])
+	}
+	a6 := Attrs{NextHop: netip.MustParseAddr("2001:db8::1"), LinkLocal: netip.MustParseAddr("fe80::1")}
+	for _, m := range updateMsgs(IPv6Unicast, &a6, false, []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}) {
+		b, _ := m.Serialize()
+		f.Add(b[bgp.BGP_HEADER_LENGTH:])
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		h := &bgp.BGPHeader{Type: bgp.BGP_MSG_UPDATE, Len: uint16(len(body) + bgp.BGP_HEADER_LENGTH)}
+		m, err := bgp.ParseBGPBody(h, body)
+		if m == nil {
+			return
+		}
+		u, ok := m.Body.(*bgp.BGPUpdate)
+		if !ok {
+			return
+		}
+		withdraw := false
+		if err != nil {
+			w, _, notify := errorHandling(err)
+			if notify != nil {
+				return
+			}
+			withdraw = w
+		}
+		d := decodeUpdate(u, withdraw)
+		_ = mergeAS4(d.Attrs.ASPath, d.as4Path)
+	})
+}

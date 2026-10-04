@@ -368,6 +368,11 @@ Last updated: 2026-10-03 (evening).
 - BFD for relayed neighbours (done 2026-10-04): the owner runs the session in its cer-bfdd (it has the same
   configuration) and reports state changes to the master in order with a failure count (bgp-bfd-state; resent to a
   new master); the master runs BFD only for neighbours it reaches itself.
+- Interop (done 2026-10-04): `make interop-bgp` runs pkg/bgp against the GoBGP server in one process (module
+  test/interop/gobgp of its own: GoBGP's server never becomes a cerOS dependency): session both ways, 4-byte AS,
+  IPv4 with MED, communities, large communities, IPv6 over an IPv4 session (next hop of the other family),
+  withdrawals both ways, route refresh without reset. FuzzUpdate: received UPDATE bodies through GoBGP's parser and
+  our decoder (RFC 7606 handling) without panics (~750k inputs, none found).
 - Open (BGP): RFC 7606 tests with
   malformed attributes; interop tests with FRR/GoBGP in network namespaces and in the lab (lab down since
   2026-10-04); a route with an unresolvable next hop is not hidden in the RIB; import `then preference`; local-as
