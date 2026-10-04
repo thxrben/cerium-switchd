@@ -19,17 +19,33 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Default deadlines.
-var (
-	// FileDeadline is the deadline of one file operation on a disk (open, read,
-	// write, sync, rename …).
-	FileDeadline = 10 * time.Second
-	// KernelDeadline is the deadline of one netlink, ioctl or sysfs call.
-	KernelDeadline = 5 * time.Second
-)
+// The deadlines (system timeouts disk-operation and kernel-call,
+// reference 5.1); SetDeadlines changes them at run time.
+var fileDeadline, kernelDeadline atomic.Int64
+
+func init() { SetDeadlines(10*time.Second, 5*time.Second) }
+
+// FileDeadline is the deadline of one file operation on a disk (open,
+// read, write, sync, rename …).
+func FileDeadline() time.Duration { return time.Duration(fileDeadline.Load()) }
+
+// KernelDeadline is the deadline of one netlink, ioctl or sysfs call.
+func KernelDeadline() time.Duration { return time.Duration(kernelDeadline.Load()) }
+
+// SetDeadlines sets the deadlines (zero: unchanged); calls already running
+// keep theirs.
+func SetDeadlines(file, kernel time.Duration) {
+	if file > 0 {
+		fileDeadline.Store(int64(file))
+	}
+	if kernel > 0 {
+		kernelDeadline.Store(int64(kernel))
+	}
+}
 
 // ErrTimeout is matched (errors.Is) by every error of a call that did not
 // end in time, or that was refused because its resource is stuck.
@@ -131,7 +147,7 @@ func DoErr(res, op string, d time.Duration, fn func() error) error {
 func DoCtx[T any](ctx context.Context, res, op string, d time.Duration, fn func() (T, error)) (T, error) {
 	var zero T
 	if d <= 0 {
-		d = KernelDeadline
+		d = KernelDeadline()
 	}
 	if c, ok := busy(res); ok {
 		return zero, &Error{Resource: res, Op: op, Since: c.Since, StuckOp: c.Op}

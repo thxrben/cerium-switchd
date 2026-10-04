@@ -23,6 +23,7 @@ func Main() int {
 	switchdDir := filepath.Join(ConfigRoot, "switchd")
 	sys.Check = RunCheck
 	sys.ActiveConfig = func() ([]byte, error) { return ConfigFromStore(switchdDir) }
+	loadTimeouts(sys.ActiveConfig) // system timeouts (reference 5.1)
 	// ceros.healthtimeout=<seconds> on the kernel command line shortens the
 	// health timeout (image tests).
 	var timeout time.Duration

@@ -196,11 +196,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	// A USB stick: every read and write has a deadline.
-	if _, err := io.Copy(hwio.Writer(out, SlotIODeadline), hwio.Reader(in, SlotIODeadline)); err != nil {
+	if _, err := io.Copy(hwio.Writer(out, SlotIODeadline()), hwio.Reader(in, SlotIODeadline())); err != nil {
 		out.Close()
 		return err
 	}
-	if err := hwio.WriteBack(out, SlotIODeadline); err != nil {
+	if err := hwio.WriteBack(out, SlotIODeadline()); err != nil {
 		out.Close()
 		return err
 	}

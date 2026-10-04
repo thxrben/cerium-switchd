@@ -89,7 +89,7 @@ func (s *System) withESP(rw bool, f func(dir string) error) error {
 		flags |= syscall.MS_RDONLY
 	}
 	res := hwio.Resource(s.Sys.ESP)
-	if err := hwio.DoErr(res, "mount "+s.Sys.ESP, hwio.FileDeadline, func() error {
+	if err := hwio.DoErr(res, "mount "+s.Sys.ESP, hwio.FileDeadline(), func() error {
 		return syscall.Mount(s.Sys.ESP, espMount, "vfat", flags, "flush")
 	}); err != nil {
 		return fmt.Errorf("mounting the ESP: %w", err)
@@ -97,10 +97,10 @@ func (s *System) withESP(rw bool, f func(dir string) error) error {
 	ferr := f(espMount)
 	// Only the ESP: a global sync would wait for a slot being written.
 	if d, err := hwio.Open(espMount); err == nil {
-		hwio.DoErr(res, "sync "+s.Sys.ESP, hwio.FileDeadline, func() error { return unix.Syncfs(int(d.Fd())) })
+		hwio.DoErr(res, "sync "+s.Sys.ESP, hwio.FileDeadline(), func() error { return unix.Syncfs(int(d.Fd())) })
 		d.Close()
 	}
-	if err := hwio.DoErr(res, "unmount "+s.Sys.ESP, hwio.FileDeadline, func() error { return syscall.Unmount(espMount, 0) }); err != nil && ferr == nil {
+	if err := hwio.DoErr(res, "unmount "+s.Sys.ESP, hwio.FileDeadline(), func() error { return syscall.Unmount(espMount, 0) }); err != nil && ferr == nil {
 		ferr = fmt.Errorf("unmounting the ESP: %w", err)
 	}
 	return ferr
@@ -206,7 +206,7 @@ func (s *System) Reboot() error { _, err := sysexec.CombinedOutput("systemctl", 
 // RunCheck runs a switchd program's configuration check: exit 0 accepts
 // (output = warnings), 1 rejects.
 func RunCheck(prog, cfgFile string) (string, error) {
-	out, err := sysexec.Command(prog, "check-config", cfgFile).WithTimeout(2 * time.Minute).CombinedOutput(context.Background())
+	out, err := sysexec.Command(prog, "check-config", cfgFile).WithTimeout(dur(&checkTimeout)).CombinedOutput(context.Background())
 	text := strings.TrimSpace(string(out))
 	var ee *exec.ExitError
 	switch {

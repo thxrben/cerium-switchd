@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/schema"
@@ -66,6 +67,7 @@ type System struct {
 	// as root into the CLI).
 	ConsoleLogin bool
 	Offload      OffloadPolicy
+	Timeouts     Timeouts
 }
 
 type NTPServer struct {
@@ -116,6 +118,24 @@ type Console struct {
 	Speed    int
 	Disabled bool
 }
+
+// Timeouts are system timeouts (reference 5.1): how long cerOS waits for
+// disks, the kernel and the steps of a software update.
+type Timeouts struct {
+	DiskOperation    time.Duration `json:"disk_operation"`
+	KernelCall       time.Duration `json:"kernel_call"`
+	SlotWrite        time.Duration `json:"slot_write"`
+	SoftwareTransfer time.Duration `json:"software_transfer"`
+	SoftwareInstall  time.Duration `json:"software_install"`
+	MemberUpdate     time.Duration `json:"member_update"`
+	HealthCheck      time.Duration `json:"health_check"`
+	ConfigCheck      time.Duration `json:"config_check"`
+}
+
+// DefaultTimeouts are the timeouts without configuration.
+var DefaultTimeouts = Timeouts{DiskOperation: 10 * time.Second, KernelCall: 5 * time.Second, SlotWrite: time.Minute,
+	SoftwareTransfer: 10 * time.Minute, SoftwareInstall: 15 * time.Minute, MemberUpdate: 10 * time.Minute,
+	HealthCheck: 5 * time.Minute, ConfigCheck: 2 * time.Minute}
 
 type OffloadPolicy struct {
 	Enabled           bool
@@ -514,6 +534,15 @@ func (b *builder) build() {
 		WatchdogThreshold: atoi(off.Leaf("watchdog", "threshold"), 100),
 		WatchdogAlarmOnly: off.Has("watchdog", "alarm-only"),
 	}
+	to := sys.Get("timeouts")
+	sec := func(name string, def time.Duration) time.Duration {
+		return time.Duration(atoi(to.Leaf(name), int(def/time.Second))) * time.Second
+	}
+	d := DefaultTimeouts
+	s.Timeouts = Timeouts{DiskOperation: sec("disk-operation", d.DiskOperation), KernelCall: sec("kernel-call", d.KernelCall),
+		SlotWrite: sec("slot-write", d.SlotWrite), SoftwareTransfer: sec("software-transfer", d.SoftwareTransfer),
+		SoftwareInstall: sec("software-install", d.SoftwareInstall), MemberUpdate: sec("member-update", d.MemberUpdate),
+		HealthCheck: sec("health-check", d.HealthCheck), ConfigCheck: sec("config-check", d.ConfigCheck)}
 
 	// VLANs.
 	for _, e := range r.Entries("vlans") {

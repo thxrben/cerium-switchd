@@ -236,6 +236,7 @@ func Run(ctx context.Context, o Options) error {
 	sysMAC := lacpSystemMAC(vc.StackID())
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
 	applier.afterApply = func(cfg *model.Config) {
+		setTimeouts(cfg.System.Timeouts) // reference 5.1
 		// Routing (reference 5.8): cer-ribd has the routing table and
 		// installs every route; the management instance only on the master
 		// (after mastership changes, a reconcile runs).

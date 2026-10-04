@@ -18,7 +18,7 @@ const Resource = "rtnl"
 // SetSocketTimeout bounds the netlink sockets themselves (a request whose
 // answer never comes), so that hung calls do not remain after the kernel
 // answers others again. Programs call it at start.
-func SetSocketTimeout() { _ = netlink.SetSocketTimeout(hwio.KernelDeadline) }
+func SetSocketTimeout() { _ = netlink.SetSocketTimeout(hwio.KernelDeadline()) }
 
 func desc(v ...any) string {
 	if len(v) == 0 {

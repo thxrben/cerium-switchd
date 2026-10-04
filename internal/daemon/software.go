@@ -16,10 +16,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/software"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/updated"
@@ -52,12 +54,29 @@ type updater struct {
 // (they are large and can be fetched again).
 const softwareDir = "/var/lib/ceros/software"
 
+// The update's waits are system timeouts (reference 5.1), set from the
+// active configuration (setTimeouts).
+var activeTimeouts atomic.Pointer[model.Timeouts]
+
+func init() { setTimeouts(model.DefaultTimeouts) }
+
+// setTimeouts applies system timeouts in switchd: the disk and kernel
+// deadlines, slot writes, and the waits of an update.
+func setTimeouts(t model.Timeouts) {
+	activeTimeouts.Store(&t)
+	hwio.SetDeadlines(t.DiskOperation, t.KernelCall)
+	software.SetSlotIODeadline(t.SlotWrite)
+}
+
 // memberWait is how long a member may take to come back after its update
 // (a reboot, and a rollback with a second reboot inside it).
-const memberWait = 10 * time.Minute
+func memberWait() time.Duration { return activeTimeouts.Load().MemberUpdate }
 
 // installWait bounds the update daemon's install (it writes a slot).
-const installWait = 15 * time.Minute
+func installWait() time.Duration { return activeTimeouts.Load().SoftwareInstall }
+
+// transferWait bounds copying a bundle to a member.
+func transferWait() time.Duration { return activeTimeouts.Load().SoftwareTransfer }
 
 // swStatus is one member's software state.
 type swStatus struct {
@@ -195,11 +214,11 @@ func (u *updater) receive(nc net.Conn) {
 		fail(err)
 		return
 	}
-	_, err = io.CopyN(hwio.Writer(f, software.SlotIODeadline), r, h.Size)
+	_, err = io.CopyN(hwio.Writer(f, software.SlotIODeadline()), r, h.Size)
 	if err == nil {
 		// Written to the disk before the rename (which would otherwise
 		// write all of it at once).
-		err = hwio.WriteBack(f, software.SlotIODeadline)
+		err = hwio.WriteBack(f, software.SlotIODeadline())
 	}
 	f.Close()
 	if err == nil {
@@ -235,7 +254,7 @@ func checkSum(path, want string) error {
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, hwio.Reader(f, software.SlotIODeadline)); err != nil {
+	if _, err := io.Copy(h, hwio.Reader(f, software.SlotIODeadline())); err != nil {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
@@ -291,7 +310,7 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 		out.WriteString(text)
 		req.ExitMaintenance = true
 	}
-	rep, err := updated.CallTimeout(u.daemonSocket(), req, installWait)
+	rep, err := updated.CallTimeout(u.daemonSocket(), req, installWait())
 	if err != nil {
 		if req.ExitMaintenance {
 			u.maint().exit("software update")
@@ -461,7 +480,7 @@ func (u *updater) do(req cli.SoftwareRequest) {
 			u.finish(nil)
 			return
 		}
-		raw, err := u.ctl.node.Call(id, "sw-install", swInstall{Version: target, Rollback: req.Rollback, Force: req.Force, NoValidate: req.NoValidate}, installWait)
+		raw, err := u.ctl.node.Call(id, "sw-install", swInstall{Version: target, Rollback: req.Rollback, Force: req.Force, NoValidate: req.NoValidate}, installWait())
 		if err == nil {
 			err = json.Unmarshal(raw, &text)
 		}
@@ -484,7 +503,7 @@ func (u *updater) do(req cli.SoftwareRequest) {
 
 // waitFor waits until member id runs v, is current and out of maintenance.
 func (u *updater) waitFor(id int, v string) error {
-	deadline := time.Now().Add(memberWait)
+	deadline := time.Now().Add(memberWait())
 	time.Sleep(5 * time.Second) // it reboots
 	var last swStatus
 	for time.Now().Before(deadline) {
@@ -501,7 +520,7 @@ func (u *updater) waitFor(id int, v string) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("member %d is not back with %s after %s (it runs %q, maintenance %v); the update stops here",
-		id, v, memberWait, last.Version, last.Maintenance)
+		id, v, memberWait(), last.Version, last.Maintenance)
 }
 
 // prepare fetches, verifies, checks and distributes the bundle; it returns
@@ -561,7 +580,7 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 	// The download is on the disk before the rename: replacing an
 	// existing bundle makes the rename write all of it at once (ext4),
 	// past its deadline on a slow disk.
-	if err := hwio.WriteBackFile(tmp, software.SlotIODeadline); err != nil {
+	if err := hwio.WriteBackFile(tmp, software.SlotIODeadline()); err != nil {
 		return "", err
 	}
 	if err := hwio.Rename(tmp, u.pkgPath(v)); err != nil {
@@ -598,7 +617,7 @@ func (u *updater) send(id int, v string, raw []byte) error {
 		return err
 	}
 	defer nc.Close()
-	nc.SetDeadline(time.Now().Add(10 * time.Minute))
+	nc.SetDeadline(time.Now().Add(transferWait()))
 	h, _ := json.Marshal(map[string]any{"Version": v, "SHA256": software.Sum(raw), "Size": len(raw)})
 	if _, err := nc.Write(append(h, '\n')); err != nil {
 		return err
@@ -620,7 +639,7 @@ func (u *updater) send(id int, v string, raw []byte) error {
 // check on the active configuration.
 func (u *updater) checkConfig(v string, noValidate bool) error {
 	u.say("checking the configuration with %s", v)
-	rep, err := updated.CallTimeout(u.daemonSocket(), updated.Request{Op: "check", Bundle: u.pkgPath(v)}, installWait)
+	rep, err := updated.CallTimeout(u.daemonSocket(), updated.Request{Op: "check", Bundle: u.pkgPath(v)}, installWait())
 	switch {
 	case err == nil:
 		if rep.Text != "" {

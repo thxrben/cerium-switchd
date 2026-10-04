@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -103,7 +104,7 @@ func WriteEnv(path string, e Env) error {
 	if err != nil {
 		return err
 	}
-	return hwio.DoErr(hwio.Resource(path), "write "+path, hwio.FileDeadline, func() error {
+	return hwio.DoErr(hwio.Resource(path), "write "+path, hwio.FileDeadline(), func() error {
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 		if err != nil {
 			return err
@@ -255,9 +256,22 @@ func DetectSystem(cmdline, sysRoot, devRoot string) (*System, error) {
 	return sys, nil
 }
 
-// SlotIODeadline bounds one read, write or sync of a slot or a bundle
+// slotIODeadline bounds one read, write or sync of a slot or a bundle
 // (4 MiB on a slow disk or USB stick: at least ~70 KB/s).
-var SlotIODeadline = 60 * time.Second
+var slotIODeadline atomic.Int64
+
+func init() { SetSlotIODeadline(60 * time.Second) }
+
+// SlotIODeadline is the deadline of one slot or bundle chunk (system
+// timeouts slot-write).
+func SlotIODeadline() time.Duration { return time.Duration(slotIODeadline.Load()) }
+
+// SetSlotIODeadline changes it (zero: unchanged).
+func SetSlotIODeadline(d time.Duration) {
+	if d > 0 {
+		slotIODeadline.Store(int64(d))
+	}
+}
 
 // Backup is the slot that is not running.
 func (s *System) Backup() string { return OtherSlot(s.Active) }
@@ -276,7 +290,7 @@ func (s *System) WriteSlot(slot string, img io.Reader, size int64, want string, 
 	}
 	// Every write, seek and sync has a deadline: a disk that stops
 	// answering fails the update instead of hanging it.
-	f := hwio.Writer(raw, SlotIODeadline)
+	f := hwio.Writer(raw, SlotIODeadline())
 	if devSize, err := f.Seek(0, io.SeekEnd); err == nil && devSize > 0 && !isRegular(raw) && devSize < size {
 		f.Close()
 		return fmt.Errorf("the image (%d bytes) does not fit into slot %s (%d bytes)", size, slot, devSize)
@@ -345,10 +359,10 @@ func sumDevice(dev string, size int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	f := hwio.Reader(raw, SlotIODeadline)
+	f := hwio.Reader(raw, SlotIODeadline())
 	defer f.Close()
 	// Drop the cached pages: the read must come from the disk.
-	if err := hwio.DoErr(hwio.Resource(dev), "flush cache "+dev, SlotIODeadline, func() error {
+	if err := hwio.DoErr(hwio.Resource(dev), "flush cache "+dev, SlotIODeadline(), func() error {
 		_ = unix.Fadvise(int(raw.Fd()), 0, 0, unix.FADV_DONTNEED)
 		if !isRegular(raw) {
 			_ = unix.IoctlSetInt(int(raw.Fd()), unix.BLKFLSBUF, 0)

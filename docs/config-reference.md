@@ -944,6 +944,25 @@ Hardware acceleration policy (see also `interfaces <if> offload disable`).
 * At startup, switchd also tunes NICs to avoid drops: RX/TX rings at their maximum and RSS across all queues. Pause frames are left
   at the driver default unless `ether-options flow-control` is set.
 
+#### `system timeouts { disk-operation <s>; kernel-call <s>; slot-write <s>; software-transfer <s>; software-install <s>; member-update <s>; health-check <s>; config-check <s>; }`
+How long cerOS waits before it treats a disk, the kernel or a software update step as failed (a cerOS extension; Junos
+has no equivalent). The defaults suit SSDs and eMMC; a switch that boots from a slow disk (a USB 2.0 stick, an SD card)
+may need longer values, so that a long write is not taken for a hanging device. All values are seconds and apply to
+every member; a change takes effect at once (running operations keep the value they started with).
+* `disk-operation` (default 10, 1..600): one file operation on a disk (open, read, write, sync, rename). A disk that
+  does not answer within it raises the "hanging device" alarm (7 of docs/os-image.md).
+* `kernel-call` (default 5, 1..120): one netlink, ioctl or sysfs call.
+* `slot-write` (default 60, 10..3600): writing and syncing one 4 MiB part of a software slot during an update.
+* `software-transfer` (default 600, 60..7200): copying an image bundle from the master to a member.
+* `software-install` (default 900, 60..7200): the whole install of a bundle on one member (writing the slot).
+* `member-update` (default 600, 60..7200): how long a rolling update waits for an updated member to come back
+  (it reboots, maybe twice when its new version fails and it rolls back).
+* `health-check` (default 300, 60..3600): how long a new version has after its reboot to report healthy before the
+  member rolls back to the previous one.
+* `config-check` (default 120, 10..1800): the new version's check of the configuration before an update.
+* The update daemon and every member read the values from the active configuration; a value raised for an update is
+  in effect for the whole update, the reboot included.
+
 ### 5.2 virtual-chassis
 
 The stack is configured like a Junos Virtual Chassis. Members are numbered 1–16 (Junos uses 0–9); the member
@@ -2364,6 +2383,15 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system offload watchdog interval` | leaf | &lt;seconds&gt; 1..300 | 5 | Seconds between counter checks |
 | `system offload watchdog threshold` | leaf | &lt;count&gt; 1..1000000 | 100 | Drops/errors per interval that trigger a software fallback |
 | `system offload watchdog alarm-only` | flag |  |  | Only raise alarms, never change offload settings |
+| `system timeouts` | container |  |  | How long cerOS waits for disks, the kernel and update steps |
+| `system timeouts disk-operation` | leaf | &lt;seconds&gt; 1..600 | 10 | One file operation on a disk |
+| `system timeouts kernel-call` | leaf | &lt;seconds&gt; 1..120 | 5 | One netlink, ioctl or sysfs call |
+| `system timeouts slot-write` | leaf | &lt;seconds&gt; 10..3600 | 60 | Writing and syncing 4 MiB of a software slot |
+| `system timeouts software-transfer` | leaf | &lt;seconds&gt; 60..7200 | 600 | Copying a bundle to a member |
+| `system timeouts software-install` | leaf | &lt;seconds&gt; 60..7200 | 900 | Installing a bundle on one member |
+| `system timeouts member-update` | leaf | &lt;seconds&gt; 60..7200 | 600 | Waiting for an updated member to come back |
+| `system timeouts health-check` | leaf | &lt;seconds&gt; 60..3600 | 300 | A new version's time to report healthy |
+| `system timeouts config-check` | leaf | &lt;seconds&gt; 10..1800 | 120 | The new version's configuration check |
 | `virtual-chassis` | container |  |  | Stack members and stacking (like a Junos Virtual Chassis) |
 | `virtual-chassis bfd` | container |  |  | BFD on stacking ports (IP-less) |
 | `virtual-chassis bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |

@@ -36,9 +36,9 @@ func Resource(path string) string {
 func deadline(path string) time.Duration {
 	switch Resource(path) {
 	case "/sys", "/proc":
-		return KernelDeadline
+		return KernelDeadline()
 	}
-	return FileDeadline
+	return FileDeadline()
 }
 
 func file[T any](op, path string, fn func() (T, error)) (T, error) {
@@ -195,7 +195,7 @@ func (g *File) d() time.Duration {
 	if g.D > 0 {
 		return g.D
 	}
-	return FileDeadline
+	return FileDeadline()
 }
 
 func (g *File) Read(p []byte) (int, error) {

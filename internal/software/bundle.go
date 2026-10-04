@@ -156,7 +156,7 @@ func WriteBundle(w io.Writer, m BundleManifest, imagePath string, key ed25519.Pr
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, hwio.Reader(f, SlotIODeadline))
+	n, err := io.Copy(h, hwio.Reader(f, SlotIODeadline()))
 	if err != nil {
 		return err
 	}
@@ -323,7 +323,7 @@ func VerifyBundleFile(path string, keys []PublicKey) (*BundleManifest, error) {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := OpenBundle(hwio.Reader(f, SlotIODeadline), keys)
+	b, err := OpenBundle(hwio.Reader(f, SlotIODeadline()), keys)
 	if err != nil {
 		return nil, err
 	}

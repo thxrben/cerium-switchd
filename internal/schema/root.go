@@ -142,6 +142,16 @@ func build() *Node {
 				F("alarm-only", "Only raise alarms, never change offload settings"),
 			),
 		),
+		C("timeouts", "How long cerOS waits for disks, the kernel and update steps",
+			VD("disk-operation", "One file operation on a disk", Uint("<seconds>", 1, 600), "10"),
+			VD("kernel-call", "One netlink, ioctl or sysfs call", Uint("<seconds>", 1, 120), "5"),
+			VD("slot-write", "Writing and syncing 4 MiB of a software slot", Uint("<seconds>", 10, 3600), "60"),
+			VD("software-transfer", "Copying a bundle to a member", Uint("<seconds>", 60, 7200), "600"),
+			VD("software-install", "Installing a bundle on one member", Uint("<seconds>", 60, 7200), "900"),
+			VD("member-update", "Waiting for an updated member to come back", Uint("<seconds>", 60, 7200), "600"),
+			VD("health-check", "A new version's time to report healthy", Uint("<seconds>", 60, 3600), "300"),
+			VD("config-check", "The new version's configuration check", Uint("<seconds>", 10, 1800), "120"),
+		),
 	)
 
 	stack := C("virtual-chassis", "Stack members and stacking (like a Junos Virtual Chassis)",

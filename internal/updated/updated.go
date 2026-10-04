@@ -30,10 +30,6 @@ import (
 // DefaultSocket is where the daemon listens.
 const DefaultSocket = "/run/switchd-update/sock"
 
-// HealthTimeout: a new version that is not healthy this long after its
-// boot is replaced by the previous one.
-const HealthTimeout = 5 * time.Minute
-
 // ErrRejected starts the error of a check whose configuration the new
 // version rejects.
 var ErrRejected = errors.New("the new version rejects the active configuration")
@@ -140,7 +136,9 @@ type Daemon struct {
 	ConfigDir, SwitchdDir, BackupDir string
 	Socket                           string
 	Log                              *slog.Logger
-	Timeout                          time.Duration // HealthTimeout if 0
+	// Timeout: a new version that is not healthy this long after its boot
+	// is replaced by the previous one (0: system timeouts health-check).
+	Timeout time.Duration
 	// Delay before a reboot (switchd answers its caller first).
 	RebootDelay time.Duration
 
@@ -154,7 +152,7 @@ func (d *Daemon) timeout() time.Duration {
 	if d.Timeout > 0 {
 		return d.Timeout
 	}
-	return HealthTimeout
+	return dur(&healthTimeout)
 }
 
 func (d *Daemon) setState(s string) {
@@ -391,7 +389,10 @@ func copyTree(src, dst string) error {
 
 func (d *Daemon) serve(ctx context.Context, c net.Conn) {
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(15 * time.Minute)) // install writes a slot
+	if s, ok := d.P.(*System); ok {
+		loadTimeouts(s.ActiveConfig)
+	}
+	c.SetDeadline(time.Now().Add(dur(&installTimeout))) // install writes a slot
 	line, err := bufio.NewReader(c).ReadBytes('\n')
 	if err != nil {
 		return
@@ -516,7 +517,7 @@ func (d *Daemon) openBundle(path string) (*os.File, *software.Bundle, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	b, err := software.OpenBundle(hwio.Reader(f, software.SlotIODeadline), keys)
+	b, err := software.OpenBundle(hwio.Reader(f, software.SlotIODeadline()), keys)
 	if err != nil {
 		f.Close()
 		return nil, nil, err

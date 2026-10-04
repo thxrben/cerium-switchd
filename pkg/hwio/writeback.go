@@ -17,7 +17,7 @@ const WriteBackChunk = 4 << 20
 // left to write.
 func WriteBack(f *os.File, d time.Duration) error {
 	if d <= 0 {
-		d = FileDeadline
+		d = FileDeadline()
 	}
 	st, err := Do(Resource(f.Name()), "stat "+f.Name(), d, f.Stat)
 	if err != nil {

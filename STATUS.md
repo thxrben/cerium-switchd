@@ -285,11 +285,9 @@ Last updated: 2026-10-03 (evening).
    or no addport/addport; swap the cables at physw4 to see whether the fault follows the UniFi port or 1/0/2).
    Done on the way: cer-lacpd warns when a send fails (d12f6bd) and reports a partner that does not receive our
    LACPDUs (its PDUs never name our port) instead of "configure periodic slow" (02a7717).
-5. **`request daemon restart|stop <daemon>`** instead of `restart <daemon>` (reference 1.9; decide what stop means:
-   until start, a switchd restart or a reboot).
-6. **Applying `request system diagnose` hints** (proposal, confirm with the user first): configuration statements
-   for what a hint recommends (interfaces <port> ether-options rx-ring/tx-ring/offload, system performance rps),
-   the hint names the `set` command, `request system diagnose apply` loads them into a candidate.
+5. **`request daemon restart|stop <daemon>`** instead of `restart <daemon>` (reference 1.9). Decided 2026-10-04: a
+   stopped daemon stays stopped until the reboot (or `request daemon start`).
+6. ~~Applying `request system diagnose` hints~~: declined by the user 2026-10-04.
 7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), lab interop with FRR (v2 and
    v3, broadcast and p2p), the punt frame test and OSPFv3 sockets in the lab.
 
@@ -298,9 +296,14 @@ Last updated: 2026-10-03 (evening).
    slot sync exceeded 60 s and the retry's rename over the unsynced bundle hung /var for 3 min; fixed in 6cb46ae
    (sync per 4 MiB, bundles written back before the rename). Workaround for updating from cc68085:
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
-9. **Proposals waiting for the user's decision**: SFTP uploads on the CLI SSH server (off by default, chroot
-   /var/tmp, super-user only; today sshd has no sftp subsystem and scp lands in the CLI); a diagnose hint (and
-   `show system software` line) when the system disk is a USB stick, USB 2.0 especially.
+9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
+   USB system disk.
+10. **System timeouts** (requested 2026-10-04): done, `system timeouts { disk-operation; kernel-call; slot-write;
+   software-transfer; software-install; member-update; health-check; config-check }` (reference 5.1, defaults as
+   before). switchd applies them on every commit (hwio deadlines atomic now, slot writes, update waits); the update
+   daemon reads them from the active configuration at start and with every request (so a raised value holds over
+   the reboot: the health check of the new version). Unit-tested. Not covered: the cer- daemons keep the default
+   disk/kernel deadlines (they rarely touch a disk).
 
 ## Phase 9b: BGP and the full `show route` (started 2026-10-04)
 - **`show route` in full** (reference 5.14): done 2026-10-04, unit-tested. From cer-ribd's RIB (every route, best

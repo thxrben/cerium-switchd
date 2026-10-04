@@ -1,6 +1,7 @@
 package model
 
 import (
+	"time"
 	"strings"
 	"testing"
 
@@ -598,5 +599,20 @@ func TestLACPPortRange(t *testing.T) {
 	_, issues := build(t, valid+"set interfaces 1/15/63 ether-options 802.3ad ae1\nset interfaces 1/16/64 ether-options 802.3ad ae2\nset interfaces ae2 unit 0 family ethernet-switching vlan members users\n", nil)
 	if issues.HasErrors() {
 		t.Fatalf("unexpected errors:\n%s", issues)
+	}
+}
+
+func TestSystemTimeouts(t *testing.T) {
+	c, is := build(t, valid, nil)
+	if is.HasErrors() || c.System.Timeouts != DefaultTimeouts {
+		t.Fatalf("defaults: %+v %s", c.System.Timeouts, is)
+	}
+	c, is = build(t, valid+"set system timeouts disk-operation 60\nset system timeouts slot-write 600\nset system timeouts health-check 900\n", nil)
+	if is.HasErrors() {
+		t.Fatal(is)
+	}
+	to := c.System.Timeouts
+	if to.DiskOperation != time.Minute || to.SlotWrite != 10*time.Minute || to.HealthCheck != 15*time.Minute || to.KernelCall != 5*time.Second {
+		t.Fatalf("timeouts %+v", to)
 	}
 }
