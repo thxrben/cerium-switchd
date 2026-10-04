@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,5 +134,37 @@ func TestCLISSHInManagementVRF(t *testing.T) {
 	}
 	if strings.Contains(unitText(""), "vrf exec") || strings.Contains(unitText(""), "@EXEC@") {
 		t.Errorf("unit without a management instance:\n%s", unitText(""))
+	}
+}
+
+// The CLI SSH server uses the stack's host keys (the same on every member,
+// reference 5.1); new keys restart it.
+func TestCLISSHStackHostKeys(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "net"), 0o755)
+	os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte("  sl  local_address rem_address   st\n"), 0o644)
+	var calls []string
+	secret := []byte("stack one secret, 32 bytes long!")
+	s := &SSH{Dir: filepath.Join(dir, "etc"), UnitPath: filepath.Join(dir, "unit"), ProcNet: filepath.Join(dir, "net"),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), HostKeySecret: func() []byte { return secret },
+		Run: func(n string, a ...string) error { calls = append(calls, n+" "+strings.Join(a, " ")); return nil }}
+	cfg := &model.Config{}
+	cfg.System.SSH = model.SSHService{Configured: true, Port: 2222, RootLogin: "deny"}
+	cfg.System.MgmtInstance = "oob"
+	if err := s.Sync(cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	conf, _ := os.ReadFile(filepath.Join(dir, "etc", "sshd_config"))
+	if !strings.Contains(string(conf), "HostKey "+filepath.Join(dir, "etc", "ssh_host_ed25519_key")) || strings.Contains(string(conf), "/etc/ssh/") {
+		t.Fatalf("config:\n%s", conf)
+	}
+	calls = nil
+	if err := s.Sync(cfg, true); err != nil || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "restart") }) {
+		t.Fatalf("unchanged keys restarted the server: %v %v", err, calls)
+	}
+	secret = []byte("another stack's secret, 32 bytes")
+	calls = nil
+	if err := s.Sync(cfg, true); err != nil || !slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "restart") }) {
+		t.Fatalf("new keys without a restart: %v %v", err, calls)
 	}
 }

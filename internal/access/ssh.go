@@ -33,6 +33,9 @@ type SSH struct {
 	PrivsepDir string
 	Log        *slog.Logger
 	Run        func(name string, args ...string) error
+	// HostKeySecret is the stack's secret for the host keys (nil: the OS
+	// host keys in /etc/ssh). The keys are written to Dir.
+	HostKeySecret func() []byte
 }
 
 const sshUnit = "switchd-sshd.service"
@@ -47,9 +50,16 @@ func (s *SSH) config(cfg *model.Config) string {
 	b.WriteString("# Managed by switchd (system services ssh). Changes are overwritten.\n")
 	fmt.Fprintf(&b, "Port %d\n", cfg.System.SSH.Port)
 	b.WriteString("PidFile /run/switchd-sshd.pid\n")
-	for _, k := range []string{"ed25519", "ecdsa", "rsa"} {
-		if p := "/etc/ssh/ssh_host_" + k + "_key"; fileExists(p) {
+	if s.HostKeySecret != nil && s.HostKeySecret() != nil {
+		// The stack's keys: the same fingerprint on every member.
+		for _, p := range HostKeyFiles(s.Dir) {
 			fmt.Fprintf(&b, "HostKey %s\n", p)
+		}
+	} else {
+		for _, k := range []string{"ed25519", "ecdsa", "rsa"} {
+			if p := "/etc/ssh/ssh_host_" + k + "_key"; fileExists(p) {
+				fmt.Fprintf(&b, "HostKey %s\n", p)
+			}
 		}
 	}
 	groups := CLIGroup
@@ -181,9 +191,20 @@ func (s *SSH) Sync(cfg *model.Config, master bool) error {
 	if _, err := writeIfChanged(s.bannerPath(), cfg.System.Banner+"\n", 0o644); err != nil {
 		return err
 	}
+	keysChanged := false
+	if s.HostKeySecret != nil {
+		if secret := s.HostKeySecret(); secret != nil {
+			ch, err := WriteHostKeys(s.Dir, secret)
+			if err != nil {
+				return fmt.Errorf("ssh: host keys: %w", err)
+			}
+			keysChanged = ch
+		}
+	}
 	conf := s.config(cfg)
 	old, _ := hwio.ReadFile(s.confPath())
-	confChanged := string(old) != conf
+	// sshd reads its host keys when it starts: new keys need a restart.
+	confChanged := string(old) != conf || keysChanged
 	if confChanged {
 		tmp := s.confPath() + ".new"
 		if err := hwio.WriteFile(tmp, []byte(conf), 0o600); err != nil {

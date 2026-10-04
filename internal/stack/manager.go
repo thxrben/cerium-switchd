@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -767,4 +769,20 @@ func ParseLocalPort(card, port int) (string, error) {
 		return "", errors.New("pic-slot 0-99, port 0-999")
 	}
 	return fmt.Sprintf("%d/%d", card, port), nil
+}
+
+// Secret derives a secret for label from the stack key: the same on every
+// member of the stack, different for every other stack (e.g. the CLI SSH
+// server's host keys, reference 5.1). nil before Load.
+func (m *Manager) Secret(label string) []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stack == nil {
+		return nil
+	}
+	b, err := hkdf.Key(sha256.New, m.stack.Key.Seed(), nil, "ceros stack secret: "+label, 32)
+	if err != nil {
+		return nil
+	}
+	return b
 }

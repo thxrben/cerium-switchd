@@ -924,7 +924,11 @@ automation access on the OS port.
   takeover (4.15 of the plan masks it). Use another port, such as 2222, until then.
 * Only managed users (`system login user`) are admitted, plus `root` according to `root-login`:
   `deny` (default), `key-only` (public key only) or `allow`. `root` also lands in the CLI (as super-user).
-* It uses the host's SSH host keys, so the fingerprint is the same as on the OS port.
+* **Host keys of the stack**: Ed25519 and ECDSA P-256 keys derived from the stack key (HKDF, so every member
+  computes the same keys and nothing secret travels): every member presents the **same fingerprint**, and the
+  management address keeps it when mastership moves. The keys change only when the switch joins another stack (or
+  leaves one: it becomes a stack of its own). They are not the OS port's host keys (port 22 keeps its own).
+  Clients that knew the CLI server before this version see a changed fingerprint once.
 * Passwords are accepted for users with an `encrypted-password`; keys come from `authentication ssh-key`.
 * The pre-login banner is `system login message`.
 * The server runs **on the master only (1.8), inside the management instance**: it accepts connections through the
