@@ -135,9 +135,16 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 		sub, _ := row[4].(string)
 		base[name] = UnitState{Loaded: load == "loaded", Active: active, Sub: sub}
 	}
+	// A stopped unit has no process; systemd unloads it again between two
+	// calls, so each Get would load it from disk once more.
+	// It is read once when it stops (its result) and when first seen.
+	running := func(u string) bool {
+		c := b.cache[u]
+		return base[u].Loaded && (base[u].Active != "inactive" || c == nil || c.st.Active != "inactive")
+	}
 	var loaded []string
 	for _, u := range units {
-		if base[u].Loaded {
+		if running(u) {
 			loaded = append(loaded, u)
 		}
 	}
@@ -155,10 +162,16 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 		st.PID, st.NRestarts = cur.PID, cur.NRestarts
 		c := b.cache[u]
 		changed := c == nil || c.st.Active != st.Active || c.st.Sub != st.Sub || c.st.PID != st.PID || c.st.NRestarts != st.NRestarts
-		if st.Loaded && changed {
+		if !running(u) {
+			st.PID, st.NRestarts = 0, 0
+			if c != nil {
+				st.NRestarts = c.st.NRestarts
+			}
+		}
+		if running(u) && changed {
 			want[u] = append(want[u], detailProps...)
 		}
-		if st.Loaded && (changed || now.Sub(c.usage) >= usageEvery) {
+		if running(u) && (changed || now.Sub(c.usage) >= usageEvery) {
 			want[u] = append(want[u], usageProps...)
 		}
 		if len(want[u]) > 0 {
@@ -196,6 +209,9 @@ func (b *unitBus) Show(units []string) (map[string]UnitState, error) {
 		}
 		if !st.Loaded {
 			st = UnitState{Active: st.Active, Sub: st.Sub}
+		}
+		if st.Active == "inactive" {
+			st.Memory, st.CPU = 0, 0
 		}
 		c.st = st
 		res[u] = st
