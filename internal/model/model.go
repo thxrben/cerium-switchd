@@ -103,12 +103,20 @@ type SSHService struct {
 	RootLogin  string
 }
 
+// WebService is system services web-management: the REST API (reference
+// 5.1).
 type WebService struct {
+	// Enabled: configured and not disabled.
 	Enabled  bool
 	Port     int
 	CertFile string
 	KeyFile  string
+	// UploadLimit is the largest bundle an upload may have (bytes).
+	UploadLimit uint64
 }
+
+// DefaultUploadLimit is upload-limit's default (1g).
+const DefaultUploadLimit = 1 << 30
 
 type CommitPolicy struct {
 	ConfirmRequired bool
@@ -533,7 +541,11 @@ func (b *builder) build() {
 	s.Banner = sys.Leaf("login", "message")
 	s.SSH = SSHService{Configured: sys.Has("services", "ssh"), Port: atoi(sys.Leaf("services", "ssh", "port"), 22), RootLogin: orDefault(sys.Leaf("services", "ssh", "root-login"), "deny")}
 	web := sys.Get("services", "web-management")
-	s.Web = WebService{Enabled: !web.Has("disable"), Port: atoi(web.Leaf("port"), 443), CertFile: web.Leaf("certificate"), KeyFile: web.Leaf("key")}
+	s.Web = WebService{Enabled: sys.Has("services", "web-management") && !web.Has("disable"), Port: atoi(web.Leaf("port"), 443),
+		CertFile: web.Leaf("certificate"), KeyFile: web.Leaf("key"), UploadLimit: DefaultUploadLimit}
+	if l, err := schema.ParseSize(web.Leaf("upload-limit")); err == nil {
+		s.Web.UploadLimit = l
+	}
 	conf := sys.Get("commit", "confirmation")
 	s.Commit = CommitPolicy{ConfirmRequired: conf.Leaf("mode") != "optional", TimeoutMinutes: atoi(conf.Leaf("timeout"), 10)}
 	s.AutoConsole = !sys.Has("ports", "no-auto-detect")

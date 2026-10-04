@@ -792,8 +792,21 @@ Restarts the whole switch software without rebooting the operating system (appli
    system storage usb eject`. Mounted (vfat/exfat/ext4) only for the operation at `/run/switchd/usb`, synced and
    unmounted right after; eject also powers the port's device off. Updates from USB read the bundle into RAM.
 
+### Phase 17b: One update at a time (requested 2026-10-04)
+Today the master refuses a second update while its own runs, and a member's update daemon refuses a second install
+while it writes. Missing:
+1. **Stack-wide**: before an update or rollback starts, every member's update daemon is asked; any member with an
+   update in progress (writing, rebooting, waiting for health, rolling back) refuses the new one, naming the member
+   and its state. A new master (failover during an update) therefore cannot start a second one; it continues
+   reporting the running one.
+2. **The bundle in use is locked**: an upload or a download that would replace the bundle an update is using is
+   refused (409 / CLI error) until the update is done.
+3. `request system reload|reboot|halt`, `request system software rollback`, `request virtual-chassis member remove`
+   and `request system zeroize` are refused while an update runs (they name it); `force` for reboot overrides.
+4. The update daemon persists "busy" over the reboot it causes (already in its state file) and answers it in status.
+
 ### Order (2026-10-04)
-Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) → Phase 15
+Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) and 17b → Phase 15
 (memory slots, with the structure optimization first) → Phase 16 (reload) → Phase 17.4 (USB) → Phase 10 (MACsec).
 Each: reference first, tests, lab.
 

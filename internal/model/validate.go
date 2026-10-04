@@ -126,7 +126,7 @@ func (b *builder) validate() {
 	b.validateAnalyzers()
 	b.validateRSTP()
 
-	b.notImplemented()
+	b.checkWeb()
 	b.checkPlainPorts()
 
 	if n := len(c.System.NameServers); n > 3 {
@@ -635,12 +635,21 @@ func speedName(mbps int) string {
 	return fmt.Sprintf("%dM", mbps)
 }
 
-// notImplemented warns about statements that are accepted but have no
-// effect yet (reference 8).
-func (b *builder) notImplemented() {
-	r := b.root
-	if r.Get("system", "services", "web-management") != nil {
-		b.warnf("system services web-management", "web-management is not implemented yet: the statement has no effect")
+// checkWeb checks system services web-management (reference 5.1).
+func (b *builder) checkWeb() {
+	w, sys := b.cfg.System.Web, b.cfg.System
+	if !w.Enabled {
+		return
+	}
+	const at = "system services web-management"
+	if (w.CertFile == "") != (w.KeyFile == "") {
+		b.errorf(at, "certificate and key must be given together")
+	}
+	if sys.MgmtInstance == "" {
+		b.warnf(at, "there is no management instance (system management-instance): the REST API does not run")
+	}
+	if sys.SSH.Configured && sys.SSH.Port == w.Port {
+		b.errorf(at+" port", "port %d is the CLI SSH server's (system services ssh port)", w.Port)
 	}
 }
 

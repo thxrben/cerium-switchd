@@ -77,6 +77,7 @@ setting one silently removes the other.
 | `<mac-address>` | `02:00:00:00:00:01` | Canonicalised to lower case. |
 | `<hostname>` | RFC 1123 | |
 | `<name>` | letter followed by letters, digits, `_ . -`; max 64 | Used for VLAN and analyzer names. |
+| `<size>` | bytes, with `k`, `m` or `g` (× 1024) | `512m`, `1g`; canonicalised to lower case. |
 | `<text>` | any printable text, max 255 bytes | Quote it if it contains spaces: `description "uplink to core"`. |
 
 No value may contain control characters (including terminal escape sequences) or invalid UTF-8. This keeps
@@ -562,6 +563,7 @@ vlans {
 | `show igmp snooping membership\|vlans`, `show mld snooping …` | Multicast groups and per-VLAN snooping state (5.5). |
 | `show vxlan [remote-vtep]` | VNIs, remote VTEPs and their reachability (5.7). |
 | `show system ntp` | The NTP servers with the address that answered, stratum, offset, delay and last poll, which server the clock follows (`*`), whether the clock is synchronised, and through which routing instance the queries leave. |
+| `show system services web-management` | Whether the REST API runs (on which member, address and port), the certificate (its file, or `temporary self-signed`, generated when), its SHA-256 fingerprint and public-key pin (`sha256//…`), and the uploaded bundle (version, size, uploaded by whom and when). |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version (with every member's two system slots, read from the disks: version, active or backup, `unreadable: …` when a slot's partition cannot be read, and a missing or damaged boot state). |
@@ -623,10 +625,23 @@ one the running version trusts. Development builds are signed with the developme
 builds trust. **No option accepts an unsigned bundle or one with a wrong signature.** A SHA-256 of the whole bundle is
 also verified when one is given (`sha256 <hex>`, or a `<bundle>.sha256` file next to it on the server).
 
+**Bundles are kept in memory only.** A bundle is never written to a disk: a worn or failing boot medium is not
+stressed by a transfer, and no copy is left behind. Whether downloaded, uploaded (5.1, `web-management`) or read from
+USB, it is received into memory (a file system of its own in RAM, `/run/ceros-software`) on the master and on every
+member it is sent to, and checked there; only the image itself is written, into the backup slot. The bundle needs no
+unpacking (the image is the compressed system itself), so it takes its own size and nothing more.
+* **Room**: the `update` slot of `system memory` (5.1) when memory is allocated in slots; without slots, the memory
+  available when the transfer starts, keeping 256 MB free for the running system. A transfer that does not fit stops
+  with an error naming the sizes, before anything is sent when the size is known (a member checks before the master
+  sends), else the moment it exceeds the room. The running system is never pushed out of memory by a bundle.
+* A bundle stays in memory until it is installed on that member, replaced by another one, unused for an hour (not
+  while an update uses it), or the member reboots.
+
 **`request system software add <source> [sha256 <hex>] [member <id>] [no-validate] [force]`** (super-user):
 * `<source>`: `http://…`, `https://…`, `ftp://…`, `sftp://user@host/path` (asks for the password unless a key of
-  the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), or a local
-  file of the master (`/var/tmp/…`). Downloads leave through the management instance (1.8).
+  the user works), `usb:<file>` (the first USB stick of the master, mounted read-only while it is read), `upload` (the
+  bundle uploaded to the master through the REST API, 5.1 `web-management`), or a local file of the master
+  (`/var/tmp/…`). Downloads leave through the management instance (1.8).
 * Steps, each reported on the terminal as it happens:
   1. **Fetch and verify** the bundle on the master: signature, platform, SHA-256.
   2. **Check**: every member has the bundle's platform. The new version reads the active configuration and accepts it:
@@ -676,7 +691,7 @@ and everything on the data partition (logs, state) of the member and reboots it 
 configuration, every port down, root logs in on the console. The member leaves the virtual chassis (its keys are
 gone).
 
-**`request system storage cleanup [member <id>]`**: deletes logs, crash reports and old software bundles from the data
+**`request system storage cleanup [member <id>]`**: deletes logs, crash reports and software bundles (earlier versions kept them there) from the data
 partition. The configuration stays.
 
 **Mixed versions.** During an update, members run different versions for a while:
@@ -901,10 +916,37 @@ automation access on the OS port.
   starts on the new one; sessions on the old master end. Without a management instance no CLI SSH server runs.
 * The server is for people. The stack itself never uses it: sessions reach the master over the stacking protocol (1.8).
 
-#### `system services web-management { port <n>; certificate <file>; key <file>; disable; }`
-*Not implemented yet* (W at commit: the statement has no effect yet).
-HTTPS web interface and REST API, reachable through the management instance on the master (1.8). Default: port 443 with a self-signed certificate generated
-at first start. `certificate` and `key` must be given together (E otherwise). `disable` turns it off.
+#### `system services web-management { port <n>; certificate <file>; key <file>; upload-limit <size>; disable; }`
+The **REST API** over HTTPS (the web interface follows later). Like the CLI SSH server, it runs **on the master only
+(1.8), inside the management instance**: it accepts connections through the management addresses, not through data
+interfaces; it moves with mastership. It runs while `system services web-management` is configured without
+`disable`; without a management instance it does not run (W).
+* `port <n>`: default 443. E: the port is used by another service of the management instance (the CLI SSH server).
+* **Certificate**: `certificate` and `key` (PEM files, must be given together, E otherwise; E when they do not belong
+  together or cannot be read) or, without them, a **temporary self-signed certificate** (ECDSA P-256, the host name
+  and the management addresses as names, valid for a year) generated when the service starts and held only in
+  memory: it changes whenever the service starts (a reboot, a mastership change). `show system services
+  web-management` shows its SHA-256 fingerprint and the public-key pin for clients (`curl --pinnedpubkey
+  sha256//…`), so a client can verify it without trusting it blindly; it is also logged.
+* Only TLS 1.2 and 1.3.
+* **Authentication**: HTTP Basic over TLS with a user of `system login user` that has an `encrypted-password`, or root
+  with `root-authentication` (as `system services ssh root-login` allows it: `deny` and `key-only` keep root out).
+  A request without valid credentials gets 401; too many failures from one address (10 per minute) get 429.
+  Permissions are those of the user's class (4.3): reading needs any class, changes need `super-user` (403
+  otherwise). Every change is logged with the user (facility `change-log`).
+* `upload-limit <size>`: the largest bundle an upload may have (default `1g`). E when it is larger than the `update`
+  slot of `system memory`.
+* **Endpoints** (JSON; errors are `{"error": "<text>"}` with a 4xx/5xx status):
+
+| Method and path | Class | Does |
+|---|---|---|
+| `GET /api/v1/software` | any | what `show system software` shows: every member's version and slots, the uploaded bundle, the running update |
+| `PUT /api/v1/software/upload` | super-user | the body is a bundle. It is received into memory (3.6; it replaces an earlier upload), its signature and platform are verified, and its manifest is returned (version, build time, platform, size, SHA-256). 413 when it exceeds `upload-limit` or the room in memory, 422 when it is not a valid bundle (the reason in `error`). Nothing is installed yet. |
+| `POST /api/v1/software/install` | super-user | starts `request system software add upload` with the options in the body (`{"sha256": "…", "member": 2, "no_validate": true, "force": true}`, all optional); 202, the progress is in `GET /api/v1/software`; 409 when an update runs already or nothing was uploaded |
+
+  Example: `curl --pinnedpubkey 'sha256//…' -k -u admin -T ceros-1.4.0-amd64.bundle
+  https://10.0.0.5/api/v1/software/upload`, then `curl … -u admin -X POST https://10.0.0.5/api/v1/software/install`
+  (or `request system software add upload` in the CLI).
 
 #### `system management-instance <instance>`
 Makes routing instance `<instance>` (any name, 5.9) the management instance (1.5, 1.8). Its interfaces are `cme.0` and
@@ -2341,7 +2383,7 @@ set forwarding-options analyzer debug output interface 1/3/0
 | `system login`, `system services ssh`, `system ports`, host names, resolver, NTP, syslog | implemented and lab tested; kernel messages not yet forwarded to syslog; `system login message` not yet on serial consoles |
 | Stacking (transport, TLS, relay, BFD, stack tunnels, join/remove, force-master, maintenance mode, software updates) | implemented, lab tested |
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
-| `system services web-management` | not implemented (W at commit) |
+| `system services web-management` | REST API: software upload and install (3.6); the web interface is not implemented yet |
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |
 | `show system bottlenecks` (3.5.2) | implemented |
@@ -2393,11 +2435,12 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system services ssh` | presence |  |  | SSH access to the CLI (present: switchd manages the SSH server configuration) |
 | `system services ssh port` | leaf | &lt;port&gt; 1..65535 | 22 | Listening port |
 | `system services ssh root-login` | leaf | deny \\| allow \\| key-only | deny | Root login policy |
-| `system services web-management` | container |  |  | Web interface and REST API |
+| `system services web-management` | container |  |  | REST API over HTTPS (web interface later) |
 | `system services web-management port` | leaf | &lt;port&gt; 1..65535 | 443 | HTTPS port |
 | `system services web-management certificate` | leaf | &lt;path&gt; |  | PEM certificate file (self-signed if unset) |
 | `system services web-management key` | leaf | &lt;path&gt; |  | PEM private key file |
-| `system services web-management disable` | flag |  |  | Disable the web interface |
+| `system services web-management upload-limit` | leaf | &lt;size&gt; 1m..64g | 1g | Largest software bundle an upload may have |
+| `system services web-management disable` | flag |  |  | Disable the REST API |
 | `system commit` | container |  |  | Commit behaviour |
 | `system commit confirmation` | container |  |  | Automatic rollback of unconfirmed commits |
 | `system commit confirmation mode` | leaf | required \\| optional | required | Whether every commit must be confirmed |

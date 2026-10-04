@@ -156,6 +156,63 @@ func String(name string, maxLen int, pattern string) *Type {
 	}
 }
 
+// ParseSize reads a <size> (bytes, with k, m or g as powers of 1024).
+func ParseSize(s string) (uint64, error) {
+	s = strings.ToLower(s)
+	mult := uint64(1)
+	switch {
+	case strings.HasSuffix(s, "k"):
+		mult = 1 << 10
+	case strings.HasSuffix(s, "m"):
+		mult = 1 << 20
+	case strings.HasSuffix(s, "g"):
+		mult = 1 << 30
+	}
+	num := s
+	if mult > 1 {
+		num = s[:len(s)-1]
+	}
+	n, err := strconv.ParseUint(num, 10, 64)
+	if err != nil || num == "" || num[0] == '+' {
+		return 0, fmt.Errorf("invalid size %q (bytes, or with k, m or g)", s)
+	}
+	if n > (1<<63)/mult {
+		return 0, fmt.Errorf("size %q is too large", s)
+	}
+	return n * mult, nil
+}
+
+// FormatSize writes a size in the largest unit that keeps it whole.
+func FormatSize(n uint64) string {
+	for _, u := range []struct {
+		m uint64
+		s string
+	}{{1 << 30, "g"}, {1 << 20, "m"}, {1 << 10, "k"}} {
+		if n >= u.m && n%u.m == 0 {
+			return strconv.FormatUint(n/u.m, 10) + u.s
+		}
+	}
+	return strconv.FormatUint(n, 10)
+}
+
+// Size is a <size> between min and max bytes.
+func Size(min, max uint64) *Type {
+	return &Type{
+		Name: "<size>",
+		Desc: FormatSize(min) + ".." + FormatSize(max),
+		Check: func(s string) (string, error) {
+			n, err := ParseSize(s)
+			if err != nil {
+				return "", err
+			}
+			if n < min || n > max {
+				return "", fmt.Errorf("size %s out of range (%s..%s)", s, FormatSize(min), FormatSize(max))
+			}
+			return FormatSize(n), nil
+		},
+	}
+}
+
 var (
 	// Text is a free-form description string.
 	Text = String("<text>", 255, "")
