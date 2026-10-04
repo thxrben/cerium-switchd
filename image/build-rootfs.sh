@@ -23,6 +23,7 @@ pkgs=(
   # what switchd uses
   iproute2 nftables ethtool openssh-server passwd login util-linux bash procps ca-certificates
   wpasupplicant # MKA for ports secured with MACsec (reference 5.15)
+  netbase # /etc/protocols and /etc/services (nft and other tools resolve names there)
   # testing and fault finding
   tcpdump iperf3 mtr-tiny iputils-ping iputils-tracepath traceroute netcat-openbsd socat curl dnsutils
   strace lsof htop pciutils usbutils i2c-tools dmidecode less vim-tiny

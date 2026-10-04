@@ -25,6 +25,8 @@ const protectTable = "switchd_protect"
 func (k *Netlink) syncProtect(ifs []string, accept []string) (bool, error) {
 	slices.Sort(ifs)
 	var b strings.Builder
+	// Protocols by number (1 ICMP, 58 ICMPv6): nft resolves names such as
+	// ipv6-icmp through /etc/protocols, which a minimal system may lack.
 	// Adding and then deleting makes the delete succeed whether or not the
 	// table exists; the whole file is one transaction.
 	fmt.Fprintf(&b, "table inet %s\ndelete table inet %s\n", protectTable, protectTable)
@@ -38,7 +40,7 @@ func (k *Netlink) syncProtect(ifs []string, accept []string) (bool, error) {
 		type filter hook input priority filter - 10; policy accept;
 		iifname != { %s } accept
 		ct state established,related accept
-		meta l4proto { icmp, ipv6-icmp } accept
+		meta l4proto { 1, 58 } accept
 %s		counter drop
 	}
 }
