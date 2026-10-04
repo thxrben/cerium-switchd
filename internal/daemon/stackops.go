@@ -80,6 +80,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.BFDSessions()
 	case "alarms":
 		return o.Alarms()
+	case "macsec":
+		return o.MACsec()
 	case "optics":
 		return o.Optics(r.Iface)
 	case "environment":
@@ -268,6 +270,12 @@ func (s *stackOps) Optics(iface string) ([]cli.OpticsPort, error) {
 // Environment lists every member's sensors.
 func (s *stackOps) Environment() ([]cli.EnvSensor, error) {
 	by, err := each[[]cli.EnvSensor](s, opsRequest{Method: "environment"})
+	return rows(by), err
+}
+
+// MACsec lists every member's MACsec interfaces and stacking links.
+func (s *stackOps) MACsec() ([]cli.MACsecConn, error) {
+	by, err := each[[]cli.MACsecConn](s, opsRequest{Method: "macsec"})
 	return rows(by), err
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/pkg/macsec"
 )
 
@@ -476,4 +477,63 @@ func kernelPortMTU(port string) int {
 func decodePush(raw json.RawMessage) (secPush, error) {
 	var p secPush
 	return p, json.Unmarshal(raw, &p)
+}
+
+// MACsec is show security macsec (this member): the stacking links, with
+// the kernel's counters.
+func (o *ops) MACsec() ([]cli.MACsecConn, error) {
+	counters := map[string]map[string]any{}
+	if out, err := (macsec.Linux{}).Output("ip", "-j", "-s", "macsec", "show"); err == nil {
+		var devs []map[string]any
+		if json.Unmarshal(out, &devs) == nil {
+			for _, d := range devs {
+				if n, ok := d["ifname"].(string); ok {
+					counters[n] = d
+				}
+			}
+		}
+	}
+	var out []cli.MACsecConn
+	if o.stackSec == nil {
+		return out, nil
+	}
+	for _, l := range o.stackSec.status() {
+		name := l.Port
+		if n, ok := o.names.Name(l.Port); ok {
+			name = n
+		}
+		c := cli.MACsecConn{Member: o.member, Interface: name, Dev: l.Dev, CA: "stack", Cipher: stackCipher, State: l.State,
+			TxAN: l.TxAN, KeySince: l.KeySince, Neighbour: fmt.Sprintf("member %d (%s)", l.Neighbor, l.PeerMAC),
+			Counters: map[string]uint64{}}
+		if len(l.RxANs) > 0 {
+			c.RxSCs = []string{fmt.Sprintf("%s port 1, associations %v", l.PeerMAC, l.RxANs)}
+		}
+		if d := counters[l.Dev]; d != nil {
+			if v, ok := d["sci"].(string); ok {
+				c.TxSCI = strings.TrimPrefix(v, "0x")
+			}
+			if v, ok := d["offload"].(string); ok {
+				c.Offload = v
+			}
+			for k, v := range d {
+				if f, ok := v.(float64); ok {
+					c.Counters[k] = uint64(f)
+				}
+			}
+			// The receive counters are per receive SC.
+			if scs, ok := d["rx_sc"].([]any); ok {
+				for _, sc := range scs {
+					if m, ok := sc.(map[string]any); ok {
+						for k, v := range m {
+							if f, ok := v.(float64); ok && strings.HasPrefix(k, "In") {
+								c.Counters[k] += uint64(f)
+							}
+						}
+					}
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }

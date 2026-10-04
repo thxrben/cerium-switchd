@@ -38,6 +38,12 @@ func (allOps) Memory() (MemoryStatus, error) {
 			{Name: "ndp", Bytes: 512, PerSlot: 8192, Used: -1}}}, nil
 }
 
+func (allOps) MACsec() ([]MACsecConn, error) {
+	return []MACsecConn{{Member: 1, Interface: "1/1/0", Dev: "msens19", CA: "stack", Cipher: "gcm-aes-xpn-256", State: "secured",
+		TxSCI: "020000000101" + "0001", TxAN: 1, RxSCs: []string{"02:00:00:00:02:01 port 1, associations [1 0]"},
+		KeySince: time.Now(), Neighbour: "member 2", Counters: map[string]uint64{"OutPktsEncrypted": 5}}}, nil
+}
+
 func (allOps) Alarms() ([]Alarm, error) {
 	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil
 }

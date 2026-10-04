@@ -1402,6 +1402,12 @@ func registerOperational() {
 					}},
 				snoopingCommand("igmp", "IGMP", false),
 				snoopingCommand("mld", "MLD", true),
+				&command{name: "security", help: "Show security information", class: commit.ReadOnly, sub: []*command{
+					{name: "macsec", help: "MACsec", class: commit.ReadOnly, sub: []*command{
+						{name: "connections", help: "The secured interfaces and stacking links: state and keys", class: commit.ReadOnly, run: (*Shell).showMACsecConnections},
+						{name: "statistics", help: "MACsec counters per interface", class: commit.ReadOnly, run: (*Shell).showMACsecStatistics},
+					}},
+				}},
 				&command{name: "dhcp", help: "Show DHCP information", class: commit.ReadOnly, sub: []*command{
 					{name: "client", help: "DHCP client", class: commit.ReadOnly, sub: []*command{
 						{name: "binding", help: "Leases of the interfaces with 'family inet dhcp'", class: commit.ReadOnly, run: (*Shell).showDHCPBinding},
