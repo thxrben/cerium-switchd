@@ -14,10 +14,10 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"unique"
-	"weak"
 	"sync"
 	"time"
+	"unique"
+	"weak"
 )
 
 // Protocol is a route source.

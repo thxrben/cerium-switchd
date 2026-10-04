@@ -139,7 +139,7 @@ type LimitsStatus struct {
 	// MACsecCapable: ports whose NIC can encrypt MACsec in hardware;
 	// MACsecOffloaded: of those, the ones doing it now.
 	MACsecCapable, MACsecOffloaded int
-	MACEntries    int
+	MACEntries                     int
 	// Memory: the memory slots (nil: unknown).
 	Memory *MemoryStatus
 }
