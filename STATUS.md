@@ -495,15 +495,17 @@ Last updated: 2026-10-03 (evening).
    - Not yet reviewed line by line: config package, stack (manager/control/mesh/link/pki), rstp, dhcp, ntp,
      syslog, access, swcli, software. Reviewed: model, schema, dataplane, daemon (ops, stackops, mclag, lacp,
      lldp, applier), cli (operational, lacp), commit engine, rpc server.
-   - LACP port numbers wrap for cards >= 16 or ports >= 64 (member*1024 + card*64 + port).
+   - ~~LACP port numbers wrap for cards >= 16 or ports >= 64~~: done 2026-10-04 (commit check).
    Ideas (user, 2026-10-01): a separate per-member update daemon (install, restart, verify, rollback; switchd
    orchestrates); f/g of the earlier list dropped (lab topology).
 1. Phase 7b rest: protocol version window (versioned stack messages), signed packages.
-2. Wireshark: decode Raft msgpack (AppendEntries/RequestVote); the "ctl" JSON RPC payloads are already shown.
-3. Open RSTP items: bpdu-block (model only), clear spanning-tree commands, lab tests with an external RSTP bridge
-   (mstpd on srv1) and an MC-LAG port with BPDUs. VLAN MTU filter: lab-test the tagged path.
-4. Kernel messages to syslog (delayed).
-5. Later phases: IGMP, VXLAN (control plane), GoBGP (full show route), encryption, polish, 802.1X, diagnostics.
+2. Wireshark: decode Raft msgpack and the reliable-stream messages (postponed by the user 2026-10-04).
+3. RSTP: bpdu-block and the clear spanning-tree commands are done (2026-10-03); open: lab tests with an external
+   RSTP bridge (mstpd on srv1) and an MC-LAG port with BPDUs. VLAN MTU filter: lab-test the tagged path.
+4. ~~Kernel messages to syslog~~: done in Phase 9a (cer-syslogd forwards the journal, kernel included).
+5. Phases (2026-10-04): IGMP/MLD, VXLAN, OSPF, BGP (own core), full show route, diagnostics done; Phase 11 partly
+   (alarms, optics, environment); open: Phase 10 encryption (scope to decide: the peer link no longer exists),
+   Phase 11 config archival, USB storage, web UI (last), docs; Phase 12 802.1X; everything lab-only (lab down).
 
 ## Questions for the user
 1. The protection filter on data L3 addresses is fixed (ping/ND/replies only). Do you want a Junos-like
