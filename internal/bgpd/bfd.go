@@ -79,7 +79,7 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 			if b.Multihop {
 				k.Local = b.Local
 			}
-			specs = append(specs, bfdd.SessionSpec{Key: k, Interface: "bgp " + n.Addr.String(), IntervalMs: b.IntervalMs,
+			specs = append(specs, bfdd.SessionSpec{Key: k, IntervalMs: b.IntervalMs,
 				Multiplier: b.Multiplier, AuthType: b.AuthType, AuthKeyID: b.AuthKeyID, AuthKey: b.AuthKey})
 			keys[k.String()] = bfdRef{instance: in.Name, nbr: n.Addr, relayed: !d.master}
 		}

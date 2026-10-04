@@ -301,6 +301,12 @@ Last updated: 2026-10-03 (evening).
    vm.dirty_bytes=8 MiB. Not yet verified on the device.
 9. Proposals decided 2026-10-04: no SFTP on the CLI SSH server (files are copied with scp), no diagnose hint for a
    USB system disk.
+12. **Commands checked** (2026-10-04): TestEveryCommand runs all ~125 operational commands bare and with `?`
+   against fakes implementing every optional interface (no panic, internal error, broken format verb or blocking);
+   the spec's command list was compared with the CLI tree: only `show bfd session` was missing, now implemented
+   (stack-wide: every member's cer-bfdd; address, state, interface, detect time, interval, multiplier; `extensive`:
+   clients, member, up time, discriminators, counters). BGP's BFD sessions no longer name a pseudo-interface.
+   Clean-up: staticcheck (unused code, empty branches) clean; Kate swap files ignored.
 11. **Update resiliency review** (requested 2026-10-04), fixed and unit-tested: (a) confirming a healthy new slot
    is retried while the disk does not answer (before: given up, the boot loader rolled the healthy version back at
    the next reboot, and the member stayed "updating"); (b) a failed reboot (rollback or install) is retried, and

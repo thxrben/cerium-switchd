@@ -76,6 +76,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.VXLAN()
 	case "stack-mtu":
 		return o.StackMTU()
+	case "bfd":
+		return o.BFDSessions()
 	}
 	return nil, fmt.Errorf("unknown listing %q", r.Method)
 }
@@ -249,6 +251,13 @@ func (s *stackOps) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 		out = append(out, n)
 	}
 	return out, err
+}
+
+// BFDSessions lists every member's sessions (they run where the
+// interface is, reference 5.8).
+func (s *stackOps) BFDSessions() ([]cli.BFDSession, error) {
+	by, err := each[[]cli.BFDSession](s, opsRequest{Method: "bfd"})
+	return rows(by), err
 }
 
 func (s *stackOps) Offload() ([]cli.OffloadPort, error) {

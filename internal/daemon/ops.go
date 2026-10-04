@@ -21,6 +21,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
+	"github.com/thxrben/cerium-switchd/pkg/bfd"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
@@ -1010,6 +1011,7 @@ var (
 	_ cli.RIB  = (*ops)(nil)
 	_ cli.OSPF = (*ops)(nil)
 	_ cli.BGP  = (*ops)(nil)
+	_ cli.BFD  = (*ops)(nil)
 )
 
 // BGPStatus is show bgp … (cer-bgpd on this member, the master).
@@ -1047,6 +1049,37 @@ func (o *ops) ClearBGP(q bgpd.ClearRequest) (int, error) {
 	defer cancel()
 	var n int
 	return n, o.svc.call(ctx, "cer-bgpd", bgpd.MethodClear, q, &n)
+}
+
+// BFDSessions is show bfd session (cer-bfdd on this member).
+func (o *ops) BFDSessions() ([]cli.BFDSession, error) {
+	if o.svc == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st []bfd.Status
+	if err := o.svc.call(ctx, "cer-bfdd", svc.MethodStatus, nil, &st); err != nil {
+		if strings.Contains(err.Error(), "not running") {
+			return nil, nil // no BFD configured
+		}
+		return nil, err
+	}
+	out := make([]cli.BFDSession, 0, len(st))
+	for _, s := range st {
+		r := cli.BFDSession{Member: o.member, Address: s.Key.Peer.String(), Instance: s.Key.Instance, Multihop: s.Key.Multihop,
+			Interface: s.Interface, State: s.State.String(), RemoteState: s.RemoteState.String(), Detect: s.Detection,
+			Interval: s.Interval, Multiplier: int(s.Multiplier), Clients: s.Clients, Transitions: s.Transitions,
+			LocalDisc: s.LocalDisc, RemoteDisc: s.RemoteDisc, Rx: s.Rx, Tx: s.Tx, RxDropped: s.RxDropped}
+		if s.Diag != 0 {
+			r.Diag = s.Diag.String()
+		}
+		if !s.UpSince.IsZero() && s.State == bfd.Up {
+			r.Up = time.Since(s.UpSince)
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // RIB is show route: cer-ribd's routes on this member.

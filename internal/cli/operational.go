@@ -1383,6 +1383,7 @@ func registerOperational() {
 				ospfCommand(ospf.V2),
 				ospfCommand(ospf.V3),
 				bgpCommand(),
+				bfdCommand(),
 				&command{name: "vxlan", help: "Show VXLAN ports and remote VTEPs", class: commit.ReadOnly,
 					run: func(sh *Shell, c *call) error { return sh.showVXLAN(c, false) }, sub: []*command{
 						{name: "remote-vtep", help: "How each member reaches the remote VTEPs", class: commit.ReadOnly,
