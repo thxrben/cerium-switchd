@@ -137,3 +137,25 @@ func TestQuestionInterrupted(t *testing.T) {
 		t.Fatal("echo not restored after a hidden answer")
 	}
 }
+
+// A shell always starts with a usable terminal, even when the terminal
+// was left raw (users had to type "reset").
+func TestShellGetsSaneTerminal(t *testing.T) {
+	pty := openPTY(t)
+	tio, err := unix.IoctlGetTermios(int(pty.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := *tio
+	raw.Lflag &^= unix.ICANON | unix.ECHO | unix.ISIG
+	raw.Oflag &^= unix.OPOST
+	raw.Iflag &^= unix.ICRNL
+	if err := unix.IoctlSetTermios(int(pty.Fd()), unix.TCSETS, &raw); err != nil {
+		t.Fatal(err)
+	}
+	saneTerminal(int(pty.Fd()))
+	got, _ := unix.IoctlGetTermios(int(pty.Fd()), unix.TCGETS)
+	if got.Lflag&(unix.ICANON|unix.ECHO|unix.ISIG) != unix.ICANON|unix.ECHO|unix.ISIG || got.Oflag&unix.OPOST == 0 || got.Iflag&unix.ICRNL == 0 {
+		t.Fatalf("terminal not sane: lflag %#x oflag %#x iflag %#x", got.Lflag, got.Oflag, got.Iflag)
+	}
+}

@@ -124,7 +124,9 @@ func supervise(args []string) int {
 		}
 		if os.Getuid() == 0 || class == "super-user" {
 			fmt.Fprintln(os.Stderr, "Starting a Linux shell; 'exit' returns to the CLI.")
+			saneTerminal(fd)
 			runBash()
+			reclaimTerminal(fd)
 			continue
 		}
 		if len(crashes) >= 3 {

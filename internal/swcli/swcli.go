@@ -796,7 +796,9 @@ func (u *ui) runShell() {
 	u.mu.Unlock()
 	u.cooked(func() {
 		u.write("\x1b[?2004l")
+		saneTerminal(int(u.in.Fd()))
 		runBash()
+		reclaimTerminal(int(u.in.Fd()))
 		u.write("\x1b[?2004h")
 	})
 	u.mu.Lock()
@@ -864,6 +866,9 @@ func (u *ui) runRemoteShell(member int) {
 	_, err = rshell.Client(nc, r, u.in, u.out, resize)
 	signal.Stop(winch)
 	close(stop)
+	// A program on the member may have left the terminal (emulator) in the
+	// alternate screen or with application cursor keys and keypad.
+	u.write("\x1b[?1049l\x1b[?1l\x1b>\x1b[?25h")
 	u.write("\x1b[?2004h")
 	if err != nil {
 		u.write(fmt.Sprintf("\n*** shell on member %d: %v ***\n", member, err))
@@ -874,6 +879,39 @@ func (u *ui) runRemoteShell(member int) {
 	if c := u.cl(); !c.Closed() {
 		_, _ = c.Exec("") // notices were not shown during the shell: refresh
 	}
+}
+
+// saneTerminal makes sure a shell gets a usable terminal: line editing,
+// echo, signals, CR/NL handling and output processing on, whatever state
+// the terminal was left in (users had to type "reset" in the shell).
+func saneTerminal(fd int) {
+	tio, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return
+	}
+	want := *tio
+	want.Lflag |= unix.ICANON | unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ISIG | unix.IEXTEN
+	want.Iflag |= unix.ICRNL | unix.IXON
+	want.Iflag &^= unix.INLCR | unix.IGNCR
+	want.Oflag |= unix.OPOST | unix.ONLCR
+	want.Cc[unix.VMIN], want.Cc[unix.VTIME] = 1, 0
+	if want != *tio {
+		_ = unix.IoctlSetTermios(fd, unix.TCSETS, &want)
+	}
+}
+
+// reclaimTerminal makes swcli's process group the terminal's foreground
+// group again: an interactive bash takes the terminal for its own group
+// and does not give it back when it is killed; swcli would then be stopped
+// (SIGTTIN) at its next read.
+func reclaimTerminal(fd int) {
+	pg := unix.Getpgrp()
+	if cur, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP); err != nil || cur == pg {
+		return
+	}
+	signal.Ignore(syscall.SIGTTOU) // a background group may not set it otherwise
+	_ = unix.IoctlSetPointerInt(fd, unix.TIOCSPGRP, pg)
+	signal.Reset(syscall.SIGTTOU)
 }
 
 // runBash runs a login bash on the terminal. SWITCHD_SHELL tells the
