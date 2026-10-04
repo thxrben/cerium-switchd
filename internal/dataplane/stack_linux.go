@@ -36,6 +36,17 @@ type StackLink struct {
 	Port     string
 	Neighbor int
 	MAC      net.HardwareAddr
+	// Dev carries the link's tunnel traffic instead of the port: its MACsec
+	// device once the link is encrypted (reference 5.2; "": the port).
+	Dev string
+}
+
+// data is the device the link's traffic goes through.
+func (l StackLink) data() string {
+	if l.Dev != "" {
+		return l.Dev
+	}
+	return l.Port
 }
 
 // ensureStackVRF creates the hidden VRF if needed and returns its index.
@@ -208,9 +219,16 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 	// routes over a link without carrier are ignored at once.
 	index := map[string]int{}
 	links, _ := nlx.LinkList()
+	// The MACsec devices of encrypted links are in the VRF too.
+	inVRF := slices.Clone(u.Ports)
+	for _, l := range u.Links {
+		if l.Dev != "" {
+			inVRF = append(inVRF, l.Dev)
+		}
+	}
 	for _, ln := range links {
 		a := ln.Attrs()
-		if slices.Contains(u.Ports, a.Name) {
+		if slices.Contains(inVRF, a.Name) {
 			index[a.Name] = a.Index
 			if a.MasterIndex != vrf {
 				// Enslaving restarts the port once (the kernel cycles it).
@@ -232,8 +250,8 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 	}
 	want := map[nkey]net.HardwareAddr{}
 	for _, l := range u.Links {
-		if index[l.Port] != 0 {
-			want[nkey{l.Port, StackAddr(l.Neighbor)}] = l.MAC
+		if index[l.data()] != 0 {
+			want[nkey{l.data(), StackAddr(l.Neighbor)}] = l.MAC
 		}
 	}
 	for port, idx := range index {
@@ -259,8 +277,8 @@ func SyncStackUnderlay(u StackUnderlay) (bool, error) {
 	// of its shortest paths.
 	byNeighbor := map[int][]string{}
 	for _, l := range u.Links {
-		if index[l.Port] != 0 {
-			byNeighbor[l.Neighbor] = append(byNeighbor[l.Neighbor], l.Port)
+		if index[l.data()] != 0 {
+			byNeighbor[l.Neighbor] = append(byNeighbor[l.Neighbor], l.data())
 		}
 	}
 	routes := map[netip.Addr][]stackHop{}

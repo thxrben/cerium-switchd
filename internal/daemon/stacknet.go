@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 // step with the stacking links and the stack topology: it recomputes every
 // 100 ms and on every topology change, applies only when something
 // differs, and checks the kernel fully every 10 s.
-func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, log *slog.Logger) {
+func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, sec *stackMACsec, macsecOn func() bool, log *slog.Logger) {
 	warned := map[string]string{}
 	var last string
 	var lastFull time.Time
@@ -28,7 +29,21 @@ func runStackNet(ctx context.Context, vc *stack.Manager, need func() int, log *s
 		var changed <-chan struct{}
 		if mesh != nil {
 			changed = mesh.Changed()
+			// MACsec first: an encrypted link's traffic goes through its
+			// device (reference 5.2).
+			var specs []stackLinkSpec
+			for _, l := range vc.Links() {
+				idx := 0
+				if i, err := net.InterfaceByName(l.Linux); err == nil {
+					idx = i.Index
+				}
+				specs = append(specs, stackLinkSpec{Port: l.Linux, Index: idx, Neighbor: l.Neighbor, PeerMAC: l.NeighborMAC.String()})
+			}
+			sec.want(specs, macsecOn())
 			u := stackUnderlay(vc)
+			for i := range u.Links {
+				u.Links[i].Dev = sec.DataDev(u.Links[i].Port)
+			}
 			key := fmt.Sprint(u)
 			if now := time.Now(); key != last || now.Sub(lastFull) >= 10*time.Second {
 				ch, err := dataplane.SyncStackUnderlay(u)

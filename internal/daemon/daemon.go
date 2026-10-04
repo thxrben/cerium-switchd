@@ -33,6 +33,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/macsec"
 	"github.com/thxrben/cerium-switchd/internal/rpcserver"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -534,6 +535,38 @@ func Run(ctx context.Context, o Options) error {
 		if err := vc.Start(ctx); err != nil {
 			log.Error("stack", "err", err)
 		} else {
+			// MACsec on the stacking links (reference 5.2): keys over the
+			// stacking protocol.
+			sec := &stackMACsec{member: member, log: log, alarms: services.alarms, k: macsec.Linux{},
+				portMAC: kernelPortMAC, portMTU: kernelPortMTU, now: time.Now,
+				members: func() int {
+					if ctl == nil {
+						return 0
+					}
+					return len(ctl.node.Members())
+				},
+				push: func(n int, req secPush) (secReply, error) {
+					var rep secReply
+					if ctl == nil {
+						return rep, errors.New("no stack control")
+					}
+					raw, err := ctl.node.Call(n, "stack-macsec", req, 5*time.Second)
+					if err == nil {
+						err = json.Unmarshal(raw, &rep)
+					}
+					return rep, err
+				}}
+			if ctl != nil {
+				ctl.node.Handle("stack-macsec", func(from int, raw json.RawMessage) (any, error) {
+					req, err := decodePush(raw)
+					if err != nil {
+						return nil, err
+					}
+					return sec.receive(from, req)
+				})
+			}
+			liveOps.stackSec = sec
+			go sec.run(ctx)
 			go runStackNet(ctx, vc, func() int {
 				cfg, _ := model.Build(engine.Active().Active(), nil)
 				if cfg == nil || len(cfg.SwitchMembers()) < 2 {
@@ -541,6 +574,9 @@ func Run(ctx context.Context, o Options) error {
 				}
 				mtu, _ := cfg.MaxDataMTU()
 				return mtu + cfg.StackOverheadOf()
+			}, sec, func() bool {
+				cfg, _ := model.Build(engine.Active().Active(), nil)
+				return cfg == nil || !cfg.MACsec.StackDisabled
 			}, log)
 		}
 	}

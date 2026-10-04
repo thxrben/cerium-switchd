@@ -60,6 +60,8 @@ type ops struct {
 	// svc reaches the cer- daemons (reference 1.9).
 	svc     *service
 	updater *updater
+	// stackSec is the stacking links' MACsec (nil: no stack).
+	stackSec *stackMACsec
 	mem     *memoryCtl
 	// web and webServer are the REST API (nil: not set up, dry run).
 	web       *webSoftware
