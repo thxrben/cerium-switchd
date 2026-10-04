@@ -62,7 +62,7 @@ type ops struct {
 	updater *updater
 	// stackSec is the stacking links' MACsec (nil: no stack).
 	stackSec *stackMACsec
-	mem     *memoryCtl
+	mem      *memoryCtl
 	// web and webServer are the REST API (nil: not set up, dry run).
 	web       *webSoftware
 	webServer *webapi.Server

@@ -113,7 +113,9 @@ func TestStackMACsec(t *testing.T) {
 
 func TestStackMACsecOldNeighbour(t *testing.T) {
 	a, _, _, _, _ := newSecPair(t)
-	a.push = func(int, secPush) (secReply, error) { return secReply{}, errors.New(`unknown operation "stack-macsec"`) }
+	a.push = func(int, secPush) (secReply, error) {
+		return secReply{}, errors.New(`unknown operation "stack-macsec"`)
+	}
 	a.sync([]stackLinkSpec{{Port: "ens19", Neighbor: 2, PeerMAC: "02:00:00:00:02:01"}}, true)
 	if a.DataDev("ens19") != "" || len(a.alarms.List()) != 1 || !a.links["ens19"].plain {
 		t.Fatalf("old neighbour: %+v %v", a.links["ens19"], a.alarms.List())
