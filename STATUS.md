@@ -390,7 +390,13 @@ Last updated: 2026-10-04 (evening).
   Still reading tool output (to move to netlink): dataplane/mcast_linux.go (`bridge -j vlan/link`, `ip -j link`),
   pkg/netdev/bridge_linux.go (`bridge -j mdb`), dataplane/vlanmtu_linux.go (`nft -j list counters`); writing
   through tools: pkg/macsec (`ip -batch`, keys on stdin), mcast settings (`ip link set ... type bridge`).
-- Open question: several stacking ports between two members (routing, forwarding, LAG first?).
+- ~~Question: several stacking ports between two members~~: answered 2026-10-04, written into reference 5.2
+  ("Several cables between the same two members"). Each cable is its own VC port (an `ae` is refused by `vc-port
+  set`: physical ports only), no LAG. Data: one ECMP next hop per up link (stack-protocol "Routes"), layer 3+4 hash
+  (fib_multipath_hash_policy 1 on every L3 sync) on the VXLAN source port, which follows the inner flow. Control:
+  mesh uses the first session to the neighbour (peers[next][0]), the next one takes over, reliable streams survive.
+  Open: equal weights only (a 10G + 1G pair shares 1:1; nexthop weights by link speed would fix it); not yet
+  lab-tested with two parallel cables (the lab ring has one per pair).
 
 ## MACsec on client ports (2026-10-04 evening; unit-tested, NOT yet on the lab)
 - `security macsec interfaces <port>`: switchd writes `/run/switchd/mka/<port>.conf` (0600; CKN/CAK, csindex for

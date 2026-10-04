@@ -1146,6 +1146,16 @@ working path, so a ring survives one broken cable.
   stack messages and the stack tunnels over the shortest working paths (equal paths share the load), and a path
   that fails is replaced within the BFD detection time. A ring (or more cables) survives any single cable failure,
   a chain does not.
+* **Several cables between the same two members** (more bandwidth, or redundancy without a third member): designate
+  every port as a VC port of its own (`request virtual-chassis vc-port set …` on both ends of each cable). Do not
+  bundle them: an `ae` cannot be a VC port (the stacking ports work below the data plane, and each cable needs its
+  own liveness). Each cable is a link of its own (its own session, liveness and, per 5.2 `macsec`, its own
+  encryption); the stack tunnels use all working cables to that member at once (equal-cost routes, flows spread by
+  addresses and UDP ports: the tunnel source port follows the client flow, so one client flow stays on one cable
+  and keeps its order); stack messages take one cable and move to another when it fails, without the sessions on
+  top noticing. A cable that fails removes only itself (within the BFD detection time); the stack MTU is the
+  smallest of all stacking ports (`show virtual-chassis mtu`). Adding or removing one cable of several does not
+  interrupt the stack (migration, 5.2 `macsec`).
 * A stacking port is never a data or management port. E: the port is configured under `interfaces` (including
   `management`). Wildcard `interface-range`s skip stacking ports. switchd keeps a stacking port
   administratively up, outside the bridge, without IP addresses and with IPv6 disabled, whatever the configuration says.
