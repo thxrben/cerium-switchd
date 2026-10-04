@@ -1,6 +1,7 @@
 package rib
 
 import (
+	"fmt"
 	"net/netip"
 	"testing"
 
@@ -23,7 +24,9 @@ func TestMemoryPerRoute(t *testing.T) {
 	}{
 		{"rib/bgp", BGP, func(i int) Route {
 			return Route{Prefix: memslots.TestPrefix(i), Protocol: BGP, Preference: 170, NextHops: []NextHop{{Gateway: gw}},
-				Attrs: &Attrs{Peer: "10.0.0.1", PeerAS: 65001, ASPath: "65001 65002 65003 I", LocalPref: &lp}}
+				// Every route its own AS path: the worst case (no sharing),
+				// which the capacities must hold.
+				Attrs: &Attrs{Peer: "10.0.0.1", PeerAS: 65001, ASPath: fmt.Sprintf("65001 %d 65003 I", 64512+i), LocalPref: &lp}}
 		}},
 		{"rib/ospf", OSPF, func(i int) Route {
 			return Route{Prefix: memslots.TestPrefix(i), Protocol: OSPF, Preference: 10, Metric: 20,

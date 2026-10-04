@@ -14,6 +14,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"unique"
+	"weak"
 	"sync"
 	"time"
 )
@@ -173,8 +175,38 @@ type key struct {
 }
 
 type dest struct {
-	routes map[key]*Route
+	// routes are the routes of the prefix, one per (protocol, source): a
+	// slice, since a prefix rarely has more than two (a map per prefix
+	// would cost more than the route; reference 5.1 memory slots).
+	routes []*Route
 	active *Route // the last reported active route (nil: none)
+}
+
+func (d *dest) get(k key) *Route {
+	for _, rt := range d.routes {
+		if rt.Protocol == k.proto && rt.Source == k.source {
+			return rt
+		}
+	}
+	return nil
+}
+
+// put stores rt in place of the route with its key.
+func (d *dest) put(rt *Route) {
+	for i, x := range d.routes {
+		if x.Protocol == rt.Protocol && x.Source == rt.Source {
+			d.routes[i] = rt
+			return
+		}
+	}
+	d.routes = append(d.routes, rt)
+}
+
+func (d *dest) del(k key) {
+	d.routes = slices.DeleteFunc(d.routes, func(rt *Route) bool { return rt.Protocol == k.proto && rt.Source == k.source })
+	if len(d.routes) == 0 {
+		d.routes = nil
+	}
 }
 
 // RIB is the routing table of all instances.
@@ -189,6 +221,10 @@ type RIB struct {
 	// limits are the memory slots' capacities per protocol (SetLimit);
 	// counts the routes now; refused the routes not stored for it.
 	limits, counts, refused map[Protocol]int
+	// Shared next hop sets and attributes (intern.go).
+	hopSets  map[string][]NextHop
+	attrSets map[uint64]weak.Pointer[Attrs]
+	attrLive int
 }
 
 // SetLimit bounds the routes of a protocol over every instance (0: no
@@ -249,7 +285,9 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 		rt.Prefix = rt.Prefix.Masked()
 		rt.NextHops = slices.Clone(rt.NextHops)
 		slices.SortFunc(rt.NextHops, compareNH)
-		rt.NextHops = slices.CompactFunc(rt.NextHops, func(a, b NextHop) bool { return compareNH(a, b) == 0 })
+		rt.NextHops = r.internHops(slices.CompactFunc(rt.NextHops, func(a, b NextHop) bool { return compareNH(a, b) == 0 }))
+		rt.Attrs = r.internAttrs(rt.Attrs)
+		rt.Source = unique.Make(rt.Source).Value()
 		t := TableOf(instance, rt.Prefix)
 		if want[t] == nil {
 			want[t] = map[netip.Prefix]*Route{}
@@ -262,8 +300,8 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 			continue
 		}
 		for p, d := range ds {
-			if _, ok := d.routes[k]; ok && want[t][p] == nil {
-				delete(d.routes, k)
+			if d.get(k) != nil && want[t][p] == nil {
+				d.del(k)
 				r.count(proto, -1)
 				r.markDirty(t, p)
 			}
@@ -284,18 +322,19 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 		for _, p := range sortedPrefixes(rs, ordered) {
 			rt := rs[p]
 			d := ds[p]
-			if (d == nil || d.routes[k] == nil) && r.limits[proto] > 0 && r.counts[proto] >= r.limits[proto] {
+			if (d == nil || d.get(k) == nil) && r.limits[proto] > 0 && r.counts[proto] >= r.limits[proto] {
 				refused++ // full: a new route is not stored
 				continue
 			}
 			if d == nil {
-				d = &dest{routes: map[key]*Route{}}
+				d = &dest{}
 				ds[p] = d
 			}
-			if d.routes[k] == nil {
+			old := d.get(k)
+			if old == nil {
 				r.count(proto, 1)
 			}
-			if old := d.routes[k]; old != nil && sameRoute(old, rt) {
+			if old != nil && sameRoute(old, rt) {
 				old.Attrs, old.Stale = rt.Attrs, rt.Stale
 				continue
 			} else if old != nil {
@@ -304,7 +343,7 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 			if rt.Since.IsZero() {
 				rt.Since = r.now()
 			}
-			d.routes[k] = rt
+			d.put(rt)
 			r.markDirty(t, p)
 		}
 	}
@@ -366,8 +405,8 @@ func (r *RIB) MarkStale(instance string, proto Protocol) {
 			continue
 		}
 		for _, d := range ds {
-			for k, rt := range d.routes {
-				if k.proto == proto {
+			for _, rt := range d.routes {
+				if rt.Protocol == proto {
 					rt.Stale = true
 				}
 			}
@@ -384,12 +423,11 @@ func (r *RIB) Sweep(instance string, proto Protocol) {
 			continue
 		}
 		for p, d := range ds {
-			for k, rt := range d.routes {
-				if k.proto == proto && rt.Stale {
-					delete(d.routes, k)
-					r.count(proto, -1)
-					r.markDirty(t, p)
-				}
+			n := len(d.routes)
+			d.routes = slices.DeleteFunc(d.routes, func(rt *Route) bool { return rt.Protocol == proto && rt.Stale })
+			if gone := n - len(d.routes); gone > 0 {
+				r.count(proto, -gone)
+				r.markDirty(t, p)
 			}
 		}
 	}
@@ -405,10 +443,10 @@ func (r *RIB) DropInstance(instance string) {
 		}
 		for p, d := range ds {
 			if len(d.routes) > 0 {
-				for k := range d.routes {
-					r.count(k.proto, -1)
+				for _, rt := range d.routes {
+					r.count(rt.Protocol, -1)
 				}
-				clear(d.routes)
+				d.routes = nil
 				r.markDirty(t, p)
 			}
 		}
@@ -657,7 +695,7 @@ func (r *RIB) SetHidden(t Table, p netip.Prefix, proto Protocol, source string, 
 	if d == nil {
 		return false
 	}
-	rt := d.routes[key{proto, source}]
+	rt := d.get(key{proto, source})
 	if rt == nil || rt.Hidden == hidden {
 		return false
 	}
@@ -673,8 +711,8 @@ func (r *RIB) Each(proto Protocol, f func(t Table, rt Route)) {
 	defer r.mu.Unlock()
 	for t, ds := range r.tables {
 		for _, d := range ds {
-			for k, rt := range d.routes {
-				if k.proto == proto {
+			for _, rt := range d.routes {
+				if rt.Protocol == proto {
 					f(t, *rt)
 				}
 			}

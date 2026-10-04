@@ -491,7 +491,7 @@ func (d *Daemon) setRoutes(sr ribd.SetRoutes) {
 func ribRoute(r bgp.Route) rib.Route {
 	pref := rib.PrefBGP
 	if r.Preference > 0 {
-		pref = r.Preference
+		pref = int(r.Preference)
 	}
 	out := rib.Route{Prefix: r.Prefix, Protocol: rib.BGP, Preference: pref, Rank: r.Rank, Since: r.Since, Stale: r.Stale,
 		NextHops: []rib.NextHop{{Gateway: r.NextHop}}}
@@ -646,7 +646,7 @@ func fromPolicy(r *policy.Route, p *bgp.Path) {
 		}
 	}
 	if r.Preference >= 0 {
-		p.Preference = r.Preference
+		p.Preference = int32(r.Preference)
 	}
 	switch nh := r.NextHop; {
 	case nh == "self":

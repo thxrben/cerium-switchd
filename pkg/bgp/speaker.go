@@ -418,7 +418,7 @@ func (s *Speaker) compare(a, b *Path) int {
 		}
 		return 1
 	}
-	ida, idb := a.PeerID, b.PeerID
+	ida, idb := a.RouterID(), b.RouterID()
 	if a.OriginatorID.IsValid() {
 		ida = a.OriginatorID
 	}

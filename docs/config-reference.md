@@ -1073,14 +1073,16 @@ every table named there has a guaranteed capacity, and `show system limits` show
    transfers, CLI output and the like use it, without a guarantee.
 
 **Purposes** (bytes per entry of this release; one entry counts everything it takes: protocol, routing table and
-kernel; `show system memory` lists the values of the running version):
+kernel, in the worst case: BGP routes that share no attributes, and an import policy that changes them; routes
+that share attributes take less, and what they leave unused stays free; `show system memory` lists the values of
+the running version):
 
 | Purpose | One entry is | Bytes | Per slot |
 |---|---|---|---|
-| `bgp-ipv4` | an IPv4 prefix learned by BGP with its best path | 2100 | 1997 |
-| `bgp-ipv6` | an IPv6 prefix learned by BGP with its best path | 2340 | 1792 |
-| `bgp-paths` | every further path to a BGP prefix (a second neighbour, multipath, a backup) | 1500 | 2796 |
-| `ospf` | an OSPF or OSPFv3 route with its share of the link-state database | 1150 | 3647 |
+| `bgp-ipv4` | an IPv4 prefix learned by BGP with its best path | 2221 | 1888 |
+| `bgp-ipv6` | an IPv6 prefix learned by BGP with its best path | 2533 | 1655 |
+| `bgp-paths` | every further path to a BGP prefix (a second neighbour, multipath, a backup) | 1721 | 2437 |
+| `ospf` | an OSPF or OSPFv3 route with its share of the link-state database | 994 | 4219 |
 | `arp` | an IPv4 neighbour | 512 | 8192 |
 | `ndp` | an IPv6 neighbour | 512 | 8192 |
 | `mac` | a MAC address (learned, or synchronised by MC-LAG or VXLAN) | 250 | 16777 |

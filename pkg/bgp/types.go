@@ -106,18 +106,18 @@ const (
 
 // Attrs are a path's attributes.
 type Attrs struct {
-	Origin    uint8
-	ASPath    []Segment
-	NextHop   netip.Addr
-	LinkLocal netip.Addr // IPv6: the next hop's link-local address
-	MED       *uint32
-	LocalPref *uint32
-	// Communities (RFC 1997) and large communities (RFC 8092).
-	Communities     []uint32
-	Large           [][3]uint32
-	OriginatorID    netip.Addr
-	ClusterList     []netip.Addr
+	Origin          uint8
 	AtomicAggregate bool
+	ASPath          []Segment
+	NextHop         netip.Addr
+	LinkLocal       netip.Addr // IPv6: the next hop's link-local address
+	MED             *uint32
+	LocalPref       *uint32
+	// Communities (RFC 1997) and large communities (RFC 8092).
+	Communities  []uint32
+	Large        [][3]uint32
+	OriginatorID netip.Addr
+	ClusterList  []netip.Addr
 	// Unknown: optional transitive attributes passed on unchanged (with the
 	// partial bit).
 	Unknown []RawAttr
@@ -220,22 +220,32 @@ type Path struct {
 	// Peer is the neighbour it was learned from (invalid: originated here).
 	Peer   netip.Addr
 	PeerAS uint32
-	PeerID netip.Addr // the neighbour's router id
-	EBGP   bool
+	// PeerID is the neighbour's router id (a BGP identifier: 32 bits, kept
+	// small: a path exists once or twice per prefix; RouterID returns it).
+	PeerID [4]byte
 	// Source: for originated paths the protocol the route came from
 	// (static, ospf, direct, ...: export policies match it).
 	Source string
-	Stale  bool // kept while the neighbour restarts (graceful restart)
 	Since  time.Time
 
 	// Preference: an import policy's route preference (0: BGP's default).
-	Preference int
+	Preference int32
 
+	EBGP  bool
+	Stale bool // kept while the neighbour restarts (graceful restart)
 	// Set by an export policy: next-hop self, an explicit next hop
 	// (NextHop), a MED (MED; else a MED is not sent to another AS).
 	NextHopSelf   bool
 	PolicyNextHop bool
 	PolicyMED     bool
+}
+
+// RouterID is the neighbour's router id (invalid: originated here).
+func (p *Path) RouterID() netip.Addr {
+	if !p.Peer.IsValid() {
+		return netip.Addr{}
+	}
+	return netip.AddrFrom4(p.PeerID)
 }
 
 // Local reports whether the path is originated by this speaker.

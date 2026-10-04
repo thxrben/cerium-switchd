@@ -1,6 +1,7 @@
 package bgp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -557,9 +558,11 @@ func (p *peer) update(u *bgp.BGPUpdate, withdrawAll bool) {
 		if !slices.Contains(p.families, FamilyOf(r.Prefix)) {
 			continue
 		}
-		a := d.Attrs.Clone()
+		// The prefixes of one UPDATE share its attributes (they are never
+		// changed in place: importPath copies before a policy changes them).
+		a := d.Attrs
 		a.NextHop, a.LinkLocal = r.NextHop, r.LinkLocal
-		raw := &Path{Prefix: r.Prefix, Attrs: a, Peer: p.n.Addr, PeerAS: p.n.PeerAS, PeerID: p.open.RouterID, EBGP: p.ebgp(), Since: now}
+		raw := &Path{Prefix: r.Prefix, Attrs: a, Peer: p.n.Addr, PeerAS: p.n.PeerAS, PeerID: p.open.RouterID.As4(), EBGP: p.ebgp(), Since: now}
 		if old := p.in[r.Prefix]; old != nil && attrKey(&old.raw.Attrs) == attrKey(&raw.Attrs) {
 			old.raw.Stale = false
 			if old.accepted != nil {
@@ -600,7 +603,42 @@ func (p *peer) importPath(raw *Path) *Path {
 	if sp.pol.Import != nil && !sp.pol.Import(&p.n, &a) {
 		return nil
 	}
+	// Unchanged: the accepted path is the received one (one copy per path
+	// instead of two; the memory slots' cost, reference 5.1).
+	if a.Preference == raw.Preference && a.NextHopSelf == raw.NextHopSelf && a.PolicyNextHop == raw.PolicyNextHop &&
+		a.PolicyMED == raw.PolicyMED && attrKey(&a.Attrs) == attrKey(&raw.Attrs) {
+		return raw
+	}
+	a.shareUnchanged(&raw.Attrs)
 	return &a
+}
+
+// shareUnchanged points the attributes a policy left as they were back to
+// the received ones (no second copy; they are never changed in place).
+func (a *Attrs) shareUnchanged(raw *Attrs) {
+	if slices.EqualFunc(a.ASPath, raw.ASPath, func(x, y Segment) bool { return x.Set == y.Set && slices.Equal(x.ASNs, y.ASNs) }) {
+		a.ASPath = raw.ASPath
+	}
+	if slices.Equal(a.Communities, raw.Communities) {
+		a.Communities = raw.Communities
+	}
+	if slices.Equal(a.Large, raw.Large) {
+		a.Large = raw.Large
+	}
+	if slices.Equal(a.ClusterList, raw.ClusterList) {
+		a.ClusterList = raw.ClusterList
+	}
+	if slices.EqualFunc(a.Unknown, raw.Unknown, func(x, y RawAttr) bool {
+		return x.Flags == y.Flags && x.Type == y.Type && bytes.Equal(x.Value, y.Value)
+	}) {
+		a.Unknown = raw.Unknown
+	}
+	if a.MED != nil && raw.MED != nil && *a.MED == *raw.MED {
+		a.MED = raw.MED
+	}
+	if a.LocalPref != nil && raw.LocalPref != nil && *a.LocalPref == *raw.LocalPref {
+		a.LocalPref = raw.LocalPref
+	}
 }
 
 // reimport evaluates the import policy again for every received path.
@@ -723,7 +761,7 @@ func (p *peer) outgoing(pf netip.Prefix) *Path {
 		}
 		if reflect {
 			if !o.OriginatorID.IsValid() {
-				o.OriginatorID = x.PeerID
+				o.OriginatorID = x.RouterID()
 			}
 			o.ClusterList = append([]netip.Addr{cluster}, o.ClusterList...)
 		}

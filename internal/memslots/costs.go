@@ -7,20 +7,19 @@ import (
 )
 
 // Go is the bytes our programs keep per entry, by component. The tests of
-// the packages that own them (pkg/rib, pkg/bgp) measure them and fail
-// when the code drifts more than 10 % from these values; those marked as
-// estimates are not measured.
+// the packages that own them (pkg/rib, pkg/bgp, internal/bgpd) measure
+// them and fail when the code drifts more than 10 % from these values;
+// those marked as estimates are not measured.
 var Go = map[string]int{
-	"rib/bgp":    1007, // cer-ribd: a BGP route with its attributes
-	"rib/ospf":   1006, // cer-ribd: an OSPF route
-	"bgp/prefix": 551,  // cer-bgpd: Adj-RIB-In (received and accepted) and the decision
-	"bgp/path":   455,  // cer-bgpd: a further path to a prefix
-	// Estimates: cer-bgpd's copy of the routes it hands to cer-ribd; an
-	// OSPF route's share of cer-ospfd's database and SPF result; a MAC
-	// address's copy in cer-mclagd.
-	"bgpd/export": 400,
-	"ospf/route":  420,
-	"mclag/mac":   122,
+	"rib/bgp":     711, // cer-ribd: a BGP route with its own attributes (none shared: the worst case)
+	"rib/ospf":    470, // cer-ribd: an OSPF route
+	"bgp/prefix":  966, // cer-bgpd: Adj-RIB-In (received, and accepted after a policy that changed it) and the decision
+	"bgp/path":    870, // cer-bgpd: a further path to a prefix (likewise)
+	"bgpd/export": 440, // cer-bgpd: the copy of the table it gives cer-ribd and the members
+	// Estimates: an OSPF route's share of cer-ospfd's database and SPF
+	// result; a MAC address's copy in cer-mclagd.
+	"ospf/route": 420,
+	"mclag/mac":  122,
 }
 
 // Kernel is the kernel's bytes per entry: a route is a FIB alias and its
