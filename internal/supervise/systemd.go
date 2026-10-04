@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +24,14 @@ type Systemd struct {
 	UnitDir string // /etc/systemd/system
 	// Systemctl runs systemctl (nil: the program).
 	Systemctl func(args ...string) (string, error)
+	// BusPath is systemd's private D-Bus socket for reading unit states
+	// ("": systemctl show only).
+	BusPath string
+	Log     *slog.Logger
+
+	busOnce   sync.Once
+	bus       *unitBus
+	busFailed bool // reported once until it works again
 }
 
 func (s *Systemd) systemctl(args ...string) (string, error) {
@@ -98,8 +108,22 @@ func (s *Systemd) Kill(unit string) error {
 
 var showProps = "Id,LoadState,ActiveState,SubState,Result,MainPID,NRestarts,ExecMainCode,ExecMainStatus,ActiveEnterTimestamp,MemoryCurrent,CPUUsageNSec"
 
-// Show reads the units' states (one systemctl call for all).
+// Show reads the units' states: over systemd's D-Bus socket, or with one
+// systemctl call for all when that is not available.
 func (s *Systemd) Show(units []string) (map[string]UnitState, error) {
+	if s.Systemctl == nil && s.BusPath != "" {
+		s.busOnce.Do(func() { s.bus = &unitBus{path: s.BusPath} })
+		res, err := s.bus.Show(units)
+		if err == nil {
+			return res, nil
+		}
+		if !s.busFailed && s.Log != nil {
+			s.Log.Warn("unit states over D-Bus failed; systemctl show is used", "err", err)
+		}
+		s.busFailed = true
+	} else if s.busFailed {
+		s.busFailed = false
+	}
 	out, err := s.systemctl(append([]string{"show", "--timestamp=unix", "-p", showProps}, units...)...)
 	if err != nil {
 		return nil, err

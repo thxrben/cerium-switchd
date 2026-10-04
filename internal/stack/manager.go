@@ -136,6 +136,33 @@ type vcPort struct {
 	cancel context.CancelFunc
 	mu     sync.Mutex
 	st     PortStatus
+	// otherStack is the neighbour (MAC and reason) last logged as being
+	// of another stack: retried every 10 s, logged once.
+	otherStack string
+}
+
+// noteOtherStack reports whether a neighbour of another stack is new
+// (to be logged); "" resets it.
+func (p *vcPort) noteOtherStack(key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.otherStack == key {
+		return false
+	}
+	p.otherStack = key
+	return key != ""
+}
+
+// otherStackReason explains a failed TLS handshake with a neighbour: a
+// certificate of another stack is the normal case before a join.
+func otherStackReason(err error) string {
+	var ua x509.UnknownAuthorityError
+	msg := err.Error()
+	if errors.As(err, &ua) || strings.Contains(msg, "unknown authority") || strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "unknown certificate authority") {
+		return "its certificate is from another stack"
+	}
+	return msg
 }
 
 type vcState struct {
@@ -562,11 +589,17 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 		conn = tls.Server(l, cfg)
 	}
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := conn.Handshake(); err != nil {
-		m.Log.Info("stack: TLS handshake with the neighbour failed", "port", p.local, "tls_client", bytes.Compare(own.HardwareAddr, pio.Peer()) < 0,
-			"own_mac", own.HardwareAddr.String(), "peer_mac", pio.Peer().String(), "err", err)
+	otherStack := func(err error) error {
+		reason := otherStackReason(err)
+		if p.noteOtherStack(pio.Peer().String() + " " + reason) {
+			m.Log.Info("stack: the neighbour on the VC port belongs to another stack (not joined); retried every 10 s",
+				"port", p.local, "peer_mac", pio.Peer().String(), "reason", reason, "err", err)
+		}
 		p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
-		return fmt.Errorf("%w: %v", errOtherStack, err)
+		return fmt.Errorf("%w: %s", errOtherStack, reason)
+	}
+	if err := conn.Handshake(); err != nil {
+		return otherStack(err)
 	}
 	host := ""
 	if m.HostName != nil {
@@ -583,11 +616,11 @@ func (m *Manager) session(ctx context.Context, p *vcPort, l *link.Link, pio *lin
 		// alert), not in the handshake.
 		var oe *net.OpError
 		if errors.As(err, &oe) && oe.Op == "remote error" {
-			p.set(func(s *PortStatus) { s.State, s.Neighbor = "up", "other stack" })
-			return fmt.Errorf("%w: %v", errOtherStack, err)
+			return otherStack(err)
 		}
 		return err
 	}
+	p.noteOtherStack("")
 	var h hello
 	if err := json.Unmarshal(line, &h); err != nil {
 		return fmt.Errorf("neighbour hello: %w", err)

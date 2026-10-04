@@ -1,6 +1,6 @@
 # Status / where to continue
 
-Last updated: 2026-10-03 (evening).
+Last updated: 2026-10-04 (evening).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).
@@ -349,6 +349,24 @@ Last updated: 2026-10-03 (evening).
    daemon reads them from the active configuration at start and with every request (so a raised value holds over
    the reboot: the health check of the new version). Unit-tested. Not covered: the cer- daemons keep the default
    disk/kernel deadlines (they rarely touch a disk).
+
+## physw4 field bugs (reported 2026-10-04 evening; fixed, unit-tested, NOT yet on a device)
+- **PID 1 at 5 % CPU**: the supervisor ran `systemctl show -p ...` for 13 units every second. systemctl fetches every
+  property (GetAll) and filters afterwards, so systemd searched each unit's drop-in directories (NeedDaemonReload),
+  read cgroup files, rlimits and scheduling every second; inactive units were also unloaded and loaded from disk
+  again on each query. Now: D-Bus Properties.Get of the 11 needed properties over /run/systemd/private (godbus,
+  pipelined; systemctl show stays as the fallback), and a unit that is to stay stopped and is stopped is queried
+  every 30 s only. Measured against a systemd user manager: 2.3 ms vs 17.6 ms of manager CPU per round of 13 units.
+  To check on physw4: `strace -c -f -p 1` and `ps` after the update.
+- **`show system processes`** footer "Restarts: in the last hour." read like a count without a number: now "The
+  Restarts column counts the last hour (N restarts in total)."
+- **Join prompt unusable**: swcli's cooked mode did not nest. A question during a command (cooked inside cooked)
+  made the terminal raw again after the answer, and the next makeRaw saved that raw state as the one to restore:
+  every later question in the session was asked raw (no echo, Enter does not end the answer, prompt lines not
+  returned to the left edge). Fixed (raw state saved once, nesting tracked); pty test fails on the old code.
+- **TLS errors on the VC port before a join**: expected (the neighbour's certificate is from another stack until it
+  joins), but logged every 10 s with raw x509 text. Now logged once per neighbour and reason; `show virtual-chassis
+  vc-port` says "its certificate is from another stack". The TLS code itself was not at fault.
 
 ## Phase 9b: BGP and the full `show route` (started 2026-10-04)
 - **`show route` in full** (reference 5.14): done 2026-10-04, unit-tested. From cer-ribd's RIB (every route, best

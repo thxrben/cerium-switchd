@@ -289,7 +289,11 @@ type tracked struct {
 	expectEnd time.Time // a planned restart or stop until then
 	missingAt time.Time // "not installed" reported at
 	startAt   time.Time // last start attempt
+	checkedAt time.Time // last state query
 }
+
+// idleCheck is how often a unit that is to stay stopped is looked at.
+const idleCheck = 30 * time.Second
 
 func (s *Supervisor) daemons() []Daemon {
 	if s.Daemons != nil {
@@ -385,6 +389,15 @@ func (s *Supervisor) Step(now time.Time) {
 			s.units[d.Unit()] = content
 			changed[d.Unit()] = ch
 		}
+		// A unit that is to stay stopped and is stopped is checked every
+		// 30 s only: systemd unloads an inactive unit, and each query loads
+		// it from disk again (drop-in directories searched).
+		idle := !(want && !s.stopped[d.Program]) && t.seen && !changed[d.Unit()] &&
+			(t.last.Active == "inactive" || t.last.Active == "failed")
+		if idle && now.Sub(t.checkedAt) < idleCheck {
+			continue
+		}
+		t.checkedAt = now
 		units = append(units, d.Unit())
 	}
 	if slices.Contains(slices.Collect(maps.Values(changed)), true) {

@@ -876,7 +876,7 @@ func TestSystemOperationalCommands(t *testing.T) {
 		"* 10.0.0.1 (prefer)", "1.5ms", "ntp.example.net", "(no answer)", "not queried yet")
 	contains(t, ts.ok("show system processes"), "Program         State         PID      Uptime     Restarts  Memory   CPU       Scheduling",
 		"switchd         running       812      03:00:00   0         48.0M    1m35s     nice -10",
-		"switchd-update  restarting    -        -          2", "Last failures:", "switchd-update: killed by signal SEGV (00:01:30 ago)")
+		"switchd-update  restarting    -        -          2", "The Restarts column counts the last hour (2 restarts in total).", "Last failures:", "switchd-update: killed by signal SEGV (00:01:30 ago)")
 	ops.power = nil
 	contains(t, ts.ok("request daemon stop bgp"), "cer-bgpd stopped until the reboot or 'request daemon start bgp'")
 	contains(t, ts.ok("request daemon start bgp"), "cer-bgpd may run again")

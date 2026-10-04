@@ -73,7 +73,9 @@ func (sh *Shell) showProcesses(c *call) error {
 	now := time.Now()
 	fmt.Fprintf(c.out, "%-15s %-13s %-8s %-10s %-9s %-8s %-9s %s\n", "Program", "State", "PID", "Uptime", "Restarts", "Memory", "CPU", "Scheduling")
 	var failures []string
+	total := 0
 	for _, x := range ps {
+		total += x.Restarts
 		pid, up, mem, cpu := "-", "-", "-", "-"
 		if x.PID > 0 {
 			pid = fmt.Sprint(x.PID)
@@ -92,7 +94,11 @@ func (sh *Shell) showProcesses(c *call) error {
 			failures = append(failures, fmt.Sprintf("  %s: %s (%s ago)", x.Program, x.LastFailure, fmtDuration(now.Sub(x.FailedAt))))
 		}
 	}
-	c.out.WriteString("Restarts: in the last hour.\n")
+	restarts := "restarts"
+	if total == 1 {
+		restarts = "restart"
+	}
+	fmt.Fprintf(c.out, "The Restarts column counts the last hour (%d %s in total).\n", total, restarts)
 	if len(failures) > 0 {
 		c.out.WriteString("Last failures:\n" + strings.Join(failures, "\n") + "\n")
 	}

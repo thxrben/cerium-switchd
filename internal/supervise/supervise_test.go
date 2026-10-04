@@ -25,6 +25,7 @@ type fakeSystemd struct {
 	states    map[string]UnitState
 	actions   []string
 	nextPID   int
+	shows     [][]string // units of every Show
 }
 
 func newFake() *fakeSystemd {
@@ -88,6 +89,7 @@ func (f *fakeSystemd) Kill(unit string) error {
 }
 
 func (f *fakeSystemd) Show(units []string) (map[string]UnitState, error) {
+	f.shows = append(f.shows, slices.Clone(units))
 	out := map[string]UnitState{}
 	for _, u := range units {
 		st, ok := f.states[u]
@@ -373,5 +375,52 @@ func TestStopUntilReboot(t *testing.T) {
 	}
 	if len(*notes) != 1 { // only the missing cer-syslogd
 		t.Fatalf("notes %v", *notes)
+	}
+}
+
+// A daemon that is to stay stopped is queried every 30 s only (each query
+// makes systemd load the unit from disk); a needed one every second.
+func TestIdleUnitsQueriedRarely(t *testing.T) {
+	s, f, _, wanted := setup(t)
+	now := time.Unix(1000, 0)
+	queried := func(unit string) int {
+		n := 0
+		for _, units := range f.shows {
+			if slices.Contains(units, unit) {
+				n++
+			}
+		}
+		return n
+	}
+	for i := range 31 {
+		s.Step(now.Add(time.Duration(i) * time.Second))
+	}
+	if n := queried("cer-lacpd.service"); n != 31 {
+		t.Fatalf("cer-lacpd queried %d times in 31 s", n)
+	}
+	if n := queried("cer-bfdd.service"); n != 2 {
+		t.Fatalf("idle cer-bfdd queried %d times in 31 s, want 2", n)
+	}
+	// Needed now: started at the next step.
+	f.actions, f.shows = nil, nil
+	wanted["cer-bfdd"] = true
+	s.Step(now.Add(31 * time.Second))
+	if !slices.Contains(f.actions, "start cer-bfdd.service") {
+		t.Fatalf("not started when needed: %v", f.actions)
+	}
+	// Stopped outside the supervisor's control while not needed: found
+	// running at the next 30 s check and stopped.
+	wanted["cer-bfdd"] = false
+	s.Step(now.Add(32 * time.Second))
+	s.Step(now.Add(33 * time.Second))
+	f.actions = nil
+	f.run("cer-bfdd.service")
+	s.Step(now.Add(40 * time.Second))
+	if len(f.actions) != 0 {
+		t.Fatalf("idle unit queried before 30 s: %v", f.actions)
+	}
+	s.Step(now.Add(64 * time.Second))
+	if !slices.Contains(f.actions, "stop cer-bfdd.service") {
+		t.Fatalf("stray instance not stopped: %v", f.actions)
 	}
 }

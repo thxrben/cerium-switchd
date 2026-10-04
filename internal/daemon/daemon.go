@@ -407,7 +407,7 @@ func Run(ctx context.Context, o Options) error {
 			log.Error("service socket", "err", err)
 		}
 		if os.Getenv("INVOCATION_ID") != "" && exe != "" {
-			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
+			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system", BusPath: supervise.SystemdPrivate, Log: log}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
 				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) },
 				Beat: func() { live.Beat("daemon supervisor") },

@@ -91,9 +91,10 @@ type ui struct {
 	in       *os.File
 	out      *os.File
 	tty      bool
-	mu       sync.Mutex // guards terminal output, the editor and the fields below
-	ed       *editor    // non-nil while a line is being edited
-	rawState *term.State
+	mu       sync.Mutex  // guards terminal output, the editor and the fields below
+	ed       *editor     // non-nil while a line is being edited
+	rawState *term.State // the terminal's normal (cooked) state
+	raw      bool        // the terminal is raw now (main goroutine only)
 	// running is set while a command executes; interrupts counts Ctrl-C
 	// during it.
 	running    atomic.Bool
@@ -307,10 +308,13 @@ func (u *ui) WriteFile(name string, data []byte) error {
 	return hwio.WriteFile(u.home(name), data, 0o600)
 }
 
-// cooked runs f with the terminal in normal (non-raw) mode.
+// cooked runs f with the terminal in normal (non-raw) mode. It nests: a
+// question asked while a command runs (already cooked) leaves the terminal
+// cooked for the rest of the command.
 func (u *ui) cooked(f func()) {
-	if u.rawState != nil {
+	if u.rawState != nil && u.raw {
 		_ = term.Restore(int(u.in.Fd()), u.rawState)
+		u.raw = false
 		defer u.makeRaw()
 	}
 	f()
@@ -398,10 +402,17 @@ func (u *ui) write(s string) {
 	_, _ = io.WriteString(u.out, s)
 }
 
+// makeRaw puts the terminal into raw mode. rawState keeps the terminal's
+// normal state from the first call: a later call while raw would otherwise
+// save the raw state as the one to go back to, and every question after it
+// would be asked in raw mode (no echo, Enter not ending the answer).
 func (u *ui) makeRaw() {
 	st, err := term.MakeRaw(int(u.in.Fd()))
 	if err == nil {
-		u.rawState = st
+		if u.rawState == nil {
+			u.rawState = st
+		}
+		u.raw = true
 	}
 }
 
