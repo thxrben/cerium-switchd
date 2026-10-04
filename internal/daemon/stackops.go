@@ -78,6 +78,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.StackMTU()
 	case "bfd":
 		return o.BFDSessions()
+	case "alarms":
+		return o.Alarms()
 	}
 	return nil, fmt.Errorf("unknown listing %q", r.Method)
 }
@@ -251,6 +253,12 @@ func (s *stackOps) Neighbors(ipv6 bool) ([]cli.Neighbor, error) {
 		out = append(out, n)
 	}
 	return out, err
+}
+
+// Alarms lists every member's alarms.
+func (s *stackOps) Alarms() ([]cli.Alarm, error) {
+	by, err := each[[]cli.Alarm](s, opsRequest{Method: "alarms"})
+	return rows(by), err
 }
 
 // BFDSessions lists every member's sessions (they run where the

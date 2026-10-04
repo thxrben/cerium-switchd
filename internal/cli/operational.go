@@ -1405,7 +1405,8 @@ func registerOperational() {
 						&command{name: "offload", help: "Show hardware capabilities and acceleration per port", class: commit.ReadOnly, run: (*Shell).showOffload},
 						&command{name: "limits", help: "Show what the switch can carry and how much is used", class: commit.ReadOnly, run: (*Shell).showLimits},
 						&command{name: "bottlenecks", help: "Show what limits forwarding, with recommendations", class: commit.ReadOnly, run: (*Shell).showBottlenecks},
-						&command{name: "processes", help: "Show switchd and the daemons, their state and restarts", class: commit.ReadOnly, run: (*Shell).showProcesses})
+						&command{name: "processes", help: "Show switchd and the daemons, their state and restarts", class: commit.ReadOnly, run: (*Shell).showProcesses},
+						&command{name: "alarms", help: "Show the active alarms of every member", class: commit.ReadOnly, run: (*Shell).showAlarms})
 				}
 			}
 			sort.Slice(cmd.sub, func(i, j int) bool { return cmd.sub[i].name < cmd.sub[j].name })

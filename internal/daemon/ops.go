@@ -1008,10 +1008,11 @@ func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.O
 
 // The optional CLI interfaces ops implements.
 var (
-	_ cli.RIB  = (*ops)(nil)
-	_ cli.OSPF = (*ops)(nil)
-	_ cli.BGP  = (*ops)(nil)
-	_ cli.BFD  = (*ops)(nil)
+	_ cli.RIB    = (*ops)(nil)
+	_ cli.OSPF   = (*ops)(nil)
+	_ cli.BGP    = (*ops)(nil)
+	_ cli.BFD    = (*ops)(nil)
+	_ cli.Alarms = (*ops)(nil)
 )
 
 // BGPStatus is show bgp … (cer-bgpd on this member, the master).
@@ -1049,6 +1050,18 @@ func (o *ops) ClearBGP(q bgpd.ClearRequest) (int, error) {
 	defer cancel()
 	var n int
 	return n, o.svc.call(ctx, "cer-bgpd", bgpd.MethodClear, q, &n)
+}
+
+// Alarms is show system alarms (this member's).
+func (o *ops) Alarms() ([]cli.Alarm, error) {
+	if o.svc == nil {
+		return nil, nil
+	}
+	var out []cli.Alarm
+	for _, a := range o.svc.alarms.List() {
+		out = append(out, cli.Alarm{Member: o.member, Class: a.Class, Text: a.Text, Since: a.Since})
+	}
+	return out, nil
 }
 
 // BFDSessions is show bfd session (cer-bfdd on this member).

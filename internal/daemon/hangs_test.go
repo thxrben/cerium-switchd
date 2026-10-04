@@ -15,7 +15,7 @@ import (
 // it when the call returns; switchd lists it meanwhile.
 func TestHangAlarm(t *testing.T) {
 	notes := make(chan string, 4)
-	watchHangs(3, slog.New(slog.NewTextHandler(io.Discard, nil)), func(s string) { notes <- s })
+	watchHangs(3, slog.New(slog.NewTextHandler(io.Discard, nil)), func(s string) { notes <- s }, nil)
 	release := make(chan struct{})
 	start := time.Now()
 	err := hwio.DoErr(nlx.Resource, "link add ae1", 30*time.Millisecond, func() error { <-release; return nil })

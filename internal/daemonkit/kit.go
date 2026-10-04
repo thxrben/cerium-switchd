@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -274,6 +275,21 @@ func (k *Kit) Notify(text string) {
 	}
 }
 
+// Alarm raises (or updates) an alarm of this daemon (show system alarms);
+// id is stable per cause, class alarms.Major or alarms.Minor.
+func (k *Kit) Alarm(id, class, text string) { k.alarm(svc.Alarm{ID: id, Class: class, Text: text}) }
+
+// ClearAlarm ends an alarm of this daemon.
+func (k *Kit) ClearAlarm(id string) { k.alarm(svc.Alarm{ID: id, Clear: true}) }
+
+func (k *Kit) alarm(a svc.Alarm) {
+	ctx, cancel := context.WithTimeout(k.Ctx, 5*time.Second)
+	defer cancel()
+	if err := k.Switchd.Call(ctx, svc.MethodAlarm, a, nil); err != nil {
+		k.Log.Warn("alarm not delivered", "id", a.ID, "err", err)
+	}
+}
+
 // Main runs a daemon: flags, logging, setup, readiness and watchdog, until
 // SIGTERM or SIGINT.
 func Main(name string, setup func(k *Kit) error) {
@@ -329,10 +345,12 @@ func run(k *Kit, sig context.Context, setup func(*Kit) error) error {
 		if raised {
 			k.Log.Error("ALARM: a device does not answer", "resource", c.Resource, "call", c.Op, "since", c.Since)
 			k.Notify(fmt.Sprintf("%s: ALARM: %s does not answer (%s, since %s)", k.Name, c.Resource, c.Op, c.Since.Format("15:04:05")))
+			k.Alarm("hang "+c.Resource, alarms.Major, fmt.Sprintf("%s does not answer (%s, %s)", c.Resource, c.Op, k.Name))
 			return
 		}
 		k.Log.Warn("alarm cleared: the device answers again", "resource", c.Resource)
 		k.Notify(fmt.Sprintf("%s: alarm cleared: %s answers again", k.Name, c.Resource))
+		k.ClearAlarm("hang " + c.Resource)
 	})
 	<-sig.Done()
 	sdnotify.Notify("STOPPING=1")

@@ -45,6 +45,8 @@ const (
 	TopicRole   = "role"
 	MethodStack = "stack.call"
 	MethodNote  = "notify"
+	// MethodAlarm raises or clears an alarm of the calling daemon (Alarm).
+	MethodAlarm = "alarm"
 	// StackPrefix precedes stacking-protocol methods handed to a daemon.
 	StackPrefix = "stack:"
 	// MethodStatus is served by every daemon: its state for show commands.
@@ -161,3 +163,12 @@ const (
 	MethodRoutes       = "routes"
 	MethodRouteSummary = "routes.summary"
 )
+
+// Alarm is a daemon's alarm (show system alarms): ID is the daemon's own,
+// switchd puts the daemon's name in front. Class: alarms.Major or Minor.
+type Alarm struct {
+	ID    string `json:"id"`
+	Class string `json:"class,omitempty"`
+	Text  string `json:"text,omitempty"`
+	Clear bool   `json:"clear,omitempty"`
+}

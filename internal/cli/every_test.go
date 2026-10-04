@@ -18,6 +18,10 @@ type allOps struct {
 
 func (allOps) BFDSessions() ([]BFDSession, error) { return bfdOps{}.BFDSessions() }
 
+func (allOps) Alarms() ([]Alarm, error) {
+	return []Alarm{{Member: 1, Class: "Major", Text: "x", Since: time.Now()}}, nil
+}
+
 // Every operational command runs, bare and with "?", against fakes:
 // no panic, no internal error, no broken format verb, and nothing blocks.
 func TestEveryCommand(t *testing.T) {

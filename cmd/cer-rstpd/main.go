@@ -9,9 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -74,7 +76,14 @@ func setup(k *daemonkit.Kit) error {
 	})
 	ctl := stp.New(k.Member, kitStack{k}, k.StateDir, k.Log)
 	ctl.Alarm = func(text string) {
-		go k.Notify(fmt.Sprintf("member %d: %s", k.Member, text)) // never under the controller's lock
+		go func() { // never under the controller's lock
+			k.Notify(fmt.Sprintf("member %d: %s", k.Member, text))
+			if msg, ok := strings.CutPrefix(text, "ALARM: "); ok {
+				k.Alarm("rstp", alarms.Major, msg)
+			} else {
+				k.ClearAlarm("rstp")
+			}
+		}()
 	}
 	ctl.Legs = func() map[string]bool {
 		mu.Lock()
@@ -87,12 +96,27 @@ func setup(k *daemonkit.Kit) error {
 	}
 	// bpdu-block (reference 5.5): switchd follows the blocked ports.
 	guard := stp.NewGuard(stp.LinuxGuardIO{}, stp.GuardStateFile(k.StateDir), k.Log)
+	var alarmed sync.Map // ports with a bpdu-block alarm
 	guard.Publish = func(m map[string]stp.Blocked) {
 		v := map[string]any{}
 		for n, b := range m {
 			v[n] = b
 		}
 		k.Endpoint.Replace(stp.TopicBPDUBlocked, v)
+		go func() {
+			for n, b := range m {
+				if _, had := alarmed.LoadOrStore(n, true); !had {
+					k.Alarm("bpdu-block "+n, alarms.Minor, fmt.Sprintf("%s received a BPDU from %s and is shut down (bpdu-block)", n, b.From))
+				}
+			}
+			alarmed.Range(func(key, _ any) bool {
+				if _, still := m[key.(string)]; !still {
+					alarmed.Delete(key)
+					k.ClearAlarm("bpdu-block " + key.(string))
+				}
+				return true
+			})
+		}()
 	}
 	guard.Alarm = func(text string) { go k.Notify(fmt.Sprintf("member %d: %s", k.Member, text)) }
 	guard.Publish(guard.Blocked())

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/nlx"
@@ -38,9 +39,16 @@ func describeResource(res string) string {
 // watchHangs raises an alarm when a device stops answering and clears it
 // when it answers again (log and a notice to every CLI session). Nothing
 // reboots: the member keeps forwarding with what is set already.
-func watchHangs(member int, log *slog.Logger, notify func(string)) {
+func watchHangs(member int, log *slog.Logger, notify func(string), al *alarms.Set) {
 	hwio.WatchResources(func(c hwio.Call, raised bool) {
 		what := describeResource(c.Resource)
+		if al != nil {
+			if raised {
+				al.Raise("switchd/hang "+c.Resource, alarms.Major, fmt.Sprintf("%s does not answer (%s)", what, c.Op))
+			} else {
+				al.Clear("switchd/hang " + c.Resource)
+			}
+		}
 		if raised {
 			log.Error("ALARM: a device does not answer", "resource", c.Resource, "call", c.Op, "since", c.Since)
 			notify(fmt.Sprintf("member %d: ALARM: %s does not answer (%s, since %s). switchd keeps running; changes that need it fail until it answers. See show system processes.",

@@ -358,7 +358,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 		srv.Notify(context.Background(), text)
 	}
-	watchHangs(member, log, notifyStack)
+	watchHangs(member, log, notifyStack, services.alarms)
 	if ctl != nil {
 		ctl.node.Handle("notice", func(_ int, req json.RawMessage) (any, error) {
 			var text string
@@ -390,7 +390,8 @@ func Run(ctx context.Context, o Options) error {
 				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) },
 				Beat: func() { live.Beat("daemon supervisor") },
 				// request daemon stop lasts until the reboot (/run is a tmpfs).
-				StoppedFile: "/run/switchd/stopped-daemons"}
+				StoppedFile: "/run/switchd/stopped-daemons",
+				Alarms:      services.alarms}
 			supRef.Store(sup)
 			go sup.Run(ctx)
 		}

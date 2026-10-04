@@ -19,6 +19,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
@@ -248,6 +249,8 @@ type Supervisor struct {
 	// StoppedFile keeps the daemons stopped by request (request daemon
 	// stop) until the reboot: it is on a tmpfs (/run). "": in memory only.
 	StoppedFile string
+	// Alarms gets the daemons' faults (show system alarms; nil: none).
+	Alarms *alarms.Set
 
 	mu       sync.Mutex
 	tracked  map[string]*tracked
@@ -335,12 +338,19 @@ func (s *Supervisor) Step(now time.Time) {
 		if !s.Backend.Installed(s.path(d)) {
 			if want && now.Sub(t.missingAt) >= time.Minute {
 				t.missingAt = now
+				s.raise("missing "+d.Program, alarms.Major, fmt.Sprintf("%s is not installed (%s): its function is missing", d.Program, s.path(d)))
 				s.Log.Error("program not installed", "program", d.Program, "path", s.path(d))
 				s.note(fmt.Sprintf("%s is not installed (%s); its function is missing", d.Program, s.path(d)))
 			}
 			continue
 		}
 		t.missingAt = time.Time{}
+		s.clear("missing " + d.Program)
+		if s.stopped[d.Program] {
+			s.raise("stopped "+d.Program, alarms.Minor, fmt.Sprintf("%s is stopped until the reboot (request daemon stop)", d.Program))
+		} else {
+			s.clear("stopped " + d.Program)
+		}
 		content := Unit(d, s.path(d), s.Args)
 		if s.units[d.Unit()] != content {
 			ch, err := s.Backend.WriteUnit(d.Unit(), content)
@@ -395,6 +405,7 @@ func (s *Supervisor) Step(now time.Time) {
 				s.Log.Error("start", "program", d.Program, "err", err)
 				if !t.down {
 					t.down, t.failure, t.failedAt = true, "cannot be started: "+err.Error(), now
+					s.raise("failed "+d.Program, alarms.Major, fmt.Sprintf("%s cannot be started: %v", d.Program, err))
 					s.note(fmt.Sprintf("%s cannot be started: %v", d.Program, err))
 				}
 			}
@@ -425,13 +436,27 @@ func (s *Supervisor) observe(d Daemon, t *tracked, u UnitState, now time.Time) {
 	if ended && !planned && u.Result != "success" {
 		t.restarts = append(t.restarts, now)
 		t.failure, t.failedAt, t.down = describe(u), now, true
+		s.raise("failed "+d.Program, alarms.Major, fmt.Sprintf("%s failed (%s); it is restarted", d.Program, t.failure))
 		s.Log.Error(d.Program+" failed", "reason", t.failure, "restarts_last_hour", len(t.restarts))
 		s.note(fmt.Sprintf("%s failed (%s) and is restarted", d.Program, t.failure))
 	}
 	if t.down && u.Running() && u.Sub == "running" {
 		t.down = false
+		s.clear("failed " + d.Program)
 		s.Log.Info(d.Program+" runs again", "restarts_last_hour", len(t.restarts))
 		s.note(fmt.Sprintf("%s runs again (%s in the last hour)", d.Program, plural(len(t.restarts), "restart")))
+	}
+}
+
+func (s *Supervisor) raise(id, class, text string) {
+	if s.Alarms != nil {
+		s.Alarms.Raise("switchd/"+id, class, text)
+	}
+}
+
+func (s *Supervisor) clear(id string) {
+	if s.Alarms != nil {
+		s.Alarms.Clear("switchd/" + id)
 	}
 }
 

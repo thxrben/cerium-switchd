@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 )
 
 // fakeSystemd behaves like systemd for the units it is given.
@@ -321,8 +323,12 @@ func TestShutdown(t *testing.T) {
 func TestStopUntilReboot(t *testing.T) {
 	s, f, notes, _ := setup(t)
 	s.StoppedFile = t.TempDir() + "/stopped-daemons"
+	s.Alarms = &alarms.Set{}
 	now := time.Unix(1000, 0)
 	s.Step(now)
+	if l := s.Alarms.List(); len(l) != 1 || l[0].ID != "switchd/missing cer-syslogd" || l[0].Class != alarms.Major {
+		t.Fatalf("alarms %+v", l)
+	}
 	if _, err := s.StopDaemon("lacp"); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +341,9 @@ func TestStopUntilReboot(t *testing.T) {
 	}
 	if st := s.Status(); st[0].State != "stopped (request daemon stop)" {
 		t.Fatalf("status %+v", st[0])
+	}
+	if l := s.Alarms.List(); len(l) != 2 || l[1].ID != "switchd/stopped cer-lacpd" || l[1].Class != alarms.Minor {
+		t.Fatalf("alarms %+v", l)
 	}
 	// switchd restarts: a new supervisor keeps it stopped.
 	s2 := &Supervisor{Backend: f, Log: quiet, Dir: s.Dir, Args: s.Args, Member: 2, Wanted: s.Wanted, Daemons: testDaemons,

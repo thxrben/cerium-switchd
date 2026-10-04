@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/alarms"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/version"
@@ -31,6 +32,9 @@ type service struct {
 	notify func(string)
 	// role computes the current role.
 	role func() svc.Role
+	// alarms are this member's (the daemons raise theirs through
+	// MethodAlarm).
+	alarms *alarms.Set
 
 	mu sync.Mutex
 	// stack: stacking-protocol method -> daemon serving it.
@@ -110,13 +114,26 @@ func (s *service) follow(daemon, topic string, onChange func(map[string]json.Raw
 
 func newService(member int, ctl *stackCtl, notify func(string), role func() svc.Role, log *slog.Logger) *service {
 	s := &service{ep: ipc.NewEndpoint(svc.Switchd, version.Version, log), member: member, log: log, ctl: ctl,
-		notify: notify, role: role, stack: map[string]string{}, mirrors: map[string][]*mirror{}}
+		notify: notify, role: role, stack: map[string]string{}, mirrors: map[string][]*mirror{}, alarms: &alarms.Set{}}
 	s.ep.Handle(svc.MethodNote, func(_ context.Context, c *ipc.Conn, raw json.RawMessage) (any, error) {
 		var n svc.Notice
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, err
 		}
 		s.notify(n.Text)
+		return nil, nil
+	})
+	s.ep.Handle(svc.MethodAlarm, func(_ context.Context, c *ipc.Conn, raw json.RawMessage) (any, error) {
+		var a svc.Alarm
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, err
+		}
+		id := c.Peer().Name + "/" + a.ID
+		if a.Clear {
+			s.alarms.Clear(id)
+		} else {
+			s.alarms.Raise(id, a.Class, a.Text)
+		}
 		return nil, nil
 	})
 	s.ep.Handle(svc.MethodStack, s.stackCall)
@@ -177,6 +194,8 @@ func (s *service) connected(c *ipc.Conn) {
 		s.log.Warn("daemon runs another version than switchd", "daemon", c.Peer().Name, "version", c.Peer().Version, "switchd", version.Version)
 	}
 	daemon := c.Peer().Name
+	// A (re)started daemon raises again what still holds.
+	s.alarms.ClearPrefix(daemon + "/")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, m := range s.mirrors[daemon] {
