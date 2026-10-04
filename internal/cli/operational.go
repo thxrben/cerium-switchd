@@ -1440,6 +1440,7 @@ func registerOperational() {
 	swRequest, swShow := softwareCommands()
 	findCmd(operational, []string{"show", "system"}).sub = append(findCmd(operational, []string{"show", "system"}).sub, swShow)
 	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.SuperUser, sub: []*command{
+		daemonCommand(),
 		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
 			power("reboot", "Reboot this member"),
 			power("halt", "Halt this member"),

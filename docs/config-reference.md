@@ -332,9 +332,15 @@ Operational commands:
 * `show system processes`: per member every program with its state (`running`, `restarting`, `failed`, `stopped`),
   process id, uptime, restarts in the last hour, the last failure, memory and CPU time, and its scheduling; and an
   **ALARM** list of system calls that do not return (a disk or NIC driver that stopped answering).
-* `restart lacp|mclag|rstp|lldp|syslog|ntp|dhcp|routing|bfd|ospf|bgp [member <id>|all-members]`: restarts that daemon
-  (super-user). Like a crash, it is hitless where the protocol allows it (LACP and RSTP keep their state; BFD, OSPF and
-  BGP sessions are re-established, with graceful restart where configured).
+* `request daemon restart|stop|start lacp|mclag|rstp|lldp|syslog|ntp|dhcp|routing|bfd|ospf|bgp [member <id>|all-members]`
+  (super-user; `restart <daemon>` is kept as a short form of `request daemon restart`):
+  * `restart`: like a crash, it is hitless where the protocol allows it (LACP and RSTP keep their state; BFD, OSPF and
+    BGP sessions are re-established, with graceful restart where configured).
+  * `stop`: the daemon ends (as at shutdown: sessions closed, BFD AdminDown) and **stays stopped until the member
+    reboots** or `request daemon start`, even when the configuration needs it or switchd restarts. Its function is
+    missing meanwhile (a stopped LACP or MC-LAG daemon takes the bundles down): the command says so, and
+    `show system processes` shows the daemon as `stopped (request daemon stop)`.
+  * `start`: ends a `stop`; the daemon runs again if it is needed.
 
 ## 2. Configuration formats
 
@@ -550,7 +556,7 @@ vlans {
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version (with every member's two system slots, read from the disks: version, active or backup, `unreadable: …` when a slot's partition cannot be read, and a missing or damaged boot state). |
-| `show system processes`, `restart <daemon>` | The switch's programs and their state; restarting one (1.9). |
+| `show system processes`, `request daemon restart\|stop\|start <daemon>` | The switch's programs and their state; restarting, stopping (until reboot) or starting one (1.9). |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
 | `start shell [local]` | A Linux shell on the master, or with `local` on the member you are connected to (1.8, 4.3); `exit` returns to the CLI. |
 

@@ -18,6 +18,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 // Daemon describes one cer- daemon (the table of reference 1.9).
@@ -243,11 +245,15 @@ type Supervisor struct {
 	Beat func()
 	// Daemons overrides the package table (tests).
 	Daemons []Daemon
+	// StoppedFile keeps the daemons stopped by request (request daemon
+	// stop) until the reboot: it is on a tmpfs (/run). "": in memory only.
+	StoppedFile string
 
 	mu       sync.Mutex
 	tracked  map[string]*tracked
 	units    map[string]string // unit -> content written
 	stopping bool              // Shutdown runs: nothing is started any more
+	stopped  map[string]bool   // by program: stopped by request until the reboot
 }
 
 type tracked struct {
@@ -307,6 +313,7 @@ func (s *Supervisor) Step(now time.Time) {
 	}
 	if s.tracked == nil {
 		s.tracked, s.units = map[string]*tracked{}, map[string]string{}
+		s.stopped = s.loadStopped()
 	}
 	var wanted map[string]bool
 	if s.Wanted != nil {
@@ -365,7 +372,7 @@ func (s *Supervisor) Step(now time.Time) {
 			continue
 		}
 		t := s.tracked[d.Program]
-		want := d.Always || wanted[d.Program]
+		want := (d.Always || wanted[d.Program]) && !s.stopped[d.Program]
 		s.observe(d, t, u, now)
 		if d.External {
 			continue
@@ -478,6 +485,84 @@ func (s *Supervisor) RestartDaemon(name string) error {
 	return s.Backend.Restart(d.Unit())
 }
 
+// StopDaemon stops a daemon on request (request daemon stop) until the
+// reboot or StartDaemon: the supervisor does not start it again.
+func (s *Supervisor) StopDaemon(name string) (Daemon, error) {
+	d, ok := s.find(name)
+	if !ok || d.External {
+		return d, fmt.Errorf("unknown daemon %q", name)
+	}
+	s.mu.Lock()
+	if s.tracked == nil {
+		s.tracked, s.units = map[string]*tracked{}, map[string]string{}
+		s.stopped = s.loadStopped()
+	}
+	s.stopped[d.Program] = true
+	if t := s.tracked[d.Program]; t != nil {
+		t.expectEnd = time.Now().Add(time.Minute)
+	}
+	err := s.saveStopped()
+	s.mu.Unlock()
+	if err != nil {
+		s.Log.Warn("stopped daemons not saved (a switchd restart starts them again)", "err", err)
+	}
+	return d, s.Backend.Stop(d.Unit())
+}
+
+// StartDaemon ends a StopDaemon; the next step starts the daemon if it
+// is needed.
+func (s *Supervisor) StartDaemon(name string) (Daemon, error) {
+	d, ok := s.find(name)
+	if !ok || d.External {
+		return d, fmt.Errorf("unknown daemon %q", name)
+	}
+	s.mu.Lock()
+	was := s.stopped[d.Program]
+	delete(s.stopped, d.Program)
+	err := s.saveStopped()
+	if t := s.tracked[d.Program]; t != nil {
+		t.startAt = time.Time{}
+	}
+	s.mu.Unlock()
+	if !was {
+		return d, fmt.Errorf("%s was not stopped", d.Program)
+	}
+	return d, err
+}
+
+// Stopped reports whether a program is stopped by request.
+func (s *Supervisor) Stopped(program string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped == nil {
+		s.stopped = s.loadStopped()
+	}
+	return s.stopped[program]
+}
+
+func (s *Supervisor) loadStopped() map[string]bool {
+	out := map[string]bool{}
+	if s.StoppedFile == "" {
+		return out
+	}
+	raw, err := hwio.ReadFile(s.StoppedFile)
+	if err != nil {
+		return out
+	}
+	for _, l := range strings.Fields(string(raw)) {
+		out[l] = true
+	}
+	return out
+}
+
+func (s *Supervisor) saveStopped() error {
+	if s.StoppedFile == "" {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(s.stopped))
+	return hwio.WriteFileAtomic(s.StoppedFile, []byte(strings.Join(names, "\n")+"\n"), 0o644)
+}
+
 func (s *Supervisor) find(name string) (Daemon, bool) {
 	for _, d := range s.daemons() {
 		if d.Name == name || d.Program == name {
@@ -509,6 +594,9 @@ func (s *Supervisor) Status() []Status {
 			case u.Active == "failed":
 				st.State = "failed"
 			}
+		}
+		if s.stopped[d.Program] && st.State != "running" {
+			st.State = "stopped (request daemon stop)"
 		}
 		if t != nil {
 			st.Restarts, st.LastFailure, st.FailedAt = len(t.restarts), t.failure, t.failedAt

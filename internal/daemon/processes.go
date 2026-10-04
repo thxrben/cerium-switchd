@@ -45,6 +45,33 @@ func (o *ops) RestartDaemon(name, user string) error {
 	return nil
 }
 
+// StopDaemon is request daemon stop: the daemon stays stopped until the
+// reboot or request daemon start.
+func (o *ops) StopDaemon(name, user string) (string, error) {
+	if o.sup == nil {
+		return "", errors.New("the daemons are not managed here (switchd was not started by systemd)")
+	}
+	d, err := o.sup.StopDaemon(name)
+	if err != nil {
+		return "", err
+	}
+	o.log.Warn(fmt.Sprintf("%s stopped until the reboot, requested by %s", d.Program, user))
+	return d.Help, nil
+}
+
+// StartDaemon is request daemon start.
+func (o *ops) StartDaemon(name, user string) error {
+	if o.sup == nil {
+		return errors.New("the daemons are not managed here (switchd was not started by systemd)")
+	}
+	d, err := o.sup.StartDaemon(name)
+	if err != nil {
+		return err
+	}
+	o.log.Info(fmt.Sprintf("%s may run again, requested by %s", d.Program, user))
+	return nil
+}
+
 // selfRSS reads this process's resident memory.
 func selfRSS() uint64 {
 	raw, err := hwio.ReadFile("/proc/self/status")

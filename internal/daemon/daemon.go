@@ -388,7 +388,9 @@ func Run(ctx context.Context, o Options) error {
 			sup = &supervise.Supervisor{Backend: &supervise.Systemd{UnitDir: "/etc/systemd/system"}, Log: log,
 				Dir: filepath.Dir(exe), Args: []string{"-member", strconv.Itoa(member), "-state-dir", o.StateDir},
 				Member: member, Notify: notifyStack, Wanted: func() map[string]bool { return wantedDaemons(engine) },
-				Beat: func() { live.Beat("daemon supervisor") }}
+				Beat: func() { live.Beat("daemon supervisor") },
+				// request daemon stop lasts until the reboot (/run is a tmpfs).
+				StoppedFile: "/run/switchd/stopped-daemons"}
 			supRef.Store(sup)
 			go sup.Run(ctx)
 		}

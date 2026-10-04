@@ -44,6 +44,10 @@ type Processes interface {
 	Processes() ([]Process, error)
 	// RestartDaemon restarts a daemon by its restart name.
 	RestartDaemon(name, user string) error
+	// StopDaemon stops it until the reboot; it returns what it does.
+	StopDaemon(name, user string) (string, error)
+	// StartDaemon ends a StopDaemon.
+	StartDaemon(name, user string) error
 }
 
 func (sh *Shell) processes() (Processes, error) {
@@ -115,26 +119,59 @@ func fmtBytes(b uint64) string {
 	return fmt.Sprintf("%dB", b)
 }
 
-// restartCommand is "restart <daemon>" (reference 1.9).
-func restartCommand() *command {
-	cmd := &command{name: "restart", help: "Restart a daemon (hitless where its protocol allows it)", class: commit.SuperUser}
-	for _, d := range supervise.Daemons {
-		name := d.Name
-		cmd.sub = append(cmd.sub, &command{name: name, help: "Restart " + d.Program + " (" + d.Help + ")", class: commit.SuperUser,
-			run: func(sh *Shell, c *call) error {
-				if err := noArgs(c); err != nil {
-					return err
-				}
-				p, err := sh.processes()
-				if err != nil {
-					return err
-				}
-				if err := p.RestartDaemon(name, sh.env.User); err != nil {
-					return err
-				}
-				fmt.Fprintf(c.out, "%s restarted\n", d.Program)
-				return nil
-			}})
+// daemonCommands are "request daemon restart|stop|start <daemon>" and the
+// short form "restart <daemon>" (reference 1.9).
+func daemonCommand() *command {
+	mk := func(verb, help string, run func(sh *Shell, c *call, p Processes, d supervise.Daemon) error) *command {
+		cmd := &command{name: verb, help: help, class: commit.SuperUser}
+		for _, d := range supervise.Daemons {
+			if d.External && verb != "restart" {
+				continue // the update daemon is never stopped
+			}
+			cmd.sub = append(cmd.sub, &command{name: d.Name, help: verb + " " + d.Program + " (" + d.Help + ")", class: commit.SuperUser,
+				perMember: true, run: func(sh *Shell, c *call) error {
+					if err := noArgs(c); err != nil {
+						return err
+					}
+					p, err := sh.processes()
+					if err != nil {
+						return err
+					}
+					return run(sh, c, p, d)
+				}})
+		}
+		return cmd
 	}
-	return cmd
+	return &command{name: "daemon", help: "Restart, stop or start a daemon", class: commit.SuperUser, sub: []*command{
+		mk("restart", "Restart a daemon (hitless where its protocol allows it)", restartDaemon),
+		mk("stop", "Stop a daemon until the reboot (its function is missing meanwhile)", func(sh *Shell, c *call, p Processes, d supervise.Daemon) error {
+			help, err := p.StopDaemon(d.Name, sh.env.User)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(c.out, "%s stopped until the reboot or 'request daemon start %s': %s is not available meanwhile\n", d.Program, d.Name, help)
+			return nil
+		}),
+		mk("start", "Start a daemon stopped by 'request daemon stop'", func(sh *Shell, c *call, p Processes, d supervise.Daemon) error {
+			if err := p.StartDaemon(d.Name, sh.env.User); err != nil {
+				return err
+			}
+			fmt.Fprintf(c.out, "%s may run again (it starts if it is needed)\n", d.Program)
+			return nil
+		}),
+	}}
+}
+
+func restartDaemon(sh *Shell, c *call, p Processes, d supervise.Daemon) error {
+	if err := p.RestartDaemon(d.Name, sh.env.User); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "%s restarted\n", d.Program)
+	return nil
+}
+
+// restartCommand is the short form "restart <daemon>".
+func restartCommand() *command {
+	cmd := daemonCommand().sub[0]
+	return &command{name: "restart", help: cmd.help, class: commit.SuperUser, sub: cmd.sub, hidden: true}
 }

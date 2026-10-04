@@ -285,8 +285,11 @@ Last updated: 2026-10-03 (evening).
    or no addport/addport; swap the cables at physw4 to see whether the fault follows the UniFi port or 1/0/2).
    Done on the way: cer-lacpd warns when a send fails (d12f6bd) and reports a partner that does not receive our
    LACPDUs (its PDUs never name our port) instead of "configure periodic slow" (02a7717).
-5. **`request daemon restart|stop <daemon>`** instead of `restart <daemon>` (reference 1.9). Decided 2026-10-04: a
-   stopped daemon stays stopped until the reboot (or `request daemon start`).
+5. **`request daemon restart|stop|start <daemon> [member <id>|all-members]`**: done 2026-10-04 (decided: a stop lasts
+   until the reboot). The supervisor never starts a stopped daemon (needed or "always"); the set is in
+   /run/switchd/stopped-daemons (tmpfs: survives a switchd restart, not a reboot); `show system processes` shows
+   "stopped (request daemon stop)"; the update daemon can be restarted, not stopped; `restart <daemon>` stays as a
+   hidden short form. Unit-tested (supervisor, CLI).
 6. ~~Applying `request system diagnose` hints~~: declined by the user 2026-10-04.
 7. OSPF follow-ups: graceful restart (helper and restarting, grace LSAs), lab interop with FRR (v2 and
    v3, broadcast and p2p), the punt frame test and OSPFv3 sockets in the lab.

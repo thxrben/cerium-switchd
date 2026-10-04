@@ -497,6 +497,16 @@ func (f *fakeOps) RestartDaemon(name, user string) error {
 	return nil
 }
 
+func (f *fakeOps) StopDaemon(name, user string) (string, error) {
+	f.power = append(f.power, "stop "+name+" "+user)
+	return "BGP", nil
+}
+
+func (f *fakeOps) StartDaemon(name, user string) error {
+	f.power = append(f.power, "start "+name+" "+user)
+	return nil
+}
+
 func (f *fakeOps) Uptime() (Uptime, error) {
 	return Uptime{Booted: time.Now().Add(-26 * time.Hour), Started: time.Now().Add(-90 * time.Second), Load: [3]float64{0.5, 0.25, 0.125}}, nil
 }
@@ -866,6 +876,12 @@ func TestSystemOperationalCommands(t *testing.T) {
 	contains(t, ts.ok("show system processes"), "Program         State         PID      Uptime     Restarts  Memory   CPU       Scheduling",
 		"switchd         running       812      03:00:00   0         48.0M    1m35s     nice -10",
 		"switchd-update  restarting    -        -          2", "Last failures:", "switchd-update: killed by signal SEGV (00:01:30 ago)")
+	ops.power = nil
+	contains(t, ts.ok("request daemon stop bgp"), "cer-bgpd stopped until the reboot or 'request daemon start bgp'")
+	contains(t, ts.ok("request daemon start bgp"), "cer-bgpd may run again")
+	contains(t, ts.run("request daemon stop update"), "error")
+	ops.power = nil
+	contains(t, ts.ok("request daemon restart update"), "switchd-update restarted")
 	ops.power = nil
 	contains(t, ts.ok("restart update"), "switchd-update restarted")
 	if len(ops.power) != 1 || !strings.HasPrefix(ops.power[0], "restart update ") {

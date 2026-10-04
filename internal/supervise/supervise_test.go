@@ -314,3 +314,47 @@ func TestShutdown(t *testing.T) {
 		t.Errorf("started again after the shutdown: %v", f.actions)
 	}
 }
+
+// request daemon stop: the daemon is not started again, also by a new
+// supervisor (switchd restarted), until request daemon start; no failure
+// is reported.
+func TestStopUntilReboot(t *testing.T) {
+	s, f, notes, _ := setup(t)
+	s.StoppedFile = t.TempDir() + "/stopped-daemons"
+	now := time.Unix(1000, 0)
+	s.Step(now)
+	if _, err := s.StopDaemon("lacp"); err != nil {
+		t.Fatal(err)
+	}
+	f.actions = nil
+	for i := 1; i <= 5; i++ {
+		s.Step(now.Add(time.Duration(i) * 3 * time.Second))
+	}
+	if slices.Contains(f.actions, "start cer-lacpd.service") {
+		t.Fatalf("a stopped daemon was started: %v", f.actions)
+	}
+	if st := s.Status(); st[0].State != "stopped (request daemon stop)" {
+		t.Fatalf("status %+v", st[0])
+	}
+	// switchd restarts: a new supervisor keeps it stopped.
+	s2 := &Supervisor{Backend: f, Log: quiet, Dir: s.Dir, Args: s.Args, Member: 2, Wanted: s.Wanted, Daemons: testDaemons,
+		StoppedFile: s.StoppedFile}
+	s2.Step(now.Add(20 * time.Second))
+	s2.Step(now.Add(23 * time.Second))
+	if slices.Contains(f.actions, "start cer-lacpd.service") || !s2.Stopped("cer-lacpd") {
+		t.Fatalf("after a switchd restart: %v", f.actions)
+	}
+	if _, err := s2.StartDaemon("lacp"); err != nil {
+		t.Fatal(err)
+	}
+	s2.Step(now.Add(30 * time.Second))
+	if !slices.Contains(f.actions, "start cer-lacpd.service") {
+		t.Fatalf("not started again: %v", f.actions)
+	}
+	if _, err := s2.StartDaemon("lacp"); err == nil {
+		t.Fatal("starting a daemon that is not stopped must say so")
+	}
+	if len(*notes) != 1 { // only the missing cer-syslogd
+		t.Fatalf("notes %v", *notes)
+	}
+}
