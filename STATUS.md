@@ -347,8 +347,13 @@ Last updated: 2026-10-03 (evening).
   tables, Active/Received/Accepted per table, capabilities, policies, last error, counters), `clear bgp neighbor
   [<ip>] [soft|soft-inbound] [instance <n>]`, `show route receive-protocol|advertising-protocol bgp <ip>
   [<prefix>] [detail]`, `show route hidden` (paths rejected by import policy or a loop check). Unit-tested.
-- Next: step 4, commit warnings for changes that reset a session ("this change resets the session"); step 5 BFD
-  client; step 6 relay of BGP sessions to routed ports of other members.
+- Step 4 done 2026-10-04: commit check warns per neighbour "bgp neighbor X: this change resets the session
+  (<settings>)" for peer-as, local-address, local-as, authentication-key, type, family, multihop, hold-time,
+  passive, graceful-restart (spec updated: graceful-restart is in the OPEN), and for a changed autonomous-system or
+  router-id (every session of the instance); model.ChangeWarnings(active, candidate), called by the commit engine.
+  Route-reflector client status changes in place (no reset).
+- Next: step 5 BFD client for BGP (placement as OSPF; BGP connects only after BFD is up once it was configured);
+  step 6 relay of BGP sessions to routed ports of other members.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

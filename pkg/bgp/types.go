@@ -72,8 +72,8 @@ type Neighbor struct {
 
 // resetKeys are the settings whose change needs a new session.
 func (n *Neighbor) resetKey() string {
-	return fmt.Sprintf("%d|%d|%v|%d|%v|%v|%v|%v|%d|%q|%v|%d", n.PeerAS, n.LocalAS, n.Internal, n.HoldTime, n.Passive,
-		n.Families, n.LocalAddress, n.GracefulRestart, n.TTL, n.AuthKey, n.Cluster.IsValid(), n.RestartTime)
+	return fmt.Sprintf("%d|%d|%v|%d|%v|%v|%v|%v|%d|%q|%d", n.PeerAS, n.LocalAS, n.Internal, n.HoldTime, n.Passive,
+		n.Families, n.LocalAddress, n.GracefulRestart, n.TTL, n.AuthKey, n.RestartTime)
 }
 
 func (n *Neighbor) carries(f Family) bool { return slices.Contains(n.Families, f) }

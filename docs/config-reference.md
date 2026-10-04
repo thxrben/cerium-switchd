@@ -2042,8 +2042,9 @@ Neighbours are configured in groups; a neighbour inherits everything from its gr
 
 **Hitless reconfiguration**: adding or removing a neighbour never affects the others. A changed policy is applied
 with route refresh (soft reconfiguration) without resetting the session. Changes that need a new session
-(`peer-as`, `local-address`, `local-as`, `authentication-key`, `type`, `family`, `multihop`, `hold-time`, `passive`)
-reset only that neighbour, and `commit check` names it (`warning: bgp neighbor 10.1.1.2: this change resets the
+(`peer-as`, `local-address`, `local-as`, `authentication-key`, `type`, `family`, `multihop`, `hold-time`, `passive`,
+`graceful-restart`: they are announced in the OPEN) reset only that neighbour; a changed `autonomous-system` or
+`router-id` resets every session of the instance, and `commit check` names it (`warning: bgp neighbor 10.1.1.2: this change resets the
 session`).
 
 Operational commands:

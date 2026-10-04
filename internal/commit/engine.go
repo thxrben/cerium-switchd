@@ -652,6 +652,12 @@ var forbidden = [][]string{{"system", "login"}, {"system", "services"}, {"virtua
 // Caller must not hold e.mu.
 func (s *Session) check(cand, active *config.Tree) (*model.Config, model.Issues) {
 	cfg, issues := model.Build(cand, s.e.o.Inventory)
+	if active != nil {
+		// What the commit does to running sessions (reference 5.14).
+		if old, oldIssues := model.Build(active, nil); !oldIssues.HasErrors() {
+			issues = append(issues, model.ChangeWarnings(old, cfg)...)
+		}
+	}
 	for _, chk := range s.e.o.Checks {
 		issues = append(issues, chk(cfg)...)
 	}

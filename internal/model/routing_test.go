@@ -285,3 +285,47 @@ set protocols bgp group up bfd-liveness-detection minimum-interval 60
 		}
 	}
 }
+
+// Changes that need a new BGP session are named at commit check; others
+// (policies, description, multipath) are not.
+func TestBGPChangeWarnings(t *testing.T) {
+	base := routingBase + `
+set protocols bgp group ext type external
+set protocols bgp group ext peer-as 65001
+set protocols bgp group ext neighbor 10.1.1.2
+set protocols bgp group ext neighbor 10.1.1.3 peer-as 65003
+`
+	old, is := build(t, base, nil)
+	if is.HasErrors() {
+		t.Fatalf("base:\n%s", is)
+	}
+	cases := []struct {
+		change string
+		want   string // "" no warning
+	}{
+		{"set protocols bgp group ext neighbor 10.1.1.2 description x", ""},
+		{"set protocols bgp group ext multipath", ""},
+		{"set protocols bgp group ext neighbor 10.1.1.2 hold-time 30", "neighbor 10.1.1.2: this change resets the session (hold-time)"},
+		{"set protocols bgp group ext neighbor 10.1.1.2 authentication-key k\nset protocols bgp group ext neighbor 10.1.1.2 passive",
+			"(authentication-key, passive)"},
+		{"set protocols bgp group ext peer-as 65009", "neighbor 10.1.1.2: this change resets the session (peer-as)"},
+		{"set routing-options autonomous-system 65010", "resets every BGP session"},
+		{"set protocols bgp group ext neighbor 10.1.1.9", ""}, // a new neighbour
+	}
+	for _, c := range cases {
+		cand, is := build(t, base+c.change+"\n", nil)
+		if is.HasErrors() {
+			t.Fatalf("%q:\n%s", c.change, is)
+		}
+		got := ChangeWarnings(old, cand).String()
+		switch {
+		case c.want == "" && got != "":
+			t.Errorf("%q: unexpected %s", c.change, got)
+		case c.want != "" && !strings.Contains(got, c.want):
+			t.Errorf("%q: want %q, got %q", c.change, c.want, got)
+		}
+		if c.change == "set protocols bgp group ext peer-as 65009" && strings.Contains(got, "10.1.1.3") {
+			t.Errorf("10.1.1.3 has its own peer-as: %s", got)
+		}
+	}
+}
