@@ -223,8 +223,10 @@ func (c *Consoles) Sync(cfg *model.Config) error {
 		errs = append(errs, err)
 	}
 	raw, _ := json.Marshal(st)
-	if err := hwio.WriteFile(c.StateFile, raw, 0o600); err != nil {
-		errs = append(errs, err)
+	if !hwio.SameContent(c.StateFile, raw) { // an unchanged state is not written again
+		if err := hwio.WriteFile(c.StateFile, raw, 0o600); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

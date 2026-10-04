@@ -364,6 +364,14 @@ Last updated: 2026-10-04 (evening).
 - User reports fixed the same night: Ctrl-C at a question; shell needing `reset`; CLI session not following the
   master; SSH host key changing with the master (now derived from the stack key); "leadership transfer timeout"
   although the switch succeeded; systemd-ssh-generator errors in VMs.
+- physw4 (USB system stick) measured on the user's stack, 9a85ef3: switchd ~7 % CPU (sw1 VM 11 %; standalone 2.7 %),
+  I/O pressure 65 % (config partition: 1.5 writes/s at ~165 ms each). Causes fixed (9dbe77d and the next commit): each
+  stacking link woke every 5 ms (now sleeps until its next timer: 0.18 % instead of 1.49 % for an idle pair here);
+  net.InterfaceByName (dump of all interfaces) every 100 ms per link; state files rewritten unchanged every 30 s
+  (dataplane-owned, l3-owned, accounts, consoles: now only on a change, also in hwio.WriteFileAtomic); rstp.json
+  (changes every second) moved to /run/ceros. Stacking sessions sw1-physw4 drop in bursts (both ends "no frames from
+  the peer" in the same second; at mastership switches and 21:12); cause open: path between physw4 enp1s0f0 and sw1
+  ens3, or physw4 stalling on its disk. Not yet deployed to that stack.
 - Open: `show security macsec connections` Transmit/Receive empty for client ports (ip -j field names); lab tests of
   swap, memory slots, reload, stacking MACsec `mode on`, the relay/host-key fixes on the user's stack.
 

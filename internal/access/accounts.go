@@ -72,6 +72,9 @@ func (m *Manager) load() state {
 
 func (m *Manager) save(st state) error {
 	raw, _ := json.Marshal(st)
+	if hwio.SameContent(m.StateFile, raw) {
+		return nil
+	}
 	tmp := m.StateFile + ".tmp"
 	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err

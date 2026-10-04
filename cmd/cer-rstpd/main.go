@@ -74,7 +74,10 @@ func setup(k *daemonkit.Kit) error {
 		}
 		mu.Unlock()
 	})
-	ctl := stp.New(k.Member, kitStack{k}, k.StateDir, k.Log)
+	// The RSTP copy is for hitless restarts of this daemon while the system
+	// runs: memory (/run), not the disk (written every second; on a USB
+	// system stick that was the largest load on the disk).
+	ctl := stp.New(k.Member, kitStack{k}, k.SocketDir, k.Log)
 	ctl.Alarm = func(text string) {
 		go func() { // never under the controller's lock
 			k.Notify(fmt.Sprintf("member %d: %s", k.Member, text))

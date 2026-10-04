@@ -1,6 +1,7 @@
 package hwio
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"io/fs"
@@ -233,10 +234,21 @@ func (g *File) Close() error {
 	return err
 }
 
+// SameContent reports whether the file at path holds exactly data (a write
+// that changes nothing is skipped: on slow system disks, e.g. USB sticks,
+// every write and its journal commit costs a sixth of a second).
+func SameContent(path string, data []byte) bool {
+	have, err := ReadFile(path)
+	return err == nil && bytes.Equal(have, data)
+}
+
 // WriteFileAtomic writes data to path through a synced temporary file
 // (path.tmp) and a rename, then syncs the directory: after a crash the
 // file is either the old or the new one. One deadline covers all of it.
 func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	if SameContent(path, data) {
+		return nil
+	}
 	return fileErr("write", path, func() error {
 		tmp := path + ".tmp"
 		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)

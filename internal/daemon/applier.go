@@ -108,6 +108,9 @@ func (a *kernelApplier) saveOwned(s *dataplane.State) error {
 	}
 	sort.Strings(names)
 	raw, _ := json.Marshal(names)
+	if hwio.SameContent(a.stateFile, raw) {
+		return nil
+	}
 	tmp := a.stateFile + ".tmp"
 	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err

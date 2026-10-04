@@ -61,6 +61,9 @@ func (k *Netlink) saveL3(st l3Owned) error {
 		return nil
 	}
 	raw, _ := json.Marshal(st)
+	if hwio.SameContent(k.l3StatePath(), raw) {
+		return nil
+	}
 	tmp := k.l3StatePath() + ".tmp"
 	if err := hwio.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
