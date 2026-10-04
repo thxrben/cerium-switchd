@@ -111,6 +111,9 @@ func TestInvalidConfigs(t *testing.T) {
 		{"snooping unknown port", "set protocols igmp-snooping interface 1/0/9 immediate-leave", "1/0/9 is not configured"},
 		{"unknown ae", "set interfaces 1/0/5 ether-options 802.3ad ae9", "ae9 is not configured"},
 		{"memory percent over 100", "set system memory allocation bgp-ipv4 percent 70\nset system memory allocation mac percent 40", "add up to 110 %"},
+		{"macsec unknown ca", "set security macsec interfaces 1/0/3 connectivity-association nosuch", "connectivity-association nosuch is not configured"},
+		{"macsec short cak", "set security macsec connectivity-association ca1 pre-shared-key ckn 01\nset security macsec connectivity-association ca1 pre-shared-key cak 0123456789abcdef0123456789abcdef", "needs a 256-bit cak"},
+		{"macsec bundle member", "set security macsec connectivity-association ca1 cipher-suite gcm-aes-128\nset security macsec connectivity-association ca1 pre-shared-key ckn 01\nset security macsec connectivity-association ca1 pre-shared-key cak 0123456789abcdef0123456789abcdef\nset interfaces 1/0/5 ether-options 802.3ad ae1\nset security macsec interfaces 1/0/5 connectivity-association ca1", "MACsec on bundle members is not supported yet"},
 		{"web certificate without key", "set system services web-management certificate /etc/c.pem", "certificate and key must be given together"},
 		{"member with family", "set interfaces 1/0/1 unit 0 family ethernet-switching", "cannot have 'unit 0 family"},
 		{"ae ether-options", "set interfaces ae1 ether-options flow-control", "only valid on physical ports"},
@@ -228,6 +231,8 @@ func TestInventoryChecks(t *testing.T) {
 // stacking port (reference 5.2, stack MTU).
 func TestStackMTU(t *testing.T) {
 	inv := fakeInv{"1/0/1": 9216, "1/0/2": 9216, "1/0/3": 9216, "1/0/4": 9216, "1/9/0": 9000, "1/9/8": -3, "1/9/9": -1}
+	// Without MACsec on the stacking links: 58 bytes on top.
+	valid := valid + "set virtual-chassis macsec disable\n"
 	// Hosts with MTU 9000 (mtu 9014) and the reference config's 9000: fine
 	// with stacking NICs limited to 9216-byte frames.
 	_, issues := build(t, valid+"set interfaces 1/0/3 mtu 9014\n", inv)
@@ -259,6 +264,10 @@ func TestStackMTU(t *testing.T) {
 	// 9158 is the limit.
 	if _, issues := build(t, valid+"set interfaces 1/0/3 mtu 9158\n", inv); issues.HasErrors() {
 		t.Errorf("mtu 9158 must fit:\n%s", issues)
+	}
+	// With MACsec (the default) 32 more: 9126 is the limit.
+	if _, issues := build(t, strings.Replace(valid, "set virtual-chassis macsec disable\n", "", 1)+"set interfaces 1/0/3 mtu 9127\n", inv); !strings.Contains(issues.String(), "the largest mtu the stack can carry is 9126") {
+		t.Errorf("with MACsec:\n%s", issues)
 	}
 	// A standalone switch has no stack tunnels.
 	one := "set interfaces 1/0/3 mtu 9216\nset interfaces 1/0/3 unit 0 family ethernet-switching vlan members v\nset vlans v vlan-id 5\n"

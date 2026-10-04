@@ -43,6 +43,9 @@ type Config struct {
 	// instance (nil: none); Policies is policy-options (never nil).
 	Routing  *Routing
 	Policies *Policies
+	// MACsec is security macsec and virtual-chassis macsec (reference
+	// 5.15, 5.2).
+	MACsec MACsec
 }
 
 type System struct {
@@ -193,8 +196,9 @@ const EthHeader = 14
 
 // The stack tunnels (reference 5.2): a frame between members needs
 // StackOverhead bytes more on a stacking link (tunnel 50, the VLAN tag
-// inside the tunnel 4, one more tag of the frame 4). switchd sets stacking
-// ports to their NIC maximum, at most MaxStackPortMTU (kernel MTU).
+// inside the tunnel 4, one more tag of the frame 4), without MACsec
+// (Config.StackOverheadOf adds it). switchd sets stacking ports to their
+// NIC maximum, at most MaxStackPortMTU (kernel MTU).
 const (
 	StackOverhead   = 58
 	MaxStackPortMTU = 16044
@@ -788,6 +792,7 @@ func (b *builder) build() {
 		}
 		c.Analyzers[a.Name] = a
 	}
+	b.buildMACsec()
 }
 
 func (b *builder) buildSwitching(i *Interface, e *config.Node) {

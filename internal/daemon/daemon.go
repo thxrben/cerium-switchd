@@ -540,7 +540,7 @@ func Run(ctx context.Context, o Options) error {
 					return 0
 				}
 				mtu, _ := cfg.MaxDataMTU()
-				return mtu + model.StackOverhead
+				return mtu + cfg.StackOverheadOf()
 			}, log)
 		}
 	}

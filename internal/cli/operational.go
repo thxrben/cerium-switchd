@@ -977,13 +977,15 @@ func (sh *Shell) showStackMTU(c *call) error {
 	}
 	st.Ports = slices.DeleteFunc(st.Ports, func(p StackMTUPort) bool { return !c.shows(p.Port) })
 	sort.SliceStable(st.Ports, func(i, j int) bool { return config.NaturalLess(st.Ports[i].Port, st.Ports[j].Port) })
-	need := st.DataMTU + model.StackOverhead
+	cfg, _ := model.Build(sh.env.Engine.Active(), nil)
+	over := cfg.StackOverheadOf()
+	need := st.DataMTU + over
 	fmt.Fprintf(c.out, "Frame sizes including the Ethernet header, without VLAN tags (reference 1.3)\n")
 	fmt.Fprintf(c.out, "  Largest data mtu in the stack:  %d (%s; hosts up to MTU %d)\n", st.DataMTU, st.Where, st.DataMTU-model.EthHeader)
 	if !st.Stack {
 		c.out.WriteString("  No other switch member: no stack tunnels.\n")
 	} else {
-		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: tunnel 50, VLAN tags 8)\n", need, model.StackOverhead)
+		fmt.Fprintf(c.out, "  Needed on the stacking links:   %d (+%d: %s)\n", need, over, overheadParts(over))
 	}
 	if len(st.Ports) == 0 {
 		c.out.WriteString("\nNo stacking ports.\n")
@@ -996,7 +998,7 @@ func (sh *Shell) showStackMTU(c *call) error {
 		}
 	}
 	if limit > 0 {
-		carry := min(limit-model.StackOverhead, 16000) // the largest configurable mtu
+		carry := min(limit-over, 16000) // the largest configurable mtu
 		fmt.Fprintf(c.out, "  The stacking ports allow data mtu up to %d (hosts up to MTU %d)\n", carry, carry-model.EthHeader)
 	}
 	fmt.Fprintf(c.out, "\n  %-8s %-7s %-8s %-9s %s\n", "Port", "MTU", "Maximum", "Verified", "Status")
@@ -1606,7 +1608,7 @@ func (sh *Shell) showLimits(c *call) error {
 	}
 	line("Largest mtu configured", fmt.Sprintf("%d (%s; hosts up to MTU %d)", mtu, orDash(where), mtu-model.EthHeader))
 	if len(cfg.SwitchMembers()) > 1 {
-		line("Added by the stack tunnels", fmt.Sprintf("%d bytes (tunnel 50, VLAN tags 8)", model.StackOverhead))
+		line("Added by the stack tunnels", fmt.Sprintf("%d bytes (%s)", cfg.StackOverheadOf(), overheadParts(cfg.StackOverheadOf())))
 		limit := 0
 		for _, p := range stack.Ports {
 			if p.MaxMTU > 0 && (limit == 0 || p.MaxMTU < limit) {
@@ -1614,7 +1616,7 @@ func (sh *Shell) showLimits(c *call) error {
 			}
 		}
 		if limit > 0 {
-			carry := min(limit-model.StackOverhead, schema.MaxMTU)
+			carry := min(limit-cfg.StackOverheadOf(), schema.MaxMTU)
 			line("Largest mtu the stack carries", fmt.Sprintf("%d (hosts up to MTU %d; 'show virtual-chassis mtu')", carry, carry-model.EthHeader))
 		}
 	} else {
@@ -1791,4 +1793,12 @@ func (sh *Shell) showRouteInstances(c *call) error {
 		fmt.Fprintf(c.out, "%-16s %-16s %-8s %s\n", name, typ, count(name), orDash(strings.Join(in.Units, ", ")))
 	}
 	return nil
+}
+
+// overheadParts names what a stacking link adds to a frame (reference 5.2).
+func overheadParts(n int) string {
+	if n > model.StackOverhead {
+		return "tunnel 50, VLAN tags 8, MACsec 32"
+	}
+	return "tunnel 50, VLAN tags 8"
 }

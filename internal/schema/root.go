@@ -183,6 +183,9 @@ func build() *Node {
 
 	stack := C("virtual-chassis", "Stack members and stacking (like a Junos Virtual Chassis)",
 		bfd("bfd", "BFD on stacking ports (IP-less)", "100"),
+		C("macsec", "MACsec on the stacking links (on by default)",
+			F("disable", "Do not encrypt the stacking links"),
+		),
 		L("member", "Stack member", MemberID,
 			V("host-name", "Host name of this member", Hostname),
 			VD("mastership-priority", "Priority for leader election (higher wins)", Uint("<priority>", 0, 255), "128"),
@@ -380,8 +383,39 @@ func build() *Node {
 	vlans.Wrapped = true
 	instances.Wrapped = true
 
+	hex := func(name string, max int) *Type { return String(name, max, `^([0-9a-fA-F]{2})+$`) }
+	security := C("security", "Security",
+		C("macsec", "MACsec (IEEE 802.1AE) on ports, keys by MKA",
+			L("connectivity-association", "A connectivity association (CAK and settings)", Identifier,
+				VD("security-mode", "How the keys are agreed", Enum(
+					E("static-cak", "Pre-shared CAK, MKA derives the session keys"),
+				), "static-cak"),
+				VD("cipher-suite", "Encryption", Enum(
+					E("gcm-aes-128", "GCM-AES-128"),
+					E("gcm-aes-256", "GCM-AES-256"),
+					E("gcm-aes-xpn-128", "GCM-AES-XPN-128 (64-bit packet numbers)"),
+					E("gcm-aes-xpn-256", "GCM-AES-XPN-256 (64-bit packet numbers)"),
+				), "gcm-aes-xpn-256"),
+				C("pre-shared-key", "The connectivity association key and its name",
+					V("ckn", "Key name (hex)", hex("<hex>", 64)),
+					V("cak", "Key (hex: 32 digits for 128-bit, 64 for 256-bit suites)", hex("<hex>", 64)),
+				),
+				C("mka", "MACsec Key Agreement",
+					VD("key-server-priority", "Key server priority (lower is preferred)", Uint("<priority>", 0, 255), "16"),
+					VD("transmit-interval", "MKA hello interval", Uint("<ms>", 500, 6000), "2000"),
+				),
+				C("replay-protect", "Replay protection",
+					VD("replay-window-size", "Frames that may arrive out of order", Uint("<packets>", 0, 65535), "0"),
+				),
+			),
+			L("interfaces", "Ports secured with MACsec", Interface,
+				V("connectivity-association", "The connectivity association", Identifier),
+			),
+		),
+	)
+
 	return C("", "",
-		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd, PolicyOptions(),
+		system, stack, ifRange, iface, vlans, protocols, mclag, switchOpts, routing, instances, fwd, PolicyOptions(), security,
 	)
 }
 

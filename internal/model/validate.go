@@ -125,6 +125,7 @@ func (b *builder) validate() {
 	b.validateSnooping()
 	b.validateAnalyzers()
 	b.validateRSTP()
+	b.validateMACsec()
 
 	b.checkWeb()
 	b.checkPlainPorts()
@@ -335,12 +336,13 @@ func (b *builder) validateStackMTU() {
 			if !p.StackPort || p.MaxMTU <= 0 {
 				continue
 			}
-			if max := min(p.MaxMTU, MaxStackPortMTU) + EthHeader; mtu+StackOverhead > max {
+			over := b.cfg.StackOverheadOf()
+			if max := min(p.MaxMTU, MaxStackPortMTU) + EthHeader; mtu+over > max {
 				b.errorf(where, "frames of %d bytes need %d on the stacking links, but stacking port %s of member %d carries at most %d; the largest mtu the stack can carry is %d",
-					mtu, mtu+StackOverhead, name, m, max, max-StackOverhead)
-			} else if p.PathMTU > 0 && mtu+StackOverhead > p.PathMTU {
+					mtu, mtu+over, name, m, max, max-over)
+			} else if p.PathMTU > 0 && mtu+over > p.PathMTU {
 				b.warnf(where, "frames of %d bytes need %d on the stacking links, but the cable at stacking port %s of member %d carries only %d (verified with probe frames); larger frames are lost. Check media converters, bridges and switches in between, or lower the mtu to %d",
-					mtu, mtu+StackOverhead, name, m, p.PathMTU, p.PathMTU-StackOverhead)
+					mtu, mtu+over, name, m, p.PathMTU, p.PathMTU-over)
 			}
 		}
 	}

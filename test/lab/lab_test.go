@@ -391,7 +391,8 @@ func TestStaticLAG(t *testing.T) {
 
 // stackJumbo returns the largest data mtu (frame size) the lab's stack can
 // carry, at most 9014, and the host MTU that fits it: the lab's stacking
-// NICs carry frames of 9014 and the tunnels need 58 more (reference 5.2),
+// NICs carry frames of 9014 and the tunnels need 58 more (90 with MACsec;
+// reference 5.2; read from the switches),
 // so it is 8956 / 8942 there and 9014 / 9000 where the stacking NICs are
 // larger.
 func stackJumbo(t *testing.T) (mtu, host int) {

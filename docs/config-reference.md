@@ -566,6 +566,7 @@ vlans {
 | `show system services web-management` | Whether the REST API runs (on which member, address and port), the certificate (its file, or `temporary self-signed`, generated when), its SHA-256 fingerprint and public-key pin (`sha256//…`), and the uploaded bundle (version, size, uploaded by whom and when). |
 | `show system memory [member <id>\|all-members]` | How the member's memory is divided (`system memory`): RAM, the fixed part (kernel, NIC rings, daemons, management reserve, margin), the slots (size, count), the system area, the update slots, and per purpose its slots, capacity, entries now and how full it is; then the dynamic area and what is in use now (per daemon and the kernel's tables). Without slots it says so and shows the use. When the configuration was changed since the last start or reload, the configured values are shown next to the applied ones. |
 | `request system memory setup` | Interactive (super-user): shows this stack's slots (the smallest member's), asks per purpose for a percentage or a number of slots, shows the resulting capacities after each answer, and writes `system memory` into the candidate configuration; it commits nothing. `?` at a question lists the purposes with their bytes per entry; an empty answer keeps the current value; `-` removes a purpose. |
+| `show security macsec connections\|statistics [interface <if>]` | MACsec on the secured ports and stacking links: state, keys in use and counters (5.15). |
 | `show system uptime` | Current time, when the system booted, when switchd started, when and by whom the configuration was last changed, load averages. |
 | `show system commit`, `show system rollback …` | See 4.1. |
 | `show log`, `show system syslog`, `show version` | Recent log messages, remote syslog state, software version (with every member's two system slots, read from the disks: version, active or backup, `unreadable: …` when a slot's partition cannot be read, and a missing or damaged boot state). |
@@ -1267,7 +1268,9 @@ configured; they follow from the member list and the stacking cables.
     fragmented. The MTU rule below makes sure that this never happens to a frame a data port accepted.
 * **Stack MTU.** A frame between members carries 58 bytes on top of its own size on the stacking link: the tunnel
   (outer Ethernet 14, IPv4 20, UDP 8, VXLAN 8 = 50), the VLAN tag inside the tunnel (4) and one more VLAN tag of the
-  frame itself (4: a QinQ customer tag or a host's own tag, which every port also accepts, 1.3).
+  frame itself (4: a QinQ customer tag or a host's own tag, which every port also accepts, 1.3). With MACsec on the
+  stacking links (the default, `virtual-chassis macsec`) 32 more: **90 bytes** (SecTAG with SCI 16, ICV 16). The
+  numbers below are those without MACsec; with it, every "58" is "90".
   * switchd sets every stacking port to the largest MTU its NIC supports (up to a frame size of 16058) when the port is
     designated, and never changes it because of a commit (an MTU change can restart a link). Ports designated by an
     older version are set once when the new version starts.
@@ -1300,6 +1303,28 @@ configured intervals (they announce theirs in the handshake), so a slow member i
 * BFD runs with real-time scheduling priority, so CPU load does not cause false detections.
 * Values below 100 ms can still cause false detections on small ARM boards. A false detection makes stacking paths
   re-route, but never drops data traffic by itself.
+
+#### `virtual-chassis macsec { disable; }`
+**Stacking links are encrypted with MACsec by default** (IEEE 802.1AE, GCM-AES-XPN-256): the stack tunnels, and
+with them every frame of the clients that crosses a stacking link, cannot be read or changed on the cable. The
+stacking protocol itself (membership, Raft, the key exchange) is TLS already and stays outside MACsec.
+* **Keys.** No configuration and no MKA: the two members of a link agree on the keys over the stacking protocol's
+  mutually authenticated TLS channel. Each member makes the key of its own transmit direction (a random 256-bit SAK,
+  a random salt) and hands it to the neighbour; a member that joins gets its links' keys right after the join (it
+  is authenticated by its stack certificate then). With 64-bit packet numbers (XPN) a key never runs out; it is
+  renewed **every hour** and whenever a member leaves the stack. A new key is installed for receiving on the
+  neighbour before it is used for sending, so the change loses no frame.
+* **Switching a link over** (at the join, after `disable` is removed, or after a member restarts) takes the link out
+  of the stack tunnels for a moment: the stack routes around it where another path exists (a ring), else that
+  member pair loses frames for well under a second.
+* Each stacking port gets a MACsec device (`ms<port>`, in the stack's hidden routing instance); frames without
+  valid protection from the neighbour are dropped (`validate strict`) and counted. NICs that encrypt MACsec in
+  hardware (`show system offload`: `macsec-hw-offload`) are used for it, others encrypt in software (AES-NI on x86;
+  `show system limits` counts the ports that can offload).
+* **Mixed versions**: a link to a member whose version has no MACsec stays unencrypted (both ends must support it);
+  `show security macsec connections` shows it as `plain (neighbour without MACsec)`, and a Minor alarm names it.
+* `disable`: the stacking links are not encrypted (the stack MTU overhead is 58 then). A change applies one link at
+  a time.
 
 #### `virtual-chassis member <1-16> { … }`
 Declares a stack member and its per-member settings. Configuration for a member that has not joined yet is kept and
@@ -2273,6 +2298,55 @@ inet.0: 7 destinations, 9 routes (7 active, 0 holddown, 1 hidden)
 
 ---
 
+### 5.15 security macsec
+
+MACsec (IEEE 802.1AE) on switch ports and routed ports, with keys agreed by MKA (IEEE 802.1X-2010) from a pre-shared
+key, in Junos syntax. The stacking links have their own, automatic MACsec (`virtual-chassis macsec`, 5.2).
+
+```
+security {
+    macsec {
+        connectivity-association <ca> {
+            security-mode static-cak;
+            cipher-suite gcm-aes-128 | gcm-aes-256 | gcm-aes-xpn-128 | gcm-aes-xpn-256;
+            pre-shared-key { ckn <hex>; cak <hex>; }
+            mka { key-server-priority <0-255>; transmit-interval <ms>; }
+            replay-protect { replay-window-size <packets>; }
+        }
+        interfaces <interface> { connectivity-association <ca>; }
+    }
+}
+```
+* `security-mode static-cak` (the only mode, and the default): the connectivity association key (CAK) and its name
+  (CKN) are configured on both ends; MKA derives and renews the session keys from them.
+* `cipher-suite`: default `gcm-aes-xpn-256` (Junos: `gcm-aes-128`). The XPN suites have 64-bit packet numbers; with
+  the others MKA renews the key before the 32-bit packet number runs out. E: an XPN suite where the peer cannot do it
+  is not detectable in advance; MKA then does not secure the link (shown as such).
+* `pre-shared-key`: `ckn` 2..64 hex digits (an even number), `cak` 32 hex digits (128-bit suites) or 64 (256-bit
+  suites; E otherwise). The CAK is a secret like the other keys of the configuration.
+* `mka key-server-priority` (default 16: lower is preferred), `transmit-interval` (MKA hellos, default 2000 ms,
+  500..6000).
+* `replay-protect replay-window-size` (default 0: frames must arrive in order; up to 65535).
+* `interfaces <interface>`: a physical port of any member (a switch port, a routed port or a port with units). The
+  port's traffic is carried by its MACsec device: **nothing passes until MKA has secured the link** (must-secure),
+  so both ends must be configured. LACP, LLDP and the stacking protocol are sent unprotected (as on Junos without
+  `exclude-protocol`, LLDP is still readable). E: a stacking port (5.2 has its own), a management port, a member port
+  of a bundle (`ae`; not yet supported), a CA that is not configured.
+* MTU: the port carries 32 bytes more than its `mtu` (SecTAG and ICV); E when that exceeds the NIC's maximum (1.7).
+* A change of a CA renegotiates the links that use it (a moment without traffic); adding or removing MACsec on a
+  port interrupts its traffic for a moment.
+* MKA runs in `wpa_supplicant` (one per port, started and watched by switchd); `show security macsec connections`
+  shows its state.
+
+Operational commands:
+* `show security macsec connections [interface <if>]`: per secured interface (stacking ports too) the CA (or
+  `stack`), the cipher suite, the state (`secured`, `negotiating`, `failed: <reason>`, `plain (neighbour without
+  MACsec)`), the transmit SCI and association number, the receive SCs, hardware offload or software, and when the
+  current key was installed.
+* `show security macsec statistics [interface <if>]`: the kernel's counters per interface: packets and bytes
+  protected and validated, and the drops (no SA, bad tag, invalid, late, not valid).
+* Both cover every member (the stack is one switch).
+
 ## 6. Frame handling summary
 
 Per-port behaviour for frames of VLAN *V*, where *N* is the native VLAN:
@@ -2564,6 +2638,8 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `virtual-chassis bfd` | container |  |  | BFD on stacking ports (IP-less) |
 | `virtual-chassis bfd minimum-interval` | leaf | &lt;ms&gt; 50..10000 | 100 | Transmit/receive interval in milliseconds |
 | `virtual-chassis bfd multiplier` | leaf | &lt;count&gt; 2..255 | 3 | Missed packets before the session goes down |
+| `virtual-chassis macsec` | container |  |  | MACsec on the stacking links (on by default) |
+| `virtual-chassis macsec disable` | flag |  |  | Do not encrypt the stacking links |
 | `virtual-chassis member <member-id>` | list | &lt;member-id&gt; 1..16 |  | Stack member |
 | `virtual-chassis member <member-id> host-name` | leaf | &lt;hostname&gt; |  | Host name of this member |
 | `virtual-chassis member <member-id> mastership-priority` | leaf | &lt;priority&gt; 0..255 | 128 | Priority for leader election (higher wins) |
@@ -3030,4 +3106,19 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `policy-options policy-statement <name> then` | container |  |  | Actions for routes no term terminated |
 | `policy-options policy-statement <name> then accept` | flag (excl. flow) |  |  | Accept |
 | `policy-options policy-statement <name> then reject` | flag (excl. flow) |  |  | Reject |
+| `security` | container |  |  | Security |
+| `security macsec` | container |  |  | MACsec (IEEE 802.1AE) on ports, keys by MKA |
+| `security macsec connectivity-association <name>` | list | &lt;name&gt; |  | A connectivity association (CAK and settings) |
+| `security macsec connectivity-association <name> security-mode` | leaf | static-cak | static-cak | How the keys are agreed |
+| `security macsec connectivity-association <name> cipher-suite` | leaf | gcm-aes-128 \\| gcm-aes-256 \\| gcm-aes-xpn-128 \\| gcm-aes-xpn-256 | gcm-aes-xpn-256 | Encryption |
+| `security macsec connectivity-association <name> pre-shared-key` | container |  |  | The connectivity association key and its name |
+| `security macsec connectivity-association <name> pre-shared-key ckn` | leaf | &lt;hex&gt; |  | Key name (hex) |
+| `security macsec connectivity-association <name> pre-shared-key cak` | leaf | &lt;hex&gt; |  | Key (hex: 32 digits for 128-bit, 64 for 256-bit suites) |
+| `security macsec connectivity-association <name> mka` | container |  |  | MACsec Key Agreement |
+| `security macsec connectivity-association <name> mka key-server-priority` | leaf | &lt;priority&gt; 0..255 | 16 | Key server priority (lower is preferred) |
+| `security macsec connectivity-association <name> mka transmit-interval` | leaf | &lt;ms&gt; 500..6000 | 2000 | MKA hello interval |
+| `security macsec connectivity-association <name> replay-protect` | container |  |  | Replay protection |
+| `security macsec connectivity-association <name> replay-protect replay-window-size` | leaf | &lt;packets&gt; 0..65535 | 0 | Frames that may arrive out of order |
+| `security macsec interfaces <interface-name>` | list | &lt;interface-name&gt; |  | Ports secured with MACsec |
+| `security macsec interfaces <interface-name> connectivity-association` | leaf | &lt;name&gt; |  | The connectivity association |
 <!-- END GENERATED STATEMENT INDEX -->

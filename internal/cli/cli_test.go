@@ -1071,8 +1071,8 @@ func TestShowStackMTU(t *testing.T) {
 	ts.sh.env.Ops = &fakeOps{}
 	contains(t, ts.ok("show virtual-chassis mtu"),
 		"Largest data mtu in the stack:  9014 (vlans storage mtu; hosts up to MTU 9000)",
-		"Needed on the stacking links:   9072 (+58: tunnel 50, VLAN tags 8)",
-		"The stacking ports allow data mtu up to 8992 (hosts up to MTU 8978)",
+		"Needed on the stacking links:   9104 (+90: tunnel 50, VLAN tags 8, MACsec 32)",
+		"The stacking ports allow data mtu up to 8960 (hosts up to MTU 8946)",
 		"  1/5/0    9216    9216     9216      ok",
 		"  1/5/1    1514    16058    -         too small (set to the maximum when switchd starts)",
 		"  1/5/2    9000    9050     -         too small: the NIC carries at most 9050",
