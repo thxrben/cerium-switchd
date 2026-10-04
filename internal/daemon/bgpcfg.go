@@ -1,0 +1,104 @@
+package daemon
+
+import (
+	"net/netip"
+	"slices"
+
+	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/bgp"
+)
+
+// bgpConfig is cer-bgpd's configuration (reference 5.14): every BGP
+// instance with its neighbours' effective settings.
+func bgpConfig(cfg *model.Config) bgpd.Config {
+	c := bgpd.Config{Policies: cfg.Policies}
+	for _, r := range cfg.AllRouting() {
+		if r.BGP == nil || r.BGP.Disabled || r.AS == 0 {
+			continue
+		}
+		in := bgpd.Instance{Name: r.Instance, VRF: r.Instance, AS: r.AS, RouterID: cfg.RouterID(r)}
+		for _, g := range sortedKeysOf(r.BGP.Groups) {
+			grp := r.BGP.Groups[g]
+			addrs := make([]netip.Addr, 0, len(grp.Neighbors))
+			for a := range grp.Neighbors {
+				addrs = append(addrs, a)
+			}
+			slices.SortFunc(addrs, netip.Addr.Compare)
+			for _, a := range addrs {
+				in.Neighbors = append(in.Neighbors, bgpNeighbor(cfg, r.Instance, grp.Neighbors[a]))
+			}
+		}
+		c.Instances = append(c.Instances, in)
+	}
+	return c
+}
+
+func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpd.Neighbor {
+	n := bgp.Neighbor{Addr: m.Addr, Group: m.Group, PeerAS: m.PeerAS, LocalAS: m.LocalAS, Internal: m.Internal,
+		HoldTime: m.HoldTime, Passive: m.Passive, Cluster: m.Cluster, RemovePrivate: m.RemovePrivate,
+		GracefulRestart: m.GracefulRestart, RestartTime: m.RestartTime, StaleTime: m.StaleTime,
+		Multipath: m.Multipath, MultipleAS: m.MultipleAS, Disabled: m.Disabled,
+		LocalAddress: m.LocalAddress, AuthKey: m.AuthKey}
+	if n.HoldTime < 0 {
+		n.HoldTime = 90
+	}
+	if m.IPv4 {
+		n.Families = append(n.Families, bgp.IPv4Unicast)
+	}
+	if m.IPv6 {
+		n.Families = append(n.Families, bgp.IPv6Unicast)
+	}
+	switch {
+	case m.Multihop && m.TTL > 0:
+		n.TTL = m.TTL
+	case m.Multihop:
+		n.TTL = 64
+	}
+	n.NextHop4, n.NextHop6 = selfAddrs(cfg, instance, m.Addr, m.LocalAddress)
+	return bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export}
+}
+
+// selfAddrs are this switch's IPv4 and IPv6 addresses towards a
+// neighbour, for next hop self in the other family than the session's:
+// those of the unit whose subnet has the neighbour (or that has the local
+// address), stack-wide addresses only.
+func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, v6 netip.Addr) {
+	for _, name := range sortedKeysOf(cfg.L3) {
+		u := cfg.L3[name]
+		if u.Disabled || u.Instance != instance {
+			continue
+		}
+		on := false
+		for _, p := range u.Addrs {
+			if p.Contains(peer) || p.Addr() == local {
+				on = true
+			}
+		}
+		if !on {
+			continue
+		}
+		for _, p := range u.Addrs {
+			if _, perMember := u.AddrMember[p]; perMember || p.Addr().IsLinkLocalUnicast() {
+				continue
+			}
+			if p.Addr().Is4() && !v4.IsValid() {
+				v4 = p.Addr()
+			}
+			if p.Addr().Is6() && !v6.IsValid() {
+				v6 = p.Addr()
+			}
+		}
+		return v4, v6
+	}
+	return v4, v6
+}
+
+func sortedKeysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}

@@ -168,6 +168,7 @@ func (s *Server) FIB(protos map[int]bool) []netdev.Route {
 		return nil
 	}
 	var out []netdev.Route
+	resolved := map[rib.Table]map[netip.Addr][]rib.NextHop{}
 	for _, e := range s.RIB.Lookup(rib.Query{Active: true}) {
 		if e.Active < 0 {
 			continue
@@ -183,7 +184,11 @@ func (s *Server) FIB(protos map[int]bool) []netdev.Route {
 		}
 		nr := netdev.Route{VRF: in.VRF, Prefix: e.Prefix, Discard: r.Discard, Proto: kp}
 		if !r.Discard {
-			for _, h := range r.NextHops {
+			hops := r.NextHops
+			if r.Protocol == rib.BGP {
+				hops = s.resolveAll(e.Table, hops, resolved)
+			}
+			for _, h := range hops {
 				dev := ""
 				if h.Interface != "" {
 					d, ok := in.Devices[h.Interface]
@@ -202,6 +207,51 @@ func (s *Server) FIB(protos map[int]bool) []netdev.Route {
 		out = append(out, nr)
 	}
 	return out
+}
+
+// resolveAll resolves BGP next hops (cache: per table and next hop).
+func (s *Server) resolveAll(t rib.Table, hops []rib.NextHop, cache map[rib.Table]map[netip.Addr][]rib.NextHop) []rib.NextHop {
+	if cache[t] == nil {
+		cache[t] = map[netip.Addr][]rib.NextHop{}
+	}
+	var out []rib.NextHop
+	for _, h := range hops {
+		if h.Interface != "" || !h.Gateway.IsValid() {
+			out = append(out, h)
+			continue
+		}
+		r, ok := cache[t][h.Gateway]
+		if !ok {
+			r = s.resolve(t, h.Gateway)
+			cache[t][h.Gateway] = r
+		}
+		out = append(out, r...)
+	}
+	return out
+}
+
+// resolve finds how a BGP next hop is reached: through the longest
+// matching active route of another protocol (directly connected: the
+// next hop itself on that interface; else that route's next hops). A
+// next hop reached only through BGP, or the switch's own address, is
+// unresolvable (the route is not installed).
+func (s *Server) resolve(t rib.Table, gw netip.Addr) []rib.NextHop {
+	es := s.RIB.Lookup(rib.Query{Tables: []rib.Table{t}, Prefix: netip.PrefixFrom(gw, gw.BitLen()), Active: true})
+	if len(es) == 0 || es[0].Active < 0 {
+		return nil
+	}
+	r := es[0].Routes[es[0].Active]
+	switch {
+	case r.Protocol == rib.BGP || r.Protocol == rib.Local || r.Discard:
+		return nil
+	case r.Protocol == rib.Direct:
+		var out []rib.NextHop
+		for _, h := range r.NextHops {
+			out = append(out, rib.NextHop{Gateway: gw, Interface: h.Interface})
+		}
+		return out
+	}
+	return r.NextHops
 }
 
 // Sync installs the active routes once.

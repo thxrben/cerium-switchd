@@ -147,3 +147,37 @@ func TestPreferenceAcrossSources(t *testing.T) {
 		t.Fatalf("the lease's default route again: %+v", r)
 	}
 }
+
+// BGP next hops are resolved through the routes of other protocols: a
+// connected one directly, one behind OSPF through OSPF's next hops; one
+// reachable only through BGP is not installed.
+func TestBGPNextHopResolution(t *testing.T) {
+	f := &fakeKernel{}
+	now := time.Unix(1000, 0)
+	s := New(f.install, quiet, now)
+	s.SetConfig(&Config{Instances: map[string]Instance{
+		"": {Devices: map[string]string{"irb.10": "irb.10", "1/0/5.0": "eth5"}, Routes: []rib.Route{
+			{Prefix: pfx("10.1.0.0/24"), Protocol: rib.Direct, NextHops: []rib.NextHop{{Interface: "irb.10"}}},
+		}},
+	}})
+	s.SetRoutes(SetRoutes{Protocol: rib.OSPF, Full: true, Routes: []rib.Route{
+		{Prefix: pfx("192.0.2.9/32"), Protocol: rib.OSPF, Preference: rib.PrefOSPF,
+			NextHops: []rib.NextHop{{Gateway: ip("10.5.0.2"), Interface: "1/0/5.0"}, {Gateway: ip("10.1.0.3"), Interface: "irb.10"}}}}})
+	s.SetRoutes(SetRoutes{Protocol: rib.OSPF3, Full: true})
+	s.SetRoutes(SetRoutes{Protocol: rib.BGP, Source: "10.1.0.2", Full: true, Routes: []rib.Route{
+		{Prefix: pfx("203.0.113.0/24"), Protocol: rib.BGP, Preference: rib.PrefBGP, NextHops: []rib.NextHop{{Gateway: ip("10.1.0.2")}}},
+		{Prefix: pfx("198.51.100.0/24"), Protocol: rib.BGP, Preference: rib.PrefBGP, NextHops: []rib.NextHop{{Gateway: ip("192.0.2.9")}}},
+		{Prefix: pfx("192.0.2.200/32"), Protocol: rib.BGP, Preference: rib.PrefBGP, NextHops: []rib.NextHop{{Gateway: ip("10.1.0.2")}}},
+		{Prefix: pfx("100.64.0.0/16"), Protocol: rib.BGP, Preference: rib.PrefBGP, NextHops: []rib.NextHop{{Gateway: ip("192.0.2.200")}}},
+	}})
+	s.Sync(now)
+	if r, ok := route(f, "203.0.113.0/24"); !ok || r.NextHops[0] != ip("10.1.0.2") || r.Devs[0] != "irb.10" {
+		t.Errorf("connected next hop: %+v", r)
+	}
+	if r, ok := route(f, "198.51.100.0/24"); !ok || len(r.NextHops) != 2 || !slices.Contains(r.Devs, "eth5") {
+		t.Errorf("next hop behind OSPF: %+v", r)
+	}
+	if _, ok := route(f, "100.64.0.0/16"); ok {
+		t.Error("a next hop reachable only through BGP must not be installed")
+	}
+}

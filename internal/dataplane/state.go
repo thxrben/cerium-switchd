@@ -182,6 +182,9 @@ type L3 struct {
 	// OSPFDevs are the devices with OSPF neighbours: the protection of the
 	// routed interfaces lets OSPF in there (reference 5.13).
 	OSPFDevs []string
+	// BGPPeers are the configured BGP neighbours: the protection lets
+	// their connections to TCP 179 in (reference 5.14, 1.5).
+	BGPPeers []netip.Addr
 }
 
 // VRF is a routing instance in the kernel.

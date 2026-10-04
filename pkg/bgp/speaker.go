@@ -31,24 +31,26 @@ type Speaker struct {
 	Transport Transport
 	Log       *slog.Logger
 	// OnRoutes receives the whole BGP table after changes (at most every
-	// RoutesDelay): every usable path, ranked.
-	OnRoutes    func([]Route)
+	// RoutesDelay): every usable path, ranked; converged as Converged. It
+	// runs on the event loop and must not block.
+	OnRoutes    func(rs []Route, converged bool)
 	RoutesDelay time.Duration
 
 	events chan func()
 	pol    Policy
 
 	// Owned by the event loop.
-	cfg         Config
-	peers       map[netip.Addr]*peer
-	local       map[netip.Prefix]*Path // originated (exports from the routing table)
-	inactive    map[netip.Prefix]bool  // BGP's route is not the active one there
-	best        map[netip.Prefix]*dest
-	dirty       map[netip.Prefix]bool
-	started     time.Time
-	routesAt    time.Time
-	routesDirty bool
-	clusterIDs  map[netip.Addr]bool
+	cfg           Config
+	peers         map[netip.Addr]*peer
+	local         map[netip.Prefix]*Path // originated (exports from the routing table)
+	inactive      map[netip.Prefix]bool  // BGP's route is not the active one there
+	best          map[netip.Prefix]*dest
+	dirty         map[netip.Prefix]bool
+	started       time.Time
+	routesAt      time.Time
+	routesDirty   bool
+	lastConverged bool
+	clusterIDs    map[netip.Addr]bool
 }
 
 // Route is one usable path of a prefix: Rank 0 for the best path and the
@@ -260,24 +262,26 @@ func (s *Speaker) Accept(c net.Conn) {
 // routing table may then remove what BGP did not send.
 func (s *Speaker) Converged() bool {
 	var ok bool
-	s.call(func() {
-		ok = true
-		if time.Since(s.started) > 3*time.Minute {
-			return
-		}
-		for _, p := range s.peers {
-			if p.n.Disabled {
-				continue
-			}
-			if p.established() && !p.allEOR() {
-				ok = false
-			}
-			if !p.established() && time.Since(s.started) < 30*time.Second && !p.n.Passive {
-				ok = false // give the sessions time to come up
-			}
-		}
-	})
+	s.call(func() { ok = s.converged() })
 	return ok
+}
+
+func (s *Speaker) converged() bool {
+	if time.Since(s.started) > 3*time.Minute {
+		return true
+	}
+	for _, p := range s.peers {
+		if p.n.Disabled {
+			continue
+		}
+		if p.established() && !p.allEOR() {
+			return false
+		}
+		if !p.established() && time.Since(s.started) < 30*time.Second && !p.n.Passive {
+			return false // give the sessions time to come up
+		}
+	}
+	return true
 }
 
 func (s *Speaker) markAll() {
@@ -304,9 +308,12 @@ func (s *Speaker) settle(now time.Time) {
 		}
 		s.routesDirty = true
 	}
+	if c := s.converged(); c != s.lastConverged {
+		s.lastConverged, s.routesDirty = c, true
+	}
 	if s.routesDirty && s.OnRoutes != nil && now.Sub(s.routesAt) >= s.RoutesDelay {
 		s.routesDirty, s.routesAt = false, now
-		s.OnRoutes(s.table())
+		s.OnRoutes(s.table(), s.lastConverged)
 	}
 }
 

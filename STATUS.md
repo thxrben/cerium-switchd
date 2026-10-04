@@ -328,8 +328,23 @@ Last updated: 2026-10-03 (evening).
   route reflection, import policy and hidden, multipath and AS loop, hitless changes, graceful restart, bad peer
   AS), codec round trips. Differences from Junos so far: local-as prepends only the local-as (Junos also the
   global AS unless `private`); IGP metric to the next hop is not compared.
-- Next: step 2, cer-bgpd (Linux sockets with MD5/TTL in the instance VRF, configuration from switchd, policies
-  through internal/policy, routes to cer-ribd and replicated, exports from the RIB).
+- Step 2 done 2026-10-04: **cer-bgpd** (internal/bgpd, cmd/cer-bgpd; supervised unit "bgp", CAP_NET_BIND_SERVICE,
+  stop stage 0 with 10 s). One speaker per instance on the master; config from switchd (bgpcfg.go: effective
+  neighbour settings, hold time 90, multihop TTL 64, next hop self addresses of the other family from the unit
+  facing the neighbour). Linux sockets: dual-stack [::]:179 bound to the instance VRF, TCP MD5 per neighbour on the
+  listener and the dialer (IPv4 neighbours v4-mapped), TTL 1 eBGP / 255 iBGP / multihop, **Multipath TCP off**
+  (Go opens listeners as MPTCP, which has no TCP MD5: found by the MD5 test). Policies through internal/policy
+  (default import accept; default export: BGP routes only, others need `from protocol`); routes to cer-ribd per
+  neighbour source (every path in show route; rank, attributes), Full after End-of-RIB from every neighbour,
+  replicated to the members (bgp-routes); exports every 5 s from cer-ribd's active routes of other protocols.
+  cer-ribd resolves BGP next hops through the longest active non-BGP route (connected: on that interface; behind
+  OSPF/static: its next hops; only through BGP or the own address: not installed). Protection: TCP 179 from the
+  configured neighbours. Status/adj/clear methods (bgp.status, bgp.adj, bgp.clear) for step 3. Tests: daemon
+  against a speaker over loopback (routes per source, import reject = hidden, localpref, static export, default
+  export rejects OSPF, non-master stops), TCP MD5 on real sockets, next-hop resolution. Open: a BGP route with an
+  unresolvable next hop is still "active" in the RIB (only not installed; Junos hides it), import `preference`.
+- Next: step 3, show bgp summary|neighbor|group, clear bgp neighbor, show route receive-protocol|
+  advertising-protocol bgp, show route hidden.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

@@ -124,7 +124,7 @@ type routes struct {
 	rs []Route
 }
 
-func (r *routes) set(rs []Route) {
+func (r *routes) set(rs []Route, _ bool) {
 	r.mu.Lock()
 	r.rs = rs
 	r.mu.Unlock()

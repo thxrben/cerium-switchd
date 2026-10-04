@@ -261,6 +261,11 @@ func Run(ctx context.Context, o Options) error {
 		if !o.DryRun {
 			services.setConfig("cer-ospfd", ospfConfig(cfg, names.Linux))
 		}
+		// BGP (reference 5.14): cer-bgpd runs where configured (the
+		// protocol on the master only).
+		if !o.DryRun {
+			services.setConfig("cer-bgpd", bgpConfig(cfg))
+		}
 	}
 	// The management services run on the master (reference 1.8).
 	mgmt := &mgmtCtl{member: member, log: log, sshd: sshd, dryRun: o.DryRun,

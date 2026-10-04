@@ -275,6 +275,20 @@ func computeL3(cfg *model.Config, m int, names PortNames, s *State) *L3 {
 		}
 	}
 	l.OSPFDevs = slices.Sorted(maps.Keys(devs))
+	peers := map[netip.Addr]bool{}
+	for _, r := range cfg.AllRouting() {
+		if r.BGP == nil || r.BGP.Disabled || r.Instance == cfg.System.MgmtInstance {
+			continue
+		}
+		for _, g := range r.BGP.Groups {
+			for a, n := range g.Neighbors {
+				if !n.Disabled {
+					peers[a] = true
+				}
+			}
+		}
+	}
+	l.BGPPeers = slices.SortedFunc(maps.Keys(peers), netip.Addr.Compare)
 	return l
 }
 

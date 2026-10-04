@@ -81,6 +81,8 @@ var Daemons = []Daemon{
 	// sessions (the neighbours notice at once).
 	{Program: "cer-ospfd", Name: "ospf", Help: "OSPF and OSPFv3", Nice: -5, OOM: -500, Caps: netCaps, StopStage: 0,
 		StopTimeout: 5 * time.Second},
+	{Program: "cer-bgpd", Name: "bgp", Help: "BGP", Nice: -5, OOM: -500, Caps: append(slices.Clone(netCaps), "CAP_NET_BIND_SERVICE"),
+		StopStage: 0, StopTimeout: 10 * time.Second},
 	// Stop stage 1 (after the routing protocols, stage 0: cer-ospfd 5 s,
 	// cer-bgpd 10 s, which close their sessions): BFD tells its neighbours
 	// AdminDown.

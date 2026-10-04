@@ -328,6 +328,20 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 		accept = append(accept, fmt.Sprintf("iifname { %s } meta l4proto 89", strings.Join(q, ", "))) // OSPF
 	}
+	var bgp4, bgp6 []string
+	for _, a := range l.BGPPeers {
+		if a.Is4() {
+			bgp4 = append(bgp4, a.String())
+		} else {
+			bgp6 = append(bgp6, a.String())
+		}
+	}
+	if len(bgp4) > 0 {
+		accept = append(accept, fmt.Sprintf("ip saddr { %s } tcp dport 179", strings.Join(bgp4, ", ")))
+	}
+	if len(bgp6) > 0 {
+		accept = append(accept, fmt.Sprintf("ip6 saddr { %s } tcp dport 179", strings.Join(bgp6, ", ")))
+	}
 	c, err := k.syncProtect(protect, accept)
 	note(c, err)
 	note(syncVTEP(l.VTEP))
