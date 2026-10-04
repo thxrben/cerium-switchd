@@ -55,6 +55,9 @@ UEFI firmware → GRUB (ceros-esp) → picks slot A or B (§4) → kernel + init
   try counts.
 * A **hardware watchdog** (systemd `RuntimeWatchdogSec=30s`, `RebootWatchdogSec=5min`) and `panic=5` +
   `panic_on_oops` make sure a hang always ends in a reboot. The next boot then counts it as a failed try (§4).
+  On a machine without a watchdog device (many VMs) switchd turns systemd's watchdog off at start (over D-Bus) and
+  logs it: systemd would otherwise retry opening the device about 100 times a second. Proxmox: add a watchdog
+  device (`watchdog: model=i6300esb,action=reset`) to keep the protection.
 
 ## 3. File systems
 

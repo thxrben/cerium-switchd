@@ -200,3 +200,40 @@ func UnitPath(unit string) dbus.ObjectPath {
 	}
 	return dbus.ObjectPath(b.String())
 }
+
+// HardwareWatchdogDevice reports whether the machine has a watchdog device
+// (/dev/watchdog0 or /dev/watchdog).
+func HardwareWatchdogDevice() bool {
+	for _, p := range []string{"/dev/watchdog0", "/dev/watchdog"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// DisableManagerWatchdog turns systemd's hardware watchdog off (runtime
+// and reboot). Without a watchdog device systemd retries opening one on
+// every pass of its main loop (about 100 times a second) while the
+// watchdog is configured (docs/os-image.md §2).
+func DisableManagerWatchdog(busPath string) error {
+	b := &unitBus{path: busPath}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	conn, err := b.connect()
+	if err != nil {
+		return err
+	}
+	defer b.drop()
+	ctx, cancel := context.WithTimeout(context.Background(), busTimeout)
+	defer cancel()
+	obj := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	for _, prop := range []string{"RuntimeWatchdogUSec", "RebootWatchdogUSec"} {
+		call := obj.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
+			"org.freedesktop.systemd1.Manager", prop, dbus.MakeVariant(uint64(0)))
+		if call.Err != nil {
+			return fmt.Errorf("%s: %w", prop, call.Err)
+		}
+	}
+	return nil
+}

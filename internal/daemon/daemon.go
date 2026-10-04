@@ -242,6 +242,15 @@ func Run(ctx context.Context, o Options) error {
 	mclag := mclagClient{services}
 	sysMAC := lacpSystemMAC(vc.StackID())
 	chassisMAC := dataplane.ChassisMAC(vc.StackID())
+	// Without a watchdog device, systemd's hardware watchdog only costs CPU
+	// (it retries the device on every loop; VMs often have none).
+	if !o.DryRun && !supervise.HardwareWatchdogDevice() {
+		if err := supervise.DisableManagerWatchdog(supervise.SystemdPrivate); err != nil {
+			log.Warn("no hardware watchdog; systemd's watchdog could not be turned off", "err", err)
+		} else {
+			log.Warn("no hardware watchdog device: a hung system is not rebooted by a watchdog (systemd's watchdog turned off)")
+		}
+	}
 	var mka *mkaManager
 	if !o.DryRun {
 		mka = newMKAManager(&supervise.Systemd{UnitDir: "/etc/systemd/system", BusPath: supervise.SystemdPrivate, Log: log}, log, services.alarms)
