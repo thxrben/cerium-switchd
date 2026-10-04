@@ -1049,6 +1049,10 @@ func TestRouting(t *testing.T) {
 		"set routing-options static route 10.99.0.0/24 next-hop 10.10.30.2\n" +
 		"set routing-options static route 198.51.100.0/24 discard\n"
 	configure(t, cfg)
+	// ECMP hashes layer 3+4 (reference 5.8).
+	if out := mustSSH(t, sw1, "cat /proc/sys/net/ipv4/fib_multipath_hash_policy /proc/sys/net/ipv6/fib_multipath_hash_policy"); strings.Join(strings.Fields(out), " ") != "1 1" {
+		t.Errorf("fib_multipath_hash_policy (v4 v6) = %q, want 1 1", out)
+	}
 	if !ping(hSrv1, "10.10.10.1") {
 		t.Error("irb.10 gateway not reachable from v10")
 	}

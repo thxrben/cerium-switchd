@@ -275,7 +275,9 @@ Last updated: 2026-10-03 (evening).
    to the master in order with a count of failures (a lost report is repaired). Open: lab run, interop with FRR's
    bfdd; BGP's BFD client comes with cer-bgpd. BFD for OSPF (bfd.set from cer-ospfd), the relay of BFD
    for routed interfaces of other members.
-3. **ECMP**: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8).
+3. **ECMP**: done 2026-10-04: switchd sets net.ipv4/ipv6 fib_multipath_hash_policy = 1 (layer 3+4, reference 5.8)
+   on every L3 sync (only written when different; skipped without IPv6); checked by the lab's TestRouting (not run
+   yet). The first sync after the update re-hashes existing multipath flows once (no drops; a flow may move).
 4. **LACP with the UniFi (physw4)**: investigated 2026-10-03. cerOS behaves correctly: tcpdump shows well-formed
    LACPDUs leaving 1/0/2 every second (actor a6:2c:0c:23:c4:1f key 1 port 1026, partner = UniFi port 23 key 66), and
    the UniFi's 0/23 counters show them arriving (CPU-trapped, as on the working 0/24), yet its LACP keeps an all-zero

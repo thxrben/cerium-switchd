@@ -196,6 +196,16 @@ func (k *Netlink) SyncL3(l *L3) (bool, []string, error) {
 		}
 	}
 
+	// ECMP spreads flows by addresses and ports (layer 3+4, reference 5.8),
+	// for the routing protocols' and static multipath routes alike.
+	for _, p := range multipathHashSysctls {
+		if _, err := hwio.ReadFile(p); err != nil {
+			continue // no IPv6 in this kernel
+		}
+		c, err := writeSysctl(p, "1")
+		note(c, err)
+	}
+
 	// DHCP leases become addresses of their units (their default routes are
 	// cer-ribd's).
 	var dhcpIfs []DHCPIf
@@ -370,6 +380,12 @@ const (
 var l3mdevSysctls = []string{
 	"/proc/sys/net/ipv4/tcp_l3mdev_accept",
 	"/proc/sys/net/ipv4/udp_l3mdev_accept",
+}
+
+// multipathHashSysctls select the layer 3+4 hash for multipath routes.
+var multipathHashSysctls = []string{
+	"/proc/sys/net/ipv4/fib_multipath_hash_policy",
+	"/proc/sys/net/ipv6/fib_multipath_hash_policy",
 }
 
 // syncVRF makes sure the VRF of a routing instance exists and is up; it
