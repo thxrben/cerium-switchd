@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/macsec"
+	"github.com/thxrben/cerium-switchd/pkg/nlx"
 )
 
 // stackMACsec encrypts the stacking links (virtual-chassis macsec,
@@ -476,26 +476,29 @@ func (s *stackMACsec) receive(from int, req secPush) (secReply, error) {
 	return secReply{OK: true}, nil
 }
 
-var encodingRE = regexp.MustCompile(`encodingsa (\d)`)
-
-// encodingSA reads the device's current encoding SA.
+// encodingSA reads the device's current encoding SA (netlink).
 func (s *stackMACsec) encodingSA(dev string) uint8 {
-	type outputter interface {
-		Output(name string, args ...string) ([]byte, error)
-	}
-	o, ok := s.k.(outputter)
+	r, ok := s.k.(macsec.StatusReader)
 	if !ok {
 		return 0
 	}
-	out, err := o.Output("ip", "-d", "link", "show", "dev", dev)
+	return macsecStatus(r)[dev].EncodingSA
+}
+
+// macsecStatus reads the kernel's MACsec devices by name (none when the
+// kernel cannot say: the listing shows no counters then).
+func macsecStatus(r macsec.StatusReader) map[string]macsec.DevStatus {
+	st, err := r.Status()
 	if err != nil {
-		return 0
+		return nil
 	}
-	if m := encodingRE.FindSubmatch(out); m != nil {
-		n, _ := strconv.Atoi(string(m[1]))
-		return uint8(n)
+	out := make(map[string]macsec.DevStatus, len(st))
+	for idx, d := range st {
+		if l, err := nlx.LinkByIndex(idx); err == nil {
+			out[l.Attrs().Name] = d
+		}
 	}
-	return 0
+	return out
 }
 
 // StackSecStatus is one stacking link for show security macsec.
@@ -571,17 +574,7 @@ func decodePush(raw json.RawMessage) (secPush, error) {
 // MACsec is show security macsec (this member): the stacking links, with
 // the kernel's counters.
 func (o *ops) MACsec() ([]cli.MACsecConn, error) {
-	counters := map[string]map[string]any{}
-	if out, err := (macsec.Linux{}).Output("ip", "-j", "-s", "macsec", "show"); err == nil {
-		var devs []map[string]any
-		if json.Unmarshal(out, &devs) == nil {
-			for _, d := range devs {
-				if n, ok := d["ifname"].(string); ok {
-					counters[n] = d
-				}
-			}
-		}
-	}
+	devs := macsecStatus(macsec.Linux{})
 	var out []cli.MACsecConn
 	if o.stackSec == nil {
 		return out, nil
@@ -604,7 +597,9 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 		if len(l.RxANs) > 0 {
 			c.RxSCs = []string{fmt.Sprintf("%s port 1, associations %v", l.PeerMAC, l.RxANs)}
 		}
-		macsecCounters(&c, counters[l.Dev])
+		if d, ok := devs[l.Dev]; ok {
+			macsecFill(&c, d, false)
+		}
 		out = append(out, c)
 	}
 	// Ports secured with MKA (reference 5.15).
@@ -631,7 +626,9 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 		switch {
 		case secured:
 			c.Dev, c.State = dev, "secured"
-			macsecCounters(&c, counters[dev])
+			if d, ok := devs[dev]; ok {
+				macsecFill(&c, d, true)
+			}
 		case problem != "":
 			c.State = "failed: " + problem
 		default:
@@ -642,33 +639,35 @@ func (o *ops) MACsec() ([]cli.MACsecConn, error) {
 	return out, nil
 }
 
-// macsecCounters fills a connection from its device's `ip -j -s macsec`
-// entry (nil: none).
-func macsecCounters(c *cli.MACsecConn, d map[string]any) {
-	if d == nil {
+// macsecFill fills a connection from its device's kernel state. With
+// mka, the transmit association and the receive channels come from the
+// kernel too (wpa_supplicant installs them; switchd knows them only for
+// the stacking links).
+func macsecFill(c *cli.MACsecConn, d macsec.DevStatus, mka bool) {
+	c.TxSCI, c.Offload = d.SCI, d.Offload
+	for k, v := range d.Counters {
+		c.Counters[k] = v
+	}
+	if !mka {
 		return
 	}
-	if v, ok := d["sci"].(string); ok {
-		c.TxSCI = strings.TrimPrefix(v, "0x")
-	}
-	if v, ok := d["offload"].(string); ok {
-		c.Offload = v
-	}
-	for k, v := range d {
-		if f, ok := v.(float64); ok {
-			c.Counters[k] = uint64(f)
+	c.TxAN = -1
+	for _, sa := range d.TxSAs {
+		if sa.AN == d.EncodingSA && sa.Active {
+			c.TxAN = int(sa.AN)
 		}
 	}
-	// The receive counters are per receive SC.
-	if scs, ok := d["rx_sc"].([]any); ok {
-		for _, sc := range scs {
-			if m, ok := sc.(map[string]any); ok {
-				for k, v := range m {
-					if f, ok := v.(float64); ok && strings.HasPrefix(k, "In") {
-						c.Counters[k] += uint64(f)
-					}
-				}
+	c.RxSCs = nil
+	for _, sc := range d.RxSCs {
+		if !sc.Active {
+			continue
+		}
+		var ans []uint8
+		for _, sa := range sc.SAs {
+			if sa.Active {
+				ans = append(ans, sa.AN)
 			}
 		}
+		c.RxSCs = append(c.RxSCs, fmt.Sprintf("SCI %s, associations %v", sc.SCI, ans))
 	}
 }

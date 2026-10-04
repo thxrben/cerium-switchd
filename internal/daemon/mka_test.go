@@ -61,7 +61,7 @@ func (f *fakeUnits) Kill(string) error                    { return nil }
 func mkaCfg(t *testing.T, cak string, ports ...string) *model.Config {
 	t.Helper()
 	text := "set virtual-chassis member 1\n" +
-				"set security macsec connectivity-association ca1 pre-shared-key ckn 0a0b\n" +
+		"set security macsec connectivity-association ca1 pre-shared-key ckn 0a0b\n" +
 		"set security macsec connectivity-association ca1 pre-shared-key cak " + cak + "\n" +
 		"set security macsec connectivity-association ca1 mka key-server-priority 7\n"
 	for _, p := range ports {

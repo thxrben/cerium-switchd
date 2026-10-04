@@ -376,7 +376,21 @@ Last updated: 2026-10-04 (evening).
   swap, memory slots, reload, stacking MACsec `mode on`, the relay/host-key fixes on the user's stack.
 
 ## Requested 2026-10-04 (late)
-- `show system alarms` does not show which member of the stack an alarm belongs to (stack-wide listing).
+- ~~Alarms do not show their member~~: done 2026-10-04 (813744f). `show system alarms` had the column; the notices
+  did not (daemon notices, MKA/memory/archival/stack MACsec alarms were not announced at all). Now the alarm set
+  logs and announces every raise, class change and clear itself (`member N: ALARM (Major): …`, `member N: alarm
+  cleared (Major): …`; a queue so a raiser never waits for the master); every daemon notice gets `member N:`; the
+  callers' own duplicate notices are gone (hangs, sensors, swap, supervisor, daemonkit); a reconnecting daemon's
+  alarms end only if not raised again within 10 s (no cleared/raised pair).
+- ~~`show security macsec connections` Transmit/Receive empty for client ports~~: done 2026-10-04. The kernel's
+  state is read through generic netlink (pkg/macsec Status: MACSEC_CMD_GET_TXSC dump: SCI, encoding SA, offload,
+  TX SAs, RX SCs, SecY/TX SC/RX SC counters) instead of `ip -j` (user: API calls, never tool output); client ports
+  take Transmit/Receive from the kernel (wpa_supplicant installs the SAs). Checked against the real kernel in a
+  user namespace (SCI, offload, counters); SA/RX SC decoding only by the parser test (keys need init-ns root).
+  Still reading tool output (to move to netlink): dataplane/mcast_linux.go (`bridge -j vlan/link`, `ip -j link`),
+  pkg/netdev/bridge_linux.go (`bridge -j mdb`), dataplane/vlanmtu_linux.go (`nft -j list counters`); writing
+  through tools: pkg/macsec (`ip -batch`, keys on stdin), mcast settings (`ip link set ... type bridge`).
+- Open question: several stacking ports between two members (routing, forwarding, LAG first?).
 
 ## MACsec on client ports (2026-10-04 evening; unit-tested, NOT yet on the lab)
 - `security macsec interfaces <port>`: switchd writes `/run/switchd/mka/<port>.conf` (0600; CKN/CAK, csindex for

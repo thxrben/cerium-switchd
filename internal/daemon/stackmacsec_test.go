@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/stack"
@@ -293,5 +294,20 @@ func TestStackMACsecNeighbourNotAnswering(t *testing.T) {
 	}
 	if st := a.status(); st[0].State != "negotiating (last error: member 2 is not reachable)" {
 		t.Fatalf("status %q", st[0].State)
+	}
+}
+
+// A port secured by MKA: Transmit and Receive come from the kernel's
+// device (wpa_supplicant installed the associations).
+func TestMACsecFillMKA(t *testing.T) {
+	c := cli.MACsecConn{TxAN: -1, Counters: map[string]uint64{}}
+	macsecFill(&c, macsec.DevStatus{SCI: "525400123456" + "0001", EncodingSA: 1, Offload: "off",
+		TxSAs: []macsec.SAStatus{{AN: 0}, {AN: 1, Active: true}},
+		RxSCs: []macsec.RxSCStatus{{SCI: "5254009876540001", Active: true, SAs: []macsec.SAStatus{{AN: 1, Active: true}, {AN: 2}}},
+			{SCI: "aa", Active: false}},
+		Counters: map[string]uint64{"InPktsOK": 3}}, true)
+	if c.TxSCI != "5254001234560001" || c.TxAN != 1 || c.Counters["InPktsOK"] != 3 ||
+		len(c.RxSCs) != 1 || c.RxSCs[0] != "SCI 5254009876540001, associations [1]" {
+		t.Fatalf("%+v", c)
 	}
 }
