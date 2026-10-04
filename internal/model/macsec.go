@@ -77,6 +77,9 @@ func (b *builder) buildMACsec() {
 // validateMACsec checks the secured ports (reference 5.15).
 func (b *builder) validateMACsec() {
 	c := b.cfg
+	if len(c.MACsec.Ports) > 0 {
+		b.warnf("security macsec interfaces", "MACsec on switch and routed ports is not implemented yet: the ports carry their traffic unencrypted (the stacking links are encrypted)")
+	}
 	for _, port := range sortedKeys(c.MACsec.Ports) {
 		ca := c.MACsec.Ports[port]
 		at := "security macsec interfaces " + port

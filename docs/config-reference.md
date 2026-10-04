@@ -2539,6 +2539,8 @@ set forwarding-options analyzer debug output interface 1/3/0
 | Stacking (transport, TLS, relay, BFD, stack tunnels, join/remove, force-master, maintenance mode, software updates) | implemented, lab tested |
 | LACP, MC-LAG (5.6), RSTP (one bridge for the stack), LLDP, port mirroring | implemented, lab tested |
 | `system services web-management` | REST API: software upload and install (3.6); the web interface is not implemented yet |
+| `virtual-chassis macsec` (stacking links) | implemented, unit-tested; not lab-tested yet |
+| `security macsec` (switch and routed ports) | not implemented yet (W at commit: the ports stay unencrypted) |
 | VXLAN to remote VTEPs (5.7) | implemented |
 | IGMP/MLD snooping (5.5) | implemented |
 | `show system bottlenecks` (3.5.2) | implemented |

@@ -658,6 +658,9 @@ WireGuard is dropped: it would only serve remote L3 sites and road warriors, and
 4. **MTU**: the stack MTU budget grows by 32 bytes (SecTAG with SCI 16 + ICV 16) on MACsec stacking links; client
    ports' MACsec device carries the configured mtu, the port gets 32 more (commit checks the hardware maximum).
 5. `show security macsec connections|statistics`, alarms when a secured link stops passing traffic.
+   Status 2026-10-04: stacking links done (unit-tested); client ports open: the data plane must move a secured port's
+   bridge/L3 role (and RSTP, MC-LAG, mac-limit, storm control) to the MACsec device wpa_supplicant creates.
+   wpa_supplicant's MKA offers GCM-AES-128/256 only (no XPN) and a fixed 2 s hello.
 6. Benchmarks (software vs offload) documented.
 
 ### Phase 11: Polish and packaging

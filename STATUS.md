@@ -437,9 +437,28 @@ Unit-tested, NOT on the lab switches yet (the lab still runs 05240a8; see "Lab d
   1024), bridge fdb_max_learned / mcast_hash_max, daemon units GOMEMLIMIT/MemoryMax/MemoryMin, BGP prefix and path
   capacities (shared `bgp.Limits`, Major alarm `cer-bgpd/memory <purpose>`), `show system memory`, `show system
   limits` Applied/Supported columns and Tables section, `request system memory setup`.
-- Open in Phase 15: OSPF enforcement (RFC 1765 LSDB overflow in cer-ospfd, route cap in cer-ribd); counts of BGP/OSPF/
-  NDP/multicast entries in show system memory (now "-"); setup across members (uses this member's slots); the
-  structure optimization (interned BGP/RIB attributes, target 1/3 of today's bytes) and a re-measure.
+- Done (Phase 15 part 2): OSPF capacity (route cap per protocol in pkg/rib/cer-ribd, RFC 1765 external overflow in
+  pkg/ospf/cer-ospfd, alarms); counts of BGP (cer-bgpd bgp.counts), OSPF (route summary), NDP in show system memory;
+  smaller routes (RIB: slice per prefix, shared next hop sets and weakly shared attributes, interned sources: BGP
+  route 1007 -> 711 B, OSPF 1006 -> 470 B worst case; BGP speaker: an UPDATE's prefixes share attributes, an
+  unchanged accepted path is the received one, a policy's copy shares what it left, Path 384 -> 352 B). The old
+  speaker measurement missed Adj-RIB-In (real was 1070 B/prefix); now 966 worst case (policy that changes the path),
+  ~630 without. cer-bgpd's export copy measured (440 B). Costs: bgp-ipv4 2221, bgp-ipv6 2533, bgp-paths 1721, ospf 994.
+- Open in Phase 15: multicast count in show system memory; setup across members (uses this member's slots);
+  cer-bgpd keeps a full copy of its table for cer-ribd (in.last) and sends the whole table as JSON on every change:
+  for a full Internet table that is a large transient (a delta protocol would fix it).
+- Done: show system limits "used of available" (MACsec offload: ports using it of those able to; no "(full)" for 0
+  of 0).
+- Done (Phase 10, stacking): virtual-chassis macsec (on by default): per stacking port a MACsec device (XPN-256) in
+  swstack carries the tunnels once both directions have keys; each member pushes its transmit key to the neighbour
+  over the stacking protocol (op stack-macsec), uses it only after the neighbour installed it; rekey hourly and when
+  a member leaves; switchd restart keeps the devices and renews keys; plain frames dropped on secured ports (tc
+  matchall, 0x88e5 and 0x88b5 pass); neighbour without MACsec: plain + Minor alarm. Stack MTU overhead 90 with
+  MACsec. show security macsec connections|statistics. NOT lab-tested (key install needs root; ip syntax checked).
+- Open (Phase 10, client ports): security macsec interfaces is accepted with a warning only. Needs: wpa_supplicant in
+  the image, a unit per port, and the data plane moving a secured port's bridge/L3 role to the MACsec device that
+  wpa_supplicant creates after MKA succeeds (the kernel names it); RSTP, MC-LAG, mac-limit, storm control address
+  bridge ports by kernel name and need the same mapping.
 - Done: Phase 16 `request system reload [member <id>|all-members]` (drain, ordered daemon stop, switch ports down,
   plan file removed, switchd restarts; waitBack between members). Needs a lab test: ports must come up again.
 - Open: Phase 17.4 USB storage (save/load usb:, file list usb:, request system storage usb eject); Phase 10 MACsec;
