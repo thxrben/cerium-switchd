@@ -38,6 +38,9 @@ type NeighborStatus struct {
 	Disabled              bool          `json:"disabled,omitempty"`
 	Passive               bool          `json:"passive,omitempty"`
 	Client                bool          `json:"client,omitempty"` // route reflector client
+	// The policy chains (filled by the program).
+	Import []string `json:"import,omitempty"`
+	Export []string `json:"export,omitempty"`
 }
 
 // Status lists the neighbours.

@@ -1382,6 +1382,7 @@ func registerOperational() {
 				lldpCommand(),
 				ospfCommand(ospf.V2),
 				ospfCommand(ospf.V3),
+				bgpCommand(),
 				&command{name: "vxlan", help: "Show VXLAN ports and remote VTEPs", class: commit.ReadOnly,
 					run: func(sh *Shell, c *call) error { return sh.showVXLAN(c, false) }, sub: []*command{
 						{name: "remote-vtep", help: "How each member reaches the remote VTEPs", class: commit.ReadOnly,
@@ -1421,6 +1422,7 @@ func registerOperational() {
 		clearSTPCommand(),
 		clearOSPFCommand(ospf.V2),
 		clearOSPFCommand(ospf.V3),
+		clearBGPCommand(),
 	}})
 	power := func(action, help string) *command {
 		return &command{name: action, help: help, class: commit.SuperUser, run: func(sh *Shell, c *call) error { return sh.power(c, action) },

@@ -343,8 +343,12 @@ Last updated: 2026-10-03 (evening).
   against a speaker over loopback (routes per source, import reject = hidden, localpref, static export, default
   export rejects OSPF, non-master stops), TCP MD5 on real sockets, next-hop resolution. Open: a BGP route with an
   unresolvable next hop is still "active" in the RIB (only not installed; Junos hides it), import `preference`.
-- Next: step 3, show bgp summary|neighbor|group, clear bgp neighbor, show route receive-protocol|
-  advertising-protocol bgp, show route hidden.
+- Step 3 done 2026-10-04: `show bgp summary|neighbor [<ip>]|group [<name>] [instance <n>]` (Junos layout: peers,
+  tables, Active/Received/Accepted per table, capabilities, policies, last error, counters), `clear bgp neighbor
+  [<ip>] [soft|soft-inbound] [instance <n>]`, `show route receive-protocol|advertising-protocol bgp <ip>
+  [<prefix>] [detail]`, `show route hidden` (paths rejected by import policy or a loop check). Unit-tested.
+- Next: step 4, commit warnings for changes that reset a session ("this change resets the session"); step 5 BFD
+  client; step 6 relay of BGP sessions to routed ports of other members.
 
 ## Next (in order)
 - Done 2026-09-30: maintenance mode (`request system maintenance-mode enter [force]|exit [member <id>]`): drain flag in

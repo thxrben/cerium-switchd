@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/policy"
+	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
 
@@ -26,6 +29,8 @@ type routeArgs struct {
 	table    string // a table name ("": by instance)
 	view     string // "", terse, detail, extensive, summary
 	hidden   bool
+	adj      string     // "in": receive-protocol bgp, "out": advertising-protocol bgp
+	adjNbr   netip.Addr // its neighbour
 }
 
 // routeProtocols are the protocol names "show route protocol" takes.
@@ -43,6 +48,8 @@ var routeWords = []Completion{
 	{Text: "extensive", Help: "Everything about each route, with internals"}, {Text: "summary", Help: "Routes per table and protocol"},
 	{Text: "table", Help: "One routing table (inet.0, inet6.0, <instance>.inet.0)"},
 	{Text: "instance", Help: "A routing instance's tables (all: every instance)"},
+	{Text: "receive-protocol", Help: "The routes a BGP neighbour sent (before import policy)"},
+	{Text: "advertising-protocol", Help: "The routes sent to a BGP neighbour (after export policy)"},
 }
 
 func parseRouteArgs(c *call) (routeArgs, error) {
@@ -103,6 +110,25 @@ func parseRouteArgs(c *call) (routeArgs, error) {
 				return a, &posError{pos: c.argPos(i), msg: "unknown table name, expecting inet.0, inet6.0 or <instance>.inet.0/.inet6.0"}
 			}
 			a.table = v
+		case prefixOf(w, "receive-protocol") || prefixOf(w, "advertising-protocol"):
+			a.adj = "in"
+			if prefixOf(w, "advertising-protocol") {
+				a.adj = "out"
+			}
+			if p, err := next("bgp"); err != nil {
+				return a, err
+			} else if p != "bgp" {
+				return a, &posError{pos: c.argPos(i), msg: "expecting bgp"}
+			}
+			v, err := next("a BGP neighbour address")
+			if err != nil {
+				return a, err
+			}
+			ip, perr := netip.ParseAddr(v)
+			if perr != nil {
+				return a, &posError{pos: c.argPos(i), msg: "expecting a BGP neighbour address"}
+			}
+			a.adjNbr = ip
 		case prefixOf(w, "instance"):
 			v, err := next("a routing instance name or all")
 			if err != nil {
@@ -188,10 +214,8 @@ func (sh *Shell) showRoute(c *call) error {
 		writeRouteSummary(c.out, sums, a)
 		return nil
 	}
-	if a.hidden {
-		// Nothing is hidden yet: routes rejected by import policy or with an
-		// unresolvable next hop come with BGP.
-		return nil
+	if a.adj != "" || a.hidden {
+		return sh.showBGPRoutes(c, a, sums)
 	}
 	es, err := r.RIB(a.q)
 	if err != nil {
@@ -537,9 +561,120 @@ func writeRouteSummary(out *strings.Builder, sums []rib.Summary, a routeArgs) {
 	}
 }
 
+// showBGPRoutes is "show route receive-protocol|advertising-protocol bgp
+// <neighbor>" and "show route hidden" (routes BGP received but its
+// import policy or a loop check rejected).
+func (sh *Shell) showBGPRoutes(c *call, a routeArgs, sums []rib.Summary) error {
+	b, err := sh.bgp()
+	if err != nil {
+		return err
+	}
+	inst := a.instance
+	if inst == "all" {
+		inst = ""
+	}
+	nbrs := []netip.Addr{a.adjNbr}
+	if a.adj == "" {
+		st, err := b.BGPStatus(&inst)
+		if err != nil {
+			return err
+		}
+		nbrs = nil
+		for _, in := range st {
+			for _, n := range in.Neighbors {
+				nbrs = append(nbrs, n.Addr)
+			}
+		}
+	}
+	var paths []bgp.InPath
+	for _, n := range nbrs {
+		ps, err := b.BGPAdj(bgpd.AdjRequest{Instance: inst, Neighbor: n, Out: a.adj == "out"})
+		if err != nil {
+			return err
+		}
+		for _, p := range ps {
+			if a.adj != "out" && p.Hidden != a.hidden {
+				continue
+			}
+			if a.q.Prefix.IsValid() && !routeMatches(a.q, p.Prefix) {
+				continue
+			}
+			paths = append(paths, p)
+		}
+	}
+	for _, v6 := range []bool{false, true} {
+		t := rib.Table{Instance: inst, V6: v6}
+		var rows []bgp.InPath
+		for _, p := range paths {
+			if p.Prefix.Addr().Is6() == v6 {
+				rows = append(rows, p)
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		fmt.Fprintf(c.out, "\n%s\n", tableHeader(t, sums, nil))
+		if a.view == "detail" || a.view == "extensive" {
+			for _, p := range rows {
+				fmt.Fprintf(c.out, "\n%s (1 entry)\n", p.Prefix)
+				fmt.Fprintf(c.out, "     Nexthop: %s\n", dashAddr(p.NextHop))
+				if p.MED != nil {
+					fmt.Fprintf(c.out, "     MED: %d\n", *p.MED)
+				}
+				if p.LocalPref != nil {
+					fmt.Fprintf(c.out, "     Localpref: %d\n", *p.LocalPref)
+				}
+				fmt.Fprintf(c.out, "     AS path: %s\n", p.PathString())
+				var cs []string
+				for _, x := range p.Communities {
+					cs = append(cs, policy.FormatCommunity(x))
+				}
+				for _, l := range p.Large {
+					cs = append(cs, fmt.Sprintf("large:%d:%d:%d", l[0], l[1], l[2]))
+				}
+				if len(cs) > 0 {
+					fmt.Fprintf(c.out, "     Communities: %s\n", strings.Join(cs, " "))
+				}
+				if p.Hidden {
+					c.out.WriteString("     Hidden reason: rejected by import policy or loop check\n")
+				}
+			}
+			continue
+		}
+		fmt.Fprintf(c.out, "  %-23s %-20s %-7s %-10s %s\n", "Prefix", "Nexthop", "MED", "Lclpref", "AS path")
+		for _, p := range rows {
+			med, lp := "", ""
+			if p.MED != nil {
+				med = fmt.Sprint(*p.MED)
+			}
+			if p.LocalPref != nil {
+				lp = fmt.Sprint(*p.LocalPref)
+			}
+			line := fmt.Sprintf("  %-23s %-20s %-7s %-10s %s", p.Prefix, dashAddr(p.NextHop), med, lp, p.PathString())
+			c.out.WriteString(strings.TrimRight(line, " ") + "\n")
+		}
+	}
+	return nil
+}
+
+// routeMatches applies a prefix filter of "show route" to one prefix.
+func routeMatches(q rib.Query, p netip.Prefix) bool {
+	switch {
+	case q.Match == "exact":
+		return p == q.Prefix
+	case q.Match == "longer":
+		return q.Prefix.Bits() < p.Bits() && q.Prefix.Contains(p.Addr())
+	case q.Prefix.IsSingleIP():
+		return p.Contains(q.Prefix.Addr())
+	}
+	return q.Prefix.Bits() <= p.Bits() && q.Prefix.Contains(p.Addr())
+}
+
 func completeRoute(sh *Shell, args []config.Token, partial string) []Completion {
 	if n := len(args); n > 0 {
 		switch prev := args[n-1].Text; {
+		case prefixOf(prev, "receive-protocol") || prefixOf(prev, "advertising-protocol"):
+			return filter([]Completion{{Text: "bgp", Help: "BGP"}}, partial)
 		case prefixOf(prev, "protocol"):
 			return filter(routeProtocols, partial)
 		case prefixOf(prev, "instance"):

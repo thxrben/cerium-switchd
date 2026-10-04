@@ -585,12 +585,14 @@ func (d *Daemon) Status(instance *string) []InstanceStatus {
 			continue
 		}
 		ns := in.sp.Status()
-		groups := map[netip.Addr]string{}
-		for _, n := range in.cfg.Neighbors {
-			groups[n.Addr] = n.Group
+		cfg := in.config()
+		byAddr := map[netip.Addr]Neighbor{}
+		for _, n := range cfg.Neighbors {
+			byAddr[n.Addr] = n
 		}
 		for i := range ns {
-			ns[i].Group = groups[ns[i].Addr]
+			n := byAddr[ns[i].Addr]
+			ns[i].Group, ns[i].Import, ns[i].Export = n.Group, n.Import, n.Export
 		}
 		out = append(out, InstanceStatus{Instance: in.cfg.Name, AS: in.cfg.AS, RouterID: in.cfg.RouterID, Neighbors: ns})
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
+	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/lacp"
 	"github.com/thxrben/cerium-switchd/pkg/lldp"
@@ -30,6 +31,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
@@ -1007,7 +1009,45 @@ func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.O
 var (
 	_ cli.RIB  = (*ops)(nil)
 	_ cli.OSPF = (*ops)(nil)
+	_ cli.BGP  = (*ops)(nil)
 )
+
+// BGPStatus is show bgp … (cer-bgpd on this member, the master).
+func (o *ops) BGPStatus(instance *string) ([]bgpd.InstanceStatus, error) {
+	if o.svc == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var st []bgpd.InstanceStatus
+	err := o.svc.call(ctx, "cer-bgpd", bgpd.MethodStatus, instance, &st)
+	if err != nil && strings.Contains(err.Error(), "not running") {
+		return nil, nil // not configured
+	}
+	return st, err
+}
+
+// BGPAdj is show route receive-protocol|advertising-protocol bgp.
+func (o *ops) BGPAdj(q bgpd.AdjRequest) ([]bgp.InPath, error) {
+	if o.svc == nil {
+		return nil, errors.New("BGP is not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out []bgp.InPath
+	return out, o.svc.call(ctx, "cer-bgpd", bgpd.MethodAdj, q, &out)
+}
+
+// ClearBGP is clear bgp neighbor.
+func (o *ops) ClearBGP(q bgpd.ClearRequest) (int, error) {
+	if o.svc == nil {
+		return 0, errors.New("BGP is not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var n int
+	return n, o.svc.call(ctx, "cer-bgpd", bgpd.MethodClear, q, &n)
+}
 
 // RIB is show route: cer-ribd's routes on this member.
 func (o *ops) RIB(q rib.Query) ([]rib.Entry, error) {
