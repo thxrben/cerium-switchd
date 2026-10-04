@@ -97,6 +97,18 @@ func (sh *Shell) runOnMembers(c *call, cmd *command, rest []config.Token, target
 		}
 		if confirmed {
 			runRemote(id) // in order
+			if cmd.waitBack {
+				if err := sh.waitBack(c, id); err != nil {
+					out[id] += fmt.Sprintf("error: %v; the next members are left as they are\n", err)
+					for _, id := range targets {
+						if _, ok := out[id]; !ok {
+							out[id] = "not done\n"
+						}
+					}
+					order = nil
+					break
+				}
+			}
 		} else {
 			wg.Add(1)
 			go func() { defer wg.Done(); runRemote(id) }()
@@ -172,6 +184,7 @@ func markPerMember() {
 		{"show lacp interfaces", ""}, {"show lacp statistics interfaces", ""}, {"show mclag", ""}, {"show dhcp client binding", ""}, {"request chassis card", ""},
 		{"clear ethernet-switching table", ""}, {"clear system reboot", ""},
 		{"request system reboot", "Reboot"}, {"request system halt", "Halt"}, {"request system power-off", "Power off"},
+		{"request system reload", "Reload the software of"},
 		{"request system maintenance-mode enter", "Put into maintenance mode:"}, {"request system maintenance-mode exit", ""},
 	} {
 		cmd := findCmd(operational, strings.Fields(p.path))
@@ -181,6 +194,7 @@ func markPerMember() {
 		cmd.perMember, cmd.confirm = true, p.confirm
 	}
 	findCmd(operational, []string{"show", "chassis", "hardware"}).allMembers = true
+	findCmd(operational, []string{"request", "system", "reload"}).waitBack = true
 	// The programs of every member (reference 1.9).
 	ps := findCmd(operational, []string{"show", "system", "processes"})
 	ps.perMember, ps.allMembers = true, true

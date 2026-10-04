@@ -37,6 +37,10 @@ type command struct {
 	// learned on them) as one table; Ops returns every member's rows, and
 	// a target only narrows them (reference 3.5).
 	stackWide bool
+	// waitBack: with several members, each must be back (its switchd
+	// started again) before the command runs on the next (request system
+	// reload).
+	waitBack bool
 	// confirm is the question asked before running it on other members
 	// ("Reboot"); the command itself then does not ask again.
 	confirm string

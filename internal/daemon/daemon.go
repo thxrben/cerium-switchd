@@ -479,6 +479,9 @@ func Run(ctx context.Context, o Options) error {
 			}}
 		liveOps.updater = upd
 		liveOps.mem = mem
+		if ctl != nil {
+			ctl.node.Handle("started", func(int, json.RawMessage) (any, error) { return liveOps.started, nil })
+		}
 		mem.onChange = func() {
 			if cfg := liveOps.model(); cfg != nil {
 				services.setConfig("cer-bgpd", bgpConfig(cfg, mem.Capacity))

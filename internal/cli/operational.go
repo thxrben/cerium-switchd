@@ -1457,6 +1457,7 @@ func registerOperational() {
 		daemonCommand(),
 		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
 			power("reboot", "Reboot this member"),
+			{name: "reload", help: "Restart the switch software of this member without rebooting", class: commit.SuperUser, run: (*Shell).reload},
 			power("halt", "Halt this member"),
 			power("power-off", "Power off this member"),
 			swRequest,
