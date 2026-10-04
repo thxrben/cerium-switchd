@@ -283,6 +283,13 @@ Last updated: 2026-10-03 (evening).
    partner on 0/23. Port settings of 0/23 and 0/24 are the same; STP is fine (3/1 forwarding, no BPDUs returned, no
    loop). Periodic timers are per port, as in 802.1AX (not a cause). Remaining: user tests on the UniFi (bounce 0/23
    or no addport/addport; swap the cables at physw4 to see whether the fault follows the UniFi port or 1/0/2).
+   **Cause found 2026-10-04**: the UniFi's generated `global_mac_acl` (inbound on every port and LAG) denies
+   VLAN 5 and VLAN 1; ports 23/24 have native VLAN 5, so every untagged frame from physw4 (BPDUs, LACPDUs on 0/23,
+   LLDP) is dropped (counted as "Unacceptable Frame Type"; "RSTP BPDUs Received" stays at 11). The UniFi never sees
+   our RSTP agreement, keeps proposing, and every LAG restart (our 3 s LACP timeout, a change of periodic) blocks 3/1
+   for 2 x forward-delay ("STP Port Blocked"). Fix on the UniFi (native VLAN not denied by the ACL). Possible
+   cerOS diagnostics: cer-lacpd's deaf-partner warning could name "partner drops untagged frames"; cer-rstpd could
+   warn when the designated partner keeps the Proposal flag although we answer with an Agreement.
    Done on the way: cer-lacpd warns when a send fails (d12f6bd) and reports a partner that does not receive our
    LACPDUs (its PDUs never name our port) instead of "configure periodic slow" (02a7717).
 5. **`request daemon restart|stop|start <daemon> [member <id>|all-members]`**: done 2026-10-04 (decided: a stop lasts
