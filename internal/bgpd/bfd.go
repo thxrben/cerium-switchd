@@ -2,6 +2,7 @@ package bgpd
 
 import (
 	"context"
+	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -54,7 +55,7 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 	// routed ports.
 	insts := map[string]Instance{}
 	if d.master {
-		for _, name := range sortedKeys(want) {
+		for _, name := range slices.Sorted(maps.Keys(want)) {
 			if d.insts[name] != nil {
 				insts[name] = want[name]
 			}
@@ -64,7 +65,7 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 			insts[in.Name] = in
 		}
 	}
-	for _, name := range sortedKeys(insts) {
+	for _, name := range slices.Sorted(maps.Keys(insts)) {
 		in := insts[name]
 		for _, n := range in.Neighbors {
 			b := n.BFDCfg

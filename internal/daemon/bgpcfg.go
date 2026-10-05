@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
 
@@ -23,7 +24,7 @@ func bgpConfig(cfg *model.Config, capacity func(memslots.Purpose) int) bgpapi.Co
 			continue
 		}
 		in := bgpapi.Instance{Name: r.Instance, VRF: r.Instance, AS: r.AS, RouterID: cfg.RouterID(r)}
-		for _, g := range sortedKeysOf(r.BGP.Groups) {
+		for _, g := range slices.Sorted(maps.Keys(r.BGP.Groups)) {
 			grp := r.BGP.Groups[g]
 			addrs := make([]netip.Addr, 0, len(grp.Neighbors))
 			for a := range grp.Neighbors {
@@ -86,7 +87,7 @@ func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpap
 // address), stack-wide addresses only. connected: a unit's subnet has the
 // neighbour.
 func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, v6 netip.Addr, connected bool) {
-	for _, name := range sortedKeysOf(cfg.L3) {
+	for _, name := range slices.Sorted(maps.Keys(cfg.L3)) {
 		u := cfg.L3[name]
 		if u.Disabled || u.Instance != instance {
 			continue
@@ -123,7 +124,7 @@ func selfAddrs(cfg *model.Config, instance string, peer, local netip.Addr) (v4, 
 // has the neighbour's subnet; 0 for an irb, an MC-LAG bundle or a
 // neighbour that is not directly connected (the master reaches it).
 func neighborOwner(cfg *model.Config, instance string, peer netip.Addr) int {
-	for _, name := range sortedKeysOf(cfg.L3) {
+	for _, name := range slices.Sorted(maps.Keys(cfg.L3)) {
 		u := cfg.L3[name]
 		if u.Disabled || u.Instance != instance || u.IRB() {
 			continue
@@ -138,13 +139,4 @@ func neighborOwner(cfg *model.Config, instance string, peer netip.Addr) int {
 		}
 	}
 	return 0
-}
-
-func sortedKeysOf[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
 }

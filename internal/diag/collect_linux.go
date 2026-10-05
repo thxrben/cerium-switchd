@@ -43,16 +43,8 @@ func (c *Collector) root() (string, string) {
 	return s, p
 }
 
-func readStr(path string) string {
-	raw, err := hwio.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
-}
-
 func readUint(path string) uint64 {
-	v, _ := strconv.ParseUint(readStr(path), 10, 64)
+	v, _ := strconv.ParseUint(hwio.ReadTrim(path), 10, 64)
 	return v
 }
 
@@ -77,21 +69,21 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 	for _, pr := range ports {
 		net := filepath.Join(sys, "class", "net", pr.Linux)
 		p := Port{Name: pr.Name, Linux: pr.Linux, Features: inventory.ReadCaps(sys, pr.Linux).Features}
-		if readStr(filepath.Join(net, "carrier")) == "1" {
-			if v, err := strconv.Atoi(readStr(filepath.Join(net, "speed"))); err == nil && v > 0 {
+		if hwio.ReadTrim(filepath.Join(net, "carrier")) == "1" {
+			if v, err := strconv.Atoi(hwio.ReadTrim(filepath.Join(net, "speed"))); err == nil && v > 0 {
 				p.SpeedMbps = v
 			}
 		}
 		qs, _ := hwio.Glob(filepath.Join(net, "queues", "rx-*"))
 		p.RXQueues = len(qs)
 		for _, q := range qs {
-			if m := strings.Trim(readStr(filepath.Join(q, "rps_cpus")), "0,"); m != "" {
+			if m := strings.Trim(hwio.ReadTrim(filepath.Join(q, "rps_cpus")), "0,"); m != "" {
 				p.RPS = true
 			}
 		}
 		for _, irq := range irqs[pr.Linux] {
 			p.IRQs = append(p.IRQs, irq)
-			cpu, _ := strconv.Atoi(strings.SplitN(strings.SplitN(readStr(filepath.Join(proc, "irq", strconv.Itoa(irq), "effective_affinity_list")), ",", 2)[0], "-", 2)[0])
+			cpu, _ := strconv.Atoi(strings.SplitN(strings.SplitN(hwio.ReadTrim(filepath.Join(proc, "irq", strconv.Itoa(irq), "effective_affinity_list")), ",", 2)[0], "-", 2)[0])
 			p.IRQCPUs = append(p.IRQCPUs, cpu)
 		}
 		if r, ok := inventory.ReadRings(pr.Linux); ok {
@@ -107,7 +99,7 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 		// The PCIe link of the port's PCI device (a card's functions share
 		// it).
 		dev, err := hwio.EvalSymlinks(filepath.Join(net, "device"))
-		if err != nil || readStr(filepath.Join(dev, "current_link_speed")) == "" {
+		if err != nil || hwio.ReadTrim(filepath.Join(dev, "current_link_speed")) == "" {
 			continue
 		}
 		key := filepath.Base(dev) // 0000:04:00.1 -> the card 0000:04:00
@@ -120,9 +112,9 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 			if pp, ok := schema.ParsePhysical(pr.Name); ok {
 				name = fmt.Sprintf("card %d (%s)", pp.Card, key)
 			}
-			cd = &Card{Name: name, CurGTs: gts(readStr(filepath.Join(dev, "current_link_speed"))), MaxGTs: gts(readStr(filepath.Join(dev, "max_link_speed")))}
-			cd.CurWidth, _ = strconv.Atoi(readStr(filepath.Join(dev, "current_link_width")))
-			cd.MaxWidth, _ = strconv.Atoi(readStr(filepath.Join(dev, "max_link_width")))
+			cd = &Card{Name: name, CurGTs: gts(hwio.ReadTrim(filepath.Join(dev, "current_link_speed"))), MaxGTs: gts(hwio.ReadTrim(filepath.Join(dev, "max_link_speed")))}
+			cd.CurWidth, _ = strconv.Atoi(hwio.ReadTrim(filepath.Join(dev, "current_link_width")))
+			cd.MaxWidth, _ = strconv.Atoi(hwio.ReadTrim(filepath.Join(dev, "max_link_width")))
 			cards[key] = cd
 			order = append(order, key)
 		}
@@ -160,9 +152,9 @@ func (c *Collector) Collect(ports []PortRef) Facts {
 	}
 	govs, _ := hwio.Glob(filepath.Join(sys, "devices", "system", "cpu", "cpu[0-9]*", "cpufreq", "scaling_governor"))
 	for _, g := range govs {
-		f.Governors = append(f.Governors, readStr(g))
+		f.Governors = append(f.Governors, hwio.ReadTrim(g))
 	}
-	for _, l := range strings.Split(readStr(filepath.Join(proc, "meminfo")), "\n") {
+	for _, l := range strings.Split(hwio.ReadTrim(filepath.Join(proc, "meminfo")), "\n") {
 		fs := strings.Fields(l)
 		if len(fs) < 2 {
 			continue

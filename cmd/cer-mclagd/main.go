@@ -18,33 +18,13 @@ import (
 
 func main() { daemonkit.Main("cer-mclagd", setup) }
 
-// kitStack is mclag.Stack over switchd's relay.
-type kitStack struct{ k *daemonkit.Kit }
-
-func (s kitStack) Reachable() []int {
-	r, _ := s.k.Role()
-	return r.Reachable
-}
-
-func (s kitStack) Call(member int, method string, req any, timeout time.Duration) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(s.k.Ctx, timeout)
-	defer cancel()
-	var out json.RawMessage
-	err := s.k.StackCall(ctx, member, method, req, &out)
-	return out, err
-}
-
-func (s kitStack) Handle(method string, h func(from int, req json.RawMessage) (any, error)) {
-	s.k.HandleStack(method, func(_ context.Context, from int, req json.RawMessage) (any, error) { return h(from, req) })
-}
-
 func setup(k *daemonkit.Kit) error {
 	dir := k.SocketDir
 	if dir == "" {
 		dir = svc.SocketDir
 	}
 	lacp := mclag.NewLACPClient(k.Ctx, k.Endpoint, dir)
-	ctl := mclag.New(k.Member, lacp, kitStack{k}, k.Log)
+	ctl := mclag.New(k.Member, lacp, k.Stack(), k.Log)
 	k.OnConfig(func(raw json.RawMessage) {
 		var c mclagapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -174,7 +175,7 @@ func (d *Daemon) instances() []*instance {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := make([]*instance, 0, len(d.insts))
-	for _, k := range sortedKeys(d.insts) {
+	for _, k := range slices.Sorted(maps.Keys(d.insts)) {
 		out = append(out, d.insts[k])
 	}
 	return out
@@ -210,7 +211,7 @@ func (d *Daemon) apply() {
 		}
 	}
 	eng := policy.New(d.cfg.Policies)
-	for _, k := range sortedKeys(want) {
+	for _, k := range slices.Sorted(maps.Keys(want)) {
 		w := want[k]
 		in := d.insts[k]
 		if in == nil {
@@ -418,15 +419,6 @@ func (in *instance) refreshExports(ctx context.Context) {
 		local = append(local, p)
 	}
 	in.sp.SetLocal(local, nil)
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
 }
 
 // ---- policies ----

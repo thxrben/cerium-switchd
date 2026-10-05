@@ -26,31 +26,6 @@ const MethodClearSTP = stpapi.MethodClear
 
 func main() { daemonkit.Main("cer-rstpd", setup) }
 
-// kitStack is stp.Stack over switchd's relay.
-type kitStack struct{ k *daemonkit.Kit }
-
-func (s kitStack) Reachable() []int {
-	r, _ := s.k.Role()
-	return r.Reachable
-}
-
-func (s kitStack) Draining() []int {
-	r, _ := s.k.Role()
-	return r.Draining
-}
-
-func (s kitStack) Call(member int, method string, req any, timeout time.Duration) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(s.k.Ctx, timeout)
-	defer cancel()
-	var out json.RawMessage
-	err := s.k.StackCall(ctx, member, method, req, &out)
-	return out, err
-}
-
-func (s kitStack) Handle(method string, h func(from int, req json.RawMessage) (any, error)) {
-	s.k.HandleStack(method, func(_ context.Context, from int, req json.RawMessage) (any, error) { return h(from, req) })
-}
-
 func setup(k *daemonkit.Kit) error {
 	dir := k.SocketDir
 	if dir == "" {
@@ -78,7 +53,7 @@ func setup(k *daemonkit.Kit) error {
 	// The RSTP copy is for hitless restarts of this daemon while the system
 	// runs: memory (/run), not the disk (written every second; on a USB
 	// system stick that was the largest load on the disk).
-	ctl := stp.New(k.Member, kitStack{k}, k.SocketDir, k.Log)
+	ctl := stp.New(k.Member, k.Stack(), k.SocketDir, k.Log)
 	ctl.Alarm = func(text string) {
 		go func() { // never under the controller's lock
 			k.Notify(fmt.Sprintf("member %d: %s", k.Member, text))

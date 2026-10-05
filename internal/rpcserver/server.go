@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"io"
 	"log/slog"
 	"net"
@@ -16,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
 
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
@@ -152,25 +151,6 @@ func (s *Server) CloseSessions() {
 	}
 }
 
-// peer returns the uid of the process on the other end of c.
-func peer(c *net.UnixConn) (int, error) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var cred *unix.Ucred
-	var cerr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, cerr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	}); err != nil {
-		return 0, err
-	}
-	if cerr != nil {
-		return 0, cerr
-	}
-	return int(cred.Uid), nil
-}
-
 type conn struct {
 	c       io.ReadWriteCloser
 	wmu     sync.Mutex
@@ -288,7 +268,7 @@ func newConn(rw io.ReadWriteCloser) *conn {
 func (s *Server) handle(uc *net.UnixConn) {
 	defer uc.Close()
 	c := newConn(uc)
-	uid, err := peer(uc)
+	uid, err := rpc.PeerUID(uc)
 	if err != nil {
 		s.Log.Error("cli: peer credentials", "err", err)
 		return

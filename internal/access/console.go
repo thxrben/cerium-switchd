@@ -255,7 +255,7 @@ func (c *Consoles) busy(unit string) bool {
 // syncVTs sets up the virtual terminals (a connected display). Running
 // gettys without a logged-in user are restarted to pick up the change.
 func (c *Consoles) syncVTs(cfg *model.Config) error {
-	if !fileExists(filepath.Join(c.SysRoot, "class", "tty", "tty0")) {
+	if !hwio.Exists(filepath.Join(c.SysRoot, "class", "tty", "tty0")) {
 		return nil
 	}
 	path := filepath.Join(c.UnitDir, vtDropIn, "switchd.conf")

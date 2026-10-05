@@ -277,3 +277,16 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		return d.Sync()
 	})
 }
+
+// ReadTrim returns a small file's content without surrounding white space
+// ("" when it cannot be read: sysfs attributes that may be missing).
+func ReadTrim(path string) string {
+	raw, err := ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// Exists reports whether a path exists.
+func Exists(path string) bool { _, err := Stat(path); return err == nil }

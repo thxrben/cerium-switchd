@@ -629,14 +629,15 @@ func (b *builder) checkBundleSpeeds() {
 		if !unknown && len(speeds) > 1 {
 			var parts []string
 			for _, sp := range sortedKeys(speeds) {
-				parts = append(parts, fmt.Sprintf("%s: %s", speedName(sp), strings.Join(speeds[sp], ", ")))
+				parts = append(parts, fmt.Sprintf("%s: %s", SpeedName(sp), strings.Join(speeds[sp], ", ")))
 			}
 			b.warnf("interfaces "+name, "member ports have different maximum speeds (%s); traffic is hashed evenly, so the slower ports limit their share", strings.Join(parts, "; "))
 		}
 	}
 }
 
-func speedName(mbps int) string {
+// SpeedName is a port speed for people (10G, 100M).
+func SpeedName(mbps int) string {
 	if mbps >= 1000 && mbps%1000 == 0 {
 		return fmt.Sprintf("%dG", mbps/1000)
 	}

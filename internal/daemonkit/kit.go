@@ -370,3 +370,37 @@ func run(k *Kit, sig context.Context, setup func(*Kit) error) error {
 	k.cancel()
 	return nil
 }
+
+// Stack is the stacking protocol as a controller needs it (cer-mclagd,
+// cer-rstpd): the reachable and draining members, calls to another
+// member's daemon of the same name, and handlers for its calls.
+type Stack struct{ k *Kit }
+
+// Stack returns the daemon's view of the stack.
+func (k *Kit) Stack() Stack { return Stack{k} }
+
+// Reachable lists the members reachable over the stack.
+func (s Stack) Reachable() []int {
+	r, _ := s.k.Role()
+	return r.Reachable
+}
+
+// Draining lists the members in maintenance mode.
+func (s Stack) Draining() []int {
+	r, _ := s.k.Role()
+	return r.Draining
+}
+
+// Call calls method of this daemon on another member.
+func (s Stack) Call(member int, method string, req any, timeout time.Duration) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(s.k.Ctx, timeout)
+	defer cancel()
+	var out json.RawMessage
+	err := s.k.StackCall(ctx, member, method, req, &out)
+	return out, err
+}
+
+// Handle serves method for the other members.
+func (s Stack) Handle(method string, h func(from int, req json.RawMessage) (any, error)) {
+	s.k.HandleStack(method, func(_ context.Context, from int, req json.RawMessage) (any, error) { return h(from, req) })
+}

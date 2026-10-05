@@ -57,7 +57,7 @@ func (s *SSH) config(cfg *model.Config) string {
 		}
 	} else {
 		for _, k := range []string{"ed25519", "ecdsa", "rsa"} {
-			if p := "/etc/ssh/ssh_host_" + k + "_key"; fileExists(p) {
+			if p := "/etc/ssh/ssh_host_" + k + "_key"; hwio.Exists(p) {
 				fmt.Fprintf(&b, "HostKey %s\n", p)
 			}
 		}
@@ -109,8 +109,6 @@ RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 `
-
-func fileExists(p string) bool { _, err := hwio.Stat(p); return err == nil }
 
 // currentPort returns the port of the running managed instance (0 = none).
 func (s *SSH) currentPort() int {
@@ -169,13 +167,13 @@ func writeIfChanged(path, content string, mode os.FileMode) (bool, error) {
 // Sync converges the CLI SSH server. It runs only on the master, inside
 // the management instance (reference 1.8, 5.1 system services ssh).
 func (s *SSH) Sync(cfg *model.Config, master bool) error {
-	if s.LegacyDropIn != "" && fileExists(s.LegacyDropIn) {
+	if s.LegacyDropIn != "" && hwio.Exists(s.LegacyDropIn) {
 		if err := hwio.Remove(s.LegacyDropIn); err == nil {
 			_ = s.Run("systemctl", "reload", "ssh")
 		}
 	}
 	if !cfg.System.SSH.Configured || cfg.System.MgmtInstance == "" || !master {
-		if !fileExists(s.UnitPath) {
+		if !hwio.Exists(s.UnitPath) {
 			return nil
 		}
 		_ = s.Run("systemctl", "disable", "--now", sshUnit)

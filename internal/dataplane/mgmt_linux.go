@@ -213,12 +213,6 @@ func flushNeighbors(ln netlink.Link) bool {
 	return changed
 }
 
-// Carrier reports whether a kernel port has a link.
-func Carrier(name string) bool {
-	ln, err := nlx.LinkByName(name)
-	return err == nil && ln.Attrs().RawFlags&unix.IFF_LOWER_UP != 0
-}
-
 // VTEPDevice holds the stack's VXLAN source address on every member
 // (reference 5.7).
 const VTEPDevice = "swvtep"

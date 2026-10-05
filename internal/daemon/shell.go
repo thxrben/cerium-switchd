@@ -13,9 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/thxrben/cerium-switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"github.com/thxrben/cerium-switchd/internal/rpcserver"
 	"github.com/thxrben/cerium-switchd/internal/rshell"
 	"github.com/thxrben/cerium-switchd/internal/stack"
@@ -78,7 +77,7 @@ func (s *shells) serveLocal(c *net.UnixConn) {
 	fail := func(format string, args ...any) {
 		_ = rshell.WriteLine(c, rshell.Status{Err: fmt.Sprintf(format, args...)})
 	}
-	uid, err := peerUID(c)
+	uid, err := rpc.PeerUID(c)
 	if err != nil {
 		return
 	}
@@ -156,23 +155,4 @@ func (s *shells) serveMember(nc net.Conn) {
 		s.log.Warn("shell", "user", h.User, "member", h.From, "err", err)
 	}
 	s.log.Info("shell ended", "facility", "authorization", "user", h.User, "member", h.From)
-}
-
-// peerUID returns the uid of the process on the other end of c.
-func peerUID(c *net.UnixConn) (int, error) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var cred *unix.Ucred
-	var cerr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, cerr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	}); err != nil {
-		return 0, err
-	}
-	if cerr != nil {
-		return 0, cerr
-	}
-	return int(cred.Uid), nil
 }

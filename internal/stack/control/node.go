@@ -140,7 +140,7 @@ func (n *Node) Start() error {
 		n.closeStores()
 		return err
 	}
-	if existing && fileExists(n.forceFile()) {
+	if existing && hwio.Exists(n.forceFile()) {
 		// request virtual-chassis force-master: this member alone forms the
 		// Raft configuration; the others come back as non-voters.
 		n.Log.Warn("stack control: force-master, this member continues alone", "facility", "change-log")
@@ -181,8 +181,6 @@ func (n *Node) Start() error {
 	go func() { defer n.wg.Done(); n.leaderLoop(ctx) }()
 	return nil
 }
-
-func fileExists(p string) bool { _, err := hwio.Stat(p); return err == nil }
 
 // forceFile marks a forced recovery for the next start.
 func (n *Node) forceFile() string { return filepath.Join(n.Dir, "force-master") }

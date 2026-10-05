@@ -967,7 +967,7 @@ func (sh *Shell) showVCPorts(c *call) error {
 		}
 		speed := "-"
 		if p.SpeedMbps > 0 {
-			speed = fmtSpeed(p.SpeedMbps)
+			speed = model.SpeedName(p.SpeedMbps)
 		}
 		fmt.Fprintf(c.out, "%-10s %-12s %-7s %-7s %-24s %-10s %s\n", p.Port, p.Linux, p.State, speed, p.Neighbor, dash(p.PeerPort), up)
 		switch {
@@ -1749,7 +1749,7 @@ func (sh *Shell) showLimits(c *call) error {
 	line("Physical ports", strconv.Itoa(hw.Ports))
 	line("Stacking ports", strconv.Itoa(hw.StackPorts))
 	if hw.FastestMbps > 0 {
-		line("Fastest port", fmt.Sprintf("%s (%s)", fmtSpeed(hw.FastestMbps), hw.FastestPort))
+		line("Fastest port", fmt.Sprintf("%s (%s)", model.SpeedName(hw.FastestMbps), hw.FastestPort))
 	}
 	// Used of available: the ports encrypting in hardware now, of those
 	// whose NIC can.
@@ -1762,13 +1762,6 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-func fmtSpeed(mbps int) string {
-	if mbps >= 1000 && mbps%1000 == 0 {
-		return fmt.Sprintf("%dG", mbps/1000)
-	}
-	return fmt.Sprintf("%dM", mbps)
 }
 
 func joinIDs(ids []int) string {

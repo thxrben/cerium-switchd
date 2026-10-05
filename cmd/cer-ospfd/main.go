@@ -17,36 +17,14 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/ospfd"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
-	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
 
 func main() {
 	daemonkit.Main("cer-ospfd", setup)
 }
 
-// ribClient calls cer-ribd on this member.
-type ribClient struct{ c *ipc.Client }
-
-func (r ribClient) SetRoutes(ctx context.Context, sr ribapi.SetRoutes) error {
-	return r.c.Call(ctx, svc.MethodRoutesSet, sr, nil)
-}
-
-func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, error) {
-	var out []rib.Entry
-	q := rib.Query{Active: true, Tables: []rib.Table{{Instance: instance}, {Instance: instance, V6: true}}}
-	err := r.c.Call(ctx, svc.MethodRoutes, q, &out)
-	return out, err
-}
-
-// bfdClient calls cer-bfdd on this member.
-type bfdClient struct{ c *ipc.Client }
-
-func (b bfdClient) Set(ctx context.Context, s bfdapi.Set) error {
-	return b.c.Call(ctx, bfdapi.MethodSet, s, nil)
-}
-
 func setup(k *daemonkit.Kit) error {
-	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
+	rc := ribapi.Client{C: k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := ospfd.New(ospfd.LinuxKernel{}, ospfd.LinuxNet{}, rc, k.Log)
 	// Graceful restart (reference 5.13): the neighbours kept in /run; a
 	// restart by the supervisor is announced to them.
@@ -64,7 +42,7 @@ func setup(k *daemonkit.Kit) error {
 	// BFD for the neighbours (cer-bfdd runs while BFD is configured; the
 	// sessions are set again whenever it (re)starts).
 	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
-	d.BFD = bfdClient{bc}
+	d.BFD = bfdapi.Client{C: bc}
 	bc.OnConnect(func(*ipc.Conn) { d.ResendBFD() })
 	bc.Subscribe(bfdapi.TopicSessions, "", func(ev ipc.Event) {
 		if ev.Sync {

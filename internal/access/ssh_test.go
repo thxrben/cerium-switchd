@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
 func TestCLISSH(t *testing.T) {
@@ -52,7 +53,7 @@ func TestCLISSH(t *testing.T) {
 	cfg.System.SSH.Port = 2222
 	cfg.System.Banner = "Authorized access only"
 	// Without a management instance no CLI SSH server runs.
-	if err := s.Sync(cfg, true); err != nil || fileExists(s.UnitPath) {
+	if err := s.Sync(cfg, true); err != nil || hwio.Exists(s.UnitPath) {
 		t.Fatalf("started without a management instance: %v", err)
 	}
 	cfg.System.MgmtInstance = "oob"
@@ -69,7 +70,7 @@ func TestCLISSH(t *testing.T) {
 			t.Errorf("config lacks %q:\n%s", want, conf)
 		}
 	}
-	if fileExists(s.LegacyDropIn) {
+	if hwio.Exists(s.LegacyDropIn) {
 		t.Error("legacy OS drop-in not removed")
 	}
 	for _, want := range []string{"systemctl reload ssh", "sshd -t -f " + s.confPath() + ".new", "systemctl disable switchd-sshd.service", "systemctl restart switchd-sshd.service"} {
@@ -114,7 +115,7 @@ func TestCLISSH(t *testing.T) {
 	// Not the master: stopped.
 	calls = nil
 	s.Sync(cfg, false)
-	if fileExists(s.UnitPath) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
+	if hwio.Exists(s.UnitPath) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
 		t.Errorf("still running on a member that is not the master: %v", calls)
 	}
 	s.Sync(cfg, true)
@@ -122,7 +123,7 @@ func TestCLISSH(t *testing.T) {
 	cfg.System.SSH.Configured = false
 	calls = nil
 	s.Sync(cfg, true)
-	if fileExists(s.UnitPath) || fileExists(s.confPath()) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
+	if hwio.Exists(s.UnitPath) || hwio.Exists(s.confPath()) || !strings.Contains(strings.Join(calls, "\n"), "disable --now switchd-sshd.service") {
 		t.Errorf("not removed: %v", calls)
 	}
 }

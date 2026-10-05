@@ -39,7 +39,7 @@ func ReadSensors(sysRoot string) []Sensor {
 	slices.Sort(devs)
 	var out []Sensor
 	for _, d := range devs {
-		chip := readTrim(filepath.Join(d, "name"))
+		chip := hwio.ReadTrim(filepath.Join(d, "name"))
 		if chip == "" {
 			chip = filepath.Base(d)
 		}
@@ -55,7 +55,7 @@ func ReadSensors(sysRoot string) []Sensor {
 				if !ok {
 					continue
 				}
-				s := Sensor{Class: k.class, Chip: chip, Label: readTrim(filepath.Join(d, base+"_label")), Value: v}
+				s := Sensor{Class: k.class, Chip: chip, Label: hwio.ReadTrim(filepath.Join(d, base+"_label")), Value: v}
 				if s.Label == "" {
 					s.Label = base
 				}
@@ -107,16 +107,8 @@ func (s Sensor) Measurement() string {
 	return fmt.Sprint(s.Value)
 }
 
-func readTrim(path string) string {
-	raw, err := hwio.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
-}
-
 func readNum(path string, div float64) (float64, bool) {
-	s := readTrim(path)
+	s := hwio.ReadTrim(path)
 	if s == "" {
 		return 0, false
 	}

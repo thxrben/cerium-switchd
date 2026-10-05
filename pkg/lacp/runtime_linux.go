@@ -454,7 +454,7 @@ func (r *Runtime) Status() []BundleStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []BundleStatus
-	for _, n := range sortedKeys(r.bundles) {
+	for _, n := range slices.Sorted(maps.Keys(r.bundles)) {
 		rb := r.bundles[n]
 		bs := BundleStatus{Name: n, Ports: rb.b.Status(), PortNames: map[string]string{}}
 		for _, p := range rb.spec.Ports {
@@ -462,15 +462,6 @@ func (r *Runtime) Status() []BundleStatus {
 		}
 		out = append(out, bs)
 	}
-	return out
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
 	return out
 }
 

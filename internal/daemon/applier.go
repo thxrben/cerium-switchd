@@ -15,6 +15,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
+	"github.com/thxrben/cerium-switchd/pkg/netdev"
 	"github.com/thxrben/cerium-switchd/pkg/sdnotify"
 
 	"github.com/vishvananda/netlink"
@@ -261,7 +262,7 @@ func (a *kernelApplier) apply(to *config.Tree, reason string) error {
 			owned[n] = true // released: down and out of any bridge or bundle
 		}
 	}
-	dataplane.Management(desired, cfg, a.member, a.names.Linux, a.master(), dataplane.Carrier, a.cmeMAC, unconf)
+	dataplane.Management(desired, cfg, a.member, a.names.Linux, a.master(), netdev.Carrier, a.cmeMAC, unconf)
 	actual := before // nothing changed the kernel since
 	ops := dataplane.Plan(actual, desired, owned)
 	if err := a.execute(ops, reason, actual, desired); err != nil {

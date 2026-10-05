@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -302,7 +304,7 @@ func (d *Daemon) ownerListen(cfg Config, master int) {
 			delete(d.owned, name)
 		}
 	}
-	for _, name := range sortedKeys(want) {
+	for _, name := range slices.Sorted(maps.Keys(want)) {
 		w := want[name]
 		if l := d.owned[name]; l != nil {
 			l.mu.Lock()
