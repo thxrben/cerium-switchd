@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/mclag"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 
+	"github.com/thxrben/cerium-switchd/internal/api/mclagapi"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/stack/mesh"
@@ -142,7 +142,7 @@ func (x *maintCtl) exit(user string) (string, error) {
 	}
 	x.set(false)
 	x.log.Warn("maintenance mode exited", "facility", "change-log", "user", user)
-	return fmt.Sprintf("maintenance mode exited; MC-LAG legs rejoin in %s\n", mclag.RejoinAfter), nil
+	return fmt.Sprintf("maintenance mode exited; MC-LAG legs rejoin in %s\n", mclagapi.RejoinAfter), nil
 }
 
 // drainForShutdown drains before a reboot, halt or power-off (best effort).

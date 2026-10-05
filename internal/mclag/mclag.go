@@ -94,11 +94,6 @@ const mclagJoinTimeout = 300 * time.Millisecond
 // before the secondary holds it.
 const mclagInconsistentAfter = 10 * time.Second
 
-// RejoinAfter: how long legs held for the minority rule (or maintenance
-// mode) wait after the peer is reachable again (the MAC tables are
-// exchanged at once).
-const RejoinAfter = 2 * time.Second
-
 // legsMsg is the leg state a member sends its peer.
 type legsMsg struct {
 	Domain int             `json:"domain"`

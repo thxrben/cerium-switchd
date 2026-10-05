@@ -155,12 +155,12 @@ const (
 	MethodDrainBlockers = "mclag.drain-blockers"
 )
 
-// cer-ribd's calls: MethodRoutesSet (ribd.SetRoutes, from the routing
+// cer-ribd's calls: MethodRoutesSet (ribapi.SetRoutes, from the routing
 // protocols), MethodRoutes (rib.Query -> []rib.Entry, show route) and
 // MethodRouteSummary ([]rib.Summary, show route summary).
 const (
 	MethodRoutesSet   = "routes.set"
-	MethodRoutesDelta = "routes.delta" // ribd.RoutesDelta -> ribd.DeltaReply
+	MethodRoutesDelta = "routes.delta" // ribapi.RoutesDelta -> ribapi.DeltaReply
 
 	// PlannedRestartDir holds a mark per program whose coming stop is a
 	// restart by the supervisor (supervise.Supervisor.PlannedDir).

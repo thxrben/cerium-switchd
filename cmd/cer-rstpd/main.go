@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/api/stpapi"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -21,7 +22,7 @@ import (
 )
 
 // MethodClearSTP is clear spanning-tree protocol-migration|statistics.
-const MethodClearSTP = stp.MethodClear
+const MethodClearSTP = stpapi.MethodClear
 
 func main() { daemonkit.Main("cer-rstpd", setup) }
 
@@ -100,12 +101,12 @@ func setup(k *daemonkit.Kit) error {
 	// bpdu-block (reference 5.5): switchd follows the blocked ports.
 	guard := stp.NewGuard(stp.LinuxGuardIO{}, stp.GuardStateFile(k.StateDir), k.Log)
 	var alarmed sync.Map // ports with a bpdu-block alarm
-	guard.Publish = func(m map[string]stp.Blocked) {
+	guard.Publish = func(m map[string]stpapi.Blocked) {
 		v := map[string]any{}
 		for n, b := range m {
 			v[n] = b
 		}
-		k.Endpoint.Replace(stp.TopicBPDUBlocked, v)
+		k.Endpoint.Replace(stpapi.TopicBPDUBlocked, v)
 		go func() {
 			for n, b := range m {
 				if _, had := alarmed.LoadOrStore(n, true); !had {
@@ -123,7 +124,7 @@ func setup(k *daemonkit.Kit) error {
 	}
 	guard.Alarm = func(text string) { go k.Notify(fmt.Sprintf("member %d: %s", k.Member, text)) }
 	guard.Publish(guard.Blocked())
-	k.Endpoint.Handle(stp.MethodClearBPDU, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	k.Endpoint.Handle(stpapi.MethodClearBPDU, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
 		var name string
 		if err := json.Unmarshal(raw, &name); err != nil {
 			return nil, err
@@ -143,7 +144,7 @@ func setup(k *daemonkit.Kit) error {
 		}
 	}()
 	k.OnConfig(func(raw json.RawMessage) {
-		var c stp.Config
+		var c stpapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return
@@ -155,7 +156,7 @@ func setup(k *daemonkit.Kit) error {
 		return ctl.Status()
 	})
 	k.Endpoint.Handle(MethodClearSTP, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var c stp.ClearRequest
+		var c stpapi.ClearRequest
 		if err := json.Unmarshal(raw, &c); err != nil {
 			return nil, err
 		}

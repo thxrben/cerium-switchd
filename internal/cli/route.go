@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/policy"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
@@ -603,7 +603,7 @@ func (sh *Shell) showBGPRoutes(c *call, a routeArgs, sums []rib.Summary) error {
 	}
 	var paths []bgp.InPath
 	for _, n := range nbrs {
-		ps, err := b.BGPAdj(bgpd.AdjRequest{Instance: inst, Neighbor: n, Out: a.adj == "out"})
+		ps, err := b.BGPAdj(bgpapi.AdjRequest{Instance: inst, Neighbor: n, Out: a.adj == "out"})
 		if err != nil {
 			return err
 		}

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/policy"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/pkg/ospf"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
@@ -77,11 +77,11 @@ func (p *fakePort) Close() error {
 
 type fakeRIB struct {
 	mu     sync.Mutex
-	sets   map[rib.Protocol]ribd.SetRoutes
+	sets   map[rib.Protocol]ribapi.SetRoutes
 	active []rib.Entry
 }
 
-func (r *fakeRIB) SetRoutes(_ context.Context, sr ribd.SetRoutes) error {
+func (r *fakeRIB) SetRoutes(_ context.Context, sr ribapi.SetRoutes) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sets[sr.Protocol] = sr
@@ -94,7 +94,7 @@ func (r *fakeRIB) Active(context.Context, string) ([]rib.Entry, error) {
 	return r.active, nil
 }
 
-func (r *fakeRIB) get(p rib.Protocol) (ribd.SetRoutes, bool) {
+func (r *fakeRIB) get(p rib.Protocol) (ribapi.SetRoutes, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	sr, ok := r.sets[p]
@@ -119,7 +119,7 @@ func TestTwoDaemons(t *testing.T) {
 	mk := func(name string, rid ospf.ID, ll string, linkPfx4, linkPfx6, lo4, lo6 string) (*Daemon, *fakeRIB) {
 		k := fakeKernel{"eth-" + name: {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr(ll), SpeedMbps: 10000},
 			"lo-" + name: {Index: 8, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::99"), SpeedMbps: 0}}
-		r := &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+		r := &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}
 		d := New(k, fakeNet{w: w, name: name}, r, quiet)
 		d.Settle = 2 * time.Second
 		link := iface("1/0/1.0", "eth-"+name, linkPfx4, linkPfx6)
@@ -280,7 +280,7 @@ func relaySetup(ctx context.Context, bfd *BFDSpec, b1, b2 BFD) (d1, d2 *Daemon, 
 		{Version: ospf.V3, RouterID: 0x01010101, ReferenceBW: 100e9, Interfaces: []Iface{port, lo}},
 	}}
 	// Member 1, the master.
-	r1 = &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+	r1 = &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}
 	d1 = New(fakeKernel{"lo1": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::99")}}, fakeNet{w: w}, r1, quiet)
 	d1.Member, d1.StackCall, d1.Settle, d1.BFD = 1, st.call, time.Second, b1
 	// Member 2 has the port's device ("link", joined to the router).
@@ -291,7 +291,7 @@ func relaySetup(ctx context.Context, bfd *BFDSpec, b1, b2 BFD) (d1, d2 *Daemon, 
 		ifs[0].Device = "link"
 		cfg2.Instances[k].Interfaces = ifs
 	}
-	d2 = New(fakeKernel{"link": {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::1")}}, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}, quiet)
+	d2 = New(fakeKernel{"link": {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::1")}}, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}, quiet)
 	d2.Member, d2.StackCall, d2.BFD = 2, st.call, b2
 	st.ds[1], st.ds[2] = d1, d2
 	for _, d := range []*Daemon{d1, d2} {
@@ -302,7 +302,7 @@ func relaySetup(ctx context.Context, bfd *BFDSpec, b1, b2 BFD) (d1, d2 *Daemon, 
 	d1.SetRole(true, 1)
 	d2.SetRole(false, 1)
 	// The router behind member 2's port.
-	rr = &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+	rr = &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}
 	dr := New(fakeKernel{"link": {Index: 3, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr("fe80::2")},
 		"lo": {Index: 1, MTU: 65536, Up: true, LinkLocal: netip.MustParseAddr("fe80::98")}}, fakeNet{w: w}, rr, quiet)
 	dr.Settle = time.Second

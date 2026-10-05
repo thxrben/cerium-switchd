@@ -6,7 +6,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
 	"github.com/thxrben/cerium-switchd/pkg/bfd"
 )
 
@@ -22,7 +22,7 @@ const bfdClient = "bgp"
 
 // BFD is cer-bfdd on this member.
 type BFD interface {
-	Set(ctx context.Context, s bfdd.Set) error
+	Set(ctx context.Context, s bfdapi.Set) error
 }
 
 type bfdRef struct {
@@ -48,7 +48,7 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 	if d.BFD == nil {
 		return
 	}
-	var specs []bfdd.SessionSpec
+	var specs []bfdapi.SessionSpec
 	keys := map[string]bfdRef{}
 	// The master: the neighbours it reaches itself. An owner: those on its
 	// routed ports.
@@ -79,7 +79,7 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 			if b.Multihop {
 				k.Local = b.Local
 			}
-			specs = append(specs, bfdd.SessionSpec{Key: k, IntervalMs: b.IntervalMs,
+			specs = append(specs, bfdapi.SessionSpec{Key: k, IntervalMs: b.IntervalMs,
 				Multiplier: b.Multiplier, AuthType: b.AuthType, AuthKeyID: b.AuthKeyID, AuthKey: b.AuthKey})
 			keys[k.String()] = bfdRef{instance: in.Name, nbr: n.Addr, relayed: !d.master}
 		}
@@ -95,13 +95,13 @@ func (d *Daemon) syncBFD(want map[string]Instance) {
 }
 
 // sendBFD hands a list to the sender (d.bfdMu held): the newest wins.
-func (d *Daemon) sendBFD(specs []bfdd.SessionSpec) {
+func (d *Daemon) sendBFD(specs []bfdapi.SessionSpec) {
 	if d.bfdQ == nil {
-		d.bfdQ = make(chan []bfdd.SessionSpec, 1)
+		d.bfdQ = make(chan []bfdapi.SessionSpec, 1)
 		go func() {
 			for ss := range d.bfdQ {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := d.BFD.Set(ctx, bfdd.Set{Client: bfdClient, Sessions: ss}); err != nil {
+				if err := d.BFD.Set(ctx, bfdapi.Set{Client: bfdClient, Sessions: ss}); err != nil {
 					d.Log.Warn("bgp: BFD sessions not set", "err", err)
 				}
 				cancel()

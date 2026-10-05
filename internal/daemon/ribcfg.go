@@ -4,9 +4,9 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
 
@@ -14,8 +14,8 @@ import (
 // every routing instance with its units' devices on this member and the
 // connected, static and DHCP routes. The management instance is only on
 // the master (reference 1.8). leases are cer-dhcpcd's, by device.
-func ribConfig(cfg *model.Config, member int, names dataplane.PortNames, master bool, leases map[string]dataplane.DHCPLease) ribd.Config {
-	c := ribd.Config{Instances: map[string]ribd.Instance{}}
+func ribConfig(cfg *model.Config, member int, names dataplane.PortNames, master bool, leases map[string]dataplane.DHCPLease) ribapi.Config {
+	c := ribapi.Config{Instances: map[string]ribapi.Instance{}}
 	for _, r := range cfg.AllRouting() {
 		for _, o := range []*model.OSPF{r.OSPF, r.OSPF3} {
 			if o != nil && !o.Disabled && o.GracefulRestart {
@@ -39,7 +39,7 @@ func ribConfig(cfg *model.Config, member int, names dataplane.PortNames, master 
 		}
 	})
 	for _, inst := range insts {
-		in := ribd.Instance{VRF: inst, Devices: map[string]string{}}
+		in := ribapi.Instance{VRF: inst, Devices: map[string]string{}}
 		defaulted := false
 		for _, name := range units {
 			u := cfg.L3[name]
@@ -66,7 +66,7 @@ func ribConfig(cfg *model.Config, member int, names dataplane.PortNames, master 
 				in.Routes = append(in.Routes, rib.Route{Prefix: le.Addr.Masked(), Protocol: rib.Direct, Preference: rib.PrefDirect, NextHops: nh})
 				if le.Router.IsValid() && !defaulted {
 					defaulted = true
-					in.Routes = append(in.Routes, rib.Route{Prefix: ribd.DefaultRoute, Protocol: rib.DHCP, Preference: rib.PrefDHCP,
+					in.Routes = append(in.Routes, rib.Route{Prefix: ribapi.DefaultRoute, Protocol: rib.DHCP, Preference: rib.PrefDHCP,
 						NextHops: []rib.NextHop{{Gateway: le.Router, Interface: name}}})
 				}
 			}

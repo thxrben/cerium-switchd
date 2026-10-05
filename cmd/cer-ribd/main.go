@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/names"
 	"github.com/thxrben/cerium-switchd/internal/ribd"
@@ -35,7 +36,7 @@ func setup(k *daemonkit.Kit) error {
 		}
 	}
 	k.OnConfig(func(raw json.RawMessage) {
-		var c ribd.Config
+		var c ribapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return
@@ -43,7 +44,7 @@ func setup(k *daemonkit.Kit) error {
 		s.SetConfig(&c)
 	})
 	k.Endpoint.Handle(svc.MethodRoutesSet, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var sr ribd.SetRoutes
+		var sr ribapi.SetRoutes
 		if err := json.Unmarshal(raw, &sr); err != nil {
 			return nil, err
 		}
@@ -51,7 +52,7 @@ func setup(k *daemonkit.Kit) error {
 		return nil, nil
 	})
 	k.Endpoint.Handle(svc.MethodRoutesDelta, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var d ribd.RoutesDelta
+		var d ribapi.RoutesDelta
 		if err := json.Unmarshal(raw, &d); err != nil {
 			return nil, err
 		}

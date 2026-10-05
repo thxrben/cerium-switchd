@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
 	"github.com/thxrben/cerium-switchd/pkg/bfd"
 )
 
@@ -40,16 +40,7 @@ const (
 
 // BFD is cer-bfdd on this member.
 type BFD interface {
-	Set(ctx context.Context, s bfdd.Set) error
-}
-
-// BFDSpec is an interface's bfd-liveness-detection.
-type BFDSpec struct {
-	IntervalMs int    `json:"interval_ms"`
-	Multiplier int    `json:"multiplier"`
-	AuthType   string `json:"auth_type,omitempty"` // keyed-md5, keyed-sha-1 ("": none)
-	AuthKeyID  int    `json:"auth_key_id,omitempty"`
-	AuthKey    string `json:"auth_key,omitempty"`
+	Set(ctx context.Context, s bfdapi.Set) error
 }
 
 // RelayBFDSession is a session a member runs for the master.
@@ -87,7 +78,7 @@ type bfdState struct {
 	// The master's sessions: those of cer-bfdd here by its key, and every
 	// session's last state (up).
 	local      map[string]bfdRef
-	localSpecs []bfdd.SessionSpec // last given to cer-bfdd (nil: never)
+	localSpecs []bfdapi.SessionSpec // last given to cer-bfdd (nil: never)
 	up         map[bfdRef]bool
 	downs      map[bfdRef]uint64 // relayed sessions: the owner's count
 	remote     map[int]RelayBFD  // per member, last sent
@@ -98,7 +89,7 @@ type bfdState struct {
 	// states.
 	relayMaster  int
 	lastRelay    RelayBFD
-	relayedSpecs []bfdd.SessionSpec
+	relayedSpecs []bfdapi.SessionSpec
 	relayed      map[string]bfdRef
 	relayedUp    map[string]bool
 	relayedDowns map[string]uint64
@@ -107,12 +98,6 @@ type bfdState struct {
 	// Calls to cer-bfdd and to other members, latest first.
 	set  map[string]*latest
 	mset map[int]*latest
-}
-
-// spec converts an interface's settings for cer-bfdd.
-func (s BFDSpec) session(k bfd.Key, unit string) bfdd.SessionSpec {
-	return bfdd.SessionSpec{Key: k, Interface: unit, IntervalMs: s.IntervalMs, Multiplier: s.Multiplier,
-		AuthType: s.AuthType, AuthKeyID: s.AuthKeyID, AuthKey: s.AuthKey}
 }
 
 // bfdKey is cer-bfdd's key of a single-hop session: link-local peers carry
@@ -131,7 +116,7 @@ func (d *Daemon) syncBFD(now time.Time) {
 	if b.up == nil {
 		b.up, b.local, b.remote = map[bfdRef]bool{}, map[string]bfdRef{}, map[int]RelayBFD{}
 	}
-	var local []bfdd.SessionSpec
+	var local []bfdapi.SessionSpec
 	localRefs := map[string]bfdRef{}
 	remote := map[int]RelayBFD{}
 	live := map[bfdRef]bool{}
@@ -150,7 +135,7 @@ func (d *Daemon) syncBFD(now time.Time) {
 			switch owner := in.owner[n.Iface]; {
 			case owner == 0 && ic.Device != "":
 				bk := bfdKey(in.cfg.VRF, n.Addr, ic.Device)
-				local = append(local, ic.BFD.session(bk, ic.Unit))
+				local = append(local, ic.BFD.Session(bk, ic.Unit))
 				localRefs[bk.String()] = ref
 			case owner != 0:
 				r := remote[owner]
@@ -174,7 +159,7 @@ func (d *Daemon) syncBFD(now time.Time) {
 	}
 	b.local = localRefs
 	if b.localSpecs == nil || !slices.Equal(local, b.localSpecs) {
-		b.localSpecs = append([]bfdd.SessionSpec{}, local...)
+		b.localSpecs = append([]bfdapi.SessionSpec{}, local...)
 		d.bfdSet(bfdClient, local)
 	}
 	resend := now.Sub(b.sentAt) >= 10*time.Second
@@ -199,7 +184,7 @@ func (d *Daemon) syncBFD(now time.Time) {
 
 // bfdSet gives cer-bfdd a client's sessions (without waiting; the latest
 // list wins).
-func (d *Daemon) bfdSet(client string, ss []bfdd.SessionSpec) {
+func (d *Daemon) bfdSet(client string, ss []bfdapi.SessionSpec) {
 	if d.BFD == nil {
 		return
 	}
@@ -212,7 +197,7 @@ func (d *Daemon) bfdSet(client string, ss []bfdd.SessionSpec) {
 		l = &latest{}
 		b.set[client] = l
 	}
-	set := bfdd.Set{Client: client, Sessions: ss}
+	set := bfdapi.Set{Client: client, Sessions: ss}
 	l.put(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -388,12 +373,12 @@ func (d *Daemon) setRelayedBFD(r *RelayBFD, force bool) {
 	ifs := map[string]Iface{}
 	vrf := map[string]string{}
 	for _, in := range cfg.Instances {
-		vrf[in.key()] = in.VRF
+		vrf[in.Key()] = in.VRF
 		for _, ic := range in.Interfaces {
-			ifs[in.key()+"|"+ic.Unit] = ic
+			ifs[in.Key()+"|"+ic.Unit] = ic
 		}
 	}
-	var ss []bfdd.SessionSpec
+	var ss []bfdapi.SessionSpec
 	refs := map[string]bfdRef{}
 	for _, s := range b.lastRelay.Sessions {
 		ic, ok := ifs[s.Key+"|"+s.Unit]
@@ -401,7 +386,7 @@ func (d *Daemon) setRelayedBFD(r *RelayBFD, force bool) {
 			continue // not this member's (any more)
 		}
 		bk := bfdKey(vrf[s.Key], s.Peer, ic.Device)
-		ss = append(ss, s.Spec.session(bk, s.Unit))
+		ss = append(ss, s.Spec.Session(bk, s.Unit))
 		refs[bk.String()] = bfdRef{key: s.Key, unit: s.Unit, peer: s.Peer}
 	}
 	b.relayed = refs
@@ -417,7 +402,7 @@ func (d *Daemon) setRelayedBFD(r *RelayBFD, force bool) {
 	if !force && b.relayedSpecs != nil && slices.Equal(ss, b.relayedSpecs) {
 		return
 	}
-	b.relayedSpecs = append([]bfdd.SessionSpec{}, ss...)
+	b.relayedSpecs = append([]bfdapi.SessionSpec{}, ss...)
 	d.bfdSet(bfdRelayClient, ss)
 }
 

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/ribd"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
@@ -142,7 +142,7 @@ func (s *sender) round(ctx context.Context) {
 		}
 	}
 	now := time.Now()
-	var chunks [][]ribd.PrefixRoutes // the changes, read once for every receiver
+	var chunks [][]ribapi.PrefixRoutes // the changes, read once for every receiver
 	read := false
 	for _, t := range targets {
 		if convNow || (t.synced && !t.full && conv) {
@@ -162,19 +162,19 @@ func (s *sender) round(ctx context.Context) {
 				chunks, read = s.read(ctx, ps), true
 			}
 			for _, c := range chunks {
-				if !s.send(ctx, t, ribd.RoutesDelta{Prefixes: c, Full: conv}) {
+				if !s.send(ctx, t, ribapi.RoutesDelta{Prefixes: c, Full: conv}) {
 					break
 				}
 			}
 		case now.Sub(t.sent) >= keepalive:
-			s.send(ctx, t, ribd.RoutesDelta{Full: conv})
+			s.send(ctx, t, ribapi.RoutesDelta{Full: conv})
 		}
 	}
 }
 
 // read returns the current paths of ps, in pieces.
-func (s *sender) read(ctx context.Context, ps []netip.Prefix) [][]ribd.PrefixRoutes {
-	var out [][]ribd.PrefixRoutes
+func (s *sender) read(ctx context.Context, ps []netip.Prefix) [][]ribapi.PrefixRoutes {
+	var out [][]ribapi.PrefixRoutes
 	for i := 0; i < len(ps); i += deltaChunk {
 		pp, err := s.in.sp.Paths(ctx, ps[i:min(i+deltaChunk, len(ps))])
 		if err != nil {
@@ -185,10 +185,10 @@ func (s *sender) read(ctx context.Context, ps []netip.Prefix) [][]ribd.PrefixRou
 	return out
 }
 
-func prefixRoutes(pp []bgp.PrefixPaths) []ribd.PrefixRoutes {
-	out := make([]ribd.PrefixRoutes, 0, len(pp))
+func prefixRoutes(pp []bgp.PrefixPaths) []ribapi.PrefixRoutes {
+	out := make([]ribapi.PrefixRoutes, 0, len(pp))
 	for _, p := range pp {
-		pr := ribd.PrefixRoutes{Prefix: p.Prefix}
+		pr := ribapi.PrefixRoutes{Prefix: p.Prefix}
 		for _, r := range p.Routes {
 			rr := ribRoute(r)
 			rr.Source = r.Peer.String()
@@ -206,7 +206,7 @@ func (s *sender) sync(ctx context.Context, t *target, conv bool) {
 	if err != nil {
 		return
 	}
-	if !s.send(ctx, t, ribd.RoutesDelta{Sync: "begin", Full: conv}) {
+	if !s.send(ctx, t, ribapi.RoutesDelta{Sync: "begin", Full: conv}) {
 		return
 	}
 	for i := 0; i < len(keys); i += deltaChunk {
@@ -215,24 +215,24 @@ func (s *sender) sync(ctx context.Context, t *target, conv bool) {
 			t.synced = false
 			return
 		}
-		if !s.send(ctx, t, ribd.RoutesDelta{Prefixes: prefixRoutes(pp), Full: conv}) {
+		if !s.send(ctx, t, ribapi.RoutesDelta{Prefixes: prefixRoutes(pp), Full: conv}) {
 			return
 		}
 	}
-	if s.send(ctx, t, ribd.RoutesDelta{Sync: "end", Full: conv}) {
+	if s.send(ctx, t, ribapi.RoutesDelta{Sync: "end", Full: conv}) {
 		t.synced, t.full = true, conv
 	}
 }
 
 // send gives one message to a receiver; false: it failed or asked for a
 // sync (the receiver syncs at the next round).
-func (s *sender) send(ctx context.Context, t *target, m ribd.RoutesDelta) bool {
+func (s *sender) send(ctx context.Context, t *target, m ribapi.RoutesDelta) bool {
 	d := s.in.d
 	t.seq++
 	m.Instance, m.Protocol, m.Seq = s.in.name, rib.BGP, t.seq
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	var reply ribd.DeltaReply
+	var reply ribapi.DeltaReply
 	var err error
 	if t.member == 0 {
 		reply, err = d.RIB.Delta(cctx, m)
@@ -283,13 +283,13 @@ func (s *sender) legacySync(ctx context.Context, t *target, conv bool) {
 	}
 	ok := true
 	for src, rs := range by {
-		if err := d.MemberSetRoutes(ctx, t.member, ribd.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src, Routes: rs, Full: conv}); err != nil {
+		if err := d.MemberSetRoutes(ctx, t.member, ribapi.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src, Routes: rs, Full: conv}); err != nil {
 			ok = false
 		}
 	}
 	for src := range t.sources {
 		if _, still := by[src]; !still {
-			d.MemberSetRoutes(ctx, t.member, ribd.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src, Full: conv})
+			d.MemberSetRoutes(ctx, t.member, ribapi.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src, Full: conv})
 		}
 	}
 	t.sources = map[string]bool{}
@@ -311,12 +311,12 @@ func (s *sender) withdraw() {
 	for _, t := range targets {
 		if t.legacy {
 			for src := range t.sources {
-				s.in.d.MemberSetRoutes(ctx, t.member, ribd.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src})
+				s.in.d.MemberSetRoutes(ctx, t.member, ribapi.SetRoutes{Instance: s.in.name, Protocol: rib.BGP, Source: src})
 			}
 			continue
 		}
-		if s.send(ctx, t, ribd.RoutesDelta{Sync: "begin", Full: true}) {
-			s.send(ctx, t, ribd.RoutesDelta{Sync: "end", Full: true})
+		if s.send(ctx, t, ribapi.RoutesDelta{Sync: "begin", Full: true}) {
+			s.send(ctx, t, ribapi.RoutesDelta{Sync: "end", Full: true})
 		}
 	}
 }

@@ -17,12 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/stpapi"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/osconf"
 	"github.com/thxrben/cerium-switchd/internal/stack"
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
-	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/usbstore"
 
 	"golang.org/x/sys/unix"
@@ -198,7 +198,7 @@ func Run(ctx context.Context, o Options) error {
 	})
 	// bpdu-block (reference 5.5): cer-rstpd decides, switchd keeps the
 	// blocked ports down.
-	bpduBlocked := services.follow("cer-rstpd", stp.TopicBPDUBlocked, func(map[string]json.RawMessage) {
+	bpduBlocked := services.follow("cer-rstpd", stpapi.TopicBPDUBlocked, func(map[string]json.RawMessage) {
 		go applier.reconcile("bpdu-block")
 	})
 	applier.blocked = func() map[string]bool {

@@ -4,9 +4,9 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/internal/api/ospfapi"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ospfd"
 	"github.com/thxrben/cerium-switchd/pkg/ospf"
 )
 
@@ -15,15 +15,15 @@ import (
 // and their stack-wide addresses (an address of one member is not OSPF's:
 // OSPF runs once for the stack). cer-ospfd reads the rest (interface
 // index, link-local address, MTU, carrier, speed) from the kernel.
-func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
-	c := ospfd.Config{Policies: cfg.Policies}
+func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfapi.Config {
+	c := ospfapi.Config{Policies: cfg.Policies}
 	for _, r := range cfg.AllRouting() {
 		rid := ospf.IDFrom(cfg.RouterID(r))
 		for _, o := range []*model.OSPF{r.OSPF, r.OSPF3} {
 			if o == nil || o.Disabled {
 				continue
 			}
-			in := ospfd.Instance{Name: r.Instance, VRF: r.Instance, Version: ospf.V2, RouterID: rid, Export: o.Export,
+			in := ospfapi.Instance{Name: r.Instance, VRF: r.Instance, Version: ospf.V2, RouterID: rid, Export: o.Export,
 				ReferenceBW: o.ReferenceBW, Overload: o.Overload, OverloadTimeout: o.OverloadTimeout,
 				GracefulRestart: o.GracefulRestart, RestartDuration: o.RestartDuration}
 			if o.V3 {
@@ -47,7 +47,7 @@ func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
 					if u == nil || u.Disabled || u.Instance != r.Instance {
 						continue
 					}
-					ic := ospfd.Iface{Unit: unit, Area: ospf.IDFrom(aid), P2P: oi.P2P, Passive: oi.Passive, Metric: oi.Metric,
+					ic := ospfapi.Iface{Unit: unit, Area: ospf.IDFrom(aid), P2P: oi.P2P, Passive: oi.Passive, Metric: oi.Metric,
 						Priority: oi.Priority, Hello: oi.Hello, Dead: oi.Dead, Retransmit: oi.Retransmit,
 						TransitDelay: oi.TransitDelay, Simple: oi.SimplePass, MD5: oi.MD5}
 					if dev, here := dataplane.UnitDevice(cfg, unit, names); here {
@@ -55,7 +55,7 @@ func ospfConfig(cfg *model.Config, names dataplane.PortNames) ospfd.Config {
 					}
 					ic.Owners, ic.IRB = unitOwners(cfg, u)
 					if b := oi.BFD; b != nil {
-						ic.BFD = &ospfd.BFDSpec{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg,
+						ic.BFD = &ospfapi.BFDSpec{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg,
 							AuthKeyID: b.AuthKeyID, AuthKey: b.AuthKey}
 					}
 					for _, p := range u.Addrs {

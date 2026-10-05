@@ -1,27 +1,28 @@
 package daemon
 
 import (
-	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"net/netip"
 	"slices"
 
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
+	"github.com/thxrben/cerium-switchd/internal/memslots"
+
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 )
 
 // bgpConfig is cer-bgpd's configuration (reference 5.14): every BGP
 // instance with its neighbours' effective settings.
-func bgpConfig(cfg *model.Config, capacity func(memslots.Purpose) int) bgpd.Config {
-	c := bgpd.Config{Policies: cfg.Policies}
+func bgpConfig(cfg *model.Config, capacity func(memslots.Purpose) int) bgpapi.Config {
+	c := bgpapi.Config{Policies: cfg.Policies}
 	if capacity != nil {
-		c.Limits = bgpd.Limits{IPv4: capacity(memslots.BGPv4), IPv6: capacity(memslots.BGPv6), Paths: capacity(memslots.BGPPaths)}
+		c.Limits = bgpapi.Limits{IPv4: capacity(memslots.BGPv4), IPv6: capacity(memslots.BGPv6), Paths: capacity(memslots.BGPPaths)}
 	}
 	for _, r := range cfg.AllRouting() {
 		if r.BGP == nil || r.BGP.Disabled || r.AS == 0 {
 			continue
 		}
-		in := bgpd.Instance{Name: r.Instance, VRF: r.Instance, AS: r.AS, RouterID: cfg.RouterID(r)}
+		in := bgpapi.Instance{Name: r.Instance, VRF: r.Instance, AS: r.AS, RouterID: cfg.RouterID(r)}
 		for _, g := range sortedKeysOf(r.BGP.Groups) {
 			grp := r.BGP.Groups[g]
 			addrs := make([]netip.Addr, 0, len(grp.Neighbors))
@@ -38,7 +39,7 @@ func bgpConfig(cfg *model.Config, capacity func(memslots.Purpose) int) bgpd.Conf
 	return c
 }
 
-func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpd.Neighbor {
+func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpapi.Neighbor {
 	n := bgp.Neighbor{Addr: m.Addr, Group: m.Group, PeerAS: m.PeerAS, LocalAS: m.LocalAS, Internal: m.Internal,
 		HoldTime: m.HoldTime, Passive: m.Passive, Cluster: m.Cluster, RemovePrivate: m.RemovePrivate,
 		GracefulRestart: m.GracefulRestart, RestartTime: m.RestartTime, StaleTime: m.StaleTime,
@@ -61,9 +62,9 @@ func bgpNeighbor(cfg *model.Config, instance string, m *model.BGPNeighbor) bgpd.
 	}
 	var connected bool
 	n.NextHop4, n.NextHop6, connected = selfAddrs(cfg, instance, m.Addr, m.LocalAddress)
-	out := bgpd.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export, Owner: neighborOwner(cfg, instance, m.Addr)}
+	out := bgpapi.Neighbor{Neighbor: n, Import: m.Import, Export: m.Export, Owner: neighborOwner(cfg, instance, m.Addr)}
 	if b := m.BFD; b != nil {
-		bc := &bgpd.BFDConfig{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg, AuthKeyID: b.AuthKeyID,
+		bc := &bgpapi.BFDConfig{IntervalMs: b.IntervalMs, Multiplier: b.Multiplier, AuthType: b.AuthAlg, AuthKeyID: b.AuthKeyID,
 			AuthKey: b.AuthKey, Multihop: m.Multihop || !connected}
 		if bc.Multihop {
 			bc.Local = m.LocalAddress

@@ -74,7 +74,7 @@ func (d *Daemon) relay(cfg Config, me, master int) {
 				if _, here := relayed(ic, me, master); !here || ic.Passive {
 					continue
 				}
-				k := in.key() + "|" + ic.Unit
+				k := in.Key() + "|" + ic.Unit
 				li, ok := d.Kernel.Link(ic.Device)
 				up := ok && li.Up && li.Index > 0 && (in.Version == ospf.V2 || li.LinkLocal.IsValid())
 				if !up {
@@ -84,7 +84,7 @@ func (d *Daemon) relay(cfg Config, me, master int) {
 				if d.rel.ports[k] != nil {
 					continue
 				}
-				key, unit := in.key(), ic.Unit
+				key, unit := in.Key(), ic.Unit
 				p, err := d.Net.Open(in.Version, ic.Device, li.Index, func(src, dst netip.Addr, pkt []byte) {
 					d.toMaster(StackRx, RelayPacket{Key: key, Unit: unit, Src: src, Dst: dst, Pkt: pkt})
 				})
@@ -121,13 +121,13 @@ func (d *Daemon) reportLinks(cfg Config, me, master int) {
 			if _, here := relayed(ic, me, master); !here {
 				continue
 			}
-			k := in.key() + "|" + ic.Unit
+			k := in.Key() + "|" + ic.Unit
 			li, ok := d.Kernel.Link(ic.Device)
 			if !all && ok && d.rel.reported[k] == li {
 				continue
 			}
 			d.rel.reported[k] = li
-			d.toMaster(StackLink, RelayLink{Key: in.key(), Unit: ic.Unit, Member: me, Info: li, OK: ok})
+			d.toMaster(StackLink, RelayLink{Key: in.Key(), Unit: ic.Unit, Member: me, Info: li, OK: ok})
 		}
 	}
 }

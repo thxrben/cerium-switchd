@@ -14,11 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ospfapi"
+	"github.com/thxrben/cerium-switchd/internal/api/stpapi"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
-	"github.com/thxrben/cerium-switchd/internal/ospfd"
 	"github.com/thxrben/cerium-switchd/internal/schema"
 	"github.com/thxrben/cerium-switchd/internal/stack"
-	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/internal/usbstore"
@@ -33,7 +34,6 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
@@ -529,7 +529,7 @@ func (o *ops) SpanningTree() (cli.STPStatus, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var st stp.Status
+	var st stpapi.Status
 	if err := o.svc.call(ctx, "cer-rstpd", svc.MethodStatus, nil, &st); err != nil {
 		return cli.STPStatus{}, err
 	}
@@ -1070,7 +1070,7 @@ func (o *ops) OSPFStatus(v ospf.Version, instance *string, detail bool) ([]cli.O
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var st []cli.OSPFInstance
-	err := o.svc.call(ctx, "cer-ospfd", ospfd.MethodStatus, ospfd.StatusRequest{Version: v, Instance: instance, Detail: detail}, &st)
+	err := o.svc.call(ctx, "cer-ospfd", ospfapi.MethodStatus, ospfapi.StatusRequest{Version: v, Instance: instance, Detail: detail}, &st)
 	if err != nil && strings.Contains(err.Error(), "not running") {
 		return nil, nil // not configured
 	}
@@ -1089,14 +1089,14 @@ var (
 )
 
 // BGPStatus is show bgp … (cer-bgpd on this member, the master).
-func (o *ops) BGPStatus(instance *string) ([]bgpd.InstanceStatus, error) {
+func (o *ops) BGPStatus(instance *string) ([]bgpapi.InstanceStatus, error) {
 	if o.svc == nil {
 		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	var st []bgpd.InstanceStatus
-	err := o.svc.call(ctx, "cer-bgpd", bgpd.MethodStatus, instance, &st)
+	var st []bgpapi.InstanceStatus
+	err := o.svc.call(ctx, "cer-bgpd", bgpapi.MethodStatus, instance, &st)
 	if err != nil && strings.Contains(err.Error(), "not running") {
 		return nil, nil // not configured
 	}
@@ -1104,25 +1104,25 @@ func (o *ops) BGPStatus(instance *string) ([]bgpd.InstanceStatus, error) {
 }
 
 // BGPAdj is show route receive-protocol|advertising-protocol bgp.
-func (o *ops) BGPAdj(q bgpd.AdjRequest) ([]bgp.InPath, error) {
+func (o *ops) BGPAdj(q bgpapi.AdjRequest) ([]bgp.InPath, error) {
 	if o.svc == nil {
 		return nil, errors.New("BGP is not running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var out []bgp.InPath
-	return out, o.svc.call(ctx, "cer-bgpd", bgpd.MethodAdj, q, &out)
+	return out, o.svc.call(ctx, "cer-bgpd", bgpapi.MethodAdj, q, &out)
 }
 
 // ClearBGP is clear bgp neighbor.
-func (o *ops) ClearBGP(q bgpd.ClearRequest) (int, error) {
+func (o *ops) ClearBGP(q bgpapi.ClearRequest) (int, error) {
 	if o.svc == nil {
 		return 0, errors.New("BGP is not running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var n int
-	return n, o.svc.call(ctx, "cer-bgpd", bgpd.MethodClear, q, &n)
+	return n, o.svc.call(ctx, "cer-bgpd", bgpapi.MethodClear, q, &n)
 }
 
 // Optics is show interfaces diagnostics optics: this member's ports (all,
@@ -1227,7 +1227,7 @@ func (o *ops) ClearOSPF(v ospf.Version, instance string, nbr netip.Addr) (int, e
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var n int
-	err := o.svc.call(ctx, "cer-ospfd", ospfd.MethodClear, ospfd.ClearRequest{Version: v, Instance: instance, Neighbor: nbr}, &n)
+	err := o.svc.call(ctx, "cer-ospfd", ospfapi.MethodClear, ospfapi.ClearRequest{Version: v, Instance: instance, Neighbor: nbr}, &n)
 	return n, err
 }
 
@@ -1239,7 +1239,7 @@ func (o *ops) ClearBPDU(iface string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var n int
-	err := o.svc.call(ctx, "cer-rstpd", stp.MethodClearBPDU, iface, &n)
+	err := o.svc.call(ctx, "cer-rstpd", stpapi.MethodClearBPDU, iface, &n)
 	return n, err
 }
 
@@ -1251,7 +1251,7 @@ func (o *ops) ClearSTP(migration bool, port string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return o.svc.call(ctx, "cer-rstpd", stp.MethodClear, stp.ClearRequest{Migration: migration, Port: port}, nil)
+	return o.svc.call(ctx, "cer-rstpd", stpapi.MethodClear, stpapi.ClearRequest{Migration: migration, Port: port}, nil)
 }
 
 // USBList is file list usb: (this member's stick, reference 3.4).

@@ -899,27 +899,6 @@ func (r *Controller) sendLocked(port string, raw []byte) {
 
 // ---- status ----
 
-// Status is what "show spanning-tree" shows (from the owner).
-type Status struct {
-	Running bool
-	// Error: why RSTP does not run although configured ("": it runs, or
-	// is not configured).
-	Error      string
-	Owner      int
-	Bridge     rstp.BridgeConfig
-	Root       rstp.Vector
-	RootPort   string
-	Times      rstp.Times
-	Changes    uint64
-	SinceTicks uint64
-	Ports      []PortStatus
-}
-
-type PortStatus struct {
-	Name string
-	rstp.PortStatus
-}
-
 func (r *Controller) localStatus() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -953,15 +932,6 @@ func (r *Controller) Status() (Status, error) {
 	}
 	var st Status
 	return st, json.Unmarshal(raw, &st)
-}
-
-// MethodClear (ClearRequest) is served by cer-rstpd.
-const MethodClear = "stp.clear"
-
-// ClearRequest is clear spanning-tree protocol-migration|statistics.
-type ClearRequest struct {
-	Migration bool   `json:"migration,omitempty"` // false: statistics
-	Port      string `json:"port,omitempty"`      // "": every port
 }
 
 // Clear runs a clear command on the owner (the state machines are there).

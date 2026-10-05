@@ -5,7 +5,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/thxrben/cerium-switchd/internal/mclag"
+	"github.com/thxrben/cerium-switchd/internal/api/mclagapi"
 	"github.com/thxrben/cerium-switchd/internal/model"
 )
 
@@ -41,8 +41,8 @@ func bundleFacts(cfg *model.Config, name string) string {
 }
 
 // mclagConfig is cer-mclagd's configuration for member (reference 5.6).
-func mclagConfig(cfg *model.Config, member int) mclag.Config {
-	c := mclag.Config{Member: member, SwitchMembers: cfg.SwitchMembers(), DelayRestore: cfg.MCLAG.DelayRestore,
+func mclagConfig(cfg *model.Config, member int) mclagapi.Config {
+	c := mclagapi.Config{Member: member, SwitchMembers: cfg.SwitchMembers(), DelayRestore: cfg.MCLAG.DelayRestore,
 		Priority: map[int]int{}, Facts: map[string]string{}}
 	for id, m := range cfg.Members {
 		c.Priority[id] = m.Priority
@@ -50,7 +50,7 @@ func mclagConfig(cfg *model.Config, member int) mclag.Config {
 	if d := cfg.PairOf(member); d != nil {
 		bundles := slices.Clone(d.Bundles)
 		sort.Strings(bundles)
-		c.Pair = &mclag.Pair{ID: d.ID, Members: d.Members, Bundles: bundles}
+		c.Pair = &mclagapi.Pair{ID: d.ID, Members: d.Members, Bundles: bundles}
 		for _, b := range bundles {
 			c.Facts[b] = bundleFacts(cfg, b)
 		}

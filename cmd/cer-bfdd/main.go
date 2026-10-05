@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
 	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -22,8 +23,8 @@ func setup(k *daemonkit.Kit) error {
 	sv := bfd.NewServer(udp, k.Log)
 	udp.Input = sv.Input
 	d := bfdd.New(sv, k.Endpoint, k.Log)
-	k.Endpoint.Handle(bfdd.MethodSet, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var s bfdd.Set
+	k.Endpoint.Handle(bfdapi.MethodSet, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var s bfdapi.Set
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return nil, err
 		}

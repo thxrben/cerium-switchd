@@ -3,15 +3,15 @@ package daemon
 import (
 	"slices"
 
+	"github.com/thxrben/cerium-switchd/internal/api/stpapi"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/stp"
 )
 
 // stpConfig is cer-rstpd's configuration for member (reference 5.5): the
 // stack's RSTP ports (switch ports that are not bundle members, and
 // aggregated interfaces), with this member's devices.
-func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool), stackID string) stp.Config {
-	c := stp.Config{Member: member, StackID: stackID, SwitchMembers: cfg.SwitchMembers(), Ports: map[string]stp.Port{}}
+func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool), stackID string) stpapi.Config {
+	c := stpapi.Config{Member: member, StackID: stackID, SwitchMembers: cfg.SwitchMembers(), Ports: map[string]stpapi.Port{}}
 	// bpdu-block works with and without RSTP.
 	for _, n := range cfg.BPDUBlock.Interfaces {
 		i := cfg.Interfaces[n]
@@ -32,7 +32,7 @@ func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool),
 		return c
 	}
 	c.On = true
-	c.Bridge = stp.BridgeConfig{BridgePriority: cfg.RSTP.BridgePriority, HelloTime: cfg.RSTP.HelloTime,
+	c.Bridge = stpapi.BridgeConfig{BridgePriority: cfg.RSTP.BridgePriority, HelloTime: cfg.RSTP.HelloTime,
 		MaxAge: cfg.RSTP.MaxAge, ForwardDelay: cfg.RSTP.ForwardDelay}
 	for n, i := range cfg.Interfaces {
 		if !i.Switching || i.Disabled || i.Parent != "" {
@@ -42,9 +42,9 @@ func stpConfig(cfg *model.Config, member int, linux func(string) (string, bool),
 		if pc != nil && pc.Disabled {
 			continue
 		}
-		p := stp.Port{AE: i.AE, LACP: i.LACP != nil}
+		p := stpapi.Port{AE: i.AE, LACP: i.LACP != nil}
 		if pc != nil {
-			p.Config = &stp.PortConfig{Cost: pc.Cost, Priority: pc.Priority, Edge: pc.Edge, RootGuard: pc.RootGuard, PointToPnt: pc.PointToPnt}
+			p.Config = &stpapi.PortConfig{Cost: pc.Cost, Priority: pc.Priority, Edge: pc.Edge, RootGuard: pc.RootGuard, PointToPnt: pc.PointToPnt}
 		}
 		switch {
 		case i.AE:

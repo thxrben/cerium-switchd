@@ -7,16 +7,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 )
 
 // BGP is implemented by members that run cer-bgpd (reference 5.14).
 type BGP interface {
-	BGPStatus(instance *string) ([]bgpd.InstanceStatus, error)
-	BGPAdj(q bgpd.AdjRequest) ([]bgp.InPath, error)
-	ClearBGP(q bgpd.ClearRequest) (int, error)
+	BGPStatus(instance *string) ([]bgpapi.InstanceStatus, error)
+	BGPAdj(q bgpapi.AdjRequest) ([]bgp.InPath, error)
+	ClearBGP(q bgpapi.ClearRequest) (int, error)
 }
 
 func (sh *Shell) bgp() (BGP, error) {
@@ -87,7 +87,7 @@ func clearBGPCommand() *command {
 				if err != nil {
 					return err
 				}
-				q := bgpd.ClearRequest{Mode: a.mode}
+				q := bgpapi.ClearRequest{Mode: a.mode}
 				if a.instance != nil {
 					q.Instance = *a.instance
 				}
@@ -116,7 +116,7 @@ func clearBGPCommand() *command {
 	}}
 }
 
-func (sh *Shell) bgpStatus(c *call, a bgpArgs) ([]bgpd.InstanceStatus, error) {
+func (sh *Shell) bgpStatus(c *call, a bgpArgs) ([]bgpapi.InstanceStatus, error) {
 	b, err := sh.bgp()
 	if err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func (sh *Shell) bgpStatus(c *call, a bgpArgs) ([]bgpd.InstanceStatus, error) {
 	return st, nil
 }
 
-func bgpInstTitle(c *call, st []bgpd.InstanceStatus, in bgpd.InstanceStatus) {
+func bgpInstTitle(c *call, st []bgpapi.InstanceStatus, in bgpapi.InstanceStatus) {
 	if len(st) > 1 || in.Instance != "" {
 		fmt.Fprintf(c.out, "Instance: %s\n", instName(in.Instance))
 	}

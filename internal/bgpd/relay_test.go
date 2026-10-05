@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/ribd"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 )
 
@@ -87,9 +87,9 @@ func TestRelayedSession(t *testing.T) {
 	r.SetLocal([]bgp.Path{{Prefix: netip.MustParsePrefix("203.0.113.0/24"), Source: "static"}}, nil)
 
 	st := &fakeStack{ds: map[int]*Daemon{}}
-	rib1 := &fakeRIB{sets: map[string]ribd.SetRoutes{}}
+	rib1 := &fakeRIB{sets: map[string]ribapi.SetRoutes{}}
 	d1 := New(loNet{local: m1, ports: ports}, rib1, quiet)
-	d2 := New(loNet{local: m2, ports: ports}, &fakeRIB{sets: map[string]ribd.SetRoutes{}}, quiet)
+	d2 := New(loNet{local: m2, ports: ports}, &fakeRIB{sets: map[string]ribapi.SetRoutes{}}, quiet)
 	d1.Member, d1.StackCall = 1, st.call(ctx, 1)
 	d2.Member, d2.StackCall = 2, st.call(ctx, 2)
 	b1, b2 := &fakeBFD{}, &fakeBFD{}

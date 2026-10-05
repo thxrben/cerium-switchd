@@ -10,10 +10,11 @@ import (
 	"slices"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ospfapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/ospfd"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
@@ -26,7 +27,7 @@ func main() {
 // ribClient calls cer-ribd on this member.
 type ribClient struct{ c *ipc.Client }
 
-func (r ribClient) SetRoutes(ctx context.Context, sr ribd.SetRoutes) error {
+func (r ribClient) SetRoutes(ctx context.Context, sr ribapi.SetRoutes) error {
 	return r.c.Call(ctx, svc.MethodRoutesSet, sr, nil)
 }
 
@@ -40,8 +41,8 @@ func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, er
 // bfdClient calls cer-bfdd on this member.
 type bfdClient struct{ c *ipc.Client }
 
-func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
-	return b.c.Call(ctx, bfdd.MethodSet, s, nil)
+func (b bfdClient) Set(ctx context.Context, s bfdapi.Set) error {
+	return b.c.Call(ctx, bfdapi.MethodSet, s, nil)
 }
 
 func setup(k *daemonkit.Kit) error {
@@ -65,11 +66,11 @@ func setup(k *daemonkit.Kit) error {
 	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
 	d.BFD = bfdClient{bc}
 	bc.OnConnect(func(*ipc.Conn) { d.ResendBFD() })
-	bc.Subscribe(bfdd.TopicSessions, "", func(ev ipc.Event) {
+	bc.Subscribe(bfdapi.TopicSessions, "", func(ev ipc.Event) {
 		if ev.Sync {
 			return
 		}
-		var st bfdd.State
+		var st bfdapi.State
 		if !ev.Deleted && json.Unmarshal(ev.Value, &st) != nil {
 			return
 		}
@@ -119,7 +120,7 @@ func setup(k *daemonkit.Kit) error {
 		return nil, nil
 	})
 	// The master's routes for the other members.
-	d.Replicate = func(sr ribd.SetRoutes) {
+	d.Replicate = func(sr ribapi.SetRoutes) {
 		r, ok := k.Role()
 		if !ok || !r.Master {
 			return
@@ -136,14 +137,14 @@ func setup(k *daemonkit.Kit) error {
 		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
 			return nil, nil // only the master's routes count
 		}
-		var sr ribd.SetRoutes
+		var sr ribapi.SetRoutes
 		if err := json.Unmarshal(raw, &sr); err != nil {
 			return nil, err
 		}
 		return nil, rc.SetRoutes(ctx, sr)
 	})
 	k.OnConfig(func(raw json.RawMessage) {
-		var c ospfd.Config
+		var c ospfapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return
@@ -159,8 +160,8 @@ func setup(k *daemonkit.Kit) error {
 			d.Resend()
 		}
 	})
-	k.Endpoint.Handle(ospfd.MethodStatus, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var q ospfd.StatusRequest
+	k.Endpoint.Handle(ospfapi.MethodStatus, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var q ospfapi.StatusRequest
 		if len(raw) > 0 && string(raw) != "null" {
 			if err := json.Unmarshal(raw, &q); err != nil {
 				return nil, err
@@ -168,15 +169,15 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return d.Status(q)
 	})
-	k.Endpoint.Handle(ospfd.MethodClear, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var q ospfd.ClearRequest
+	k.Endpoint.Handle(ospfapi.MethodClear, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var q ospfapi.ClearRequest
 		if err := json.Unmarshal(raw, &q); err != nil {
 			return nil, err
 		}
 		return d.Clear(q)
 	})
 	k.Endpoint.Handle(svc.MethodStatus, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
-		return d.Status(ospfd.StatusRequest{})
+		return d.Status(ospfapi.StatusRequest{})
 	})
 	// Stopping: the neighbours drop the adjacencies at once (hellos without
 	// neighbours) instead of after the dead interval.

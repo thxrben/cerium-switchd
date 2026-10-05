@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/mclagapi"
 	"github.com/thxrben/cerium-switchd/internal/cli"
-	"github.com/thxrben/cerium-switchd/internal/mclag"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 )
 
@@ -47,7 +47,7 @@ func (c mclagClient) DrainBlockers(draining []int) []string {
 
 // Status is show mclag of this member.
 func (c mclagClient) Status() ([]cli.MCLAGStatus, error) {
-	var st []mclag.Status
+	var st []mclagapi.Status
 	if err := c.call(svc.MethodStatus, nil, &st); err != nil {
 		return nil, err
 	}

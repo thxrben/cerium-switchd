@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/pkg/ospf"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
@@ -16,20 +16,20 @@ import (
 // fakeBFD is a member's cer-bfdd: the clients' last session lists.
 type fakeBFD struct {
 	mu   sync.Mutex
-	sets map[string][]bfdd.SessionSpec
+	sets map[string][]bfdapi.SessionSpec
 }
 
-func (f *fakeBFD) Set(_ context.Context, s bfdd.Set) error {
+func (f *fakeBFD) Set(_ context.Context, s bfdapi.Set) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sets == nil {
-		f.sets = map[string][]bfdd.SessionSpec{}
+		f.sets = map[string][]bfdapi.SessionSpec{}
 	}
 	f.sets[s.Client] = s.Sessions
 	return nil
 }
 
-func (f *fakeBFD) get(client string) ([]bfdd.SessionSpec, bool) {
+func (f *fakeBFD) get(client string) ([]bfdapi.SessionSpec, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ss, ok := f.sets[client]
@@ -61,9 +61,9 @@ func nbrState(d *Daemon, v ospf.Version, rid ospf.ID) string {
 }
 
 // sessions: the peers of a client's sessions (zone included).
-func sessions(f *fakeBFD, client string) map[string]bfdd.SessionSpec {
+func sessions(f *fakeBFD, client string) map[string]bfdapi.SessionSpec {
 	ss, _ := f.get(client)
-	out := map[string]bfdd.SessionSpec{}
+	out := map[string]bfdapi.SessionSpec{}
 	for _, s := range ss {
 		out[s.Key.Peer.String()] = s
 	}
@@ -80,7 +80,7 @@ func TestBFDLocal(t *testing.T) {
 	fb := &fakeBFD{}
 	mk := func(rid ospf.ID, ll, p4, p6 string, b BFD, spec *BFDSpec) *Daemon {
 		k := fakeKernel{"link": {Index: 7, MTU: 1500, Up: true, LinkLocal: netip.MustParseAddr(ll), SpeedMbps: 10000}}
-		d := New(k, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}, quiet)
+		d := New(k, fakeNet{w: w}, &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}, quiet)
 		d.BFD = b
 		link := iface("1/0/1.0", "link", p4, p6)
 		link.BFD = spec

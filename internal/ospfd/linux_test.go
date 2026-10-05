@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/ribd"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/pkg/ospf"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 	"github.com/vishvananda/netlink"
@@ -137,7 +137,7 @@ func TestLinuxSockets(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mk := func(ns netns.NsHandle, h *netlink.Handle, dev string, rid ospf.ID, p4, p6, lo4, lo6 string) *fakeRIB {
-		r := &fakeRIB{sets: map[rib.Protocol]ribd.SetRoutes{}}
+		r := &fakeRIB{sets: map[rib.Protocol]ribapi.SetRoutes{}}
 		d := New(nsKernel{h}, nsNet{ns}, r, quiet)
 		d.Settle = time.Second
 		link := iface("1/0/1.0", dev, p4, p6)

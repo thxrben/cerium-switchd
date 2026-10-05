@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
@@ -61,7 +61,7 @@ func (t netDialer) Dial(ctx context.Context, nb bgp.Neighbor) (net.Conn, error) 
 // (sequence, sync, sweep when converged) and answers Active.
 type fakeRIB struct {
 	mu     sync.Mutex
-	sets   map[string]ribd.SetRoutes
+	sets   map[string]ribapi.SetRoutes
 	active []rib.Entry
 	rib    *rib.RIB
 	seq    uint64
@@ -69,21 +69,21 @@ type fakeRIB struct {
 	deltas, syncs, prefixes int
 }
 
-func (r *fakeRIB) SetRoutes(_ context.Context, sr ribd.SetRoutes) error {
+func (r *fakeRIB) SetRoutes(_ context.Context, sr ribapi.SetRoutes) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sets[sr.Source] = sr
 	return nil
 }
 
-func (r *fakeRIB) Delta(_ context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error) {
+func (r *fakeRIB) Delta(_ context.Context, d ribapi.RoutesDelta) (ribapi.DeltaReply, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.rib == nil {
 		r.rib = rib.New(nil)
 	}
 	if d.Sync != "begin" && d.Seq != r.seq+1 {
-		return ribd.DeltaReply{Resync: true}, nil
+		return ribapi.DeltaReply{Resync: true}, nil
 	}
 	r.seq = d.Seq
 	r.deltas++
@@ -99,7 +99,7 @@ func (r *fakeRIB) Delta(_ context.Context, d ribd.RoutesDelta) (ribd.DeltaReply,
 		r.rib.SweepGen(d.Instance, d.Protocol)
 	}
 	r.rib.Changes()
-	return ribd.DeltaReply{}, nil
+	return ribapi.DeltaReply{}, nil
 }
 
 func (r *fakeRIB) Active(context.Context, string) ([]rib.Entry, error) {
@@ -173,7 +173,7 @@ func TestDaemon(t *testing.T) {
 
 	// The switch: AS 65001, import rejects 198.51.100.0/24 and sets local
 	// preference 200, export announces static routes.
-	r := &fakeRIB{sets: map[string]ribd.SetRoutes{}, active: []rib.Entry{
+	r := &fakeRIB{sets: map[string]ribapi.SetRoutes{}, active: []rib.Entry{
 		{Prefix: netip.MustParsePrefix("10.10.0.0/16"), Active: 0, Routes: []rib.Route{{Protocol: rib.Static}}},
 		{Prefix: netip.MustParsePrefix("10.20.0.0/16"), Active: 0, Routes: []rib.Route{{Protocol: rib.OSPF}}},
 	}}
@@ -264,18 +264,18 @@ func TestLinuxMD5(t *testing.T) {
 // fakeBFD records cer-bfdd's session list.
 type fakeBFD struct {
 	mu sync.Mutex
-	ss []bfdd.SessionSpec
+	ss []bfdapi.SessionSpec
 	n  int
 }
 
-func (f *fakeBFD) Set(_ context.Context, s bfdd.Set) error {
+func (f *fakeBFD) Set(_ context.Context, s bfdapi.Set) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ss, f.n = s.Sessions, f.n+1
 	return nil
 }
 
-func (f *fakeBFD) get() []bfdd.SessionSpec {
+func (f *fakeBFD) get() []bfdapi.SessionSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.ss
@@ -304,7 +304,7 @@ func TestDaemonBFD(t *testing.T) {
 		}
 	}()
 	fb := &fakeBFD{}
-	d := New(loNet{local: me, ports: ports}, &fakeRIB{sets: map[string]ribd.SetRoutes{}}, quiet)
+	d := New(loNet{local: me, ports: ports}, &fakeRIB{sets: map[string]ribapi.SetRoutes{}}, quiet)
 	d.BFD = fb
 	go d.Run(ctx)
 	nb := Neighbor{Neighbor: bgp.Neighbor{Addr: peer, PeerAS: 65002, LocalAS: 65001, HoldTime: 9, Families: []bgp.Family{bgp.IPv4Unicast}},

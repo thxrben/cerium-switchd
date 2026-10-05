@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/mclagapi"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
 	"github.com/thxrben/cerium-switchd/internal/mclag"
 	"github.com/thxrben/cerium-switchd/internal/svc"
@@ -45,7 +46,7 @@ func setup(k *daemonkit.Kit) error {
 	lacp := mclag.NewLACPClient(k.Ctx, k.Endpoint, dir)
 	ctl := mclag.New(k.Member, lacp, kitStack{k}, k.Log)
 	k.OnConfig(func(raw json.RawMessage) {
-		var c mclag.Config
+		var c mclagapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return

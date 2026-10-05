@@ -776,6 +776,25 @@ untagged VLAN (PVID) for the session only.
   relays them): OSPF max-metric (RFC 6987) and wait until the neighbours' paths moved, BGP graceful shutdown (RFC
   8326 community, then withdraw), before mastership moves; OSPF/BGP graceful restart across the mastership change.
 
+### Modular code base: plan of 2026-10-05 (started the same day)
+Facts (go list): every program already is its own binary (cmd/*), but all share one module; switchd imports the
+daemons' implementation packages only for their API (configuration, requests, statuses, method names); every
+daemon imports pkg/lacp through internal/svc; cer-bgpd/cer-ospfd import the configuration model through policy.
+1. **API packages**: `internal/api/{bgpd,ospfd,ribd,bfdd,mclag,stp}` hold what switchd and other daemons use of a
+   daemon (types and names); the daemon packages refer to them (aliases where the daemon uses the names a lot).
+2. **Library modules** `lib/<name>` (each its own go.mod): `sys` (hwio, sysexec, nlx, netdev, sdnotify, journal),
+   the protocol cores one module each (lacp, rstp, lldp, bfd, ospf, bgp, rib, dhcp, ntp, syslog, macsec), `conf`
+   (schema, config, model, policy, memslots: the configuration model of cerOS), `platform` (ipc, svc, daemonkit,
+   alarms, version, names, api/*), `software` (software, usbstore: switchd and the update daemon).
+3. **Program modules** `apps/<program>` (switchd, swcli, switchd-update, cer-*, rtest), each with go.mod, main and
+   its own internal/ (switchd: access, cli, commit, daemon, dataplane, diag, inventory, osconf, rpcserver, stack,
+   supervise, webapi, …; cer-bgpd: bgpd; …). `go.work` at the root; every go.mod has relative `replace` lines, so a
+   module also builds alone (GOWORK=off) and `go mod tidy` works.
+4. **Duplicates** removed on the way: the cer-ribd client in cer-bgpd and cer-ospfd (-> platform/api/ribd), the
+   sorted-keys helpers (slices.Sorted(maps.Keys)), and what a scan finds.
+5. Makefile targets per program, CI per module, image/ and lab/ paths, README module map. No behaviour change: the
+   whole test suite green after every step.
+
 ### Item 13 of 2026-10-05: further plans
 1. **Modular code base** (requested 2026-10-03; steps there): one mechanical change with no behaviour change. Layout:
    `lib/{netdev,nlx,hwio,ipc,lacp,rstp,lldp,ospf,bgp,rib,bfd,macsec,dhcp,ntp,syslog,journal,sdnotify,sysexec}`

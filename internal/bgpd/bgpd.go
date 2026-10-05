@@ -16,61 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
-	"github.com/thxrben/cerium-switchd/internal/model"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/policy"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
-
-// Config is what switchd gives cer-bgpd.
-type Config struct {
-	Instances []Instance      `json:"instances,omitempty"`
-	Policies  *model.Policies `json:"policies,omitempty"`
-	// Limits are the memory slots' capacities (0: none; reference 5.1).
-	Limits Limits `json:"limits,omitzero"`
-}
-
-// Limits are BGP's capacities: prefixes per family, further paths.
-type Limits struct {
-	IPv4  int `json:"ipv4,omitempty"`
-	IPv6  int `json:"ipv6,omitempty"`
-	Paths int `json:"paths,omitempty"`
-}
-
-// Instance is BGP of one routing instance.
-type Instance struct {
-	Name      string     `json:"name"` // "": default
-	VRF       string     `json:"vrf,omitempty"`
-	AS        uint32     `json:"as"`
-	RouterID  netip.Addr `json:"router_id"`
-	Neighbors []Neighbor `json:"neighbors,omitempty"`
-}
-
-// Neighbor is a neighbour with its policies and BFD.
-type Neighbor struct {
-	bgp.Neighbor
-	Import []string   `json:"import,omitempty"`
-	Export []string   `json:"export,omitempty"`
-	BFDCfg *BFDConfig `json:"bfd,omitempty"`
-	// Owner: the member whose routed port reaches the neighbour (0: any,
-	// e.g. irb); another member than the master relays the session.
-	Owner int `json:"owner,omitempty"`
-}
-
-// BFDConfig is a neighbour's bfd-liveness-detection (reference 5.12).
-type BFDConfig struct {
-	IntervalMs int    `json:"interval_ms"`
-	Multiplier int    `json:"multiplier"`
-	AuthType   string `json:"auth_type,omitempty"`
-	AuthKeyID  int    `json:"auth_key_id,omitempty"`
-	AuthKey    string `json:"auth_key,omitempty"`
-	// Multihop (UDP 4784, RFC 5883) from Local: eBGP multihop and iBGP to
-	// a neighbour that is not directly connected.
-	Multihop bool       `json:"multihop,omitempty"`
-	Local    netip.Addr `json:"local,omitempty"`
-}
 
 // Net is the sockets of an instance (the Linux implementation is in
 // linux.go).
@@ -90,8 +41,8 @@ type Listener interface {
 
 // RIB is cer-ribd for this daemon.
 type RIB interface {
-	SetRoutes(ctx context.Context, sr ribd.SetRoutes) error
-	Delta(ctx context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error)
+	SetRoutes(ctx context.Context, sr ribapi.SetRoutes) error
+	Delta(ctx context.Context, d ribapi.RoutesDelta) (ribapi.DeltaReply, error)
 	Active(ctx context.Context, instance string) ([]rib.Entry, error)
 }
 
@@ -105,8 +56,8 @@ type Daemon struct {
 	// them a delta (stack op StackRoutesDelta), MemberSetRoutes a whole
 	// table to a member of an older release (StackRoutes).
 	Members         func() []int
-	MemberDelta     func(ctx context.Context, member int, d ribd.RoutesDelta) (ribd.DeltaReply, error)
-	MemberSetRoutes func(ctx context.Context, member int, sr ribd.SetRoutes) error
+	MemberDelta     func(ctx context.Context, member int, d ribapi.RoutesDelta) (ribapi.DeltaReply, error)
+	MemberSetRoutes func(ctx context.Context, member int, sr ribapi.SetRoutes) error
 	// BFD is cer-bfdd on this member (nil: no BFD).
 	BFD BFD
 	// Member is this member's id; StackCall calls cer-bgpd on another
@@ -123,9 +74,9 @@ type Daemon struct {
 
 	bfdMu      sync.Mutex
 	bfdKeys    map[string]bfdRef // cer-bfdd key -> neighbour
-	bfdSpecs   []bfdd.SessionSpec
+	bfdSpecs   []bfdapi.SessionSpec
 	bfdSent    bool
-	bfdQ       chan []bfdd.SessionSpec
+	bfdQ       chan []bfdapi.SessionSpec
 	bfdUp      map[string]bool   // an owner's relayed sessions: state
 	bfdDowns   map[string]uint64 // and failures
 	bfdReports chan func()
@@ -582,25 +533,12 @@ func fromPolicy(r *policy.Route, p *bgp.Path) {
 
 // Methods served by cer-bgpd.
 const (
-	MethodStatus = "bgp.status"
-	MethodAdj    = "bgp.adj"
-	MethodClear  = "bgp.clear"
-	// MethodCounts is the received prefixes and further paths (Counts).
-	MethodCounts = "bgp.counts"
 	// StackRoutes is the master's routes for the other members (whole
 	// tables: members of an older release); StackRoutesDelta the changes
-	// (ribd.RoutesDelta -> ribd.DeltaReply, PLAN 15b).
+	// (ribapi.RoutesDelta -> ribapi.DeltaReply, PLAN 15b).
 	StackRoutes      = "bgp-routes"
 	StackRoutesDelta = "bgp-routes-delta"
 )
-
-// InstanceStatus is show bgp summary|neighbor of one instance.
-type InstanceStatus struct {
-	Instance  string               `json:"instance"`
-	AS        uint32               `json:"as"`
-	RouterID  netip.Addr           `json:"router_id"`
-	Neighbors []bgp.NeighborStatus `json:"neighbors"`
-}
 
 // Status lists the instances (instance nil: all).
 func (d *Daemon) Status(instance *string) []InstanceStatus {
@@ -624,13 +562,6 @@ func (d *Daemon) Status(instance *string) []InstanceStatus {
 	return out
 }
 
-// AdjRequest asks for a neighbour's Adj-RIB-In (received) or -Out.
-type AdjRequest struct {
-	Instance string     `json:"instance"`
-	Neighbor netip.Addr `json:"neighbor"`
-	Out      bool       `json:"out,omitempty"`
-}
-
 // Adj answers an AdjRequest.
 func (d *Daemon) Adj(q AdjRequest) ([]bgp.InPath, error) {
 	for _, in := range d.instances() {
@@ -647,13 +578,6 @@ func (d *Daemon) Adj(q AdjRequest) ([]bgp.InPath, error) {
 		return in.sp.AdjIn(q.Neighbor), nil
 	}
 	return nil, fmt.Errorf("BGP does not run in instance %s", instName(q.Instance))
-}
-
-// ClearRequest is clear bgp neighbor.
-type ClearRequest struct {
-	Instance string     `json:"instance"`
-	Neighbor netip.Addr `json:"neighbor,omitempty"` // invalid: all
-	Mode     string     `json:"mode,omitempty"`     // "", soft, soft-inbound
 }
 
 // Clear answers a ClearRequest with the number of neighbours.
@@ -680,14 +604,6 @@ func (d *Daemon) ResyncRIB() {
 	for _, in := range d.instances() {
 		in.snd.syncAgain(0)
 	}
-}
-
-// Counts are the received IPv4 and IPv6 prefixes and further paths of
-// every instance (the memory slots' entries, reference 5.1).
-type Counts struct {
-	IPv4  int `json:"ipv4"`
-	IPv6  int `json:"ipv6"`
-	Paths int `json:"paths"`
 }
 
 // Counts counts what the instances hold.

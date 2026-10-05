@@ -21,20 +21,6 @@ import (
 // the disable-timeout. The blocked set survives restarts of cer-rstpd and
 // of switchd.
 
-// TopicBPDUBlocked (key: interface name, value: Blocked) is served by
-// cer-rstpd; MethodClearBPDU (request: interface name, "" all) clears.
-const (
-	TopicBPDUBlocked = "bpdu-blocked"
-	MethodClearBPDU  = "stp.clear-bpdu"
-)
-
-// Blocked is a port shut down by bpdu-block.
-type Blocked struct {
-	Since time.Time `json:"since"`
-	Until time.Time `json:"until,omitempty"` // zero: until cleared
-	From  string    `json:"from"`            // the BPDU's source MAC
-}
-
 // The destinations of BPDUs: IEEE STP/RSTP/MSTP and Cisco PVST+.
 var (
 	bpduDst  = []byte{0x01, 0x80, 0xc2, 0x00, 0x00, 0x00}

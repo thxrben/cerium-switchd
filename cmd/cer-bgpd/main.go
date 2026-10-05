@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/thxrben/cerium-switchd/internal/bfdd"
+	"github.com/thxrben/cerium-switchd/internal/api/bfdapi"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/daemonkit"
-	"github.com/thxrben/cerium-switchd/internal/ribd"
 	"github.com/thxrben/cerium-switchd/internal/svc"
 	"github.com/thxrben/cerium-switchd/pkg/ipc"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
@@ -24,12 +25,12 @@ func main() {
 // ribClient calls cer-ribd on this member.
 type ribClient struct{ c *ipc.Client }
 
-func (r ribClient) SetRoutes(ctx context.Context, sr ribd.SetRoutes) error {
+func (r ribClient) SetRoutes(ctx context.Context, sr ribapi.SetRoutes) error {
 	return r.c.Call(ctx, svc.MethodRoutesSet, sr, nil)
 }
 
-func (r ribClient) Delta(ctx context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error) {
-	var out ribd.DeltaReply
+func (r ribClient) Delta(ctx context.Context, d ribapi.RoutesDelta) (ribapi.DeltaReply, error) {
+	var out ribapi.DeltaReply
 	err := r.c.Call(ctx, svc.MethodRoutesDelta, d, &out)
 	return out, err
 }
@@ -44,8 +45,8 @@ func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, er
 // bfdClient calls cer-bfdd on this member.
 type bfdClient struct{ c *ipc.Client }
 
-func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
-	return b.c.Call(ctx, bfdd.MethodSet, s, nil)
+func (b bfdClient) Set(ctx context.Context, s bfdapi.Set) error {
+	return b.c.Call(ctx, bfdapi.MethodSet, s, nil)
 }
 
 func setup(k *daemonkit.Kit) error {
@@ -105,11 +106,11 @@ func setup(k *daemonkit.Kit) error {
 	bc := k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-bfdd"))
 	d.BFD = bfdClient{bc}
 	bc.OnConnect(func(*ipc.Conn) { d.ResendBFD() })
-	bc.Subscribe(bfdd.TopicSessions, "", func(ev ipc.Event) {
+	bc.Subscribe(bfdapi.TopicSessions, "", func(ev ipc.Event) {
 		if ev.Sync {
 			return
 		}
-		var st bfdd.State
+		var st bfdapi.State
 		if !ev.Deleted && json.Unmarshal(ev.Value, &st) != nil {
 			return
 		}
@@ -130,19 +131,19 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return out
 	}
-	d.MemberDelta = func(ctx context.Context, m int, dl ribd.RoutesDelta) (ribd.DeltaReply, error) {
-		var out ribd.DeltaReply
+	d.MemberDelta = func(ctx context.Context, m int, dl ribapi.RoutesDelta) (ribapi.DeltaReply, error) {
+		var out ribapi.DeltaReply
 		err := k.StackCall(ctx, m, bgpd.StackRoutesDelta, dl, &out)
 		return out, err
 	}
-	d.MemberSetRoutes = func(ctx context.Context, m int, sr ribd.SetRoutes) error {
+	d.MemberSetRoutes = func(ctx context.Context, m int, sr ribapi.SetRoutes) error {
 		return k.StackCall(ctx, m, bgpd.StackRoutes, sr, nil)
 	}
 	k.HandleStack(bgpd.StackRoutesDelta, func(ctx context.Context, from int, raw json.RawMessage) (any, error) {
 		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
-			return ribd.DeltaReply{}, nil // only the master's routes count
+			return ribapi.DeltaReply{}, nil // only the master's routes count
 		}
-		var dl ribd.RoutesDelta
+		var dl ribapi.RoutesDelta
 		if err := json.Unmarshal(raw, &dl); err != nil {
 			return nil, err
 		}
@@ -152,14 +153,14 @@ func setup(k *daemonkit.Kit) error {
 		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
 			return nil, nil // only the master's routes count
 		}
-		var sr ribd.SetRoutes
+		var sr ribapi.SetRoutes
 		if err := json.Unmarshal(raw, &sr); err != nil {
 			return nil, err
 		}
 		return nil, rc.SetRoutes(ctx, sr)
 	})
 	k.OnConfig(func(raw json.RawMessage) {
-		var c bgpd.Config
+		var c bgpapi.Config
 		if err := json.Unmarshal(raw, &c); err != nil {
 			k.Log.Error("configuration", "err", err)
 			return
@@ -174,7 +175,7 @@ func setup(k *daemonkit.Kit) error {
 			d.Resend()
 		}
 	})
-	k.Endpoint.Handle(bgpd.MethodStatus, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	k.Endpoint.Handle(bgpapi.MethodStatus, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
 		var inst *string
 		if len(raw) > 0 && string(raw) != "null" {
 			if err := json.Unmarshal(raw, &inst); err != nil {
@@ -183,18 +184,18 @@ func setup(k *daemonkit.Kit) error {
 		}
 		return d.Status(inst), nil
 	})
-	k.Endpoint.Handle(bgpd.MethodCounts, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
+	k.Endpoint.Handle(bgpapi.MethodCounts, func(context.Context, *ipc.Conn, json.RawMessage) (any, error) {
 		return d.Counts(), nil
 	})
-	k.Endpoint.Handle(bgpd.MethodAdj, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var q bgpd.AdjRequest
+	k.Endpoint.Handle(bgpapi.MethodAdj, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var q bgpapi.AdjRequest
 		if err := json.Unmarshal(raw, &q); err != nil {
 			return nil, err
 		}
 		return d.Adj(q)
 	})
-	k.Endpoint.Handle(bgpd.MethodClear, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
-		var q bgpd.ClearRequest
+	k.Endpoint.Handle(bgpapi.MethodClear, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var q bgpapi.ClearRequest
 		if err := json.Unmarshal(raw, &q); err != nil {
 			return nil, err
 		}

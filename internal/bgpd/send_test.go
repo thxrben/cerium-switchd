@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/ribd"
+	"github.com/thxrben/cerium-switchd/internal/api/ribapi"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/rib"
 )
@@ -72,18 +72,18 @@ func TestRoutesAsDeltas(t *testing.T) {
 	router := startRouter(t, ctx, ports, peer, me)
 	announce(router, 300)
 
-	local := &fakeRIB{sets: map[string]ribd.SetRoutes{}}
-	m2 := &fakeRIB{sets: map[string]ribd.SetRoutes{}}
+	local := &fakeRIB{sets: map[string]ribapi.SetRoutes{}}
+	m2 := &fakeRIB{sets: map[string]ribapi.SetRoutes{}}
 	m3 := &legacyMember{sets: map[string][]rib.Route{}}
 	d := New(loNet{local: me, ports: ports}, local, quiet)
 	d.Members = func() []int { return []int{2, 3} }
-	d.MemberDelta = func(ctx context.Context, m int, dl ribd.RoutesDelta) (ribd.DeltaReply, error) {
+	d.MemberDelta = func(ctx context.Context, m int, dl ribapi.RoutesDelta) (ribapi.DeltaReply, error) {
 		if m == 3 {
-			return ribd.DeltaReply{}, errors.New("member 3: unknown operation bgp-routes-delta")
+			return ribapi.DeltaReply{}, errors.New("member 3: unknown operation bgp-routes-delta")
 		}
 		return m2.Delta(ctx, dl)
 	}
-	d.MemberSetRoutes = func(_ context.Context, m int, sr ribd.SetRoutes) error {
+	d.MemberSetRoutes = func(_ context.Context, m int, sr ribapi.SetRoutes) error {
 		m3.mu.Lock()
 		m3.sets[sr.Source] = sr.Routes
 		m3.mu.Unlock()
@@ -131,20 +131,20 @@ func TestRoutesAsDeltas(t *testing.T) {
 // restarted: no drop while it learns the table); once converged, a sync
 // removes what is gone.
 func TestSyncKeepsUntilConverged(t *testing.T) {
-	r := &fakeRIB{sets: map[string]ribd.SetRoutes{}}
+	r := &fakeRIB{sets: map[string]ribapi.SetRoutes{}}
 	ctx := context.Background()
-	old := ribd.PrefixRoutes{Prefix: netip.MustParsePrefix("192.0.2.0/24"), Routes: []rib.Route{{Source: "10.0.0.1", Preference: rib.PrefBGP,
+	old := ribapi.PrefixRoutes{Prefix: netip.MustParsePrefix("192.0.2.0/24"), Routes: []rib.Route{{Source: "10.0.0.1", Preference: rib.PrefBGP,
 		NextHops: []rib.NextHop{{Gateway: netip.MustParseAddr("10.0.0.1")}}}}}
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 1, Sync: "begin", Prefixes: []ribd.PrefixRoutes{old}, Full: true})
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 2, Sync: "end", Full: true})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 1, Sync: "begin", Prefixes: []ribapi.PrefixRoutes{old}, Full: true})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 2, Sync: "end", Full: true})
 	// The restarted daemon's first sync: nothing learned yet.
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 1, Sync: "begin"})
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 2, Sync: "end"})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 1, Sync: "begin"})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 2, Sync: "end"})
 	if n := len(r.routes("10.0.0.1")); n != 1 {
 		t.Fatalf("a sync before convergence removed routes (%d left)", n)
 	}
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 3, Sync: "begin", Full: true})
-	r.Delta(ctx, ribd.RoutesDelta{Protocol: rib.BGP, Seq: 4, Sync: "end", Full: true})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 3, Sync: "begin", Full: true})
+	r.Delta(ctx, ribapi.RoutesDelta{Protocol: rib.BGP, Seq: 4, Sync: "end", Full: true})
 	if n := len(r.routes("10.0.0.1")); n != 0 {
 		t.Fatalf("the converged sync kept %d routes that are gone", n)
 	}

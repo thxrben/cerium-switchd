@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/config"
 	"github.com/thxrben/cerium-switchd/internal/dataplane"
@@ -372,8 +372,8 @@ func (o *ops) memoryUse() map[memslots.Purpose]int {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		// BGP: what cer-bgpd holds (it runs on the master).
-		var c bgpd.Counts
-		if err := o.svc.call(ctx, "cer-bgpd", bgpd.MethodCounts, nil, &c); err == nil {
+		var c bgpapi.Counts
+		if err := o.svc.call(ctx, "cer-bgpd", bgpapi.MethodCounts, nil, &c); err == nil {
 			out[memslots.BGPv4], out[memslots.BGPv6], out[memslots.BGPPaths] = c.IPv4, c.IPv6, c.Paths
 		} else if strings.Contains(err.Error(), "not running") {
 			out[memslots.BGPv4], out[memslots.BGPv6], out[memslots.BGPPaths] = 0, 0, 0

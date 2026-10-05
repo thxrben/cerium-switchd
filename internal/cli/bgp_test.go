@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/bgpd"
+	"github.com/thxrben/cerium-switchd/internal/api/bgpapi"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 )
 
 type bgpOps struct {
 	ribOps
-	cleared []bgpd.ClearRequest
-	adj     []bgpd.AdjRequest
+	cleared []bgpapi.ClearRequest
+	adj     []bgpapi.AdjRequest
 }
 
 var (
@@ -22,8 +22,8 @@ var (
 	nbr2 = netip.MustParseAddr("10.1.1.6")
 )
 
-func (f *bgpOps) BGPStatus(*string) ([]bgpd.InstanceStatus, error) {
-	return []bgpd.InstanceStatus{{AS: 65000, RouterID: netip.MustParseAddr("10.0.0.1"), Neighbors: []bgp.NeighborStatus{
+func (f *bgpOps) BGPStatus(*string) ([]bgpapi.InstanceStatus, error) {
+	return []bgpapi.InstanceStatus{{AS: 65000, RouterID: netip.MustParseAddr("10.0.0.1"), Neighbors: []bgp.NeighborStatus{
 		{Addr: nbr1, Group: "ext", PeerAS: 65001, LocalAS: 65000, State: "Established", Since: 10*time.Minute + 12*time.Second,
 			RouterID: netip.MustParseAddr("10.9.9.9"), HoldTime: 90, LocalHold: 90, Local: netip.MustParseAddr("10.1.1.1"),
 			Families: []bgp.Family{bgp.IPv4Unicast}, AS4: true, RouteRefresh: true, Import: []string{"in"}, Export: []string{"out"},
@@ -34,7 +34,7 @@ func (f *bgpOps) BGPStatus(*string) ([]bgpd.InstanceStatus, error) {
 	}}}, nil
 }
 
-func (f *bgpOps) BGPAdj(q bgpd.AdjRequest) ([]bgp.InPath, error) {
+func (f *bgpOps) BGPAdj(q bgpapi.AdjRequest) ([]bgp.InPath, error) {
 	f.adj = append(f.adj, q)
 	if q.Neighbor != nbr1 {
 		return nil, nil
@@ -48,7 +48,7 @@ func (f *bgpOps) BGPAdj(q bgpd.AdjRequest) ([]bgp.InPath, error) {
 	}, nil
 }
 
-func (f *bgpOps) ClearBGP(q bgpd.ClearRequest) (int, error) {
+func (f *bgpOps) ClearBGP(q bgpapi.ClearRequest) (int, error) {
 	f.cleared = append(f.cleared, q)
 	return 1, nil
 }
