@@ -111,6 +111,9 @@ func (sh *Shell) showLACP(c *call) error {
 			}
 		}
 		for _, p := range b.Ports {
+			if p.Held {
+				fmt.Fprintf(c.out, "    %s: MACsec: negotiating (the port joins the bundle once MKA has secured it)\n", b.PortNames[p.Name])
+			}
 			if p.PartnerDeaf {
 				fmt.Fprintf(c.out, "    Warning: the partner of %s does not receive our LACPDUs (its LACPDUs do not name this port); check the cable, this port's transmit path and the partner's port\n", b.PortNames[p.Name])
 			}

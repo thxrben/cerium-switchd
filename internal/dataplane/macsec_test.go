@@ -84,3 +84,29 @@ func TestComputeSecuredPort(t *testing.T) {
 		t.Fatalf("nothing to do when the device went:\n%s", FormatPlan(ops))
 	}
 }
+
+// A secured member of an LACP bundle: before MKA it is in no bundle (mtu of
+// the bundle + 32); its MACsec device then joins the team, the port itself
+// stays outside it.
+func TestComputeSecuredBundleMember(t *testing.T) {
+	ca := &model.MACsecCA{Name: "ca1", Cipher: "gcm-aes-128"}
+	cfg := &model.Config{Interfaces: map[string]*model.Interface{
+		"ae1":   {Name: "ae1", AE: true, MemberIDs: []int{1}, MTU: 9014, LACP: &model.LACP{Active: true}, Switching: true, Mode: "trunk", VLANs: []int{10}},
+		"1/0/0": {Name: "1/0/0", Member: 1, MTU: 1514, Parent: "ae1"},
+		"1/0/1": {Name: "1/0/1", Member: 1, MTU: 1514, Parent: "ae1"},
+	}, MACsec: model.MACsec{CAs: map[string]*model.MACsecCA{"ca1": ca}, Ports: map[string]string{"1/0/0": "ca1", "1/0/1": "ca1"}}}
+	unsecured, _ := ComputeSecured(cfg, 1, testNames, nil)
+	if p := unsecured.Links["eth0"]; p.Master != "" || p.MTU != 9000+32 {
+		t.Fatalf("unsecured member: %s", p)
+	}
+	secured, _ := ComputeSecured(cfg, 1, testNames, map[string]string{"eth0": "macsec0"})
+	if d := secured.Links["macsec0"]; d == nil || d.Master != "ae1" || d.MTU != 9000 || d.Kind != SecPort {
+		t.Fatalf("MACsec device: %v", d)
+	}
+	if p := secured.Links["eth0"]; p.Master != "" || p.MTU != 9032 {
+		t.Fatalf("the port joined the bundle itself: %s", p)
+	}
+	if p := secured.Links["eth1"]; p.Master != "" {
+		t.Fatalf("the unsecured member joined: %s", p)
+	}
+}

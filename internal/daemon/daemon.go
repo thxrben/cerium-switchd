@@ -279,7 +279,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 		// LACP bundles: after the data plane created their devices.
 		if !o.DryRun {
-			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, sysMAC), Hooks: "cer-mclagd"})
+			services.setConfig("cer-lacpd", svc.LACPConfig{Bundles: lacpSpecs(cfg, member, names.Linux, applier.dataNames(cfg), sysMAC), Hooks: "cer-mclagd"})
 		}
 		if !o.DryRun {
 			sys, ports := lldpConfig(cfg, member, names, chassisMAC, vc.IsPort)

@@ -124,8 +124,12 @@ func ComputeSecured(cfg *model.Config, m int, names PortNames, secDevs map[strin
 			FlowControl: i.FlowControl,
 		}
 		data := l
-		if cfg.MACsecPort(i.Name) != nil && i.Parent == "" {
-			// The port carries its MACsec device's frames only.
+		if cfg.MACsecPort(i.Name) != nil {
+			// The port carries its MACsec device's frames only (a bundle
+			// member: the device is in the bundle, reference 5.15).
+			if b := s.Links[i.Parent]; i.Parent != "" && b != nil {
+				l.MTU = b.MTU
+			}
 			l.MTU += model.MACsecOverhead
 			plainPorts = append(plainPorts, linux)
 			s.Links[linux] = l

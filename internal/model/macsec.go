@@ -144,6 +144,24 @@ func (b *builder) validateMACsec() {
 			}
 		}
 	}
+	// A bundle's ports are all secured or none (reference 5.15): its
+	// traffic must not leave both protected and not.
+	secured, plain := map[string][]string{}, map[string][]string{}
+	for _, name := range sortedKeys(c.Interfaces) {
+		if i := c.Interfaces[name]; i.Parent != "" {
+			if c.MACsec.Ports[name] != "" {
+				secured[i.Parent] = append(secured[i.Parent], name)
+			} else {
+				plain[i.Parent] = append(plain[i.Parent], name)
+			}
+		}
+	}
+	for _, ae := range sortedKeys(secured) {
+		if len(plain[ae]) > 0 {
+			b.errorf("security macsec interfaces "+secured[ae][0], "%s: either every port of the bundle is secured or none (%s secured, %s not)",
+				ae, strings.Join(secured[ae], ", "), strings.Join(plain[ae], ", "))
+		}
+	}
 	for _, port := range sortedKeys(c.MACsec.Ports) {
 		ca := c.MACsec.Ports[port]
 		at := "security macsec interfaces " + port
@@ -162,8 +180,6 @@ func (b *builder) validateMACsec() {
 			b.errorf(at, "%s is not configured under interfaces", port)
 		case i.Management:
 			b.errorf(at, "%s is a management port", port)
-		case i.Parent != "":
-			b.errorf(at, "%s is a member of %s: MACsec on bundle members is not supported yet", port, i.Parent)
 		}
 		pp, _ := schema.ParsePhysical(port)
 		if info, present, _ := b.port(pp.Member, port); present && info.StackPort {

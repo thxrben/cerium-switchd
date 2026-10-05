@@ -168,7 +168,7 @@ func (m *mkaManager) sync(cfg *model.Config, member int, linux func(string) (str
 	for name, caName := range cfg.MACsec.Ports {
 		ca := cfg.MACsec.CAs[caName]
 		i := cfg.Interfaces[name]
-		if ca == nil || i == nil || i.Member != member || i.Parent != "" { // bundle members: PLAN 10.8
+		if ca == nil || i == nil || i.Member != member {
 			continue
 		}
 		if port, ok := linux(name); ok {

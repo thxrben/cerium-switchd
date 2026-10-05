@@ -681,6 +681,8 @@ WireGuard is dropped: it would only serve remote L3 sites and road warriors, and
    dataplane (team port = the device, mtu + 32 on the physical port), cer-lacpd (the "secured" state per port from
    switchd, held out of sync before), show lacp (a `MACsec: negotiating` note), tests (dataplane plan, LACP machine
    held out of sync, a two-member MC-LAG with secured legs in test/daemons).
+   Status 2026-10-05: 7 and 8 done, unit-tested (not on a device; the test/daemons MC-LAG case with secured legs is
+   not written: it needs MKA, which test/daemons cannot run).
 
 ### Phase 11: Polish and packaging
 1. ~~Full web UI~~: dropped 2026-10-04; the REST API (Phase 18) serves an external orchestrator instead.

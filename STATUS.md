@@ -413,6 +413,16 @@ Last updated: 2026-10-04 (evening).
 - Open: lab test (two lab switches or srv1 with wpa_supplicant as the partner), offload, bundle members; the
   wpa_supplicant of Debian 13 must know macsec_csindex (gcm-aes-256).
 
+## MACsec offload and bundle members (2026-10-05; unit-tested, NOT on a device)
+- Offload on client ports (PLAN 10.7): `macsec_offload=2` when the NIC has `macsec-hw-offload`, the port has no
+  `offload disable` and the wpa_supplicant binary knows the option (2.12 here does; Debian 13's 2.10 decides at run
+  time); not secured within 30 s or 2 restarts -> software for 10 min, Minor alarm, then offload again.
+- Bundle members (PLAN 10.8): all ports of an ae secured or none (E); the MACsec device joins the team/bond, the port
+  keeps the bundle's mtu + 32 outside it; cer-lacpd keeps LACPDUs on the port, enables the device in the team
+  (PortSpec.Team) and holds a port without its device out of sync (PortSpec.Held, lacp.Bundle.SetPortHold; `show
+  lacp interfaces`: "MACsec: negotiating").
+- Lab: needs two switches with MACsec on an LACP bundle (the virtio NICs cannot offload).
+
 ## MACsec rework, PLAN 10b (2026-10-04 evening; unit-tested, NOT yet on the lab)
 - Reference 5.2: `virtual-chassis macsec { mode auto|on|off; interface <if> mode auto|on|off; }`, default `auto` =
   encrypted only where both ends' NICs offload (`macsec-hw-offload`); `on` = software where needed; `off` wins. A

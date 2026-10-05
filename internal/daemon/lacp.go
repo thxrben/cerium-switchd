@@ -44,8 +44,10 @@ func lacpPortNumber(name string) uint16 {
 	return uint16(p.Member*1024 + p.Card*64 + p.Port)
 }
 
-// lacpSpecs lists this member's LACP bundles.
-func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool), sysMAC [6]byte) []lacp.BundleSpec {
+// lacpSpecs lists this member's LACP bundles; data names the device that
+// carries a port's traffic (a secured port's MACsec device, false: none
+// yet: the port is held, reference 5.15).
+func lacpSpecs(cfg *model.Config, member int, linux, data func(string) (string, bool), sysMAC [6]byte) []lacp.BundleSpec {
 	var out []lacp.BundleSpec
 	for _, i := range cfg.Interfaces {
 		if !i.AE || i.LACP == nil || i.Disabled {
@@ -65,7 +67,12 @@ func lacpSpecs(cfg *model.Config, member int, linux func(string) (string, bool),
 			if !ok || num == 0 {
 				continue // not plugged in, or no port number (the commit check rejects it)
 			}
-			spec.Ports = append(spec.Ports, lacp.PortSpec{Linux: l, Name: p.Name, Number: num, Priority: 32768})
+			ps := lacp.PortSpec{Linux: l, Name: p.Name, Number: num, Priority: 32768}
+			if cfg.MACsecPort(p.Name) != nil {
+				dev, secured := data(p.Name)
+				ps.Team, ps.Held = dev, !secured
+			}
+			spec.Ports = append(spec.Ports, ps)
 		}
 		if len(spec.Ports) > 0 {
 			sort.Slice(spec.Ports, func(a, b int) bool { return spec.Ports[a].Number < spec.Ports[b].Number })

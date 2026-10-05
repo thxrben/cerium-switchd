@@ -57,15 +57,18 @@ func (s MuxState) String() string {
 
 // Port is one member port of a bundle.
 type Port struct {
-	Name         string
-	Number       uint16
-	Priority     uint16
-	up           bool
-	actor        State // Sync, Collecting, Distributing, Defaulted, Expired (the rest comes from Config)
-	partner      Info
-	rx           RxState
-	mux          MuxState
-	selected     bool
+	Name     string
+	Number   uint16
+	Priority uint16
+	up       bool
+	actor    State // Sync, Collecting, Distributing, Defaulted, Expired (the rest comes from Config)
+	partner  Info
+	rx       RxState
+	mux      MuxState
+	selected bool
+	// held keeps the port unselected (not in sync): it cannot carry
+	// traffic yet (a MACsec port before its link is secured).
+	held         bool
 	currentWhile time.Time // deadlines; zero: stopped
 	waitWhile    time.Time
 	drainUntil   time.Time // held while distributing: out once the partner stopped sending
@@ -104,6 +107,8 @@ type PortStatus struct {
 	SlowPartner bool
 	// PartnerDeaf: the partner does not receive this side's LACPDUs.
 	PartnerDeaf bool
+	// Held: the port cannot carry traffic yet (MACsec negotiating).
+	Held bool `json:",omitempty"`
 }
 
 // BundleStatus is a bundle for "show lacp".
@@ -151,6 +156,15 @@ func (b *Bundle) SetHold(h bool) { b.hold = h }
 
 // Held reports whether the bundle is held.
 func (b *Bundle) Held() bool { return b.hold }
+
+// SetPortHold keeps one port out of the bundle (true: LACP tells the
+// partner "not in sync" on it) or lets it in again.
+func (b *Bundle) SetPortHold(name string, h bool) {
+	if p := b.ports[name]; p != nil && p.held != h {
+		p.held = h
+		p.ntt = true
+	}
+}
 
 // AddPort adds a member port (down until SetLink).
 func (b *Bundle) AddPort(name string, number, priority uint16) {
@@ -383,7 +397,7 @@ func (b *Bundle) selection(names []string) {
 	}
 	for _, n := range names {
 		p := b.ports[n]
-		p.selected = !b.hold && b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key
+		p.selected = !b.hold && !p.held && b.agg.set && candidate(p) && p.partner.System == b.agg.system && p.partner.Key == b.agg.key
 	}
 }
 
@@ -501,7 +515,7 @@ func (b *Bundle) Status() []PortStatus {
 	for _, n := range b.Ports() {
 		p := b.ports[n]
 		out = append(out, PortStatus{Name: n, Actor: b.actorInfo(p), Partner: p.partner, Rx: p.rx, Mux: p.mux, Selected: p.selected, Stats: p.stats,
-			SlowPartner: p.slowPartner && b.cfg.Fast && !p.deafPartner, PartnerDeaf: p.deafPartner})
+			SlowPartner: p.slowPartner && b.cfg.Fast && !p.deafPartner, PartnerDeaf: p.deafPartner, Held: p.held})
 	}
 	return out
 }

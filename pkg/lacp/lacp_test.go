@@ -415,3 +415,31 @@ func TestDeafPartner(t *testing.T) {
 		t.Errorf("not distributing after repair: %+v", a.Status())
 	}
 }
+
+// A port held alone (MACsec not secured yet) stays out of sync while the
+// other port of the bundle carries traffic; released, it joins.
+func TestPortHold(t *testing.T) {
+	s := newSim()
+	a := s.add("A", Config{System: sys(1), Key: 1, Active: true, Fast: true}, "p1", "p2")
+	b := s.add("B", Config{System: sys(2), Key: 1, Active: true, Fast: true}, "p1", "p2")
+	a.SetPortHold("p2", true)
+	s.connect("A/p1", "B/p1")
+	s.connect("A/p2", "B/p2")
+	s.run(4 * time.Second)
+	if !slices.Equal(dist(a), []string{"p1"}) || !slices.Equal(dist(b), []string{"p1"}) {
+		t.Fatalf("with p2 held: A %v B %v", dist(a), dist(b))
+	}
+	for _, st := range b.Status() {
+		if st.Name == "p2" && st.Partner.State.Has(Sync) {
+			t.Error("the partner sees the held port in sync")
+		}
+	}
+	if st := a.Status(); !st[1].Held || st[0].Held {
+		t.Errorf("status %+v", st)
+	}
+	a.SetPortHold("p2", false)
+	s.run(4 * time.Second)
+	if !slices.Equal(dist(a), []string{"p1", "p2"}) || !slices.Equal(dist(b), []string{"p1", "p2"}) {
+		t.Fatalf("released: A %v B %v", dist(a), dist(b))
+	}
+}

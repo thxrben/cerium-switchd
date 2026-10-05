@@ -38,6 +38,21 @@ type PortSpec struct {
 	Name     string // configuration name (x/y/z)
 	Number   uint16
 	Priority uint16
+	// Team is the device that carries the port's traffic in the bundle (a
+	// secured port's MACsec device; "": the port itself). LACPDUs always
+	// use the port.
+	Team string `json:",omitempty"`
+	// Held: the port cannot carry traffic yet (MACsec not secured): it is
+	// kept out of the bundle, LACP says "not in sync".
+	Held bool `json:",omitempty"`
+}
+
+// team is the device enabled in the bundle for a port.
+func (p PortSpec) team() string {
+	if p.Team != "" {
+		return p.Team
+	}
+	return p.Linux
 }
 
 // Runtime runs LACP for all bundles of this switch.
@@ -73,7 +88,8 @@ type Runtime struct {
 type rtBundle struct {
 	spec    BundleSpec
 	b       *Bundle
-	enabled map[string]bool // what the kernel was told
+	enabled map[string]bool   // what the kernel was told
+	team    map[string]string // port -> the device enabled for it (PortSpec.Team)
 	// peerReady: ports the MC-LAG peer has ready (minimum-links counts
 	// both members' ports).
 	peerReady  int
@@ -135,7 +151,7 @@ func (r *Runtime) Sync(specs []BundleSpec) {
 	for _, s := range specs {
 		rb := r.bundles[s.Name]
 		if rb == nil {
-			rb = &rtBundle{enabled: map[string]bool{}}
+			rb = &rtBundle{enabled: map[string]bool{}, team: map[string]string{}}
 			rb.b = NewBundle(s.Config, func(port string, p *PDU) { r.send(port, p) })
 			r.bundles[s.Name] = rb
 		}
@@ -162,11 +178,20 @@ func (r *Runtime) Sync(specs []BundleSpec) {
 				}
 			}
 			if slices.Contains(rb.b.Ports(), p.Linux) {
+				rb.b.SetPortHold(p.Linux, p.Held)
+				if rb.team[p.Linux] != p.team() {
+					// Another device carries it now (MACsec secured or lost):
+					// what the kernel has for that one.
+					rb.team[p.Linux] = p.team()
+					rb.enabled[p.Linux] = kernel[p.team()]
+				}
 				continue
 			}
 			rb.b.AddPort(p.Linux, p.Number, p.Priority)
-			rb.enabled[p.Linux] = kernel[p.Linux]
-			if snap, ok := r.restore[s.Name][p.Linux]; ok && kernel[p.Linux] && r.carrier(p.Linux) {
+			rb.b.SetPortHold(p.Linux, p.Held)
+			rb.team[p.Linux] = p.team()
+			rb.enabled[p.Linux] = kernel[p.team()]
+			if snap, ok := r.restore[s.Name][p.Linux]; ok && kernel[p.team()] && r.carrier(p.Linux) {
 				rb.b.Restore(p.Linux, snap, now)
 				r.Log.Info("lacp: port state restored", "bundle", s.Name, "port", p.Name)
 			}
@@ -291,7 +316,11 @@ func (r *Runtime) enforce(rb *rtBundle) {
 		if rb.enabled[p] == on {
 			continue
 		}
-		if err := r.Kernel.SetPort(rb.spec.Name, p, on); err != nil {
+		dev := rb.team[p]
+		if dev == "" {
+			dev = p
+		}
+		if err := r.Kernel.SetPort(rb.spec.Name, dev, on); err != nil {
 			r.Log.Warn("lacp: port", "bundle", rb.spec.Name, "port", p, "err", err)
 			continue
 		}
