@@ -26,7 +26,9 @@ func (allOps) USBList(dir string) (usbstore.Listing, error) {
 		{Name: "sw1.conf", Size: 1234, ModTime: time.Now()}}}, nil
 }
 
-func (allOps) USBEject() (usbstore.Stick, error) { return usbstore.Stick{Disk: "sdb", Vendor: "Kingston"}, nil }
+func (allOps) USBEject() (usbstore.Stick, error) {
+	return usbstore.Stick{Disk: "sdb", Vendor: "Kingston"}, nil
+}
 
 func (allOps) Optics(iface string) ([]OpticsPort, error) { return opticsOps{}.Optics(iface) }
 

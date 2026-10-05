@@ -11,10 +11,10 @@ import (
 // them and fail when the code drifts more than 10 % from these values;
 // those marked as estimates are not measured.
 var Go = map[string]int{
-	"rib/bgp":     711, // cer-ribd: a BGP route with its own attributes (none shared: the worst case)
-	"rib/ospf":    470, // cer-ribd: an OSPF route
-	"bgp/prefix":  966, // cer-bgpd: Adj-RIB-In (received, and accepted after a policy that changed it) and the decision
-	"bgp/path":    870, // cer-bgpd: a further path to a prefix (likewise)
+	"rib/bgp":    711, // cer-ribd: a BGP route with its own attributes (none shared: the worst case)
+	"rib/ospf":   470, // cer-ribd: an OSPF route
+	"bgp/prefix": 966, // cer-bgpd: Adj-RIB-In (received, and accepted after a policy that changed it) and the decision
+	"bgp/path":   870, // cer-bgpd: a further path to a prefix (likewise)
 	// Estimates: an OSPF route's share of cer-ospfd's database and SPF
 	// result; a MAC address's copy in cer-mclagd.
 	"ospf/route": 420,
