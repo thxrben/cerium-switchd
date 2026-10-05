@@ -659,6 +659,16 @@ func (b *builder) checkWeb() {
 	if sys.SSH.Configured && sys.SSH.Port == w.Port {
 		b.errorf(at+" port", "port %d is the CLI SSH server's (system services ssh port)", w.Port)
 	}
+	for _, name := range sortedKeys(w.Tokens) {
+		t := w.Tokens[name]
+		tat := at + " api-token " + name
+		if t.Hash == "" {
+			b.errorf(tat, "hash is required (request system api-token create makes the token and its hash)")
+		}
+		if t.User != "root" && sys.Users[t.User] == nil {
+			b.errorf(tat+" user", "user %q is not configured under system login user", t.User)
+		}
+	}
 }
 
 // checkPlainPorts warns about physical ports that are configured but

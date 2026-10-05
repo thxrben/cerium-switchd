@@ -419,7 +419,12 @@ Last updated: 2026-10-04 (evening).
   class (webapi.User.Class; a User without SuperUser never becomes super-user).
 - 18.2 done the same day: `GET /api/v1/state[/{name}]` (21 documents from the stack-wide ops), `GET /api/v1/events`
   (SSE of every CLI notice: rpcserver.OnNotify -> webapi.Publish), `/healthz`, `/readyz`, `/metrics` (alarms,
-  daemons, interfaces and counters, memory purposes). Next: 18.3 tokens/OpenAPI (PLAN 18).
+  daemons, interfaces and counters, memory purposes).
+- 18.3 done the same day: `system services web-management api-token <name> { user; hash; }` (schema, model, E for
+  an unknown user or no hash), `request system api-token create <name> user <u>` (token printed once, SHA-256 into
+  the candidate), `Authorization: Bearer` (the user's class; a removed user's token stops working), `GET
+  /api/v1/openapi.json` generated from the route table (one table registers the handlers and describes them).
+  Phase 18 is complete apart from link-change events and per-member state (`member=`), both noted in PLAN 18.2.
 
 ## OSPF graceful restart (2026-10-05; unit-tested, NOT on a device; PLAN 9c "Graceful restart")
 - Helper (RFC 3623/5187: grace LSAs, strict LSA checking, DR election kept), restarting role after a cer-ospfd

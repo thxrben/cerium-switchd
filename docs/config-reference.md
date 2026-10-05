@@ -968,6 +968,13 @@ interfaces; it moves with mastership. It runs while `system services web-managem
   otherwise). Every change is logged with the user (facility `change-log`).
 * `upload-limit <size>`: the largest bundle an upload may have (default `1g`). With memory slots (`system memory`), the
   update slot limits it too: the smaller one applies.
+* `api-token <name> { user <user>; hash <sha256>; }`: a token for an orchestrator, sent as `Authorization: Bearer
+  <token>` instead of a password; it has the class of its user (`system login user`, E when the user is not
+  configured; E without `hash`). The configuration keeps only the token's SHA-256, so it is the same on every member
+  and works after a mastership change. `request system api-token create <name> user <user>` (super-user) makes a
+  random token (32 bytes, base64url), prints it once and writes the statement into the candidate (it commits
+  nothing); deleting the statement and committing revokes it. Failed tokens count as failed logins (429).
+* `GET /api/v1/openapi.json` (no authentication) describes every endpoint (OpenAPI 3.1).
 * **Endpoints** (JSON; errors are `{"error": "<text>"}` with a 4xx/5xx status):
 
 | Method and path | Class | Does |
@@ -2686,6 +2693,9 @@ All statements with their types, ranges and defaults, generated from the schema.
 | `system services web-management certificate` | leaf | &lt;path&gt; |  | PEM certificate file (self-signed if unset) |
 | `system services web-management key` | leaf | &lt;path&gt; |  | PEM private key file |
 | `system services web-management upload-limit` | leaf | &lt;size&gt; 1m..64g | 1g | Largest software bundle an upload may have |
+| `system services web-management api-token <name>` | list | &lt;name&gt; |  | API token for an orchestrator (request system api-token create) |
+| `system services web-management api-token <name> user` | leaf | &lt;username&gt; |  | User whose class the token has |
+| `system services web-management api-token <name> hash` | leaf | &lt;sha256&gt; |  | SHA-256 of the token (written by request system api-token create) |
 | `system services web-management disable` | flag |  |  | Disable the REST API |
 | `system commit` | container |  |  | Commit behaviour |
 | `system commit confirmation` | container |  |  | Automatic rollback of unconfirmed commits |

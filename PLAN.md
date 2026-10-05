@@ -982,6 +982,8 @@ One API per virtual chassis (master, `cme` address) or single switch, extending 
   configuration: they work on every master); `request system api-token create <name> user <u>` prints the token
   once (32 random bytes, base64url) and writes its hash into the candidate; `Authorization: Bearer <token>` has the
   user's class. `GET /api/v1/openapi.json` (written by hand, checked by a test against the routes).
+  **18.2 and 18.3 done 2026-10-05** (unit-tested). Changed on the way: the OpenAPI description is generated from
+  the route table that also registers the handlers (not written by hand). Open: link-change events, `member=`.
 
 ### Order (2026-10-04)
 Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) and 17b → Phase 15

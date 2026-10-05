@@ -119,6 +119,14 @@ type WebService struct {
 	KeyFile  string
 	// UploadLimit is the largest bundle an upload may have (bytes).
 	UploadLimit uint64
+	// Tokens are the API tokens by name.
+	Tokens map[string]APIToken
+}
+
+// APIToken is an api-token (reference 5.1 web-management).
+type APIToken struct {
+	User string
+	Hash string // SHA-256 of the token, hex
 }
 
 // DefaultUploadLimit is upload-limit's default (1g).
@@ -552,6 +560,10 @@ func (b *builder) build() {
 		CertFile: web.Leaf("certificate"), KeyFile: web.Leaf("key"), UploadLimit: DefaultUploadLimit}
 	if l, err := schema.ParseSize(web.Leaf("upload-limit")); err == nil {
 		s.Web.UploadLimit = l
+	}
+	s.Web.Tokens = map[string]APIToken{}
+	for _, e := range web.Entries("api-token") {
+		s.Web.Tokens[e.Key] = APIToken{User: e.Leaf("user"), Hash: e.Leaf("hash")}
 	}
 	conf := sys.Get("commit", "confirmation")
 	s.Commit = CommitPolicy{ConfirmRequired: conf.Leaf("mode") != "optional", TimeoutMinutes: atoi(conf.Leaf("timeout"), 10)}

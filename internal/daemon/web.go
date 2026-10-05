@@ -65,6 +65,33 @@ func webAuth(cfg *model.Config, name, password string) (webapi.User, bool) {
 	return webapi.User{Name: name, SuperUser: cl == commit.SuperUser, Class: cl}, true
 }
 
+// webTokenAuth checks an API token against the configuration's hashes
+// (reference 5.1 web-management api-token): the token has its user's
+// class.
+func webTokenAuth(cfg *model.Config, token string) (webapi.User, bool) {
+	if cfg == nil || token == "" {
+		return webapi.User{}, false
+	}
+	sum := sha256.Sum256([]byte(token))
+	got := hex.EncodeToString(sum[:])
+	for _, t := range cfg.System.Web.Tokens {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(t.Hash)) != 1 {
+			continue
+		}
+		class := "super-user"
+		if t.User != "root" {
+			u := cfg.System.Users[t.User]
+			if u == nil {
+				return webapi.User{}, false
+			}
+			class = u.Class
+		}
+		cl := commit.ParseClass(class)
+		return webapi.User{Name: t.User, SuperUser: cl == commit.SuperUser, Class: cl}, true
+	}
+	return webapi.User{}, false
+}
+
 // Upload is the bundle uploaded through the REST API.
 type Upload struct {
 	Version string    `json:"version"`

@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,6 +106,62 @@ func TestStateHealthEvents(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("no event")
+		}
+	}
+}
+
+// API tokens (Bearer) and the OpenAPI description of every route.
+func TestTokensAndOpenAPI(t *testing.T) {
+	s, _, base, c := start(t, 1<<20)
+	s.TokenAuth = func(tok string) (User, bool) {
+		if tok == "good-token" {
+			return User{Name: "orchestrator", Class: 2}, true // read-only
+		}
+		return User{}, false
+	}
+	fs := &fakeState{}
+	s.SetState(fs, fs)
+	call := func(path, auth string) int {
+		method := "GET"
+		if strings.HasSuffix(path, "/install") {
+			method = "POST"
+		}
+		req, _ := http.NewRequest(method, base+path, nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := call("/api/v1/state/uptime", "Bearer good-token"); code != 200 {
+		t.Fatalf("good token: %d", code)
+	}
+	if code := call("/api/v1/state/uptime", "Bearer bad"); code != http.StatusUnauthorized {
+		t.Fatalf("bad token: %d", code)
+	}
+	if code := call("/api/v1/software/install", "Bearer good-token"); code != http.StatusForbidden {
+		t.Fatalf("install with a read-only token: %d", code)
+	}
+	req, _ := http.NewRequest("GET", base+"/api/v1/openapi.json", nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		OpenAPI string                    `json:"openapi"`
+		Paths   map[string]map[string]any `json:"paths"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&doc) != nil || doc.OpenAPI != "3.1.0" {
+		t.Fatalf("openapi %d %+v", resp.StatusCode, doc)
+	}
+	for _, rt := range s.table() {
+		if doc.Paths[rt.path][strings.ToLower(rt.method)] == nil {
+			t.Errorf("%s %s missing from the description", rt.method, rt.path)
 		}
 	}
 }

@@ -96,11 +96,13 @@ type Info struct {
 // Server is the REST API.
 type Server struct {
 	Log *slog.Logger
-	// Auth checks a user's credentials (ok false: wrong).
-	Auth     func(user, password string) (User, bool)
-	Software Software
-	sess     sessions
-	events   hub
+	// Auth checks a user's credentials (ok false: wrong); TokenAuth an API
+	// token (Authorization: Bearer; nil: none accepted).
+	Auth      func(user, password string) (User, bool)
+	TokenAuth func(token string) (User, bool)
+	Software  Software
+	sess      sessions
+	events    hub
 
 	mu       sync.Mutex
 	newShell func(User) Shell // SetShells
@@ -266,39 +268,70 @@ func (s *Server) Info() Info {
 
 // ---- requests ----
 
-func (s *Server) routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/software", s.auth(false, func(w http.ResponseWriter, r *http.Request, _ User) {
+// route is one endpoint: the handlers and the OpenAPI description
+// (openapi.go) come from the same table, so they cannot differ.
+type route struct {
+	method, path string
+	// access: "" none (no authentication), "any" class, else the least
+	// class ("operator", "super-user").
+	access  string
+	summary string
+	h       func(http.ResponseWriter, *http.Request, User)
+	open    http.HandlerFunc // access "": without a user
+}
+
+func (s *Server) table() []route {
+	software := func(w http.ResponseWriter, r *http.Request, _ User) {
 		st, err := s.Software.Status()
 		if err != nil {
 			fail(w, http.StatusServiceUnavailable, err)
 			return
 		}
 		reply(w, http.StatusOK, st)
-	}))
-	mux.HandleFunc("PUT /api/v1/software/upload", s.auth(true, s.upload))
-	mux.HandleFunc("POST /api/v1/software/install", s.auth(true, s.install))
-	{
-		mux.HandleFunc("POST /api/v1/cli", s.auth(false, s.cliRun))
-		mux.HandleFunc("GET /api/v1/config", s.auth(false, s.configGet))
-		mux.HandleFunc("GET /api/v1/config/revisions", s.auth(false, func(w http.ResponseWriter, r *http.Request, u User) {
-			s.oneCommand(w, r, u, "show system commit", false)
-		}))
-		mux.HandleFunc("POST /api/v1/config/confirm", s.authClass(commit.Operator, s.confirm))
-		mux.HandleFunc("POST /api/v1/config/sessions", s.auth(true, s.newSession))
-		mux.HandleFunc("POST /api/v1/config/sessions/{id}/load", s.auth(true, s.withSession(s.sessionLoad)))
-		mux.HandleFunc("POST /api/v1/config/sessions/{id}/commands", s.auth(true, s.withSession(s.sessionCommands)))
-		mux.HandleFunc("GET /api/v1/config/sessions/{id}/compare", s.auth(true, s.withSession(s.sessionCompare)))
-		mux.HandleFunc("POST /api/v1/config/sessions/{id}/check", s.auth(true, s.withSession(s.sessionCheck)))
-		mux.HandleFunc("POST /api/v1/config/sessions/{id}/commit", s.auth(true, s.withSession(s.sessionCommit)))
-		mux.HandleFunc("DELETE /api/v1/config/sessions/{id}", s.auth(true, s.withSession(s.sessionDelete)))
 	}
-	mux.HandleFunc("GET /api/v1/state", s.auth(false, s.stateList))
-	mux.HandleFunc("GET /api/v1/state/{name}", s.auth(false, s.stateGet))
-	mux.HandleFunc("GET /api/v1/events", s.auth(false, s.eventStream))
-	mux.HandleFunc("GET /healthz", s.healthz)
-	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET /metrics", s.auth(false, s.metrics))
+	revisions := func(w http.ResponseWriter, r *http.Request, u User) {
+		s.oneCommand(w, r, u, "show system commit", false)
+	}
+	return []route{
+		{"GET", "/api/v1/software", "any", "The software of every member, the uploaded bundle and the running update", software, nil},
+		{"PUT", "/api/v1/software/upload", "super-user", "Upload a software bundle into memory (verified, not installed)", s.upload, nil},
+		{"POST", "/api/v1/software/install", "super-user", "Install the uploaded bundle on the members", s.install, nil},
+		{"POST", "/api/v1/cli", "any", "Run operational commands (each with the user's class)", s.cliRun, nil},
+		{"GET", "/api/v1/config", "any", "The active configuration (format json, set or text)", s.configGet, nil},
+		{"GET", "/api/v1/config/revisions", "any", "The commit history", revisions, nil},
+		{"POST", "/api/v1/config/confirm", "operator", "Confirm a commit pending confirmation", s.confirm, nil},
+		{"POST", "/api/v1/config/sessions", "super-user", "Open a private configuration session", s.newSession, nil},
+		{"POST", "/api/v1/config/sessions/{id}/load", "super-user", "Load text into the session's candidate", s.withSession(s.sessionLoad), nil},
+		{"POST", "/api/v1/config/sessions/{id}/commands", "super-user", "Run configuration commands in the session", s.withSession(s.sessionCommands), nil},
+		{"GET", "/api/v1/config/sessions/{id}/compare", "super-user", "The session's changes", s.withSession(s.sessionCompare), nil},
+		{"POST", "/api/v1/config/sessions/{id}/check", "super-user", "Commit check of the session", s.withSession(s.sessionCheck), nil},
+		{"POST", "/api/v1/config/sessions/{id}/commit", "super-user", "Commit the session (and close it)", s.withSession(s.sessionCommit), nil},
+		{"DELETE", "/api/v1/config/sessions/{id}", "super-user", "Close the session, discarding its changes", s.withSession(s.sessionDelete), nil},
+		{"GET", "/api/v1/state", "any", "The names of the state documents", s.stateList, nil},
+		{"GET", "/api/v1/state/{name}", "any", "A state document (what a show command reports), for the whole stack", s.stateGet, nil},
+		{"GET", "/api/v1/events", "any", "Server-sent events: every notice of the CLI sessions", s.eventStream, nil},
+		{"GET", "/healthz", "", "200 while the API runs", nil, s.healthz},
+		{"GET", "/readyz", "", "200 when the switch is ready (configuration applied, a master)", nil, s.readyz},
+		{"GET", "/metrics", "any", "Prometheus metrics", s.metrics, nil},
+		{"GET", "/api/v1/openapi.json", "", "This description (OpenAPI 3.1)", nil, s.openAPI},
+	}
+}
+
+func (s *Server) routes() http.Handler {
+	mux := http.NewServeMux()
+	for _, rt := range s.table() {
+		pattern := rt.method + " " + rt.path
+		switch rt.access {
+		case "":
+			mux.HandleFunc(pattern, rt.open)
+		case "any":
+			mux.HandleFunc(pattern, s.auth(false, rt.h))
+		case "super-user":
+			mux.HandleFunc(pattern, s.auth(true, rt.h))
+		default:
+			mux.HandleFunc(pattern, s.authClass(commit.ParseClass(rt.access), rt.h))
+		}
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
@@ -329,7 +362,12 @@ func (s *Server) auth(change bool, h func(http.ResponseWriter, *http.Request, Us
 		}
 		name, pw, ok := r.BasicAuth()
 		var u User
-		if ok {
+		if bearer, isBearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); isBearer {
+			name, ok = "(token)", false
+			if s.TokenAuth != nil {
+				u, ok = s.TokenAuth(strings.TrimSpace(bearer))
+			}
+		} else if ok {
 			u, ok = s.Auth(name, pw)
 		}
 		if !ok {

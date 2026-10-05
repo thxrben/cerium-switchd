@@ -315,6 +315,12 @@ func Run(ctx context.Context, o Options) error {
 			cfg := mgmt.cfg
 			mgmt.mu.Unlock()
 			return webAuth(cfg, user, pw)
+		},
+		TokenAuth: func(token string) (webapi.User, bool) {
+			mgmt.mu.Lock()
+			cfg := mgmt.cfg
+			mgmt.mu.Unlock()
+			return webTokenAuth(cfg, token)
 		}}
 	applier.isMaster = mgmt.master
 	applier.gatewayMAC = kernel.GatewayMAC

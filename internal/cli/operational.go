@@ -1499,6 +1499,7 @@ func registerOperational() {
 		daemonCommand(),
 		{name: "system", help: "System requests", class: commit.Operator, sub: []*command{
 			usbCommand(),
+			apiTokenCommand(),
 			power("reboot", "Reboot this member"),
 			{name: "reload", help: "Restart the switch software of this member without rebooting", class: commit.SuperUser, run: (*Shell).reload},
 			power("halt", "Halt this member"),
