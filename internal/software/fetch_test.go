@@ -2,10 +2,14 @@ package software
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/thxrben/cerium-switchd/internal/usbstore"
 )
 
 func TestSourcesAndCurl(t *testing.T) {
@@ -34,26 +38,34 @@ func TestSourcesAndCurl(t *testing.T) {
 	}
 }
 
+// fakeUSB is a stick with one file.
+type fakeUSB map[string]string
+
+func (u fakeUSB) CopyTo(p string, w io.Writer, max int64) (int64, error) {
+	b, ok := u[p]
+	if !ok {
+		return 0, os.ErrNotExist
+	}
+	if int64(len(b)) > max {
+		return 0, usbstore.ErrTooLarge
+	}
+	n, err := io.WriteString(w, b)
+	return int64(n), err
+}
+
 func TestUSBAndFile(t *testing.T) {
 	dir := t.TempDir()
-	sys := filepath.Join(dir, "sys")
-	os.MkdirAll(filepath.Join(sys, "block", "sdb", "sdb1"), 0o755)
-	os.WriteFile(filepath.Join(sys, "block", "sdb", "removable"), []byte("1\n"), 0o644)
-	mnt := filepath.Join(dir, "mnt")
-	var cmds []string
-	f := &Fetcher{SysRoot: sys, MountDir: mnt, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
-		cmds = append(cmds, name+" "+strings.Join(args, " "))
-		if name == "mount" {
-			os.WriteFile(filepath.Join(mnt, "ceros.tar.gz"), []byte("pkg"), 0o644)
-		}
-		return nil, nil
-	}}
-	src, _ := ParseSource("usb:ceros.tar.gz")
+	f := &Fetcher{USB: fakeUSB{"ceros.bundle": "pkg"}}
+	src, _ := ParseSource("usb:ceros.bundle")
 	dst := filepath.Join(dir, "out")
 	if err := f.Fetch(context.Background(), src, dst, ""); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(dst); string(b) != "pkg" || !strings.Contains(strings.Join(cmds, "\n"), "mount -o ro /dev/sdb1") || !strings.HasPrefix(cmds[len(cmds)-1], "umount") {
-		t.Errorf("usb: %q %v", b, cmds)
+	if b, _ := os.ReadFile(dst); string(b) != "pkg" {
+		t.Errorf("usb: %q", b)
+	}
+	f.MaxSize = 2
+	if err := f.Fetch(context.Background(), src, dst, ""); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("too large: %v", err)
 	}
 }

@@ -572,8 +572,19 @@ Unit-tested, NOT on the lab switches yet (the lab still runs 05240a8; see "Lab d
   bridge ports by kernel name and need the same mapping.
 - Done: Phase 16 `request system reload [member <id>|all-members]` (drain, ordered daemon stop, switch ports down,
   plan file removed, switchd restarts; waitBack between members). Needs a lab test: ports must come up again.
-- Open: Phase 17.4 USB storage (save/load usb:, file list usb:, request system storage usb eject); Phase 10 MACsec;
-  show system limits "used of available" fix (MACsec offload shows n of all ports, must be of capable ports).
+- Done 2026-10-05 (unit-tested, NOT on a device): Phase 17.4 USB storage (PLAN 17.4, reference 3.4/3.5).
+  internal/usbstore: sticks from sysfs (USB bus or removable, a medium present), **the system disk excluded** (disks
+  under a mounted file system, through dm-verity slaves, and every disk with a `ceros-*` GPT partition: the old
+  software/fetch.go took "the first USB disk", which on physw4 is the system stick); mount(2) only (vfat, exfat,
+  ext4 tried in order; nosuid,nodev,noexec,noatime; ro for reads), one operation at a time (5 s wait, then busy),
+  openat2 RESOLVE_IN_ROOT (no escapes by `..` or symlinks), writes to a temporary name + fsync + rename + syncfs,
+  unmount even on errors, eject = unmount + SCSI delete + USB port remove (sysfs). `usb:` is the stick of the member
+  the user is connected to: rpcserver answers `usb:` readfile/writefile itself for local sessions, and in the relay
+  pump for sessions on the master (swcli unchanged); `file list usb:` and `request system storage usb eject` run on
+  the origin member (Stack.Exec). `request`/`request system` are operator class now (every other request below
+  stays super-user, checked per level). Software fetch uses the same store (one lock with the CLI).
+  Not done: Tab completion of usb: paths; `request system software add usb:` still reads the master's stick; a real
+  mount (needs root: lab with a virtual USB disk).
 - Lab deploy: the lab VMs still run the pre-image single-binary install (/usr/local/sbin/switchd, swcli symlink).
   The new build needs every program in /usr/local/sbin; members 1 and 3 are reachable from the master only over the
   stack VRF (`ip vrf exec swstack ssh` with agent forwarding). Installing that way was blocked by the permission

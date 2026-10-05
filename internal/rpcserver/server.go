@@ -26,6 +26,43 @@ import (
 // rejects the connection with that message.
 type Authorizer func(uid int, name string) (commit.Class, error)
 
+// USBFiles is the USB stick of this member (usbstore.Store).
+type USBFiles interface {
+	Read(path string, max int64) ([]byte, error)
+	Write(path string, data []byte) error
+}
+
+// maxUSBFile is the largest file read from a stick for a session.
+const maxUSBFile = 16 << 20
+
+// usbFile answers a readfile/writefile request for a usb: name, for a
+// user of class (operator at least).
+func (s *Server) usbFile(m rpc.Msg, class commit.Class, user string) rpc.Msg {
+	reply := rpc.Msg{T: "file"}
+	path := strings.TrimPrefix(m.Name, "usb:")
+	if class > commit.Operator {
+		reply.Err = "permission denied: USB sticks need the operator class"
+		return reply
+	}
+	var err error
+	if m.T == "readfile" {
+		reply.Data, err = s.USB.Read(path, maxUSBFile)
+	} else {
+		err = s.USB.Write(path, m.Data)
+		if err == nil {
+			s.Log.Info("file written to the USB stick", "facility", "change-log", "user", user, "file", m.Name, "bytes", len(m.Data))
+		}
+	}
+	if err != nil {
+		reply.Err = err.Error()
+	}
+	return reply
+}
+
+func usbName(m rpc.Msg) bool {
+	return (m.T == "readfile" || m.T == "writefile") && strings.HasPrefix(m.Name, "usb:")
+}
+
 // Server serves CLI sessions on a unix socket.
 type Server struct {
 	// Env returns the CLI environment for a user (Engine, HostName, …).
@@ -47,6 +84,11 @@ type Server struct {
 	// Synced waits (briefly) until this member has the master's revision
 	// rev, when a relayed session returns to operational mode.
 	Synced func(rev uint64)
+	// USB reads and writes usb:<file> names of this member's stick
+	// (reference 3.4): a session's file requests for them are answered
+	// here, where the user is, also when the session runs on the master
+	// (nil: usb: names go to the client like other files).
+	USB USBFiles
 
 	mu    sync.Mutex
 	conns map[*conn]struct{}
@@ -168,6 +210,10 @@ func (c *conn) wait(ctx context.Context) (rpc.Msg, error) {
 type term struct {
 	c   *conn
 	ctx context.Context
+	// usb answers usb: file requests on this member (a session of a user
+	// connected here; nil: they go to the client, which is a relaying
+	// member that answers them).
+	usb func(rpc.Msg) rpc.Msg
 }
 
 func (t *term) Ask(prompt string, echo bool) (string, error) {
@@ -194,6 +240,13 @@ func (t *term) ReadText(prompt string) (string, error) {
 }
 
 func (t *term) ReadFile(name string) ([]byte, error) {
+	if m := (rpc.Msg{T: "readfile", Name: name}); t.usb != nil && usbName(m) {
+		r := t.usb(m)
+		if r.Err != "" {
+			return nil, errors.New(r.Err)
+		}
+		return r.Data, nil
+	}
 	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "readfile", Name: name}); err != nil {
 		return nil, err
@@ -203,6 +256,12 @@ func (t *term) ReadFile(name string) ([]byte, error) {
 }
 
 func (t *term) WriteFile(name string, data []byte) error {
+	if m := (rpc.Msg{T: "writefile", Name: name, Data: data}); t.usb != nil && usbName(m) {
+		if r := t.usb(m); r.Err != "" {
+			return errors.New(r.Err)
+		}
+		return nil
+	}
 	t.c.drain()
 	if err := t.c.send(rpc.Msg{T: "writefile", Name: name, Data: data}); err != nil {
 		return err
@@ -302,6 +361,10 @@ type relay struct {
 	ended          bool
 	// master is the member the session was opened on (0: not known).
 	master int
+	// user and class of the session (usb: requests from the master are
+	// answered here, with this member's stick).
+	user  string
+	class commit.Class
 }
 
 func (r *relay) forward(m rpc.Msg) error {
@@ -520,7 +583,11 @@ func (s *Server) serve(c *conn, name string, class commit.Class, local bool, ori
 			mu.Lock()
 			cancel = cf
 			mu.Unlock()
-			rep := sh.Execute(ctx, m.Line, &term{c: c, ctx: ctx})
+			t := &term{c: c, ctx: ctx}
+			if local && s.USB != nil {
+				t.usb = func(m rpc.Msg) rpc.Msg { return s.usbFile(m, class, name) }
+			}
+			rep := sh.Execute(ctx, m.Line, t)
 			cf()
 			reply = rpc.Msg{T: "done", Text: rep.Output, NoMore: rep.NoMore, Exit: rep.Exit, Shell: rep.Shell, Member: rep.ShellMember,
 				Prompt: sh.Prompt(), Banner: sh.Banner(), Cfg: sh.InConfig()}
@@ -559,7 +626,7 @@ func (s *Server) startRelay(nc net.Conn, name string, class commit.Class) (*rela
 		nc.Close()
 		return nil, err
 	}
-	r := &relay{nc: nc, rd: bufio.NewReaderSize(nc, 64<<10), enc: json.NewEncoder(nc)}
+	r := &relay{nc: nc, rd: bufio.NewReaderSize(nc, 64<<10), enc: json.NewEncoder(nc), user: name, class: class}
 	line, err := r.rd.ReadBytes('\n')
 	var m rpc.Msg
 	if err == nil && (json.Unmarshal(line, &m) != nil || m.T != "hello") {
@@ -583,6 +650,12 @@ func (s *Server) pump(c *conn, sh *cli.Shell, r *relay, rlMu *sync.Mutex, rl **r
 		var m rpc.Msg
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
 			break
+		}
+		if s.USB != nil && usbName(m) {
+			// The stick is here, where the user is: answered by this
+			// member, the client never sees the request.
+			go func(m rpc.Msg) { _ = r.forward(s.usbFile(m, r.class, r.user)) }(m)
+			continue
 		}
 		switch m.T {
 		case "done", "completions":

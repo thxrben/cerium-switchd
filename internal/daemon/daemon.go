@@ -23,6 +23,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stack/control"
 	"github.com/thxrben/cerium-switchd/internal/stack/pki"
 	"github.com/thxrben/cerium-switchd/internal/stp"
+	"github.com/thxrben/cerium-switchd/internal/usbstore"
 
 	"golang.org/x/sys/unix"
 
@@ -135,7 +136,10 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("state: %w", err)
 	}
-	srv := &rpcserver.Server{Log: log}
+	// The USB stick of this member (reference 3.4): one store, so CLI
+	// sessions and software fetches never mount it at the same time.
+	usb := usbstore.New(usbstore.Finder{}, nil, "")
+	srv := &rpcserver.Server{Log: log, USB: usb}
 	kernel := &dataplane.Netlink{StateDir: o.StateDir}
 	// The stack identity decides this switch's member id (interface names
 	// <member>/<card>/<port>).
@@ -485,7 +489,7 @@ func Run(ctx context.Context, o Options) error {
 		ctl.servePorts(localPorts)
 		ports = func() []string { return append(localPorts(), ctl.remotePorts()...) }
 	}
-	liveOps := &ops{applier: applier, mka: mka, restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
+	liveOps := &ops{usb: usb, applier: applier, mka: mka, restart: restart, kernel: kernel, engine: engine, names: names, member: member, vc: vc, hostName: hostName, started: time.Now(), log: log, dryRun: o.DryRun,
 		notify: func(m string) { srv.Notify(context.Background(), m) }}
 	if !o.DryRun {
 		liveOps.mclag = &mclag
@@ -499,7 +503,7 @@ func Run(ctx context.Context, o Options) error {
 		liveOps.sup = sup
 		store := newBundleStore(log)
 		store.slot = mem.UpdateRoom
-		upd := &updater{member: member, store: store, vc: vc, ctl: ctl, log: log,
+		upd := &updater{member: member, store: store, usb: usb, vc: vc, ctl: ctl, log: log,
 			engine: func() *commit.Engine { return engine }, maint: func() *maintCtl { return liveOps.maint },
 			mgmtVRF: func() string {
 				if cfg, _ := model.Build(engine.Active().Active(), nil); cfg != nil {

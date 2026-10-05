@@ -807,6 +807,38 @@ Restarts the whole switch software without rebooting the operating system (appli
 4. **USB storage**: `save usb:<file>`, `load override|merge|replace usb:<file>`, `file list usb:`, `request
    system storage usb eject`. Mounted (vfat/exfat/ext4) only for the operation at `/run/switchd/usb`, synced and
    unmounted right after; eject also powers the port's device off. Updates from USB read the bundle into RAM.
+   **Plan (2026-10-05)**:
+   * **Which stick**: `usb:` is the stick in the switch the CLI session runs on (where swcli runs: the member you
+     logged in to, or whose console you use), as home-directory files already are. swcli cannot mount (it runs as
+     the user), so it asks its local switchd (RPC `usb`), which checks the user's class (operator for read/list/
+     save/eject) from SO_PEERCRED and does the work. `request system software add usb:<file>` keeps reading on the
+     master for now (the bundle is fetched there); a stick on another member is a later step (that member reads
+     the bundle into its RAM and sends it to the master over the existing bundle stream).
+   * **Finding sticks** (`internal/usbstore`): block devices from sysfs (`/sys/block/sd*`) on a USB bus or marked
+     removable, **never the system disk**: every disk holding a mounted file system of the running system
+     (`/proc/self/mountinfo` major:minor → `/sys/dev/block/M:m` → its disk) or a cerOS partition (labels `ceros-*`,
+     the A/B slots, config and data) is excluded. physw4 boots from a USB stick: without this, "the first USB disk"
+     (today's software/fetch.go) can be the system itself. First stick by sysfs order; on it, the first partition (or
+     the whole disk) whose file system mounts.
+   * **Mounting through the kernel API** (unix.Mount/Unmount, no `mount` tool): types tried in order vfat, exfat,
+     ext4 (others: "unsupported file system"); options `nosuid,nodev,noexec`, plus `ro` for reads; at
+     `/run/switchd/usb` (0700). Every call under hwio deadlines (`system timeouts disk-operation`); a stick that
+     hangs raises the hang alarm, as every device. One USB operation at a time per member (mutex, a second waits up
+     to 5 s, then "the USB stick is busy"). After a write: fsync of the file and syncfs, then unmount.
+   * **Paths**: relative to the stick's root; opened with openat2 RESOLVE_IN_ROOT|RESOLVE_NO_MAGICLINKS (no `..` or
+     symlink escapes). Writes go to a temporary name and are renamed over the target (a pulled stick never leaves a
+     half file under the real name). Size limit for configuration files: 16 MiB.
+   * **Commands**: `save usb:<file>`, `load merge|replace|override|set usb:<file>` (config mode; same semantics as
+     files); `file list usb:[<dir>]` (operational: the stick (vendor, model, size, file system, label), then name,
+     size, time; directories with `/`); `request system storage usb eject` (sync, unmount, delete the SCSI device,
+     power the USB port off through sysfs `remove`; then "the stick can be removed"). Completion for `usb:` paths
+     lists the stick's files (one read-only mount).
+   * **Software fetch** (software/fetch.go) uses the same finder and mounter (system disk excluded, read-only API
+     mount).
+   * **Tests**: finder against a fake sysfs/mountinfo (USB system disk excluded, partitions, removable flag); path
+     resolution (escapes refused); a fake mounter for the operation order (mount ro/rw, write temp + rename, sync,
+     unmount even on errors); CLI with a fake RPC. Real mounts need root: lab (sw2/sw3 with a virtual USB disk from
+     Proxmox) when the lab is up.
 
 ### Phase 17b: One update at a time (requested 2026-10-04)
 Today the master refuses a second update while its own runs, and a member's update daemon refuses a second install

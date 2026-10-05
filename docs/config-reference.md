@@ -540,6 +540,13 @@ vlans {
 * `terminal` reads until Ctrl-D. Pasting into the terminal is supported (bracketed paste).
 * Loading is **all or nothing**: if any line fails to parse, the candidate is left unchanged, and the error reports the line number.
 * File paths are relative to the user's home directory. Loading only changes the candidate; nothing takes effect until `commit`.
+* **USB sticks**: `usb:<file>` (e.g. `save usb:sw1.conf`, `load override usb:configs/base.conf`) is a file on the USB
+  stick plugged into the switch your session runs on (the member you logged in to, or whose console you use). The
+  stick is mounted only for that one operation and unmounted right after (a write is synced first), so it can be
+  pulled at any time between operations; `request system storage usb eject` also powers it off. File systems: FAT
+  (vfat), exFAT and ext4. Paths are relative to the stick's root and cannot leave it. A file is written under a
+  temporary name and renamed when complete. The disk the switch itself runs from is never used, even when it is a
+  USB stick. Operator class.
 
 ---
 
@@ -573,6 +580,8 @@ vlans {
 | `show system alarms` | The alarms active now on every member: time raised, class (`Major`, `Minor`), member and description. Major: a device or disk that does not answer, a daemon that failed (until it runs again) or is not installed, RSTP configured but not running, swap that cannot be turned off (1.9). Minor: a port shut down by `bpdu-block`, a daemon stopped by `request daemon stop`. An alarm ends by itself when its cause is gone; every alarm is also logged (with the member) and announced to every CLI session of the stack when raised, when its class changes and when cleared, always naming the member: `member 2: ALARM (Major): swap is active and cannot be turned off: …`, `member 2: alarm cleared (Major): swap is active …`. Every other notice of a member's programs also starts with `member <id>:`. |
 | `show system processes`, `request daemon restart\|stop\|start <daemon>` | The switch's programs and their state; restarting, stopping (until reboot) or starting one (1.9). |
 | `request system reload [member <id>\|all-members]` | After a confirmation prompt, restarts the whole switch software of the member without rebooting its operating system, e.g. to apply a new `system memory` allocation. The member drains as for maintenance mode (5.2: mastership moves away, stacking paths are routed around it, its MC-LAG legs leave their bundles after their partners stopped sending), the daemons stop in order as at shutdown (1.9: BGP sends a Cease after withdrawing, OSPF and BFD end their sessions properly), its switch ports go down (stacking and management ports stay up), and switchd ends; systemd starts it again, it divides the memory anew, starts the daemons, applies the configuration and brings the ports up. With `all-members` (or several members) one member at a time, each back and current before the next, this member last. A single switch does not forward while it reloads. Refused while a software update runs (3.6). `show system uptime` shows when switchd started next to when the system booted. |
+| `file list usb:[<dir>]` | The USB stick of the switch your session runs on (3.4): vendor, model, size, file system and label, then the files of the directory (name, size, modification time; directories end in `/`). Without a stick: `No USB stick found`. Operator class. |
+| `request system storage usb eject` | Syncs and unmounts the USB stick of this switch (if an operation runs, after it) and powers its USB port off; then it can be removed. Operator class. |
 | `request system reboot\|halt\|power-off [in <minutes>]` | After a confirmation prompt (`[yes,no] (no)`), reboots, halts or powers off this member, now or in n minutes. Every CLI session is notified. `clear system reboot` cancels a scheduled one. With stacking and MC-LAG, the member first drains (as for maintenance mode, 5.2): mastership moves away, stacking paths are routed around it and its MC-LAG legs leave their bundles after their partners stopped sending; then it shuts down. |
 | `start shell [local]` | A Linux shell on the master, or with `local` on the member you are connected to (1.8, 4.3); `exit` returns to the CLI. |
 

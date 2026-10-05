@@ -521,3 +521,82 @@ func TestRelayFollowsMaster(t *testing.T) {
 		t.Fatalf("this member is master now, the session must run here: %q", out)
 	}
 }
+
+// fakeUSB is a member's stick.
+type fakeUSB struct {
+	mu    sync.Mutex
+	files map[string][]byte
+}
+
+func (u *fakeUSB) Read(p string, max int64) ([]byte, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if b, ok := u.files[p]; ok {
+		return b, nil
+	}
+	return nil, errors.New("usb:" + p + ": no such file")
+}
+
+func (u *fakeUSB) Write(p string, d []byte) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.files[p] = d
+	return nil
+}
+
+// usb: names are the stick of the member the user is connected to, also
+// when the session runs on the master (reference 3.4); the client (swcli)
+// never sees them.
+func TestUSBFilesWhereTheUserIs(t *testing.T) {
+	masterUSB := &fakeUSB{files: map[string][]byte{"a.conf": []byte("system { host-name from-master-stick; }\n")}}
+	memberUSB := &fakeUSB{files: map[string][]byte{"a.conf": []byte("system { host-name from-member-stick; }\n")}}
+	masterPath, master, me := startServerHost(t, allow, "sw1", func(s *Server) { s.USB = masterUSB })
+	l := &chanListener{c: make(chan net.Conn), done: make(chan struct{})}
+	go master.ServeRemote(l)
+	t.Cleanup(func() { l.Close() })
+	path, _, _ := startServerHost(t, allow, "sw2", func(s *Server) {
+		s.Member, s.USB = 2, memberUSB
+		s.Relay = func() (net.Conn, error) {
+			a, b := net.Pipe()
+			l.c <- b
+			return a, nil
+		}
+	})
+	h := &handler{files: map[string][]byte{}}
+	c, err := rpc.Dial(path, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, line := range []string{"configure", "load merge usb:a.conf", "commit", "save usb:saved.conf"} {
+		if m, err := c.Exec(line); err != nil || strings.Contains(m.Text, "error") {
+			t.Fatalf("%q: %q %v", line, m.Text, err)
+		}
+	}
+	if got := me.Active().Root.Leaf("system", "host-name"); got != "from-member-stick" {
+		t.Fatalf("loaded %q, want the member's stick", got)
+	}
+	memberUSB.mu.Lock()
+	saved := string(memberUSB.files["saved.conf"])
+	memberUSB.mu.Unlock()
+	if !strings.Contains(saved, "from-member-stick") || len(h.files) != 0 {
+		t.Fatalf("saved on the member's stick %q; client files %v", saved, h.files)
+	}
+	if _, ok := masterUSB.files["saved.conf"]; ok {
+		t.Fatal("written to the master's stick")
+	}
+	// A user logged in to the master: the master's stick.
+	c2, err := rpc.Dial(masterPath, &handler{files: map[string][]byte{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	for _, line := range []string{"configure", "load merge usb:a.conf", "commit"} {
+		if m, err := c2.Exec(line); err != nil || strings.Contains(m.Text, "error") {
+			t.Fatalf("%q: %q %v", line, m.Text, err)
+		}
+	}
+	if got := me.Active().Root.Leaf("system", "host-name"); got != "from-master-stick" {
+		t.Fatalf("loaded %q on the master, want its own stick", got)
+	}
+}

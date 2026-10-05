@@ -37,6 +37,7 @@ import (
 type updater struct {
 	member  int
 	store   *bundleStore // bundles, in memory only
+	usb     software.USBReader
 	vc      *stack.Manager
 	ctl     *stackCtl // nil: standalone
 	engine  func() *commit.Engine
@@ -615,7 +616,7 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 		if err != nil {
 			return "", err
 		}
-		f := &software.Fetcher{VRF: u.mgmtVRF(), MaxSize: int64(room), TempDir: u.store.dir}
+		f := &software.Fetcher{VRF: u.mgmtVRF(), MaxSize: int64(room), TempDir: u.store.dir, USB: u.usb}
 		u.say("fetching %s into memory (room: %s)", src.Raw, mib(room))
 		if err := f.Fetch(ctx, src, tmp, req.Password); err != nil {
 			hwio.Remove(tmp)
@@ -625,7 +626,7 @@ func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string,
 	defer hwio.Remove(tmp)
 	sum := req.SHA256
 	if sum == "" && src.Kind != "upload" {
-		f := &software.Fetcher{VRF: u.mgmtVRF(), TempDir: u.store.dir}
+		f := &software.Fetcher{VRF: u.mgmtVRF(), TempDir: u.store.dir, USB: u.usb}
 		if s, ok := f.FetchOptional(ctx, src, ".sha256"); ok {
 			if fs := strings.Fields(s); len(fs) > 0 {
 				sum = fs[0]

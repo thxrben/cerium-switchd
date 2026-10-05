@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thxrben/cerium-switchd/internal/usbstore"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
@@ -56,12 +57,18 @@ type Fetcher struct {
 	VRF string
 	// Run runs a command (tests replace it).
 	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
-	// SysRoot is "/sys" (tests: a fake tree); MountDir a scratch directory.
-	SysRoot, MountDir string
+	// USB reads from the stick (the switch's one store, so operations on
+	// the stick never overlap; nil: usb: sources fail).
+	USB USBReader
 	// MaxSize is the largest bundle that fits (0: no limit); a larger one
 	// fails with ErrTooLarge. TempDir holds companion files ("": /tmp).
 	MaxSize int64
 	TempDir string
+}
+
+// USBReader copies a file of the USB stick (usbstore.Store).
+type USBReader interface {
+	CopyTo(path string, w io.Writer, max int64) (int64, error)
 }
 
 // ErrTooLarge is a bundle larger than Fetcher.MaxSize.
@@ -81,7 +88,7 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source, dst, password string) e
 	case "file":
 		return copyFile(src.Path, dst, f.MaxSize)
 	case "usb":
-		return f.fromUSB(ctx, src.Path, dst)
+		return f.fromUSB(src.Path, dst)
 	}
 	return f.curl(ctx, src.URL, dst, password)
 }
@@ -158,50 +165,32 @@ func (f *Fetcher) curl(ctx context.Context, u *url.URL, dst, password string) er
 	return nil
 }
 
-// fromUSB copies path from the first USB stick (mounted read-only while
-// it is read).
-func (f *Fetcher) fromUSB(ctx context.Context, path, dst string) error {
-	dev, err := f.usbDevice()
+// fromUSB copies path from the USB stick (never the system disk; mounted
+// read-only for the copy) into dst.
+func (f *Fetcher) fromUSB(path, dst string) error {
+	if f.USB == nil {
+		return errors.New("USB sticks are not available here")
+	}
+	out, err := hwio.Create(dst)
 	if err != nil {
 		return err
 	}
-	dir := f.MountDir
-	if dir == "" {
-		dir = "/run/switchd/usb"
+	max := f.MaxSize
+	if max <= 0 {
+		max = 1 << 40
 	}
-	if err := hwio.MkdirAll(dir, 0o700); err != nil {
+	if _, err := f.USB.CopyTo(path, hwio.Writer(out, SlotIODeadline()), max); err != nil {
+		out.Close()
+		if errors.Is(err, usbstore.ErrTooLarge) {
+			return fmt.Errorf("%w (%d bytes): %v", ErrTooLarge, f.MaxSize, err)
+		}
 		return err
 	}
-	if out, err := f.run(ctx, "mount", "-o", "ro", dev, dir); err != nil {
-		return fmt.Errorf("mounting %s: %s", dev, strings.TrimSpace(string(out)))
+	if err := hwio.WriteBack(out, SlotIODeadline()); err != nil {
+		out.Close()
+		return err
 	}
-	defer f.run(context.Background(), "umount", dir)
-	return copyFile(filepath.Join(dir, path), dst, f.MaxSize)
-}
-
-// usbDevice returns the first partition (or the whole disk) of the first
-// removable USB disk.
-func (f *Fetcher) usbDevice() (string, error) {
-	root := f.SysRoot
-	if root == "" {
-		root = "/sys"
-	}
-	disks, _ := hwio.Glob(filepath.Join(root, "block", "sd*"))
-	for _, d := range disks {
-		rem, _ := hwio.ReadFile(filepath.Join(d, "removable"))
-		link, _ := hwio.Readlink(filepath.Join(d, "device"))
-		real, _ := hwio.EvalSymlinks(filepath.Join(d, "device"))
-		if strings.TrimSpace(string(rem)) != "1" && !strings.Contains(link+real, "/usb") {
-			continue
-		}
-		name := filepath.Base(d)
-		parts, _ := hwio.Glob(filepath.Join(d, name+"*"))
-		if len(parts) > 0 {
-			return "/dev/" + filepath.Base(parts[0]), nil
-		}
-		return "/dev/" + name, nil
-	}
-	return "", errors.New("no USB stick found")
+	return hwio.Close(out)
 }
 
 // copyFile copies src to dst; a src larger than max (0: no limit) fails

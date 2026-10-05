@@ -1492,9 +1492,13 @@ func registerOperational() {
 	}
 	swRequest, swShow := softwareCommands()
 	findCmd(operational, []string{"show", "system"}).sub = append(findCmd(operational, []string{"show", "system"}).sub, swShow)
-	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.SuperUser, sub: []*command{
+	// request and request system are open to operators for the USB stick;
+	// every other request below is super-user (checked per level).
+	operational = append(operational, fileCommand())
+	operational = append(operational, &command{name: "request", help: "Make system-level requests", class: commit.Operator, sub: []*command{
 		daemonCommand(),
-		{name: "system", help: "System requests", class: commit.SuperUser, sub: []*command{
+		{name: "system", help: "System requests", class: commit.Operator, sub: []*command{
+			usbCommand(),
 			power("reboot", "Reboot this member"),
 			{name: "reload", help: "Restart the switch software of this member without rebooting", class: commit.SuperUser, run: (*Shell).reload},
 			power("halt", "Halt this member"),

@@ -8,6 +8,7 @@ import (
 
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
+	"github.com/thxrben/cerium-switchd/internal/usbstore"
 )
 
 // allOps implements every optional interface of Ops (RIB, BGP, OSPF and
@@ -18,6 +19,14 @@ type allOps struct {
 }
 
 func (allOps) BFDSessions() ([]BFDSession, error) { return bfdOps{}.BFDSessions() }
+
+func (allOps) USBList(dir string) (usbstore.Listing, error) {
+	return usbstore.Listing{Info: usbstore.Info{Stick: usbstore.Stick{Disk: "sdb", Vendor: "Kingston", Model: "DT", Size: 16e9},
+		Device: "/dev/sdb1", FSType: "vfat"}, Dir: ".", Entries: []usbstore.Entry{{Name: "configs", Dir: true, ModTime: time.Now()},
+		{Name: "sw1.conf", Size: 1234, ModTime: time.Now()}}}, nil
+}
+
+func (allOps) USBEject() (usbstore.Stick, error) { return usbstore.Stick{Disk: "sdb", Vendor: "Kingston"}, nil }
 
 func (allOps) Optics(iface string) ([]OpticsPort, error) { return opticsOps{}.Optics(iface) }
 

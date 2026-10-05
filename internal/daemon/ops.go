@@ -21,6 +21,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/stp"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/internal/svc"
+	"github.com/thxrben/cerium-switchd/internal/usbstore"
 	"github.com/thxrben/cerium-switchd/pkg/bfd"
 	"github.com/thxrben/cerium-switchd/pkg/bgp"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -46,6 +47,7 @@ import (
 // ops implements cli.Operational from the kernel and the active
 // configuration of this member.
 type ops struct {
+	usb    *usbstore.Store // this member's USB stick
 	kernel *dataplane.Netlink
 	engine *commit.Engine
 	// applier knows the MACsec devices of secured ports (nil: none); mka
@@ -1250,4 +1252,20 @@ func (o *ops) ClearSTP(migration bool, port string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return o.svc.call(ctx, "cer-rstpd", stp.MethodClear, stp.ClearRequest{Migration: migration, Port: port}, nil)
+}
+
+// USBList is file list usb: (this member's stick, reference 3.4).
+func (o *ops) USBList(dir string) (usbstore.Listing, error) {
+	if o.usb == nil {
+		return usbstore.Listing{}, errors.New("USB sticks are not available")
+	}
+	return o.usb.List(dir)
+}
+
+// USBEject is request system storage usb eject.
+func (o *ops) USBEject() (usbstore.Stick, error) {
+	if o.usb == nil {
+		return usbstore.Stick{}, errors.New("USB sticks are not available")
+	}
+	return o.usb.Eject()
 }
