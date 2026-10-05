@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thxrben/cerium-switchd/internal/config"
-	"github.com/thxrben/cerium-switchd/internal/model"
-	"github.com/thxrben/cerium-switchd/internal/schema"
+	"github.com/thxrben/cerium-switchd/lib/conf/config"
+	"github.com/thxrben/cerium-switchd/lib/conf/model"
+	"github.com/thxrben/cerium-switchd/lib/conf/schema"
 )
 
 var update = flag.Bool("update", false, "rewrite generated documentation sections")

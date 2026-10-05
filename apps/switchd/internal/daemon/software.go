@@ -1,0 +1,799 @@
+package daemon
+
+import (
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/thxrben/cerium-switchd/apps/switchd/internal/cli"
+	"github.com/thxrben/cerium-switchd/apps/switchd/internal/commit"
+	"github.com/thxrben/cerium-switchd/apps/switchd/internal/stack"
+	"github.com/thxrben/cerium-switchd/lib/conf/model"
+	"github.com/thxrben/cerium-switchd/lib/platform/api/updapi"
+	"github.com/thxrben/cerium-switchd/lib/platform/version"
+	"github.com/thxrben/cerium-switchd/lib/software/software"
+	"github.com/thxrben/cerium-switchd/lib/sys/hwio"
+)
+
+// updater updates the stack's software (reference 3.6): the master fetches
+// and checks a bundle, hands it to every member over the stacking protocol
+// and updates the members one by one, drained, itself last. On each member
+// the update daemon writes the bundle into the backup slot and reboots
+// (docs/os-image.md §4).
+type updater struct {
+	member  int
+	store   *bundleStore // bundles, in memory only
+	usb     software.USBReader
+	vc      *stack.Manager
+	ctl     *stackCtl // nil: standalone
+	engine  func() *commit.Engine
+	maint   func() *maintCtl
+	mgmtVRF func() string
+	// updateSocket is the update daemon's socket ("": the default).
+	updateSocket string
+	log          *slog.Logger
+
+	mu  sync.Mutex
+	run *cli.SoftwareRun // the current or last update started here
+}
+
+// oldSoftwareDir is where earlier versions kept bundles on the data
+// partition; switchd empties it.
+const oldSoftwareDir = "/var/lib/ceros/software"
+
+// The update's waits are system timeouts (reference 5.1), set from the
+// active configuration (setTimeouts).
+var activeTimeouts atomic.Pointer[model.Timeouts]
+
+func init() { setTimeouts(model.DefaultTimeouts) }
+
+// setTimeouts applies system timeouts in switchd: the disk and kernel
+// deadlines, slot writes, and the waits of an update.
+func setTimeouts(t model.Timeouts) {
+	activeTimeouts.Store(&t)
+	hwio.SetDeadlines(t.DiskOperation, t.KernelCall)
+	software.SetSlotIODeadline(t.SlotWrite)
+}
+
+// memberWait is how long a member may take to come back after its update
+// (a reboot, and a rollback with a second reboot inside it).
+func memberWait() time.Duration { return activeTimeouts.Load().MemberUpdate }
+
+// installWait bounds the update daemon's install (it writes a slot).
+func installWait() time.Duration { return activeTimeouts.Load().SoftwareInstall }
+
+// transferWait bounds copying a bundle to a member.
+func transferWait() time.Duration { return activeTimeouts.Load().SoftwareTransfer }
+
+// swStatus is one member's software state.
+type swStatus struct {
+	Member      int               `json:"member"`
+	Version     string            `json:"version"`
+	Built       string            `json:"built"`
+	Arch        string            `json:"arch"`
+	Maintenance bool              `json:"maintenance"`
+	Current     bool              `json:"current"`
+	Packages    map[string]string `json:"packages,omitempty"` // version -> bundle file
+	// Transit: member pairs that have no other stacking path than this
+	// member (cut off while it reboots).
+	Transit []string `json:"transit,omitempty"`
+	// The update daemon's view ("" / nil: it does not run, e.g. not an
+	// image).
+	Daemon string `json:"daemon,omitempty"`
+	// DaemonErr: why the update daemon did not answer.
+	DaemonErr string              `json:"daemon_err,omitempty"`
+	Slots     []software.SlotInfo `json:"slots,omitempty"`
+	BootState string              `json:"boot_state,omitempty"`
+	Active    string              `json:"active,omitempty"`
+	Update    *updapi.State       `json:"update,omitempty"`
+	Note      string              `json:"note,omitempty"`
+}
+
+// updating: an update of this member is in progress (written, rebooting,
+// or waiting for the new version to be healthy).
+func (st swStatus) updating() bool { return st.Update != nil && st.Update.Done == "" }
+
+// previous: the version in the backup slot ("": none that boots).
+func (st swStatus) previous() string {
+	for _, sl := range st.Slots {
+		if sl.Name != st.Active && sl.OK && sl.Version != "" {
+			return sl.Version
+		}
+	}
+	return ""
+}
+
+type swInstall struct {
+	Version  string `json:"version"`
+	Rollback bool   `json:"rollback,omitempty"`
+	// Force: update even if the member is the only path to others (they
+	// are cut off while it reboots).
+	Force      bool `json:"force,omitempty"`
+	NoValidate bool `json:"no_validate,omitempty"`
+}
+
+// start registers the stacking protocol handlers.
+func (u *updater) start(ctx context.Context) {
+	if u.ctl == nil {
+		return
+	}
+	u.ctl.node.Handle("sw-status", func(int, json.RawMessage) (any, error) { return u.status(), nil })
+	u.ctl.node.Handle("sw-busy", func(int, json.RawMessage) (any, error) { return u.busy(), nil })
+	u.ctl.node.Handle("sw-keep", func(int, json.RawMessage) (any, error) {
+		files, _ := hwio.Glob(filepath.Join(u.store.dir, "*.bundle"))
+		for _, f := range files {
+			u.store.touch(f)
+		}
+		return nil, nil
+	})
+	u.ctl.node.Handle("sw-install", func(from int, raw json.RawMessage) (any, error) {
+		var r swInstall
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, err
+		}
+		return u.installHere(r, fmt.Sprintf("member %d", from))
+	})
+	l := u.vc.Mesh().Listen("software")
+	go func() {
+		<-ctx.Done()
+		l.Close()
+	}()
+	go func() {
+		for {
+			nc, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go u.receive(nc)
+		}
+	}()
+}
+
+// keepStore removes the bundles of earlier versions from the data
+// partition (bundles are kept in memory now) and those in memory that
+// nobody used for an hour.
+func (u *updater) keepStore(ctx context.Context) {
+	if files, _ := hwio.Glob(filepath.Join(oldSoftwareDir, "*")); len(files) > 0 {
+		for _, f := range files {
+			hwio.Remove(f)
+		}
+		hwio.Remove(oldSoftwareDir)
+		u.log.Info("software: bundles removed from the data partition (they are kept in memory only now)", "files", len(files))
+	}
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		busy := u.busy()
+		u.store.sweep(busy)
+		// The members waiting for their turn keep their bundles.
+		if busy && u.ctl != nil {
+			for _, id := range u.members() {
+				if id != u.member {
+					u.ctl.node.Call(id, "sw-keep", nil, 5*time.Second)
+				}
+			}
+		}
+	}
+}
+
+// busy: an update started here runs.
+func (u *updater) busy() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.run != nil && !u.run.Done
+}
+
+// running names an update in progress that concerns this member ("":
+// none): one the master runs, or this member's own install (writing,
+// rebooting, waiting for health). Reboots and the like wait for it.
+func (u *updater) running() string {
+	if u.busy() {
+		return "a software update runs (show system software)"
+	}
+	if st := u.status(); st.updating() {
+		return fmt.Sprintf("member %d is being updated to %s (show system software)", u.member, st.Update.To)
+	}
+	if u.ctl != nil && !u.ctl.node.IsMaster() {
+		if m := u.ctl.node.Master(); m != 0 && m != u.member {
+			var busy bool
+			if raw, err := u.ctl.node.Call(m, "sw-busy", nil, 5*time.Second); err == nil && json.Unmarshal(raw, &busy) == nil && busy {
+				return "a software update runs (show system software)"
+			}
+		}
+	}
+	return ""
+}
+
+// othersUpdating refuses a second update (reference 3.6): any member
+// with an update in progress, or one that does not answer (it may be
+// restarting for one; a targeted update skips those).
+func (u *updater) othersUpdating(req cli.SoftwareRequest) error {
+	for _, id := range u.members() {
+		st, err := u.statusOf(id)
+		if err != nil {
+			if req.Member != 0 && req.Member != id {
+				continue
+			}
+			return fmt.Errorf("member %d does not answer (%v); it may be restarting for an update: try again when it is back, or update single members ('member <id>')", id, err)
+		}
+		if st.updating() {
+			return fmt.Errorf("member %d is being updated to %s (update daemon: %s): one update at a time", id, st.Update.To, st.Daemon)
+		}
+	}
+	return nil
+}
+
+func (u *updater) status() swStatus {
+	st := swStatus{Member: u.member, Version: version.Version, Built: version.Date, Arch: software.Arch(),
+		Packages: map[string]string{}}
+	if m := u.maint(); m != nil {
+		st.Maintenance = m.active()
+		st.Transit = m.transit()
+	}
+	st.Current = u.ctl == nil || u.ctl.node.Current()
+	if rep, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "status"}); err == nil {
+		st.Daemon, st.Slots, st.Active, st.Update, st.Note = rep.State, rep.Slots, rep.Active, rep.Update, rep.Note
+		st.BootState = rep.BootState
+	} else if !errors.Is(err, os.ErrNotExist) {
+		st.DaemonErr = err.Error()
+	}
+	files, _ := hwio.Glob(filepath.Join(u.store.dir, "ceros-*-"+software.Arch()+".bundle"))
+	for _, f := range files {
+		v := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(f), "ceros-"), "-"+software.Arch()+".bundle")
+		st.Packages[v] = f
+	}
+	return st
+}
+
+func (u *updater) pkgPath(v string) string { return u.store.path(v) }
+
+// verify checks a bundle file completely (signature and image) with the
+// keys this system trusts.
+func verifyBundle(path string) (*software.BundleManifest, error) {
+	keys, err := software.LoadKeys(updapi.KeysDir)
+	if err != nil {
+		return nil, err
+	}
+	return software.VerifyBundleFile(path, keys)
+}
+
+// receive stores a package sent by the master: a JSON line with version
+// and SHA-256, then the package; the answer is "ok" or an error line.
+func (u *updater) receive(nc net.Conn) {
+	defer nc.Close()
+	r := bufio.NewReader(nc)
+	var h struct {
+		Version, SHA256 string
+		Size            int64
+	}
+	line, err := r.ReadBytes('\n')
+	if err != nil || json.Unmarshal(line, &h) != nil || h.Version == "" || strings.ContainsAny(h.Version, "/\x00") {
+		return
+	}
+	fail := func(err error) { fmt.Fprintf(nc, "error: %v\n", err) }
+	if _, err := u.store.prepare(uint64(max(h.Size, 0))); err != nil {
+		fail(fmt.Errorf("member %d: %w", u.member, err))
+		return
+	}
+	tmp := u.pkgPath(h.Version) + ".part"
+	f, err := hwio.Create(tmp)
+	if err != nil {
+		fail(err)
+		return
+	}
+	_, err = io.CopyN(f, r, h.Size)
+	f.Close()
+	if err == nil {
+		err = checkSum(tmp, h.SHA256)
+	}
+	if err == nil {
+		var m *software.BundleManifest
+		if m, err = verifyBundle(tmp); err == nil && m.Version != h.Version {
+			err = fmt.Errorf("the bundle holds %s, not %s", m.Version, h.Version)
+		}
+	}
+	if err != nil {
+		hwio.Remove(tmp)
+		fail(err)
+		return
+	}
+	if err := hwio.Rename(tmp, u.pkgPath(h.Version)); err != nil {
+		fail(err)
+		return
+	}
+	u.store.touch(u.pkgPath(h.Version))
+	fmt.Fprintln(nc, "ok")
+}
+
+// checkSum compares a file's SHA-256 with want ("": not checked).
+func checkSum(path, want string) error {
+	if want == "" {
+		return nil
+	}
+	f, err := hwio.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, hwio.Reader(f, software.SlotIODeadline())); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("the bundle's SHA-256 is %s, expected %s", got, strings.ToLower(want))
+	}
+	return nil
+}
+
+// installHere updates this member: drains it (maintenance mode, kept over
+// the reboot) and hands the bundle to the update daemon, which writes the
+// backup slot and reboots; the new version leaves maintenance mode once it
+// is healthy.
+func (u *updater) installHere(r swInstall, by string) (string, error) {
+	if _, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "status"}); err != nil {
+		return "", fmt.Errorf("member %d cannot be updated: its update daemon does not run (%v); updates need the cerOS image", u.member, err)
+	}
+	req := updapi.Request{Op: "install", Bundle: u.pkgPath(r.Version), Standalone: len(u.members()) == 1, NoValidate: r.NoValidate}
+	if r.Rollback {
+		req = updapi.Request{Op: "rollback"}
+	} else if _, err := hwio.Stat(req.Bundle); err != nil {
+		return "", fmt.Errorf("member %d does not have the bundle %s (bundles are kept in memory only: a restarted member needs it again)", u.member, r.Version)
+	}
+	u.store.touch(req.Bundle)
+	var out strings.Builder
+	if m := u.maint(); m != nil && !r.Force {
+		if t := m.transit(); len(t) > 0 {
+			return "", fmt.Errorf("member %d is the only stacking path between %s: they would be cut off while it reboots "+
+				"(cable them to another member, or update with 'force')", u.member, strings.Join(t, ", "))
+		}
+	}
+	if m := u.maint(); m != nil && !m.active() {
+		text, err := m.enter(false, true, "software update")
+		if err != nil {
+			return "", fmt.Errorf("cannot drain member %d: %w", u.member, err)
+		}
+		out.WriteString(text)
+		req.ExitMaintenance = true
+	}
+	rep, err := updapi.CallTimeout(u.daemonSocket(), req, installWait())
+	if err != nil {
+		if req.ExitMaintenance {
+			u.maint().exit("software update")
+		}
+		return "", fmt.Errorf("member %d: %w", u.member, err)
+	}
+	if rep.Text != "" {
+		fmt.Fprintf(&out, "%s\n", rep.Text)
+	}
+	u.log.Warn("software: the update daemon reboots into "+rep.Version, "facility", "change-log", "from", version.Version, "by", by)
+	fmt.Fprintf(&out, "member %d reboots into %s\n", u.member, rep.Version)
+	return out.String(), nil
+}
+
+// started runs when switchd starts: the update daemon counts the starts of
+// a new version.
+func (u *updater) started() {
+	updapi.Call(u.daemonSocket(), updapi.Request{Op: "started", Version: version.Version})
+}
+
+// healthy runs once this switchd works (configuration applied, stack
+// state current): the update daemon confirms the slot, and a member the
+// update drained leaves maintenance mode.
+func (u *updater) healthy() {
+	rep, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "healthy", Version: version.Version})
+	if err != nil {
+		u.log.Debug("software: update daemon", "err", err)
+		return
+	}
+	st := rep.Update
+	if st == nil || !st.ExitMaintenance || (st.To != version.Version && st.From != version.Version) {
+		return
+	}
+	if st.To == version.Version {
+		u.log.Warn("software: now running "+version.Version, "facility", "change-log")
+	}
+	if m := u.maint(); m != nil && m.active() {
+		m.exit("software update")
+	}
+	updapi.Call(u.daemonSocket(), updapi.Request{Op: "maintenance-done"})
+}
+
+// ---- the update, run by the master ----
+
+// Start begins an update (or rollback) and returns at once; progress is in
+// Status.
+func (u *updater) Start(req cli.SoftwareRequest) error {
+	if u.ctl != nil && !u.ctl.node.IsMaster() {
+		return errors.New("updates run on the master")
+	}
+	if u.busy() {
+		return errors.New("an update is running (show system software)")
+	}
+	if err := u.othersUpdating(req); err != nil {
+		return err
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.run != nil && !u.run.Done { // started meanwhile
+		return errors.New("an update is running (show system software)")
+	}
+	u.run = &cli.SoftwareRun{Request: req, Started: time.Now()}
+	go u.do(req)
+	return nil
+}
+
+func (u *updater) say(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	u.mu.Lock()
+	u.run.Lines = append(u.run.Lines, line)
+	u.mu.Unlock()
+	u.log.Info("software update: " + line)
+}
+
+func (u *updater) finish(err error) {
+	u.mu.Lock()
+	u.run.Done = true
+	if err != nil {
+		u.run.Failed = err.Error()
+	}
+	u.mu.Unlock()
+	if err != nil {
+		u.log.Error("software update failed", "facility", "change-log", "err", err)
+	}
+}
+
+// members returns the stack's members (this one alone when standalone).
+func (u *updater) members() []int {
+	if u.ctl == nil {
+		return []int{u.member}
+	}
+	var ids []int
+	for id := range u.ctl.node.Members() {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func (u *updater) statusOf(id int) (swStatus, error) {
+	if id == u.member {
+		return u.status(), nil
+	}
+	raw, err := u.ctl.node.Call(id, "sw-status", nil, 10*time.Second)
+	if err != nil {
+		return swStatus{}, err
+	}
+	var st swStatus
+	return st, json.Unmarshal(raw, &st)
+}
+
+func (u *updater) do(req cli.SoftwareRequest) {
+	ctx := context.Background()
+	target := ""
+	if !req.Rollback {
+		v, err := u.prepare(ctx, req)
+		if err != nil {
+			u.finish(err)
+			return
+		}
+		target = v
+	}
+	ids := u.members()
+	if req.Member != 0 {
+		if !slices.Contains(ids, req.Member) {
+			u.finish(fmt.Errorf("member %d is not in this virtual chassis", req.Member))
+			return
+		}
+		ids = []int{req.Member}
+	}
+	// The master last: it hands mastership on when it drains.
+	slices.SortStableFunc(ids, func(a, b int) int {
+		if a == u.member {
+			return 1
+		}
+		if b == u.member {
+			return -1
+		}
+		return 0
+	})
+	for _, id := range ids {
+		st, err := u.statusOf(id)
+		if err != nil {
+			u.finish(fmt.Errorf("member %d: %v; the update stops here", id, err))
+			return
+		}
+		want := target
+		if req.Rollback {
+			if st.previous() == "" {
+				u.say("member %d: no previous version, skipped", id)
+				continue
+			}
+			want = st.previous()
+		} else if st.Version == target {
+			u.say("member %d already runs %s", id, target)
+			continue
+		}
+		if len(st.Transit) > 0 && !req.Force {
+			u.finish(fmt.Errorf("member %d is the only stacking path between %s: they would be cut off while it restarts "+
+				"(cable them to another member, or update with 'force'); the update stops here", id, strings.Join(st.Transit, ", ")))
+			return
+		}
+		u.say("member %d: %s -> %s", id, st.Version, want)
+		var text string
+		if id == u.member {
+			u.say("this member (the master) is last: it drains, hands mastership on, installs and reboots")
+			text, err = u.installHere(swInstall{Version: target, Rollback: req.Rollback, Force: req.Force, NoValidate: req.NoValidate}, "the update")
+			if err != nil {
+				u.finish(fmt.Errorf("member %d: %v", id, err))
+				return
+			}
+			u.say("%s", strings.TrimSpace(text))
+			u.finish(nil)
+			return
+		}
+		raw, err := u.ctl.node.Call(id, "sw-install", swInstall{Version: target, Rollback: req.Rollback, Force: req.Force, NoValidate: req.NoValidate}, installWait())
+		if err == nil {
+			err = json.Unmarshal(raw, &text)
+		}
+		if err != nil {
+			u.finish(fmt.Errorf("member %d: %v; the update stops here", id, err))
+			return
+		}
+		for _, l := range strings.Split(strings.TrimSpace(text), "\n") {
+			u.say("member %d: %s", id, l)
+		}
+		if err := u.waitFor(id, want); err != nil {
+			u.finish(err)
+			return
+		}
+		u.say("member %d runs %s and carries traffic again", id, want)
+	}
+	u.say("done")
+	u.finish(nil)
+}
+
+// waitFor waits until member id runs v, is current and out of maintenance.
+func (u *updater) waitFor(id int, v string) error {
+	deadline := time.Now().Add(memberWait())
+	time.Sleep(5 * time.Second) // it reboots
+	var last swStatus
+	for time.Now().Before(deadline) {
+		st, err := u.statusOf(id)
+		if err == nil {
+			last = st
+			if st.Version == v && st.Current && !st.Maintenance && !st.updating() {
+				return nil
+			}
+			if st.Update != nil && strings.HasPrefix(st.Update.Done, "rolled back") && st.Version != v {
+				return fmt.Errorf("member %d %s; the update stops here", id, st.Update.Done)
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("member %d is not back with %s after %s (it runs %q, maintenance %v); the update stops here",
+		id, v, memberWait(), last.Version, last.Maintenance)
+}
+
+// prepare fetches, verifies, checks and distributes the bundle; it returns
+// its version.
+func (u *updater) prepare(ctx context.Context, req cli.SoftwareRequest) (string, error) {
+	src, err := software.ParseSource(req.Source)
+	if err != nil {
+		return "", err
+	}
+	tmp := filepath.Join(u.store.dir, "incoming.bundle")
+	if src.Kind == "upload" {
+		if _, err := hwio.Stat(u.pkgPath("upload")); err != nil {
+			return "", errors.New("no bundle was uploaded (PUT /api/v1/software/upload, system services web-management)")
+		}
+		if _, err := u.store.prepare(0, u.pkgPath("upload")); err != nil {
+			return "", err
+		}
+		if err := hwio.Rename(u.pkgPath("upload"), tmp); err != nil {
+			return "", err
+		}
+	} else {
+		room, err := u.store.prepare(0)
+		if err != nil {
+			return "", err
+		}
+		f := &software.Fetcher{VRF: u.mgmtVRF(), MaxSize: int64(room), TempDir: u.store.dir, USB: u.usb}
+		u.say("fetching %s into memory (room: %s)", src.Raw, mib(room))
+		if err := f.Fetch(ctx, src, tmp, req.Password); err != nil {
+			hwio.Remove(tmp)
+			return "", err
+		}
+	}
+	defer hwio.Remove(tmp)
+	sum := req.SHA256
+	if sum == "" && src.Kind != "upload" {
+		f := &software.Fetcher{VRF: u.mgmtVRF(), TempDir: u.store.dir, USB: u.usb}
+		if s, ok := f.FetchOptional(ctx, src, ".sha256"); ok {
+			if fs := strings.Fields(s); len(fs) > 0 {
+				sum = fs[0]
+			}
+		}
+	}
+	if err := checkSum(tmp, sum); err != nil {
+		return "", err
+	}
+	m, err := verifyBundle(tmp)
+	if err != nil {
+		return "", err
+	}
+	v := m.Version
+	if sum != "" {
+		u.say("bundle %s for %s (built %s): signature and SHA-256 verified", v, m.Arch, m.Built)
+	} else {
+		u.say("bundle %s for %s (built %s): signature verified", v, m.Arch, m.Built)
+	}
+	// Every member must run the image on the bundle's platform.
+	for _, id := range u.members() {
+		if req.Member != 0 && id != req.Member {
+			continue
+		}
+		st, err := u.statusOf(id)
+		if err != nil {
+			return "", fmt.Errorf("member %d: %v", id, err)
+		}
+		if st.Arch != m.Arch {
+			return "", fmt.Errorf("member %d is %s, the bundle is for %s", id, st.Arch, m.Arch)
+		}
+		if st.Daemon == "" {
+			return "", fmt.Errorf("member %d does not run the cerOS image (its update daemon does not answer)", id)
+		}
+	}
+	if err := hwio.Rename(tmp, u.pkgPath(v)); err != nil {
+		return "", err
+	}
+	u.store.touch(u.pkgPath(v))
+	// The new version must accept the active configuration.
+	if err := u.checkConfig(v, req.NoValidate); err != nil {
+		return "", err
+	}
+	// Distribute.
+	// Streamed from the file: the bundle is in memory once.
+	sum, size, err := fileSum(u.pkgPath(v))
+	if err != nil {
+		return "", err
+	}
+	for _, id := range u.members() {
+		if id == u.member || (req.Member != 0 && id != req.Member) {
+			continue
+		}
+		if st, err := u.statusOf(id); err == nil && (st.Version == v || st.Packages[v] != "") {
+			continue
+		}
+		u.say("sending the bundle to member %d", id)
+		if err := u.send(id, v, u.pkgPath(v), sum, size); err != nil {
+			return "", fmt.Errorf("member %d: %v", id, err)
+		}
+	}
+	return v, nil
+}
+
+func (u *updater) send(id int, v, path, sum string, size int64) error {
+	nc, err := u.vc.Mesh().Dial(id, "software", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+	nc.SetDeadline(time.Now().Add(transferWait()))
+	h, _ := json.Marshal(map[string]any{"Version": v, "SHA256": sum, "Size": size})
+	if _, err := nc.Write(append(h, '\n')); err != nil {
+		return err
+	}
+	f, err := hwio.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	// The member answers before the bundle when it has no room for it.
+	go func() {
+		io.CopyN(nc, f, size)
+	}()
+	line, err := bufio.NewReader(nc).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if line = strings.TrimSpace(line); line != "ok" {
+		return errors.New(strings.TrimPrefix(line, "error: "))
+	}
+	return nil
+}
+
+// fileSum is a file's SHA-256 and size.
+func fileSum(path string) (string, int64, error) {
+	f, err := hwio.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// checkConfig has the update daemon run the new image's configuration
+// check on the active configuration.
+func (u *updater) checkConfig(v string, noValidate bool) error {
+	u.say("checking the configuration with %s", v)
+	rep, err := updapi.CallTimeout(u.daemonSocket(), updapi.Request{Op: "check", Bundle: u.pkgPath(v)}, installWait())
+	switch {
+	case err == nil:
+		if rep.Text != "" {
+			u.say("the new version accepts the configuration, with warnings:\n%s", rep.Text)
+		} else {
+			u.say("the new version accepts the configuration")
+		}
+		return nil
+	case errors.Is(err, updapi.ErrRejected) || strings.HasPrefix(err.Error(), updapi.ErrRejected.Error()):
+		if noValidate {
+			u.say("%v (no-validate: continuing)", err)
+			return nil
+		}
+		return fmt.Errorf("%v ('no-validate' updates anyway)", err)
+	default:
+		return fmt.Errorf("checking the configuration with %s: %v", v, err)
+	}
+}
+
+// Status is "show system software".
+func (u *updater) Status() (cli.SoftwareStatus, error) {
+	var out cli.SoftwareStatus
+	u.mu.Lock()
+	if u.run != nil {
+		r := *u.run
+		r.Lines = slices.Clone(r.Lines)
+		out.Run = &r
+	}
+	u.mu.Unlock()
+	for _, id := range u.members() {
+		st, err := u.statusOf(id)
+		m := cli.SoftwareMember{Member: id}
+		if err != nil {
+			m.Error = err.Error()
+		} else {
+			m.Version, m.Built, m.Previous, m.Note, m.Maintenance = st.Version, st.Built, st.previous(), st.Note, st.Maintenance
+			m.Daemon, m.DaemonErr, m.BootState = st.Daemon, st.DaemonErr, st.BootState
+			if st.updating() {
+				m.Pending = st.Update.To
+			}
+			for _, sl := range st.Slots {
+				m.Slots = append(m.Slots, cli.SoftwareSlot{Name: sl.Name, Version: sl.Version, Active: sl.Name == st.Active,
+					OK: sl.OK, Next: sl.First, Error: sl.Error})
+			}
+		}
+		out.Members = append(out.Members, m)
+	}
+	return out, nil
+}
+
+func (u *updater) daemonSocket() string {
+	if u.updateSocket != "" {
+		return u.updateSocket
+	}
+	return updapi.DefaultSocket
+}

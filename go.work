@@ -1,0 +1,35 @@
+go 1.27.1
+
+use (
+	.
+	./apps/cer-bfdd
+	./apps/cer-bgpd
+	./apps/cer-dhcpcd
+	./apps/cer-lacpd
+	./apps/cer-lldpd
+	./apps/cer-mclagd
+	./apps/cer-ntpd
+	./apps/cer-ospfd
+	./apps/cer-ribd
+	./apps/cer-rstpd
+	./apps/cer-syslogd
+	./apps/rtest
+	./apps/swcli
+	./apps/switchd
+	./apps/switchd-update
+	./lib/bfd
+	./lib/bgp
+	./lib/conf
+	./lib/dhcp
+	./lib/lacp
+	./lib/lldp
+	./lib/macsec
+	./lib/ntp
+	./lib/ospf
+	./lib/platform
+	./lib/rib
+	./lib/rstp
+	./lib/software
+	./lib/sys
+	./lib/syslog
+)

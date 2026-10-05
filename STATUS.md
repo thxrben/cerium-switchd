@@ -1,6 +1,8 @@
 # Status / where to continue
 
-Last updated: 2026-10-04 (evening).
+Last updated: 2026-10-05.
+
+Code layout: the modular split is done (lib/<name> and apps/<program>, one go.mod each, go.work at the root; README "Repository layout"). Package paths named below as `internal/<x>` live now in lib/ or in apps/<program>/internal/. Next: cer-ribd FIB diff, tool-output parsing, routing drain, 802.1X (PLAN.md).
 
 ## Done
 - Phase 1.1–1.3: schema, config tree, set/curly/JSON formats, diff (tested + fuzzed).

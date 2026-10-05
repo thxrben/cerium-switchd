@@ -58,7 +58,7 @@
 
     - name: systemd unit
       ansible.builtin.copy:
-        src: ../packaging/switchd.service
+        src: ../apps/switchd/internal/packaging/switchd.service
         dest: /etc/systemd/system/switchd.service
         mode: "0644"
       notify: restart switchd

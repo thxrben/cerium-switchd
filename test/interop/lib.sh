@@ -4,6 +4,7 @@
 # Nothing touches the host's network configuration.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+ROOT=$PWD
 FRR_IMAGE=${FRR_IMAGE:-quay.io/frrouting/frr:10.1.1}
 PREFIX=ceros-interop
 WORK=build/interop
@@ -13,7 +14,7 @@ say() { echo "=== $*"; }
 fail() { echo "FAIL: $*"; dump; exit 1; }
 
 build_rtest() {
-  CGO_ENABLED=0 go build -o "$WORK/rtest" ./cmd/rtest
+  (cd apps/rtest && CGO_ENABLED=0 go build -o "$ROOT/$WORK/rtest" .)
 }
 
 # net <name> <subnet4> [<subnet6>]

@@ -15,10 +15,10 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l .; exit 1)
       - name: vet
-        run: go vet ./...
+        run: make vet
       - name: unit tests
-        run: go test ./...
+        run: make test
       - name: build each program on its own
-        run: for p in $(ls cmd); do go build -o /dev/null ./cmd/$p || exit 1; done
+        run: for p in $(ls apps); do (cd apps/$p && go build -o /dev/null .) || exit 1; done
       - name: build (all architectures)
         run: make cross

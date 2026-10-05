@@ -1,0 +1,221 @@
+package software
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/thxrben/cerium-switchd/lib/software/usbstore"
+	"github.com/thxrben/cerium-switchd/lib/sys/hwio"
+)
+
+// Source is where a package comes from (reference 3.6).
+type Source struct {
+	Raw  string
+	Kind string // "url", "usb", "file", "upload" (the bundle uploaded through the REST API)
+	URL  *url.URL
+	Path string // usb: path on the stick; file: local path
+}
+
+// ParseSource checks a source: http(s)://, ftp://, sftp://user@host/path,
+// usb:<file>, an absolute local path, or "upload".
+func ParseSource(s string) (Source, error) {
+	switch {
+	case s == "upload":
+		return Source{Raw: s, Kind: "upload"}, nil
+	case strings.HasPrefix(s, "usb:"):
+		p := strings.TrimPrefix(strings.TrimPrefix(s, "usb:"), "/")
+		if p == "" || strings.Contains(p, "..") {
+			return Source{}, fmt.Errorf("expecting usb:<file>")
+		}
+		return Source{Raw: s, Kind: "usb", Path: p}, nil
+	case strings.HasPrefix(s, "/"):
+		return Source{Raw: s, Kind: "file", Path: filepath.Clean(s)}, nil
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return Source{}, fmt.Errorf("invalid source %q (expecting http(s)://, ftp://, sftp://, usb:<file> or a local path)", s)
+	}
+	switch u.Scheme {
+	case "http", "https", "ftp", "sftp":
+	default:
+		return Source{}, fmt.Errorf("unsupported source %q", u.Scheme)
+	}
+	return Source{Raw: s, Kind: "url", URL: u}, nil
+}
+
+// Fetcher downloads packages on the master.
+type Fetcher struct {
+	// VRF is the management instance (downloads leave through it; "":
+	// the default routing table).
+	VRF string
+	// Run runs a command (tests replace it).
+	Run func(ctx context.Context, name string, args ...string) ([]byte, error)
+	// USB reads from the stick (the switch's one store, so operations on
+	// the stick never overlap; nil: usb: sources fail).
+	USB USBReader
+	// MaxSize is the largest bundle that fits (0: no limit); a larger one
+	// fails with ErrTooLarge. TempDir holds companion files ("": /tmp).
+	MaxSize int64
+	TempDir string
+}
+
+// USBReader copies a file of the USB stick (usbstore.Store).
+type USBReader interface {
+	CopyTo(path string, w io.Writer, max int64) (int64, error)
+}
+
+// ErrTooLarge is a bundle larger than Fetcher.MaxSize.
+var ErrTooLarge = errors.New("the bundle is larger than the room in memory")
+
+func (f *Fetcher) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if f.Run != nil {
+		return f.Run(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+// Fetch stores the package at dst. password is for sftp/ftp logins ("":
+// none, or the user's key).
+func (f *Fetcher) Fetch(ctx context.Context, src Source, dst, password string) error {
+	switch src.Kind {
+	case "file":
+		return copyFile(src.Path, dst, f.MaxSize)
+	case "usb":
+		return f.fromUSB(src.Path, dst)
+	}
+	return f.curl(ctx, src.URL, dst, password)
+}
+
+// FetchOptional fetches a small companion file (e.g. <package>.sha256);
+// a missing one is not an error (ok false).
+func (f *Fetcher) FetchOptional(ctx context.Context, src Source, suffix string) (string, bool) {
+	tmp, err := hwio.CreateTemp(f.TempDir, "ceros-*"+suffix)
+	if err != nil {
+		return "", false
+	}
+	tmp.Close()
+	defer hwio.Remove(tmp.Name())
+	var s Source
+	switch src.Kind {
+	case "url":
+		u := *src.URL
+		u.Path += suffix
+		s = Source{Kind: "url", URL: &u}
+	default:
+		s = src
+		s.Path += suffix
+	}
+	if f.Fetch(ctx, s, tmp.Name(), "") != nil {
+		return "", false
+	}
+	b, err := hwio.ReadFile(tmp.Name())
+	return string(b), err == nil
+}
+
+func (f *Fetcher) curl(ctx context.Context, u *url.URL, dst, password string) error {
+	args := []string{"-fsS", "--retry", "2", "--connect-timeout", "15", "-o", dst}
+	if f.MaxSize > 0 {
+		// Refused before the transfer when the server names the size,
+		// else ended the moment it exceeds it.
+		args = append(args, "--max-filesize", strconv.FormatInt(f.MaxSize, 10))
+	}
+	if u.User != nil {
+		user := u.User.Username()
+		if p, ok := u.User.Password(); ok {
+			password = p
+		}
+		clean := *u
+		clean.User = nil
+		if password != "" {
+			args = append(args, "-u", user+":"+password)
+		} else {
+			args = append(args, "-u", user+":")
+			for _, k := range []string{"/root/.ssh/id_ed25519", "/root/.ssh/id_rsa"} {
+				if _, err := hwio.Stat(k); err == nil && u.Scheme == "sftp" {
+					args = append(args, "--key", k)
+					break
+				}
+			}
+		}
+		u = &clean
+	}
+	if u.Scheme == "sftp" {
+		args = append(args, "--insecure") // no known_hosts on a switch; the package is verified instead
+	}
+	args = append(args, u.String())
+	name := "curl"
+	if f.VRF != "" {
+		args = append([]string{"vrf", "exec", f.VRF, "curl"}, args...)
+		name = "ip"
+	}
+	if out, err := f.run(ctx, name, args...); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 63 { // curl: maximum file size exceeded
+			return fmt.Errorf("%w (%d bytes)", ErrTooLarge, f.MaxSize)
+		}
+		return fmt.Errorf("download of %s failed: %s", u.Redacted(), strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// fromUSB copies path from the USB stick (never the system disk; mounted
+// read-only for the copy) into dst.
+func (f *Fetcher) fromUSB(path, dst string) error {
+	if f.USB == nil {
+		return errors.New("USB sticks are not available here")
+	}
+	out, err := hwio.Create(dst)
+	if err != nil {
+		return err
+	}
+	max := f.MaxSize
+	if max <= 0 {
+		max = 1 << 40
+	}
+	if _, err := f.USB.CopyTo(path, hwio.Writer(out, SlotIODeadline()), max); err != nil {
+		out.Close()
+		if errors.Is(err, usbstore.ErrTooLarge) {
+			return fmt.Errorf("%w (%d bytes): %v", ErrTooLarge, f.MaxSize, err)
+		}
+		return err
+	}
+	if err := hwio.WriteBack(out, SlotIODeadline()); err != nil {
+		out.Close()
+		return err
+	}
+	return hwio.Close(out)
+}
+
+// copyFile copies src to dst; a src larger than max (0: no limit) fails
+// with ErrTooLarge before anything is copied.
+func copyFile(src, dst string, max int64) error {
+	in, err := hwio.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if fi, err := in.Stat(); err == nil && max > 0 && fi.Size() > max {
+		return fmt.Errorf("%w (%d bytes, the bundle has %d)", ErrTooLarge, max, fi.Size())
+	}
+	out, err := hwio.Create(dst)
+	if err != nil {
+		return err
+	}
+	// A USB stick: every read and write has a deadline.
+	if _, err := io.Copy(hwio.Writer(out, SlotIODeadline()), hwio.Reader(in, SlotIODeadline())); err != nil {
+		out.Close()
+		return err
+	}
+	if err := hwio.WriteBack(out, SlotIODeadline()); err != nil {
+		out.Close()
+		return err
+	}
+	return hwio.Close(out)
+}

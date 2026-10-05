@@ -100,25 +100,13 @@ servers described in `lab/README.md`.
 
 | Path | Contents |
 |---|---|
-| `cmd/switchd` | the switch daemon, and the tools `check-config`, `bundle`, `keygen`, `verify-bundle` |
-| `cmd/swcli`, `cmd/switchd-update` | the CLI client (login shell); the update daemon |
-| `cmd/cer-*` | the protocol and service daemons (reference 1.9), each built on its own |
-| `cmd/rtest` | runs the routing protocols without a switch (test/interop) |
-| `pkg/` | reusable libraries: no imports from `internal/` (checked by `test/layout`): `ipc` (calls and state topics between programs), `journal`, `sdnotify`, `netdev` (devices, teams, bridge, routes), and the protocols `lacp`, `rstp`, `lldp`, `bfd`, `ospf`, `rib`, `dhcp`, `ntp`, `syslog` |
-| `internal/svc`, `internal/daemonkit`, `internal/supervise` | the service protocol between switchd and the daemons, the daemons' common main, switchd's supervisor |
-| `internal/mclag`, `internal/stp`, `internal/ribd`, `internal/bfdd` | the logic of cer-mclagd, cer-rstpd, cer-ribd and cer-bfdd |
-| `test/daemons`, `test/layout` | every daemon against a fake switchd; the layering rules |
-| `internal/schema`, `internal/config`, `internal/model` | configuration schema, parser/formats, typed model and commit checks |
-| `internal/commit` | candidates, commit, confirmation, rollback |
-| `internal/cli`, `internal/swcli`, `internal/rpc`, `internal/rpcserver` | the CLI, its client, the session protocol and its server |
-| `internal/dataplane` | kernel state: bridge, bonds, VLANs, L3, filters, tunnels, multicast, VXLAN |
-| `internal/daemon` | switchd itself: wiring, stack control, MC-LAG, LACP/LLDP/RSTP glue, software updates |
-| `internal/stack` | stacking: links, mesh routing, Raft control, PKI and joining |
-| `internal/lacp`, `internal/lldp`, `internal/rstp`, `internal/dhcp`, `internal/ntp`, `internal/syslog` | protocols |
-| `internal/access`, `internal/osconf` | accounts, SSH, consoles; host name and resolver |
-| `internal/software`, `internal/updated` | signed bundles, boot state and slots; the update daemon |
-| `internal/diag`, `internal/inventory` | diagnostics; port numbering and hardware facts |
-| `packaging` | systemd units |
+| `apps/<program>` | one module per program, each with its own `internal/` and built on its own (`make <program>`): `switchd` (the switch daemon and the tools `check-config`, `bundle`, `keygen`, `verify-bundle`; its `internal/` holds access, cli, commit, daemon, dataplane, diag, inventory, osconf, rpcserver, stack, supervise, webapi, packaging with the systemd units), `swcli` (CLI client, login shell), `switchd-update` (update daemon), `cer-*` (protocol and service daemons, reference 1.9), `rtest` (routing protocols without a switch, test/interop) |
+| `lib/sys` | system access: `hwio`, `sysexec`, `nlx` (netlink), `netdev` (devices, teams, bridge, routes), `sdnotify`, `journal` |
+| `lib/<protocol>` | protocol cores, one module each: `lacp`, `rstp`, `lldp`, `bfd`, `ospf`, `bgp`, `rib`, `dhcp`, `ntp`, `syslog`, `macsec` |
+| `lib/conf` | the configuration model: `schema`, `config`, `model` (typed model and commit checks), `policy`, `memslots` |
+| `lib/platform` | what programs share: `ipc`, `svc`, `daemonkit`, `alarms`, `version`, `names`, `rpc`, `rshell`, and `api/*` (what switchd and other daemons use of a daemon: types and names) |
+| `lib/software` | signed bundles, boot state and slots (`software`), USB storage (`usbstore`) |
+| `go.work`, `test/daemons`, `test/layout` | the workspace; every daemon against a fake switchd; the layering rules (libraries never import a program, programs never link each other) |
 | `image`, `test/image` | the operating system image (build in docker, GRUB, initramfs) and its QEMU tests |
 | `lab`, `test/lab` | the Proxmox test lab (Ansible) and its integration tests |
 | `docs` | the specification |

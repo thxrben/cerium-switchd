@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thxrben/cerium-switchd/internal/svc"
-	"github.com/thxrben/cerium-switchd/pkg/ipc"
+	"github.com/thxrben/cerium-switchd/lib/platform/ipc"
+	"github.com/thxrben/cerium-switchd/lib/platform/svc"
 )
 
 func programs(t *testing.T) []string {
-	entries, err := os.ReadDir("../../cmd")
+	entries, err := os.ReadDir("../../apps")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestDaemonsStartAndStop(t *testing.T) {
 	}
 	bin := t.TempDir()
 	for _, p := range progs {
-		out, err := exec.Command("go", "build", "-o", filepath.Join(bin, p), "../../cmd/"+p).CombinedOutput()
+		out, err := exec.Command("go", "build", "-o", filepath.Join(bin, p), "../../apps/"+p).CombinedOutput()
 		if err != nil {
 			t.Fatalf("build %s: %v\n%s", p, err, out)
 		}

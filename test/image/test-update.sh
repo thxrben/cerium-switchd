@@ -12,6 +12,7 @@
 # 7. a bundle with a changed byte and one signed by an unknown key are rejected
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+PWD_ROOT=$PWD
 v1=$1 v2=$2 from=${3:-1}
 wd=build/test-image
 vm=test/image/vm.py
@@ -169,11 +170,11 @@ b = bytearray(open(sys.argv[1], 'rb').read())
 b[len(b) // 2] ^= 0x01
 open(sys.argv[2], 'wb').write(b)
 EOF
-go run ./cmd/switchd keygen "$wd/other" 2>/dev/null || true
+(cd apps/switchd && go run . keygen "$PWD_ROOT/$wd/other" 2>/dev/null) || true
 img=build/image-$v2/out/rootfs.img
 vj=build/image-$v2/out/verity.json
-go run ./cmd/switchd bundle -o "$wd/foreign.bundle" -image "$img" -key "$wd/other.key" -version "$v2" \
-  -roothash "$(sed -E 's/.*"roothash":"([0-9a-f]+)".*/\1/' "$vj")" -hash-offset "$(sed -E 's/.*"hash_offset":([0-9]+).*/\1/' "$vj")"
+(cd apps/switchd && go run . bundle -o "$PWD_ROOT/$wd/foreign.bundle" -image "$PWD_ROOT/$img" -key "$PWD_ROOT/$wd/other.key" -version "$v2" \
+  -roothash "$(sed -E 's/.*"roothash":"([0-9a-f]+)".*/\1/' "$PWD_ROOT/$vj")" -hash-offset "$(sed -E 's/.*"hash_offset":([0-9]+).*/\1/' "$PWD_ROOT/$vj")")
 put_bundle "$wd/bad.bundle" bad.bundle
 put_bundle "$wd/foreign.bundle" foreign.bundle
 $vm start "$wd/disk.img" "$wd"; boot

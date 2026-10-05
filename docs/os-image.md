@@ -287,5 +287,5 @@ set already.
 switchd itself has a systemd **watchdog** (60 s) that it feeds only while its loops make progress (data plane, stack
 control, daemon supervisor): a loop that stops (a bug, a deadlock) gets switchd restarted, and the daemons keep
 running. A hanging device does not trigger it, because every call returns at its deadline. The cer- daemons have the
-same watchdog (10 s). The libraries are `pkg/hwio` (deadlines, stuck resources, file functions), `pkg/sysexec`
-(tools) and `pkg/nlx` (netlink).
+same watchdog (10 s). The libraries are `lib/sys/hwio` (deadlines, stuck resources, file functions), `lib/sys/sysexec`
+(tools) and `lib/sys/nlx` (netlink).

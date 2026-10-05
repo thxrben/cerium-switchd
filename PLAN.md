@@ -776,7 +776,7 @@ untagged VLAN (PVID) for the session only.
   relays them): OSPF max-metric (RFC 6987) and wait until the neighbours' paths moved, BGP graceful shutdown (RFC
   8326 community, then withdraw), before mastership moves; OSPF/BGP graceful restart across the mastership change.
 
-### Modular code base: plan of 2026-10-05 (started the same day)
+### Modular code base: plan of 2026-10-05 (done the same day)
 Facts (go list): every program already is its own binary (cmd/*), but all share one module; switchd imports the
 daemons' implementation packages only for their API (configuration, requests, statuses, method names); every
 daemon imports pkg/lacp through internal/svc; cer-bgpd/cer-ospfd import the configuration model through policy.

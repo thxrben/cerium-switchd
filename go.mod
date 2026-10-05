@@ -3,26 +3,20 @@ module github.com/thxrben/cerium-switchd
 go 1.27.1
 
 require (
-	github.com/hashicorp/go-hclog v1.6.3
-	github.com/hashicorp/raft v1.8.0
-	github.com/hashicorp/raft-boltdb/v2 v2.4.2
-	github.com/osrg/gobgp/v3 v3.37.0
-	github.com/vishvananda/netlink v1.3.1
-	github.com/vishvananda/netns v0.0.5
-	golang.org/x/net v0.59.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
+	github.com/thxrben/cerium-switchd/lib/conf v0.0.0-00010101000000-000000000000
+	github.com/thxrben/cerium-switchd/lib/platform v0.0.0-00010101000000-000000000000
 )
 
 require (
-	github.com/boltdb/bolt v1.3.1 // indirect
-	github.com/fatih/color v1.19.0 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
-	github.com/hashicorp/go-metrics v0.7.0 // indirect
-	github.com/hashicorp/go-msgpack/v2 v2.1.5 // indirect
-	github.com/hashicorp/golang-lru v1.0.2 // indirect
-	github.com/mattn/go-colorable v0.1.15 // indirect
-	github.com/mattn/go-isatty v0.0.24 // indirect
-	go.etcd.io/bbolt v1.4.1 // indirect
+	github.com/thxrben/cerium-switchd/lib/lacp v0.0.0-00010101000000-000000000000 // indirect
+	github.com/thxrben/cerium-switchd/lib/sys v0.0.0-00010101000000-000000000000 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
+
+replace github.com/thxrben/cerium-switchd/lib/sys => ./lib/sys
+
+replace github.com/thxrben/cerium-switchd/lib/platform => ./lib/platform
+
+replace github.com/thxrben/cerium-switchd/lib/conf => ./lib/conf
+
+replace github.com/thxrben/cerium-switchd/lib/lacp => ./lib/lacp

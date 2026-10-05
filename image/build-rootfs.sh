@@ -53,8 +53,8 @@ for p in "$bin"/*; do
 done
 ln -sf swcli "$root/usr/local/bin/cli"
 echo /usr/local/bin/swcli >> "$root/etc/shells"
-install -D -m 0644 "$here/../packaging/switchd.service" "$root/etc/systemd/system/switchd.service"
-install -D -m 0644 "$here/../packaging/switchd-update.service" "$root/etc/systemd/system/switchd-update.service"
+install -D -m 0644 "$here/../apps/switchd/internal/packaging/switchd.service" "$root/etc/systemd/system/switchd.service"
+install -D -m 0644 "$here/../apps/switchd/internal/packaging/switchd-update.service" "$root/etc/systemd/system/switchd-update.service"
 mkdir -p "$root/usr/share/ceros/keys"
 cp "$keys"/*.pub "$root/usr/share/ceros/keys/"
 cp -a "$here/dracut/90ceros" "$root/usr/lib/dracut/modules.d/"

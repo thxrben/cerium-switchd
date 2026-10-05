@@ -22,7 +22,7 @@ import (
 	pb "github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v3/pkg/server"
 
-	"github.com/thxrben/cerium-switchd/pkg/bgp"
+	"github.com/thxrben/cerium-switchd/lib/bgp"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
