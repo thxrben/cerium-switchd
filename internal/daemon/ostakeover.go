@@ -21,20 +21,10 @@ const (
 	updateUnitPath = "/etc/systemd/system/switchd-update.service"
 )
 
-// renderUnit is a unit with exe as the program.
-// updateUnit is the update daemon's unit: its own program next to switchd,
-// or "switchd update-daemon" where that program is not installed (an
-// installation of an earlier version's single program).
-func updateUnit(exe string) string {
-	if exe == "" {
-		return packaging.UpdateUnit
-	}
-	if _, err := hwio.Stat(filepath.Join(filepath.Dir(exe), "switchd-update")); err != nil {
-		return strings.Replace(packaging.UpdateUnit, "/usr/local/sbin/switchd-update", "/usr/local/sbin/switchd update-daemon", 1)
-	}
-	return packaging.UpdateUnit
-}
+// updateUnit is the update daemon's unit (its own program, switchd-update).
+func updateUnit(string) string { return packaging.UpdateUnit }
 
+// renderUnit is a unit with exe as the program.
 func renderUnit(unit, exe string) string {
 	if exe == "" {
 		return unit

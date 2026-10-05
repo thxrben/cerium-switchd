@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/updapi"
 	"github.com/thxrben/cerium-switchd/internal/software"
 )
 
@@ -209,7 +210,7 @@ func (m *fakeMachine) start(t *testing.T, timeout time.Duration) (*Daemon, func(
 	done := make(chan struct{})
 	go func() { d.Run(ctx); close(done) }()
 	for i := 0; i < 100; i++ {
-		if _, err := Call(d.Socket, Request{Op: "status"}); err == nil {
+		if _, err := updapi.Call(d.Socket, Request{Op: "status"}); err == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -233,10 +234,10 @@ func (m *fakeMachine) waitReboots(t *testing.T, n int) {
 func TestUpdateHealthy(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, time.Second)
-	if _, err := Call(d.Socket, Request{Op: "healthy", Version: "v1"}); err != nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "healthy", Version: "v1"}); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), Standalone: true, ExitMaintenance: true})
+	rep, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), Standalone: true, ExitMaintenance: true})
 	if err != nil || rep.Version != "v2" {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -251,8 +252,8 @@ func TestUpdateHealthy(t *testing.T) {
 	}
 	d, stop = m.start(t, time.Second)
 	defer stop()
-	Call(d.Socket, Request{Op: "started", Version: "v2"})
-	rep, err = Call(d.Socket, Request{Op: "healthy", Version: "v2"})
+	updapi.Call(d.Socket, Request{Op: "started", Version: "v2"})
+	rep, err = updapi.Call(d.Socket, Request{Op: "healthy", Version: "v2"})
 	if err != nil || rep.Update == nil || !rep.Update.ExitMaintenance {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -270,7 +271,7 @@ func TestUpdateHealthy(t *testing.T) {
 func TestUpdateNotHealthyRollsBack(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, 200*time.Millisecond)
-	Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), Standalone: true})
+	updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), Standalone: true})
 	m.waitReboots(t, 1)
 	stop()
 	m.boot()
@@ -296,7 +297,7 @@ func TestUpdateNotHealthyRollsBack(t *testing.T) {
 	if !strings.Contains(string(raw), `"system"`) {
 		t.Fatalf("configuration not restored: %s", raw)
 	}
-	rep, _ := Call(d.Socket, Request{Op: "status"})
+	rep, _ := updapi.Call(d.Socket, Request{Op: "status"})
 	if !strings.Contains(rep.Note, "rolled back") || len(rep.Slots) != 2 || rep.Slots[1].OK {
 		t.Fatalf("status %+v", rep)
 	}
@@ -308,7 +309,7 @@ func TestUpdateKernelFailsBootLoaderReturns(t *testing.T) {
 	m := newMachine(t)
 	m.broken["v2"] = true
 	d, stop := m.start(t, time.Second)
-	Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
+	updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
 	m.waitReboots(t, 1)
 	stop()
 	m.boot()
@@ -330,14 +331,14 @@ func TestUpdateKernelFailsBootLoaderReturns(t *testing.T) {
 func TestUpdateCrashLoop(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, time.Minute)
-	Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
+	updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
 	m.waitReboots(t, 1)
 	stop()
 	m.boot()
 	d, stop = m.start(t, time.Minute)
 	defer stop()
 	for i := 0; i <= MaxStarts; i++ {
-		Call(d.Socket, Request{Op: "started", Version: "v2"})
+		updapi.Call(d.Socket, Request{Op: "started", Version: "v2"})
 	}
 	m.waitReboots(t, 2)
 	if m.e()["B_OK"] != "0" {
@@ -350,7 +351,7 @@ func TestUpdateRejectedAndFailures(t *testing.T) {
 	m.rejects["v2"] = true
 	d, stop := m.start(t, time.Second)
 	defer stop()
-	_, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
+	_, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")})
 	if err == nil || !strings.Contains(err.Error(), "rejects") {
 		t.Fatalf("rejected config installed: %v", err)
 	}
@@ -359,12 +360,12 @@ func TestUpdateRejectedAndFailures(t *testing.T) {
 		t.Fatalf("env %v reboots %d", m.env, m.reboots)
 	}
 	// check reports the same as an error the master understands.
-	_, err = Call(d.Socket, Request{Op: "check", Bundle: m.bundle(t, "v2")})
+	_, err = updapi.Call(d.Socket, Request{Op: "check", Bundle: m.bundle(t, "v2")})
 	if err == nil || !strings.HasPrefix(err.Error(), ErrRejected.Error()) {
 		t.Fatalf("check: %v", err)
 	}
 	// no-validate installs anyway.
-	rep, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), NoValidate: true})
+	rep, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2"), NoValidate: true})
 	if err != nil || !strings.Contains(rep.Text, "no-validate") {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -376,7 +377,7 @@ func TestUpdateWriteErrorAndSignature(t *testing.T) {
 	d, stop := m.start(t, time.Second)
 	defer stop()
 	m.writeErr = errors.New("I/O error")
-	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err == nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err == nil {
 		t.Fatal("write error ignored")
 	}
 	if m.e()["B_OK"] != "0" || m.e().Order()[0] != "A" {
@@ -385,11 +386,11 @@ func TestUpdateWriteErrorAndSignature(t *testing.T) {
 	m.writeErr = nil
 	// Signed by another key.
 	other := newMachine(t)
-	if _, err := Call(d.Socket, Request{Op: "install", Bundle: other.bundle(t, "v3")}); err == nil || !strings.Contains(err.Error(), "does not trust") {
+	if _, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: other.bundle(t, "v3")}); err == nil || !strings.Contains(err.Error(), "does not trust") {
 		t.Fatalf("foreign bundle: %v", err)
 	}
 	// The running version.
-	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v1")}); err == nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v1")}); err == nil {
 		t.Fatal("the running version installed again")
 	}
 }
@@ -397,14 +398,14 @@ func TestUpdateWriteErrorAndSignature(t *testing.T) {
 func TestRollbackCommand(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, time.Second)
-	if _, err := Call(d.Socket, Request{Op: "rollback"}); err == nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "rollback"}); err == nil {
 		t.Fatal("rollback to an empty slot")
 	}
 	m.mu.Lock()
 	m.env["B_VERSION"], m.env["B_ROOTHASH"] = "v0", "cc"
 	m.slots["B"] = "v0"
 	m.mu.Unlock()
-	rep, err := Call(d.Socket, Request{Op: "rollback"})
+	rep, err := updapi.Call(d.Socket, Request{Op: "rollback"})
 	if err != nil || rep.Version != "v0" {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -413,7 +414,7 @@ func TestRollbackCommand(t *testing.T) {
 	m.boot()
 	d, stop = m.start(t, time.Second)
 	defer stop()
-	Call(d.Socket, Request{Op: "healthy", Version: "v0"})
+	updapi.Call(d.Socket, Request{Op: "healthy", Version: "v0"})
 	for i := 0; i < 100 && d.Load().Done != "ok"; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -430,7 +431,7 @@ func TestPlainBootConfirmed(t *testing.T) {
 	if m.e()["A_TRY"] != "1" {
 		t.Fatal(m.env)
 	}
-	Call(d.Socket, Request{Op: "healthy", Version: "v1"})
+	updapi.Call(d.Socket, Request{Op: "healthy", Version: "v1"})
 	for i := 0; i < 100 && m.e()["A_TRY"] != "0"; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -444,7 +445,7 @@ func TestPlainBootConfirmed(t *testing.T) {
 func TestConfirmRetried(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, time.Minute)
-	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
 		t.Fatal(err)
 	}
 	m.waitReboots(t, 1)
@@ -455,7 +456,7 @@ func TestConfirmRetried(t *testing.T) {
 	m.mu.Lock()
 	m.envErrs = 3
 	m.mu.Unlock()
-	Call(d.Socket, Request{Op: "healthy", Version: "v2"})
+	updapi.Call(d.Socket, Request{Op: "healthy", Version: "v2"})
 	for i := 0; i < 200 && d.Load().Done != "ok"; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -471,7 +472,7 @@ func TestRebootRetried(t *testing.T) {
 	m.rebootErrs = 2
 	d, stop := m.start(t, time.Minute)
 	defer stop()
-	if _, err := Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
+	if _, err := updapi.Call(d.Socket, Request{Op: "install", Bundle: m.bundle(t, "v2")}); err != nil {
 		t.Fatal(err)
 	}
 	m.waitReboots(t, 1)
@@ -487,7 +488,7 @@ func TestRebootRetried(t *testing.T) {
 func TestInterruptedInstall(t *testing.T) {
 	m := newMachine(t)
 	d, stop := m.start(t, time.Minute)
-	Call(d.Socket, Request{Op: "healthy", Version: "v1"}) // slot A confirmed
+	updapi.Call(d.Socket, Request{Op: "healthy", Version: "v1"}) // slot A confirmed
 	time.Sleep(50 * time.Millisecond)
 	// The install had marked slot B not bootable and written the record.
 	e := m.e()

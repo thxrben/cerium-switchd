@@ -19,12 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thxrben/cerium-switchd/internal/api/updapi"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/commit"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/software"
 	"github.com/thxrben/cerium-switchd/internal/stack"
-	"github.com/thxrben/cerium-switchd/internal/updated"
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
@@ -99,7 +99,7 @@ type swStatus struct {
 	Slots     []software.SlotInfo `json:"slots,omitempty"`
 	BootState string              `json:"boot_state,omitempty"`
 	Active    string              `json:"active,omitempty"`
-	Update    *updated.State      `json:"update,omitempty"`
+	Update    *updapi.State       `json:"update,omitempty"`
 	Note      string              `json:"note,omitempty"`
 }
 
@@ -250,7 +250,7 @@ func (u *updater) status() swStatus {
 		st.Transit = m.transit()
 	}
 	st.Current = u.ctl == nil || u.ctl.node.Current()
-	if rep, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err == nil {
+	if rep, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "status"}); err == nil {
 		st.Daemon, st.Slots, st.Active, st.Update, st.Note = rep.State, rep.Slots, rep.Active, rep.Update, rep.Note
 		st.BootState = rep.BootState
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -269,7 +269,7 @@ func (u *updater) pkgPath(v string) string { return u.store.path(v) }
 // verify checks a bundle file completely (signature and image) with the
 // keys this system trusts.
 func verifyBundle(path string) (*software.BundleManifest, error) {
-	keys, err := software.LoadKeys(updated.KeysDir)
+	keys, err := software.LoadKeys(updapi.KeysDir)
 	if err != nil {
 		return nil, err
 	}
@@ -349,12 +349,12 @@ func checkSum(path, want string) error {
 // backup slot and reboots; the new version leaves maintenance mode once it
 // is healthy.
 func (u *updater) installHere(r swInstall, by string) (string, error) {
-	if _, err := updated.Call(u.daemonSocket(), updated.Request{Op: "status"}); err != nil {
+	if _, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "status"}); err != nil {
 		return "", fmt.Errorf("member %d cannot be updated: its update daemon does not run (%v); updates need the cerOS image", u.member, err)
 	}
-	req := updated.Request{Op: "install", Bundle: u.pkgPath(r.Version), Standalone: len(u.members()) == 1, NoValidate: r.NoValidate}
+	req := updapi.Request{Op: "install", Bundle: u.pkgPath(r.Version), Standalone: len(u.members()) == 1, NoValidate: r.NoValidate}
 	if r.Rollback {
-		req = updated.Request{Op: "rollback"}
+		req = updapi.Request{Op: "rollback"}
 	} else if _, err := hwio.Stat(req.Bundle); err != nil {
 		return "", fmt.Errorf("member %d does not have the bundle %s (bundles are kept in memory only: a restarted member needs it again)", u.member, r.Version)
 	}
@@ -374,7 +374,7 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 		out.WriteString(text)
 		req.ExitMaintenance = true
 	}
-	rep, err := updated.CallTimeout(u.daemonSocket(), req, installWait())
+	rep, err := updapi.CallTimeout(u.daemonSocket(), req, installWait())
 	if err != nil {
 		if req.ExitMaintenance {
 			u.maint().exit("software update")
@@ -392,14 +392,14 @@ func (u *updater) installHere(r swInstall, by string) (string, error) {
 // started runs when switchd starts: the update daemon counts the starts of
 // a new version.
 func (u *updater) started() {
-	updated.Call(u.daemonSocket(), updated.Request{Op: "started", Version: version.Version})
+	updapi.Call(u.daemonSocket(), updapi.Request{Op: "started", Version: version.Version})
 }
 
 // healthy runs once this switchd works (configuration applied, stack
 // state current): the update daemon confirms the slot, and a member the
 // update drained leaves maintenance mode.
 func (u *updater) healthy() {
-	rep, err := updated.Call(u.daemonSocket(), updated.Request{Op: "healthy", Version: version.Version})
+	rep, err := updapi.Call(u.daemonSocket(), updapi.Request{Op: "healthy", Version: version.Version})
 	if err != nil {
 		u.log.Debug("software: update daemon", "err", err)
 		return
@@ -414,7 +414,7 @@ func (u *updater) healthy() {
 	if m := u.maint(); m != nil && m.active() {
 		m.exit("software update")
 	}
-	updated.Call(u.daemonSocket(), updated.Request{Op: "maintenance-done"})
+	updapi.Call(u.daemonSocket(), updapi.Request{Op: "maintenance-done"})
 }
 
 // ---- the update, run by the master ----
@@ -740,7 +740,7 @@ func fileSum(path string) (string, int64, error) {
 // check on the active configuration.
 func (u *updater) checkConfig(v string, noValidate bool) error {
 	u.say("checking the configuration with %s", v)
-	rep, err := updated.CallTimeout(u.daemonSocket(), updated.Request{Op: "check", Bundle: u.pkgPath(v)}, installWait())
+	rep, err := updapi.CallTimeout(u.daemonSocket(), updapi.Request{Op: "check", Bundle: u.pkgPath(v)}, installWait())
 	switch {
 	case err == nil:
 		if rep.Text != "" {
@@ -749,7 +749,7 @@ func (u *updater) checkConfig(v string, noValidate bool) error {
 			u.say("the new version accepts the configuration")
 		}
 		return nil
-	case errors.Is(err, updated.ErrRejected) || strings.HasPrefix(err.Error(), updated.ErrRejected.Error()):
+	case errors.Is(err, updapi.ErrRejected) || strings.HasPrefix(err.Error(), updapi.ErrRejected.Error()):
 		if noValidate {
 			u.say("%v (no-validate: continuing)", err)
 			return nil
@@ -795,5 +795,5 @@ func (u *updater) daemonSocket() string {
 	if u.updateSocket != "" {
 		return u.updateSocket
 	}
-	return updated.DefaultSocket
+	return updapi.DefaultSocket
 }

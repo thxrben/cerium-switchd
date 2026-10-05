@@ -31,15 +31,12 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 )
 
-// DefaultSocket is where switchd listens for CLI sessions.
-const DefaultSocket = "/run/switchd/cli.sock"
-
 // Main runs the client and returns the exit code. args excludes the
 // program name.
 func Main(args []string) int {
 	fs := flag.NewFlagSet("swcli", flag.ContinueOnError)
 	cmd := fs.String("c", "", "run one command (or several, separated by newlines) and exit")
-	sock := fs.String("s", DefaultSocket, "switchd socket")
+	sock := fs.String("s", rpc.DefaultSocket, "switchd socket")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

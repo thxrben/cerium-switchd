@@ -24,7 +24,6 @@ import (
 
 // Paths of the image (docs/os-image.md §3).
 const (
-	KeysDir     = "/usr/share/ceros/keys"
 	ReleaseFile = "/etc/ceros-release"
 	ConfigRoot  = "/config"
 	espMount    = "/run/switchd-update/esp"

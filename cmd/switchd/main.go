@@ -1,6 +1,5 @@
-// Command switchd is the switch daemon. The same binary is the CLI client:
-// started as "swcli" or "cli" (e.g. through a symlink, or as login shell "-swcli")
-// or as "switchd cli", it runs the client instead.
+// Command switchd is the switch daemon (the CLI client is the program
+// swcli, the update daemon switchd-update).
 package main
 
 import (
@@ -11,27 +10,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/thxrben/cerium-switchd/internal/daemon"
+	"github.com/thxrben/cerium-switchd/internal/rpc"
 	"github.com/thxrben/cerium-switchd/internal/software"
-	"github.com/thxrben/cerium-switchd/internal/swcli"
-	"github.com/thxrben/cerium-switchd/internal/updated"
 	"github.com/thxrben/cerium-switchd/internal/version"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"github.com/thxrben/cerium-switchd/pkg/journal"
 )
 
 func main() {
-	name := strings.TrimPrefix(filepath.Base(os.Args[0]), "-")
-	if name == "swcli" || name == "cli" || name == "swcli-session" {
-		os.Exit(swcli.Main(os.Args[1:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "cli" {
-		os.Exit(swcli.Main(os.Args[2:]))
-	}
-
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "check-config":
@@ -42,14 +31,12 @@ func main() {
 			os.Exit(keygen(os.Args[2:]))
 		case "verify-bundle":
 			os.Exit(verifyBundle(os.Args[2:]))
-		case "update-daemon":
-			os.Exit(updateDaemon())
 		}
 	}
 
 	fs := flag.NewFlagSet("switchd", flag.ExitOnError)
 	stateDir := fs.String("state-dir", "/var/lib/switchd", "directory for persistent state")
-	socket := fs.String("socket", swcli.DefaultSocket, "CLI socket")
+	socket := fs.String("socket", rpc.DefaultSocket, "CLI socket")
 	dryRun := fs.Bool("dry-run", false, "do not change the kernel; log what would be applied")
 	debug := fs.Bool("debug", false, "debug logging")
 	showVersion := fs.Bool("version", false, "print the version and exit")
@@ -191,4 +178,3 @@ func verifyBundle(args []string) int {
 
 // updateDaemon is "switchd update-daemon", the update daemon of earlier
 // versions' units (now its own program, cmd/switchd-update).
-func updateDaemon() int { return updated.Main() }
