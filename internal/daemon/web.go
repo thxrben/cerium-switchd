@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/internal/commit"
 	"io"
 	"net"
 	"sync"
@@ -60,7 +61,8 @@ func webAuth(cfg *model.Config, name, password string) (webapi.User, bool) {
 	if err != nil || subtle.ConstantTimeCompare([]byte(got), []byte(u.PasswordHash)) != 1 {
 		return webapi.User{}, false
 	}
-	return webapi.User{Name: name, SuperUser: u.Class == "super-user"}, true
+	cl := commit.ParseClass(u.Class)
+	return webapi.User{Name: name, SuperUser: cl == commit.SuperUser, Class: cl}, true
 }
 
 // Upload is the bundle uploaded through the REST API.

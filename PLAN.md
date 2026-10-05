@@ -965,6 +965,23 @@ One API per virtual chassis (master, `cme` address) or single switch, extending 
 4. Events: a stream (server-sent events) of notices, alarms, commits and link changes, so an orchestrator need not
    poll. `/healthz`, `/readyz`, `/metrics`.
 5. Authentication: Basic as today, plus API tokens per user (for orchestrators); an OpenAPI description.
+**Plan 2026-10-05** (slices; each spec first in reference 5.1, then tests):
+* 18.1 configuration and commands: the API runs the CLI itself (a cli.Shell per request, or per configuration
+  session held on the server with `configure private`), with the user's class, so locks, confirmation, permissions
+  and per-member results are the CLI's. `POST /api/v1/cli` (operational commands, questions answered from the
+  request), `GET /api/v1/config[?format=json|set|text]`, `GET /api/v1/config/revisions`, sessions (open, load,
+  commands, compare, check, commit, delete; idle 30 min, 8 per user), `POST /api/v1/config/confirm`.
+  **Done 2026-10-05**, tested end to end against a real engine and CLI (internal/webapi/cli_test.go).
+* 18.2 state and events: `GET /api/v1/state/<name>[?member=<id>]` = the Ops structures behind `show` as JSON
+  (interfaces, virtual-chassis, lacp, mclag, spanning-tree, routes, bgp, ospf, alarms, processes, memory, limits;
+  the cli types have JSON tags); `GET /api/v1/events` (server-sent events: the notices every CLI session gets,
+  which include alarms and commits; link changes later); `/healthz` (unauthenticated, 200 while the API runs),
+  `/readyz` (the configuration applied, a master known), `/metrics` (Prometheus text: interfaces' counters, alarms
+  by class, daemons running, memory per purpose; authenticated).
+* 18.3 API tokens: `system services web-management api-token <name> { user <u>; hash <sha256>; }` (in the
+  configuration: they work on every master); `request system api-token create <name> user <u>` prints the token
+  once (32 random bytes, base64url) and writes its hash into the candidate; `Authorization: Bearer <token>` has the
+  user's class. `GET /api/v1/openapi.json` (written by hand, checked by a test against the routes).
 
 ### Order (2026-10-04)
 Lab deploy and tests of everything since 05240a8 → Phase 14 (swap) → Phase 17.1–3 (RAM bundles, upload) and 17b → Phase 15

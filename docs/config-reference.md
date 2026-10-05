@@ -975,6 +975,17 @@ interfaces; it moves with mastership. It runs while `system services web-managem
 | `GET /api/v1/software` | any | what `show system software` shows: every member's version and slots, the uploaded bundle, the running update |
 | `PUT /api/v1/software/upload` | super-user | the body is a bundle. It is received into memory (3.6; it replaces an earlier upload), its signature and platform are verified, and its manifest is returned (version, build time, platform, size, SHA-256). 413 when it exceeds `upload-limit` or the room in memory, 422 when it is not a valid bundle (the reason in `error`). Nothing is installed yet. |
 | `POST /api/v1/software/install` | super-user | starts `request system software add upload` with the options in the body (`{"sha256": "…", "member": 2, "no_validate": true, "force": true}`, all optional); 202, the progress is in `GET /api/v1/software`; 409 when an update runs already or nothing was uploaded |
+| `POST /api/v1/cli` | any (each command needs its own class, 4.3) | runs operational commands as the user, as the CLI does: `{"commands": ["show version", "request system reboot member 2"], "answers": ["yes"]}`; a command's questions are answered from `answers` in order (none left: the question is answered with an error, as Ctrl-D). The answer is a list of `{"command", "output", "ok"}` (`ok` false: the output has an error). Status 200 even when a command failed. |
+| `GET /api/v1/config[?format=json\|set\|text]` | any | the active configuration (`show configuration`), default `json` (2.3); `text` is the curly-brace form. |
+| `GET /api/v1/config/revisions` | any | the commit history (`show system commit`), as text. |
+| `POST /api/v1/config/sessions` | super-user | opens a **private candidate** (`configure private`, 4.1) for the user and returns `{"id": "…"}`. A session that is not used for 30 minutes is closed (its changes discarded). At most 8 per user. |
+| `POST /api/v1/config/sessions/{id}/load` | super-user | `{"mode": "merge\|replace\|override\|set", "text": "…"}` loads the text into the session's candidate (3.4: all or nothing). |
+| `POST /api/v1/config/sessions/{id}/commands` | super-user | `{"commands": ["set …", "delete …"]}` runs configuration-mode commands in the session (as `POST /api/v1/cli`). |
+| `GET /api/v1/config/sessions/{id}/compare` | super-user | the session's changes (`show \| compare`). |
+| `POST /api/v1/config/sessions/{id}/check` | super-user | `commit check`: `{"ok", "output"}` with the errors and warnings. |
+| `POST /api/v1/config/sessions/{id}/commit` | super-user | `{"comment": "…", "confirmed": 5}` (both optional) commits (`commit [confirmed <minutes>] [comment …]`) and closes the session: `{"ok", "output"}` with every member's result. A confirmed commit is confirmed with `POST /api/v1/config/confirm`. |
+| `DELETE /api/v1/config/sessions/{id}` | super-user | closes the session; its changes are discarded. |
+| `POST /api/v1/config/confirm` | operator | confirms a commit pending confirmation (4.2). |
 
   Example: `curl --pinnedpubkey 'sha256//…' -k -u admin -T ceros-1.4.0-amd64.bundle
   https://10.0.0.5/api/v1/software/upload`, then `curl … -u admin -X POST https://10.0.0.5/api/v1/software/install`

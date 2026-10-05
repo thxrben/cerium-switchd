@@ -413,6 +413,12 @@ Last updated: 2026-10-04 (evening).
 - Open: lab test (two lab switches or srv1 with wpa_supplicant as the partner), offload, bundle members; the
   wpa_supplicant of Debian 13 must know macsec_csindex (gcm-aes-256).
 
+## REST API 18.1 (2026-10-05; unit-tested, NOT on a device)
+- `POST /api/v1/cli`, `GET /api/v1/config`, `/config/revisions`, configuration sessions (open/load/commands/compare/
+  check/commit/delete), `/config/confirm` (reference 5.1 web-management). The API runs cli.Shells with the user's
+  class (webapi.User.Class; a User without SuperUser never becomes super-user). Next: 18.2 state/events/health,
+  18.3 tokens/OpenAPI (PLAN 18).
+
 ## OSPF graceful restart (2026-10-05; unit-tested, NOT on a device; PLAN 9c "Graceful restart")
 - Helper (RFC 3623/5187: grace LSAs, strict LSA checking, DR election kept), restarting role after a cer-ospfd
   restart (neighbours in /run/ceros/ospf-restart.json, grace LSAs before hellos, no own LSAs or routes until the

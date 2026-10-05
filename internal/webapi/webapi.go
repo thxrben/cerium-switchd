@@ -1,6 +1,7 @@
 // Package webapi is the REST API over HTTPS (system services
 // web-management, reference 5.1): it runs on the master inside the
-// management instance. Only the software endpoints exist so far.
+// management instance: software, configuration sessions and commands
+// (cli.go).
 package webapi
 
 import (
@@ -27,6 +28,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/thxrben/cerium-switchd/internal/commit"
 )
 
 // Config is what the server runs with.
@@ -48,6 +51,7 @@ type Config struct {
 type User struct {
 	Name      string
 	SuperUser bool
+	Class     commit.Class // its class (4.3): the CLI checks every command with it
 }
 
 // Software is what the software endpoints do (the daemon implements it).
@@ -95,14 +99,16 @@ type Server struct {
 	// Auth checks a user's credentials (ok false: wrong).
 	Auth     func(user, password string) (User, bool)
 	Software Software
+	sess     sessions
 
-	mu      sync.Mutex
-	cfg     Config
-	running bool
-	srv     *http.Server
-	info    Info
-	tmpCert *tls.Certificate // the self-signed one, kept while the server runs
-	fails   map[string][]time.Time
+	mu       sync.Mutex
+	newShell func(User) Shell // SetShells
+	cfg      Config
+	running  bool
+	srv      *http.Server
+	info     Info
+	tmpCert  *tls.Certificate // the self-signed one, kept while the server runs
+	fails    map[string][]time.Time
 }
 
 // Sync runs the server with cfg, or stops it (cfg nil); it restarts only
@@ -269,10 +275,36 @@ func (s *Server) routes() http.Handler {
 	}))
 	mux.HandleFunc("PUT /api/v1/software/upload", s.auth(true, s.upload))
 	mux.HandleFunc("POST /api/v1/software/install", s.auth(true, s.install))
+	{
+		mux.HandleFunc("POST /api/v1/cli", s.auth(false, s.cliRun))
+		mux.HandleFunc("GET /api/v1/config", s.auth(false, s.configGet))
+		mux.HandleFunc("GET /api/v1/config/revisions", s.auth(false, func(w http.ResponseWriter, r *http.Request, u User) {
+			s.oneCommand(w, r, u, "show system commit", false)
+		}))
+		mux.HandleFunc("POST /api/v1/config/confirm", s.authClass(commit.Operator, s.confirm))
+		mux.HandleFunc("POST /api/v1/config/sessions", s.auth(true, s.newSession))
+		mux.HandleFunc("POST /api/v1/config/sessions/{id}/load", s.auth(true, s.withSession(s.sessionLoad)))
+		mux.HandleFunc("POST /api/v1/config/sessions/{id}/commands", s.auth(true, s.withSession(s.sessionCommands)))
+		mux.HandleFunc("GET /api/v1/config/sessions/{id}/compare", s.auth(true, s.withSession(s.sessionCompare)))
+		mux.HandleFunc("POST /api/v1/config/sessions/{id}/check", s.auth(true, s.withSession(s.sessionCheck)))
+		mux.HandleFunc("POST /api/v1/config/sessions/{id}/commit", s.auth(true, s.withSession(s.sessionCommit)))
+		mux.HandleFunc("DELETE /api/v1/config/sessions/{id}", s.auth(true, s.withSession(s.sessionDelete)))
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
 	return mux
+}
+
+// authClass is auth for a class (at least need).
+func (s *Server) authClass(need commit.Class, h func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
+	return s.auth(false, func(w http.ResponseWriter, r *http.Request, u User) {
+		if !classOK(u, need) {
+			fail(w, http.StatusForbidden, fmt.Errorf("this needs the %s class", need))
+			return
+		}
+		h(w, r, u)
+	})
 }
 
 // maxFails is how many failed logins one address may have per minute.

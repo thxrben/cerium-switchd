@@ -613,6 +613,12 @@ func Run(ctx context.Context, o Options) error {
 		}
 		return env
 	}
+	// The REST API runs the CLI (reference 5.1 web-management).
+	mgmt.web.SetShells(func(u webapi.User) webapi.Shell {
+		sh := cli.New(srv.Env(u.Name, u.Class))
+		sh.SetPlainErrors()
+		return sh
+	})
 	if ctl != nil {
 		ctl.serveOps(liveOps)
 		ctl.serveExec(func(name string, class commit.Class) cli.Env {
