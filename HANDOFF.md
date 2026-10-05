@@ -1,21 +1,28 @@
-# Handoff (2026-10-04, paused for LACP/LAG debugging on physw4 + UniFi)
+# Handoff (2026-10-05)
 
-Branch `claude/relaxed-cori-qe4lur`, everything committed and pushed. Details: STATUS.md section
-"Requested 2026-10-04", PLAN.md phases 10, 10b, 14-17, 17b.
+Branch `claude/relaxed-cori-qe4lur`, everything committed and pushed. Details: STATUS.md (sections of 2026-10-04 late
+and 2026-10-05), PLAN.md (15b, 9c "Graceful restart", 10.7/10.8, 17.4, 18, Phase 12 plan, "Item 13").
 
-## Where it stands
-- Done, unit-tested, NOT on the lab yet: no swap (14), RAM-only bundles + REST upload (17.1-3), one update at a
-  time (17b), memory slots incl. OSPF/BGP enforcement and smaller routes (15), `request system reload` (16),
-  `show system limits` used/available fix, MACsec on stacking links (10, stack-wide on by default - to be changed).
-- Open, in this order:
-  1. ~~MACsec rework per PLAN 10b~~: done 2026-10-04 (STATUS.md "MACsec rework"), lab test pending.
-  2. **Lab deploy + tests** (the user allowed free deploys; never touch physw4). The lab VMs run the old
-     single-binary install (/usr/local/sbin/switchd + swcli symlink, 05240a8). Deploy: `make build`, tar bin/,
-     copy to the master (`ssh root@10.5.176.95`), from there to sw1/sw3 with agent forwarding
-     (`ssh -A`, then `ip vrf exec swstack scp/ssh root@169.254.64.1` = sw1, `169.254.64.3` = sw3), install every
-     program into /usr/local/sbin, `systemctl restart switchd`; order sw3, sw1, then the master sw2. Keep
-     /usr/local/sbin/switchd.05240a8 for rollback. Check the lab config with `go run ./cmd/switchd check-config`
-     first (it passed for 51b37de). Test: daemon split, swap off (lab has /dev/sda5 swap), memory slots, reload
-     (ports must come up again), stacking MACsec (needs root: real key install), REST upload.
-  3. ~~MACsec on client ports~~: done 2026-10-04 (STATUS.md), lab test pending; open: offload, LAG member ports.
-  4. USB storage (17.4), multicast count in show system memory, cer-bgpd full-table JSON transient (delta).
+## Lab
+- The user switched the lab off on 2026-10-04 night. sw2/sw3 (firmware) are mine to test when it is back; sw1 + physw4
+  are the user's stack: never deploy there unless asked.
+- Waiting for the lab (in this order): deploy the current build to sw2/sw3 (check-config on the lab config first);
+  memory slots, swap off, `request system reload` (ports come back), stacking MACsec `mode on`; the relay/host-key
+  fixes; USB storage with a virtual USB disk; two parallel stacking cables; the lab harness rework (it still
+  addresses members directly); OSPF/BGP/BFD interop with FRR (incl. graceful restart both ways).
+
+## Done 2026-10-04 late / 2026-10-05 (unit-tested, not on a device)
+Alarms name their member; MACsec status and multicast memberships through netlink (no `ip -j`/`bridge -j`); parallel
+stacking cables documented; USB storage (system disk excluded); BGP to cer-ribd/members as deltas (no table copy;
+slot costs lowered); memory setup uses the smallest member; MACsec offload on client ports and on bundle members;
+OSPF graceful restart (helper + restarting); REST API 18.1-18.3 (CLI, config sessions, state, events, health,
+metrics, tokens, OpenAPI).
+
+## Open, waiting for the user's decisions (PLAN "Phase 12" plan and "Item 13")
+802.1X (RADIUS only? dynamic VLAN in multiple mode?), modular code base (when?), arm64 (which hardware?), Secure Boot
+(own keys in db, or shim + MOK?), delta updates (block size after measuring reproducible builds).
+
+## Open without decisions
+cer-ribd installs the whole active table on every change (PLAN 15b.4); OSPF GR across a mastership change (9c GR 3);
+REST API link-change events and `member=`; remaining tool-output readers (dataplane/mcast_linux.go `bridge -j vlan`,
+`ip -j link`; vlanmtu `nft -j`); Tab completion of `usb:` paths; `software add usb:` from a non-master member.
