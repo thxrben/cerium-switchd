@@ -657,6 +657,30 @@ WireGuard is dropped: it would only serve remote L3 sites and road warriors, and
    DataNames). Open: NIC offload for client ports (wpa_supplicant macsec_offload), bundle members, lab test.
    wpa_supplicant's MKA offers GCM-AES-128/256 only (no XPN) and a fixed 2 s hello.
 6. Benchmarks (software vs offload) documented.
+7. **Plan 2026-10-05: offload on client ports.** wpa_supplicant creates the MACsec device, so the offload must be in
+   its configuration (`macsec_offload=2`: MAC, the `macsec-hw-offload` NIC feature; 1 = PHY has no feature flag and is
+   not used). The kernel cannot change the offload of a device with SAs, so switchd cannot set it afterwards.
+   * Used when: the NIC reports `macsec-hw-offload` (ethtool features through the existing hwio/ethtool reader), the
+     port has no `offload disable` (5.3.2), and the installed wpa_supplicant knows the option. 2.10 (Debian 13) may
+     not: an unknown option makes it refuse the whole configuration (as `macsec_csindex` did in the lab), which on a
+     must-secure port means no traffic. Known = the option's name is among the program's configuration keywords
+     (the binary's strings; checked once per start of switchd, the program is read-only on the image).
+   * Fallback: when the offloaded MKA does not secure the link within 30 s, or its unit fails twice, the port runs
+     MKA again without offload (software) and a Minor alarm says so; retried with offload after 10 min (as the
+     stacking links, 10b).
+   * `show security macsec connections`: `Encryption: hardware (mac)` from the kernel (netlink, done 2026-10-04).
+   * Tests: configuration text per case, the fallback timing with a fake supervisor; the lab has no offloading NIC
+     (virtio): only the software path and the "not offered" decision are lab-testable.
+8. **Plan 2026-10-05: bundle members.** A member port of an `ae` may be secured; its MACsec device takes the port's
+   place in the team (LACP bundles) or the static bundle. cer-lacpd keeps sending LACPDUs on the physical port
+   (unprotected, as on Junos), so its partner relation does not depend on MKA; but a member is only *enabled* in the
+   team (collecting/distributing) once its MACsec device exists. Until MKA has secured it, LACP reports the port as
+   not in sync (Actor sync bit cleared), so the partner does not send traffic over it either. MC-LAG legs work the
+   same (each leg's ports are local to its member). E: a bundle whose ports mix secured and unsecured ports
+   (traffic would leave both protected and unprotected). Steps: model check (all or none of a bundle's ports),
+   dataplane (team port = the device, mtu + 32 on the physical port), cer-lacpd (the "secured" state per port from
+   switchd, held out of sync before), show lacp (a `MACsec: negotiating` note), tests (dataplane plan, LACP machine
+   held out of sync, a two-member MC-LAG with secured legs in test/daemons).
 
 ### Phase 11: Polish and packaging
 1. ~~Full web UI~~: dropped 2026-10-04; the REST API (Phase 18) serves an external orchestrator instead.

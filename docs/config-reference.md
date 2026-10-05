@@ -2383,8 +2383,13 @@ security {
 * `interfaces <interface>`: a physical port of any member (a switch port, a routed port or a port with units). The
   port's traffic is carried by its MACsec device: **nothing passes until MKA has secured the link** (must-secure),
   so both ends must be configured. LACP, LLDP and the stacking protocol are sent unprotected (as on Junos without
-  `exclude-protocol`, LLDP is still readable). E: a stacking port (5.2 has its own), a management port, a member port
-  of a bundle (`ae`; not yet supported), a CA that is not configured.
+  `exclude-protocol`, LLDP is still readable). E: a stacking port (5.2 has its own), a management port, a CA that is
+  not configured.
+* **Bundle members**: the ports of an `ae` may be secured, all of them or none (E: a bundle with secured and
+  unsecured ports, whose traffic would leave both protected and not). Each member port runs MKA of its own; its
+  MACsec device takes the port's place in the bundle. LACP keeps running on the port itself (unprotected), but a port
+  is announced in sync, and carries traffic, only once MKA has secured it; until then `show lacp interfaces` shows
+  `MACsec: negotiating`. MC-LAG bundles work the same way (each member secures its own legs).
 * MTU: the port carries 32 bytes more than its `mtu` (SecTAG and ICV); E when that exceeds the NIC's maximum (1.7).
 * A change of a CA renegotiates the links that use it (a moment without traffic); adding or removing MACsec on a
   port interrupts its traffic for a moment.
@@ -2397,7 +2402,11 @@ security {
   itself only keeps its link settings (up/down, `mtu` + 32, flow control) and carries MKA, LACP and LLDP (unprotected).
   When MKA loses the link (the device goes away), the port carries nothing again until it is secured anew. Listings
   (`show ethernet-switching table`, `show spanning-tree`) show the port's name, not the device's.
-* The cipher suites run in software for now (offloading client ports to the NIC follows).
+* **Hardware offload**: a port whose NIC offers MACsec offload (`macsec-hw-offload`, `show system offload`) encrypts
+  in the NIC, unless the port has `offload disable` (5.3.2) or the installed MKA implementation cannot offload (then
+  every port encrypts in software). When an offloaded link does not come up within 30 s (or MKA fails twice), the
+  port falls back to software encryption with a Minor alarm, and tries the offload again after 10 minutes.
+  `show security macsec connections` shows `Encryption: hardware (mac)` or `software`.
 
 Operational commands:
 * `show security macsec connections [interface <if>]`: per secured interface (stacking ports too) the CA (or

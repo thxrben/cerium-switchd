@@ -266,7 +266,8 @@ func Run(ctx context.Context, o Options) error {
 		// reach the data plane with the next apply (a link event).
 		if mka != nil {
 			mka.sync(cfg, member, names.Linux)
-			mka.check()
+			dn := applier.dataNames(cfg)
+			mka.check(func(name string) bool { _, ok := dn(name); return ok })
 		}
 		// Routing (reference 5.8): cer-ribd has the routing table and
 		// installs every route; the management instance only on the master

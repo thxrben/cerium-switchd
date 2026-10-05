@@ -131,7 +131,7 @@ func TestMKAManager(t *testing.T) {
 	}
 	// MKA does not run: alarm.
 	delete(f.running, "cer-mka@eth1.service")
-	m2.check()
+	m2.check(nil)
 	if l := m2.alarms.List(); len(l) != 1 || !strings.Contains(l[0].Text, "eth1 is not running") {
 		t.Fatalf("alarms %+v", l)
 	}
@@ -142,5 +142,61 @@ func TestMKAManager(t *testing.T) {
 	m3.sync(mkaCfg(t, cak1, "1/0/1"), 1, linux)
 	if len(f3.actions) != 0 || len(m3.alarms.List()) != 1 {
 		t.Fatalf("missing program: %v %v", f3.actions, m3.alarms.List())
+	}
+}
+
+// Offload (reference 5.15): only on a NIC that can, with a wpa_supplicant
+// that knows the option, and not with offload disable; a link that does
+// not come up offloaded falls back to software, and tries again later.
+func TestMKAOffload(t *testing.T) {
+	f := &fakeUnits{installed: true, running: map[string]bool{}, files: map[string]string{}}
+	al := &alarms.Set{}
+	m := newMKAManager(f, slog.New(slog.DiscardHandler), al)
+	m.dir = t.TempDir()
+	now := time.Unix(1000, 0)
+	m.now = func() time.Time { return now }
+	m.capable = func(port string) bool { return port != "eth3" } // eth3's NIC cannot
+	knows := true
+	m.programOffload = func() bool { return knows }
+	linux := func(n string) (string, bool) { return "eth" + n[len(n)-1:], true }
+	cfg := mkaCfg(t, strings.Repeat("11", 16), "1/0/1", "1/0/2", "1/0/3")
+	cfg.Interfaces["1/0/2"].NoOffload = true
+	m.sync(cfg, 1, linux)
+	conf := func(port string) string {
+		b, _ := os.ReadFile(filepath.Join(m.dir, port+".conf"))
+		return string(b)
+	}
+	if !strings.Contains(conf("eth1"), "macsec_offload=2") || strings.Contains(conf("eth2"), "macsec_offload") || strings.Contains(conf("eth3"), "macsec_offload") {
+		t.Fatalf("offload in eth1 only:\n%s\n%s\n%s", conf("eth1"), conf("eth2"), conf("eth3"))
+	}
+	// Not secured after 30 s: software, a Minor alarm, MKA restarted.
+	f.actions = nil
+	now = now.Add(31 * time.Second)
+	m.check(func(string) bool { return false })
+	if strings.Contains(conf("eth1"), "macsec_offload") || !slices.Contains(f.actions, "restart cer-mka@eth1.service") {
+		t.Fatalf("no fallback: %v\n%s", f.actions, conf("eth1"))
+	}
+	if l := al.List(); !slices.ContainsFunc(l, func(a alarms.Alarm) bool { return a.Class == alarms.Minor && strings.Contains(a.Text, "1/0/1 encrypts in software") }) {
+		t.Fatalf("alarms %+v", l)
+	}
+	// Ten minutes later the offload is tried again.
+	now = now.Add(11 * time.Minute)
+	m.sync(cfg, 1, linux)
+	if !strings.Contains(conf("eth1"), "macsec_offload=2") {
+		t.Fatal("offload not tried again")
+	}
+	// Secured offloaded: the alarm ends.
+	m.check(func(name string) bool { return name == "1/0/1" })
+	if slices.ContainsFunc(al.List(), func(a alarms.Alarm) bool { return strings.Contains(a.ID, "offload") }) {
+		t.Fatalf("alarm left: %+v", al.List())
+	}
+	// A wpa_supplicant without the option: never offloaded.
+	knows = false
+	m2 := newMKAManager(f, slog.New(slog.DiscardHandler), &alarms.Set{})
+	m2.dir, m2.capable, m2.programOffload = t.TempDir(), m.capable, func() bool { return knows }
+	m2.sync(cfg, 1, linux)
+	b, _ := os.ReadFile(filepath.Join(m2.dir, "eth1.conf"))
+	if strings.Contains(string(b), "macsec_offload") {
+		t.Fatal("offload with a wpa_supplicant that does not know it")
 	}
 }

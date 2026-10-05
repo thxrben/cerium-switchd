@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -9,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/alarms"
+	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/model"
 	"github.com/thxrben/cerium-switchd/internal/supervise"
 	"github.com/thxrben/cerium-switchd/pkg/hwio"
@@ -30,15 +33,72 @@ type mkaManager struct {
 	dir     string
 	program string // wpa_supplicant
 
+	// capable reports whether a port's NIC offloads MACsec (tests replace
+	// it); programOffload whether wpa_supplicant knows macsec_offload.
+	capable        func(linux string) bool
+	programOffload func() bool
+	now            func() time.Time
+
 	mu      sync.Mutex
 	unit    string            // template written
 	running map[string]string // port -> configuration in use
+	off     map[string]*mkaOffload
+	// the last sync's arguments (a fallback applies itself at once)
+	last struct {
+		cfg    *model.Config
+		member int
+		linux  func(string) (string, bool)
+	}
 }
 
-const mkaAlarm = "switchd/mka "
+// mkaOffload is a port's hardware offload state (reference 5.15).
+type mkaOffload struct {
+	name     string // interface name
+	offload  bool   // the running MKA offloads
+	started  time.Time
+	restarts int // the unit's restarts when it started
+	// software until then: the offload did not come up.
+	softwareUntil time.Time
+}
+
+const (
+	mkaAlarm = "switchd/mka "
+	// mkaOffloadWait: an offloaded link not secured by then falls back to
+	// software, for mkaSoftwareFor.
+	mkaOffloadWait = 30 * time.Second
+	mkaSoftwareFor = 10 * time.Minute
+)
 
 func newMKAManager(backend supervise.Backend, log *slog.Logger, al *alarms.Set) *mkaManager {
-	return &mkaManager{backend: backend, log: log, alarms: al, dir: "/run/switchd/mka", program: "/usr/sbin/wpa_supplicant"}
+	m := &mkaManager{backend: backend, log: log, alarms: al, dir: "/run/switchd/mka", program: "/usr/sbin/wpa_supplicant",
+		capable: func(linux string) bool { return inventory.ReadCaps("/sys", linux).Features["macsec-hw-offload"] != "" },
+		now:     time.Now}
+	var once sync.Once
+	var knows bool
+	m.programOffload = func() bool {
+		// The program is read-only on the image: once per start. An option it
+		// does not know makes it refuse the whole configuration.
+		once.Do(func() {
+			b, err := hwio.ReadFile(m.program)
+			knows = err == nil && bytes.Contains(b, []byte("macsec_offload"))
+			if !knows {
+				m.log.Info("mka: wpa_supplicant cannot offload MACsec; every port encrypts in software", "program", m.program)
+			}
+		})
+		return knows
+	}
+	return m
+}
+
+// wantOffload decides whether a port's MKA offloads to the NIC.
+func (m *mkaManager) wantOffload(port string, i *model.Interface) bool {
+	if i.NoOffload || m.capable == nil || !m.capable(port) || m.programOffload == nil || !m.programOffload() {
+		return false
+	}
+	if o := m.off[port]; o != nil && m.now().Before(o.softwareUntil) {
+		return false
+	}
+	return true
 }
 
 // mkaUnit is the template unit (instance: the port's kernel name).
@@ -61,14 +121,18 @@ LimitCORE=0
 
 func mkaUnitName(port string) string { return "cer-mka@" + port + ".service" }
 
-// mkaConfig is a port's wpa_supplicant configuration.
-func mkaConfig(ca *model.MACsecCA, dir string) string {
+// mkaConfig is a port's wpa_supplicant configuration; offload: in the NIC
+// (macsec_offload=2, the MAC; PHY offload has no NIC feature to tell it).
+func mkaConfig(ca *model.MACsecCA, dir string, offload bool) string {
 	// macsec_csindex selects GCM-AES-256; wpa_supplicant 2.10 (Debian 13)
 	// does not know the field, so it is written only for that suite (which
 	// the commit check refuses while the image has 2.10).
 	csindex := ""
 	if ca.Bits256() {
 		csindex = "\tmacsec_csindex=1\n"
+	}
+	if offload {
+		csindex += "\tmacsec_offload=2\n"
 	}
 	return fmt.Sprintf(`# Written by switchd (reference 5.15): connectivity association %s
 ctrl_interface=%s
@@ -94,15 +158,22 @@ network={
 func (m *mkaManager) sync(cfg *model.Config, member int, linux func(string) (string, bool)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.last.cfg, m.last.member, m.last.linux = cfg, member, linux
+	if m.off == nil {
+		m.off = map[string]*mkaOffload{}
+	}
 	want := map[string]string{} // port -> configuration
+	offload := map[string]bool{}
+	names := map[string]string{}
 	for name, caName := range cfg.MACsec.Ports {
 		ca := cfg.MACsec.CAs[caName]
 		i := cfg.Interfaces[name]
-		if ca == nil || i == nil || i.Member != member || i.Parent != "" {
+		if ca == nil || i == nil || i.Member != member || i.Parent != "" { // bundle members: PLAN 10.8
 			continue
 		}
 		if port, ok := linux(name); ok {
-			want[port] = mkaConfig(ca, m.dir)
+			offload[port], names[port] = m.wantOffload(port, i), name
+			want[port] = mkaConfig(ca, m.dir, offload[port])
 		}
 	}
 	if m.running == nil {
@@ -151,7 +222,9 @@ func (m *mkaManager) sync(cfg *model.Config, member int, linux func(string) (str
 		}
 		_ = hwio.Remove(filepath.Join(m.dir, port+".conf"))
 		delete(m.running, port)
+		delete(m.off, port)
 		m.alarms.Clear(mkaAlarm + port)
+		m.alarms.Clear(mkaAlarm + "offload " + port)
 		m.log.Info("mka: stopped (MACsec removed from the port)", "port", port)
 	}
 	for _, port := range slices.Sorted(maps.Keys(want)) {
@@ -173,13 +246,29 @@ func (m *mkaManager) sync(cfg *model.Config, member int, linux func(string) (str
 			continue
 		}
 		m.running[port] = conf
-		m.log.Info("mka: started", "port", port, "renegotiate", had)
+		o := m.off[port]
+		if o == nil {
+			o = &mkaOffload{}
+			m.off[port] = o
+		}
+		o.name, o.offload, o.started = names[port], offload[port], m.now()
+		if st, err := m.backend.Show([]string{mkaUnitName(port)}); err == nil {
+			o.restarts = st[mkaUnitName(port)].NRestarts
+		}
+		m.log.Info("mka: started", "port", port, "renegotiate", had, "offload", offload[port])
+	}
+	for port := range m.off {
+		if o := m.off[port]; o.name == "" {
+			o.name = names[port] // found running after a switchd restart
+		}
 	}
 }
 
 // check raises an alarm for each port whose MKA does not run (systemd
-// restarts it; a failing start shows here).
-func (m *mkaManager) check() {
+// restarts it; a failing start shows here), and moves an offloaded port
+// whose link does not come up to software (secured: the port's MACsec
+// device exists, by interface name).
+func (m *mkaManager) check(secured func(name string) bool) {
 	m.mu.Lock()
 	ports := slices.Sorted(maps.Keys(m.running))
 	m.mu.Unlock()
@@ -194,13 +283,32 @@ func (m *mkaManager) check() {
 	if err != nil {
 		return
 	}
+	fallback := false
+	m.mu.Lock()
 	for _, p := range ports {
 		u := states[mkaUnitName(p)]
+		o := m.off[p]
+		if o != nil && o.offload && secured != nil {
+			switch {
+			case secured(o.name):
+				m.alarms.Clear(mkaAlarm + "offload " + p)
+			case m.now().Sub(o.started) >= mkaOffloadWait || u.NRestarts >= o.restarts+2:
+				o.softwareUntil = m.now().Add(mkaSoftwareFor)
+				m.alarms.Raise(mkaAlarm+"offload "+p, alarms.Minor, fmt.Sprintf("MACsec on %s encrypts in software: the link did not come up with the NIC's offload (tried again in %s)", o.name, mkaSoftwareFor))
+				m.log.Warn("mka: offloaded link not secured; software encryption", "port", p, "since", o.started)
+				fallback = true
+			}
+		}
 		if u.Running() && u.Sub == "running" {
 			m.alarms.Clear(mkaAlarm + p)
 			continue
 		}
 		m.alarms.Raise(mkaAlarm+p, alarms.Major, fmt.Sprintf("MKA (wpa_supplicant) on %s is not running (%s/%s): the port carries no traffic", p, u.Active, u.Sub))
+	}
+	last := m.last
+	m.mu.Unlock()
+	if fallback && last.cfg != nil {
+		m.sync(last.cfg, last.member, last.linux) // the new configuration restarts MKA
 	}
 }
 
