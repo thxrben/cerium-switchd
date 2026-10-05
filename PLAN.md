@@ -760,7 +760,23 @@ no authentication unless configured.
    has them); pkg/radius against RFC 2865 test vectors.
 Questions: RADIUS only, or local users too? Dynamic VLAN in `multiple` mode (E, or the first VLAN)?
 
-### Item 13 of 2026-10-05: further plans (for review; nothing implemented yet)
+**Decisions of the user (2026-10-05)**: RADIUS and local users (`system login user`, never root) can authenticate;
+on any port only **one** client authenticates (`supplicant single`), every other frame on the port then belongs to
+the same VLAN(s) as configured (also a trunk); `multiple` is not offered. Dynamic VLAN therefore changes the port's
+untagged VLAN (PVID) for the session only.
+
+### Decisions of 2026-10-05 for item 13 and after
+* Order: the **modular code base first**, before anything else: every program its own application, shared libraries
+  wherever code is duplicated.
+* Secure Boot: **own keys** enrolled in the firmware's db (plan 3 (a) below). arm64: later.
+* cer-ribd (PLAN 15b.4): diff the kernel against cer-ribd and push only changes; a full reinsertion when something
+  is wrong (unknown or stale routes in the kernel, a diff larger than a threshold, a failed incremental push).
+* Tool output: every remaining place that parses non-JSON tool output moves to the kernel API.
+* Routing protocols drain in maintenance mode (and so before a software update or reboot of a member that runs or
+  relays them): OSPF max-metric (RFC 6987) and wait until the neighbours' paths moved, BGP graceful shutdown (RFC
+  8326 community, then withdraw), before mastership moves; OSPF/BGP graceful restart across the mastership change.
+
+### Item 13 of 2026-10-05: further plans
 1. **Modular code base** (requested 2026-10-03; steps there): one mechanical change with no behaviour change. Layout:
    `lib/{netdev,nlx,hwio,ipc,lacp,rstp,lldp,ospf,bgp,rib,bfd,macsec,dhcp,ntp,syslog,journal,sdnotify,sysexec}`
    (each its own go.mod), `cmd/<program>` each its own module, `internal/` stays switchd's (go.work ties them).
