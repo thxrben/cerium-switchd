@@ -734,6 +734,59 @@ Authenticator on switch ports (hostapd wired driver, per port, EAP → RADIUS or
 dynamic VLAN) and supplicant (wpa_supplicant, for uplinks into a secured network). Off by default: ports need
 no authentication unless configured.
 
+**Plan 2026-10-05 (for review; nothing implemented yet)**:
+1. **Syntax (Junos)**: `protocols dot1x authenticator { authentication-profile-name <p>; interface <if> {
+   supplicant single|single-secure|multiple; mac-radius [restrict]; reauthentication <s>; guest-vlan <vlan>;
+   server-fail deny|permit|use-cache|vlan-name <vlan>; } }`, `access radius-server <ip> { secret <s>; port <n>;
+   source-address <ip>; }`, `access profile <p> { authentication-order [radius]; radius { authentication-server
+   [<ip>…]; } }`. RADIUS leaves through the management instance (1.8) of the master or the member that has the port.
+2. **Data plane**: the Linux bridge's port flags `locked` and `mab` (kernel 6.2+): a locked port forwards only from
+   source MACs with an FDB entry; switchd adds the entry (VLAN, port) when the client authenticated and removes it
+   on logoff, reauthentication failure or timeout. `single`: the first MAC; `multiple`: each MAC on its own (the MAB
+   flag reports unknown MACs). Dynamic VLAN from RADIUS (Tunnel-Private-Group-ID): `single` changes the port's
+   PVID for the session; `multiple` with different VLANs per MAC is not possible in the Linux bridge (E for the
+   combination, or the first MAC's VLAN for all: decision for you).
+3. **EAP**: hostapd per port (wired driver, `ieee8021x=1`, RADIUS client), supervised like cer-mka (unit
+   `cer-dot1x@<port>`); its control socket tells switchd about authorized/deauthorized stations. MAB: switchd sends
+   the RADIUS request itself (pkg/radius: Access-Request with the MAC as user name and password, Message-
+   Authenticator), since hostapd's MAB support is limited.
+4. **Stack/MC-LAG**: the state is per member port; an MC-LAG bundle authenticates each leg's ports on their member
+   (both legs see the same client MAC: the second leg's authentication is the first one's, shared over the stack).
+5. **Supplicant** (an uplink into a secured network): `protocols dot1x supplicant interface <if> { … }` with
+   wpa_supplicant wired (cerOS extension).
+6. **Show**: `show dot1x interface [detail]`, `clear dot1x interface <if>`, `show dot1x authentication-failed-users`.
+7. **Tests**: hostapd and wpa_supplicant 2.12 are on the dev box: EAP-MD5/PEAP between them in network namespaces
+   with hostapd's integrated RADIUS server; the bridge `locked`/`mab` flags in a user namespace (the kernel here
+   has them); pkg/radius against RFC 2865 test vectors.
+Questions: RADIUS only, or local users too? Dynamic VLAN in `multiple` mode (E, or the first VLAN)?
+
+### Item 13 of 2026-10-05: further plans (for review; nothing implemented yet)
+1. **Modular code base** (requested 2026-10-03; steps there): one mechanical change with no behaviour change. Layout:
+   `lib/{netdev,nlx,hwio,ipc,lacp,rstp,lldp,ospf,bgp,rib,bfd,macsec,dhcp,ntp,syslog,journal,sdnotify,sysexec}`
+   (each its own go.mod), `cmd/<program>` each its own module, `internal/` stays switchd's (go.work ties them).
+   swcli becomes its own program without netlink (it needs internal/rpc and internal/swcli only). Risk: import
+   paths change everywhere (sed + gofmt), CI builds each module alone. Best done between two features, with the
+   whole test suite green before and after. Question: now, or after the lab tests of what is pending?
+2. **arm64**: the image for arm64 UEFI (Debian's arm64 kernel, grub-efi-arm64 or systemd-boot, the same partition
+   layout), bundles per platform (the manifest has the platform already; an update of a mixed stack carries one bundle
+   per platform: `request system software add` takes several sources, the master gives each member its own),
+   QEMU tests with qemu-system-aarch64 and AAVMF (as test/image does for amd64). Question: which arm64 hardware
+   (it decides drivers and the console)?
+3. **Secure Boot**: a unified kernel image (UKI: kernel, initramfs and the command line with the slot's dm-verity
+   root hash) per slot, signed; the firmware verifies it, it verifies the root file system (verity), so nothing
+   unsigned runs. Two ways, a decision for you: (a) cerOS's own keys enrolled in the firmware's db by the operator
+   (simple, most secure, a step per switch), or (b) the Microsoft-signed shim with cerOS's key as MOK (works with
+   default firmware settings, one confirmation at the console per switch). With UKIs, systemd-boot's boot counting
+   (`+3-0` names) can replace GRUB's grubenv counting; the A/B logic stays as in docs/os-image.md. The signing key
+   is the release key (CEROS_SIGNING_KEY), kept off the build machine (sign step separate).
+4. **Delta updates**: a delta bundle carries only the 128 KiB blocks of the new image that differ from a named base
+   version (the base's image SHA-256 in the manifest), signed like a full bundle. The member reads the base blocks
+   from its active slot (verified by dm-verity on the way), writes the new image into the backup slot block by block
+   and checks the result's root hash against the manifest before it switches; a member whose active slot is not
+   the base gets the full bundle. Needs reproducible images (mksquashfs `-reproducible`, sorted files, fixed times),
+   so unchanged files stay in unchanged blocks; measured on two consecutive builds before deciding block size. RAM:
+   one block plus the delta (in the update slot, 17.1).
+
 ### Phase 13: System diagnostics (`request system diagnose` / `show system bottlenecks`)
 An overall check that lists what limits the switch, with a recommendation per finding:
 * **PCIe**: per NIC the negotiated link speed/width vs. the card's maximum and vs. what its ports need at line rate
