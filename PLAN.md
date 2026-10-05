@@ -774,6 +774,35 @@ neighbour thresholds are raised to a sane value, see 7).
     `unique` package), RIB attributes shared between routes, compact prefixes (netip.Prefix, no strings); target ≈
     1/3 of today's bytes per route; costs table re-measured.
 
+### Phase 15b: leftovers (planned 2026-10-05)
+1. **BGP routes to cer-ribd as changes, not tables.** Today every change cycle (RoutesDelay) builds the whole table
+   (pkg/bgp Speaker.table: a copy of every path), groups it per neighbour (rib.Route), sends it as JSON to cer-ribd and
+   to every member, and keeps the last one (bgpd instance.last) for resends: with a full Internet table hundreds of
+   MB of transient memory per cycle, on top of the slots. New:
+   * **Speaker**: `OnChanges(ch []PrefixPaths, converged bool)` replaces OnRoutes: for every prefix decided since the
+     last call, its complete ranked path list (empty = gone). A prefix is the unit of change, so rank changes are
+     included. `Snapshot(after netip.Prefix, n int) ([]PrefixPaths, next)` on the event loop gives the table in pieces
+     for a resync (no full copy).
+   * **cer-ribd**: `routes.delta` {instance, protocol, seq, prefixes: [{prefix, routes (with source)}], sync:
+     ""|"begin"|"end", full}. `rib.RIB.Replace(instance, proto, prefix, routes)` replaces every route of that
+     protocol at the prefix (all sources; counts and limits as Set). Seq per (instance, protocol): a gap answers
+     "resync" and cer-ribd keeps what it has. Sync: "begin" opens a generation, the pieces follow (4096 prefixes per
+     message), "end" removes the protocol's routes of the instance not refreshed since "begin" (nothing is
+     withdrawn before the new table is complete: no route flap, no drop).
+   * **cer-bgpd**: one ordered worker sends the changes (split into pieces of 4096 prefixes); a failed call or a
+     "resync" answer, cer-ribd reconnecting, or a new instance -> a full sync from the speaker's Snapshot. No
+     instance.last any more.
+   * **Members**: the same messages per member (stack op `bgp-routes-delta`, seq per member); a member that becomes
+     reachable, a gap or an error -> full sync for that member alone. A member of an older release answers "unknown
+     operation": it gets the old full SetRoutes (built from the snapshot pieces, only during a rolling update).
+   * **Tests**: property test (random churn: deltas applied to an empty RIB equal RIB.Set of the full table, for
+     every source), lost delta -> resync without a withdrawal of unchanged routes, member resync, mixed versions;
+     memory test (bgp cost table: the transient per change cycle is bounded by the changes, not the table).
+2. **Multicast count in `show system memory`**: the bridge's MDB entries (memberships) as the `multicast` purpose's
+   use, read through netlink (RTM_GETMDB dump; not `bridge -j mdb`).
+3. **`request system memory setup` across members**: the slots shown and the capacities computed are the stack's
+   smallest member's (each member's plan through the ops `memory` call), as the reference says; today this member's.
+
 ### Phase 16: `request system reload [member <id> | all-members]` (decided 2026-10-04)
 Restarts the whole switch software without rebooting the operating system (applies a new slot map, Phase 15).
 1. Drain as for maintenance mode (5.2): mastership moves away, stacking paths route around, MC-LAG legs leave their

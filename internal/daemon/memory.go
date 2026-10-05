@@ -18,6 +18,7 @@ import (
 	"github.com/thxrben/cerium-switchd/internal/bgpd"
 	"github.com/thxrben/cerium-switchd/internal/cli"
 	"github.com/thxrben/cerium-switchd/internal/config"
+	"github.com/thxrben/cerium-switchd/internal/dataplane"
 	"github.com/thxrben/cerium-switchd/internal/inventory"
 	"github.com/thxrben/cerium-switchd/internal/memslots"
 	"github.com/thxrben/cerium-switchd/internal/model"
@@ -396,6 +397,10 @@ func (o *ops) memoryUse() map[memslots.Purpose]int {
 				}
 			}
 			out[memslots.MAC] = n
+		}
+		// Multicast: the bridge's memberships (netlink MDB dump).
+		if es, _, err := dataplane.McastGroups(); err == nil {
+			out[memslots.Multicast] = len(es)
 		}
 	}
 	return out

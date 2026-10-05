@@ -3,7 +3,6 @@
 package netdev
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/thxrben/cerium-switchd/pkg/nlx"
 	"github.com/thxrben/cerium-switchd/pkg/sysexec"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,55 +42,68 @@ type McastRouterPort struct {
 	Expires   float64 // learned ones
 }
 
-func parseTimer(s string) float64 {
-	v, _ := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	return v
-}
-
-// McastGroups reads a bridge's group memberships and router ports.
+// McastGroups reads a bridge's group memberships and router ports
+// (RTM_GETMDB dump).
 func McastGroups(bridge string) ([]McastEntry, []McastRouterPort, error) {
-	raw, err := runTool("bridge", "-j", "-d", "-s", "mdb", "show", "dev", bridge)
+	br, err := nlx.LinkByName(bridge)
 	if err != nil {
 		return nil, nil, err
 	}
-	var out []struct {
-		MDB []struct {
-			Port    string `json:"port"`
-			Grp     string `json:"grp"`
-			VID     int    `json:"vid"`
-			State   string `json:"state"`
-			Timer   string `json:"timer"`
-			Mode    string `json:"filter_mode"`
-			Sources []struct {
-				Address string `json:"address"`
-			} `json:"source_list"`
-		} `json:"mdb"`
-		// iproute2 writes the router ports as an object (by bridge) or a
-		// list, depending on its version: walked generically.
-		Router json.RawMessage `json:"router"`
+	req := nl.NewNetlinkRequest(unix.RTM_GETMDB, unix.NLM_F_DUMP)
+	// Every bridge (a bridge index in the request returns nothing on some
+	// kernels); the replies are filtered below.
+	req.AddData(&brPortMsg{})
+	// The kernel answers a dump with RTM_GETMDB messages (not NEWMDB).
+	msgs, err := nlx.Execute(req, unix.NETLINK_ROUTE, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bridge multicast database: %w", err)
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, nil, fmt.Errorf("bridge mdb show: %w", err)
+	names := map[int]string{}
+	name := func(idx int) string {
+		if n, ok := names[idx]; ok {
+			return n
+		}
+		n := strconv.Itoa(idx)
+		if l, err := nlx.LinkByIndex(idx); err == nil {
+			n = l.Attrs().Name
+		}
+		names[idx] = n
+		return n
 	}
 	var es []McastEntry
 	var rs []McastRouterPort
-	for _, o := range out {
-		for _, e := range o.MDB {
-			if e.Port == bridge {
+	for _, m := range msgs {
+		idx, entries, routers, err := parseMDB(m)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bridge multicast database: %w", err)
+		}
+		if idx != br.Attrs().Index {
+			continue // another bridge
+		}
+		for _, e := range entries {
+			if e.ifindex == idx {
 				continue // the bridge itself (irb receivers)
 			}
-			me := McastEntry{Port: e.Port, VID: e.VID, Group: e.Grp, Permanent: e.State == "permanent", Expires: parseTimer(e.Timer), Mode: e.Mode}
-			for _, s := range e.Sources {
-				me.Sources = append(me.Sources, s.Address)
-			}
-			es = append(es, me)
+			es = append(es, McastEntry{Port: name(e.ifindex), VID: e.vid, Group: e.group, Permanent: e.permanent,
+				Expires: e.expires, Mode: e.mode, Sources: e.sources})
 		}
-		var any interface{}
-		if len(o.Router) > 0 && json.Unmarshal(o.Router, &any) == nil {
-			walkRouters(any, &rs)
+		for _, r := range routers {
+			rs = append(rs, McastRouterPort{Port: name(r.ifindex), VID: r.vid, Permanent: r.permanent, Expires: r.expires})
 		}
 	}
 	return es, rs, nil
+}
+
+// brPortMsg is struct br_port_msg (family, padding, bridge ifindex).
+type brPortMsg struct{ ifindex uint32 }
+
+func (m *brPortMsg) Len() int { return sizeofBrPortMsg }
+
+func (m *brPortMsg) Serialize() []byte {
+	b := make([]byte, sizeofBrPortMsg)
+	b[0] = unix.AF_BRIDGE
+	nl.NativeEndian().PutUint32(b[4:], m.ifindex)
+	return b
 }
 
 // McastRefresh adds or refreshes a learned (temporary) membership of port
@@ -100,33 +113,6 @@ func McastGroups(bridge string) ([]McastEntry, []McastRouterPort, error) {
 func McastRefresh(bridge, port string, vid int, group string) error {
 	_, err := runTool("bridge", "mdb", "replace", "dev", bridge, "port", port, "grp", group, "temp", "vid", strconv.Itoa(vid))
 	return err
-}
-
-// walkRouters collects router port entries (objects with a "port") from
-// iproute2's JSON, whatever their nesting.
-func walkRouters(v interface{}, out *[]McastRouterPort) {
-	switch x := v.(type) {
-	case []interface{}:
-		for _, e := range x {
-			walkRouters(e, out)
-		}
-	case map[string]interface{}:
-		if port, ok := x["port"].(string); ok {
-			r := McastRouterPort{Port: port}
-			if vid, ok := x["vid"].(float64); ok {
-				r.VID = int(vid)
-			}
-			r.Permanent = x["type"] == "permanent"
-			if t, ok := x["timer"].(string); ok {
-				r.Expires = parseTimer(t)
-			}
-			*out = append(*out, r)
-			return
-		}
-		for _, e := range x {
-			walkRouters(e, out)
-		}
-	}
 }
 
 // FlushLearned removes the MAC addresses a bridge learned on dev (not
