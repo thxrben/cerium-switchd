@@ -286,10 +286,11 @@ shutdown's own messages too; 5 s). A daemon that does not finish within its budg
 stop takes at most a minute. A **restart** of switchd (or its crash) leaves the daemons running. After a full stop,
 MC-LAG legs rejoin as after a boot (`delay-restore`).
 
-**Every CLI session is told** when a daemon of any member fails and when it is back, e.g.
-`*** member 2: cer-lacpd failed (killed by signal SEGV) and is restarted ***` and
-`*** member 2: cer-lacpd runs again (restart 3 in the last hour) ***`. The same appears in the log (facility `daemon`,
-severity `error` and `notice`). A daemon that cannot be started at all (missing program) is reported every minute.
+**Every CLI session is told** when a daemon of any member fails and when it is back, as an alarm (3.5, `show system
+alarms`), e.g. `*** member 2: ALARM (Major): cer-lacpd failed (killed by signal SEGV); it is restarted ***` and
+`*** member 2: alarm cleared (Major): cer-lacpd failed (killed by signal SEGV); it is restarted ***`; the restarts of
+the last hour are in `show system processes`. The same appears in the log (with the member). A daemon that cannot be
+started at all (missing program) is a Major alarm until it is installed.
 
 **Scheduling.** The daemons whose timing the network depends on come first when the CPUs are busy (software
 forwarding uses them heavily):
