@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -258,6 +259,11 @@ type Supervisor struct {
 	Beat func()
 	// Daemons overrides the package table (tests).
 	Daemons []Daemon
+	// PlannedDir marks a restart the supervisor makes on purpose (a file
+	// per program, svc.PlannedRestartDir; "": none): the daemon may then
+	// restart gracefully (OSPF announces a grace period, reference 5.13),
+	// since the kernel keeps forwarding meanwhile.
+	PlannedDir string
 	// StoppedFile keeps the daemons stopped by request (request daemon
 	// stop) until the reboot: it is on a tmpfs (/run). "": in memory only.
 	StoppedFile string
@@ -415,6 +421,7 @@ func (s *Supervisor) Step(now time.Time) {
 			// A new unit (new program version, arguments): restart.
 			t.expectEnd = now.Add(10 * time.Second)
 			s.Log.Info("daemon restarted for its new unit", "program", d.Program)
+			s.markPlanned(d.Program)
 			if err := s.Backend.Restart(d.Unit()); err != nil {
 				s.Log.Error("restart", "program", d.Program, "err", err)
 			}
@@ -520,7 +527,19 @@ func (s *Supervisor) RestartDaemon(name string) error {
 		t.expectEnd = time.Now().Add(10 * time.Second)
 	}
 	s.mu.Unlock()
+	s.markPlanned(d.Program)
 	return s.Backend.Restart(d.Unit())
+}
+
+// markPlanned tells a daemon that its coming stop is a restart (it reads
+// and removes the mark when it stops).
+func (s *Supervisor) markPlanned(program string) {
+	if s.PlannedDir == "" {
+		return
+	}
+	if err := hwio.MkdirAll(s.PlannedDir, 0o755); err == nil {
+		_ = hwio.WriteFile(filepath.Join(s.PlannedDir, program), nil, 0o644)
+	}
 }
 
 // StopDaemon stops a daemon on request (request daemon stop) until the

@@ -413,6 +413,13 @@ Last updated: 2026-10-04 (evening).
 - Open: lab test (two lab switches or srv1 with wpa_supplicant as the partner), offload, bundle members; the
   wpa_supplicant of Debian 13 must know macsec_csindex (gcm-aes-256).
 
+## OSPF graceful restart (2026-10-05; unit-tested, NOT on a device; PLAN 9c "Graceful restart")
+- Helper (RFC 3623/5187: grace LSAs, strict LSA checking, DR election kept), restarting role after a cer-ospfd
+  restart (neighbours in /run/ceros/ospf-restart.json, grace LSAs before hellos, no own LSAs or routes until the
+  neighbours are Full again), planned restarts announced (supervisor mark), cer-ribd keeps OSPF routes for the
+  configured restart-duration, `show ospf overview`/`neighbor` show it. Sim tests v2/v3: no route lost, ~5 s restart.
+- Open: mastership change (PLAN 9c GR 3), interop with FRR/Junos as helper and restarter (lab).
+
 ## MACsec offload and bundle members (2026-10-05; unit-tested, NOT on a device)
 - Offload on client ports (PLAN 10.7): `macsec_offload=2` when the NIC has `macsec-hw-offload`, the port has no
   `offload disable` and the wpa_supplicant binary knows the option (2.12 here does; Debian 13's 2.10 decides at run

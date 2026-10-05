@@ -50,7 +50,7 @@ func (i *iface) transit() bool {
 		return len(i.fullNbrs()) > 0
 	}
 	n := i.drNeighbor()
-	return n != nil && n.state == NbrFull
+	return n != nil && n.adjacent()
 }
 
 // drIfID is the OSPFv3 interface id of the DR on a transit link.
@@ -394,10 +394,16 @@ func (r *Router) originateAll() {
 	w := r.desired()
 	for _, s := range r.scopes() {
 		for _, ref := range sortedRefs(w[s]) {
+			if r.restart != nil && !(r.v == V3 && ref.Type == V3Link) {
+				continue // restarting: the LSAs from before stay (RFC 3623 §2.2)
+			}
 			r.originate(s, w[s][ref])
 		}
+		if r.restart != nil {
+			continue
+		}
 		for _, l := range s.db.All(r.now) {
-			if l.AdvRtr == r.rid && l.Age < MaxAge && w[s][l.Ref()] == nil {
+			if l.AdvRtr == r.rid && l.Age < MaxAge && w[s][l.Ref()] == nil && !(r.v.isGrace(l) && r.planned) {
 				r.flush(s, l)
 			}
 		}
@@ -447,6 +453,7 @@ func (r *Router) install(s *scope, want *LSA, prev int32) {
 		l.Seq = InitialSeq
 	}
 	l.Encode()
+	r.strictCheck(s, &l, s.db.Get(l.Ref(), r.now))
 	if s.db.Install(&l, r.now) {
 		r.scheduleSPF()
 	}

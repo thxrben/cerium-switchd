@@ -42,6 +42,9 @@ type NeighborStatus struct {
 	Events   uint64        `json:"events"`
 	Retrans  int           `json:"retrans"`
 	Requests int           `json:"requests"`
+	// HelperFor: this router helps the neighbour restart for this long
+	// still (0: not helping, RFC 3623).
+	HelperFor time.Duration `json:"helper_for,omitempty"`
 }
 
 // LSAStatus is an entry of show ospf database.
@@ -75,6 +78,10 @@ type Overview struct {
 	LSAs        int           `json:"lsas"`
 	Externals   int           `json:"externals"`
 	Uptime      time.Duration `json:"uptime"`
+	// Graceful restart: configured, and restarting now for how long still.
+	GracefulRestart bool          `json:"graceful_restart,omitempty"`
+	RestartLeft     time.Duration `json:"restart_left,omitempty"`
+	Helping         int           `json:"helping,omitempty"` // neighbours helped now
 }
 
 // Status is everything show ospf … needs of one router.
@@ -104,6 +111,10 @@ func (r *Router) Status(detail bool) Status {
 		o.LastSPF = now.Sub(r.Stats.LastSPF)
 	}
 	o.Uptime = now.Sub(r.started)
+	o.GracefulRestart = r.cfg.GracefulRestart
+	if r.restart != nil {
+		o.RestartLeft = max(r.restart.until.Sub(now), 0)
+	}
 	for _, a := range r.sortedAreas() {
 		o.Areas = append(o.Areas, a.id)
 		for _, i := range sortedIfs(a) {
@@ -118,6 +129,10 @@ func (r *Router) Status(detail bool) Status {
 				s.Neighbors = append(s.Neighbors, NeighborStatus{ID: n.id, Addr: n.addr, Iface: i.cfg.Name, Area: a.id,
 					State: n.state.String(), Priority: n.prio, DeadIn: max(n.inactAt.Sub(now), 0), DR: n.dr, BDR: n.bdr,
 					Up: now.Sub(n.since), Options: n.options, Events: n.Events, Retrans: len(n.retrans), Requests: len(n.requests)})
+				if n.helping() {
+					s.Neighbors[len(s.Neighbors)-1].HelperFor = max(n.helpUntil.Sub(now), time.Second)
+					o.Helping++
+				}
 			}
 		}
 	}

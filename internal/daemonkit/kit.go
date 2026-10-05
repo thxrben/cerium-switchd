@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,6 +265,18 @@ func (k *Kit) StackCall(ctx context.Context, member int, method string, req, res
 	}
 	return k.Switchd.Call(ctx, svc.MethodStack, svc.StackCall{Member: member, Method: method, Data: raw,
 		TimeoutMs: int(timeout / time.Millisecond)}, resp)
+}
+
+// PlannedRestart reports whether this stop is a restart the supervisor
+// makes on purpose (the kernel keeps forwarding meanwhile); it removes the
+// mark.
+func (k *Kit) PlannedRestart() bool {
+	p := filepath.Join(svc.PlannedRestartDir, k.Name)
+	if _, err := hwio.Stat(p); err != nil {
+		return false
+	}
+	_ = hwio.Remove(p)
+	return true
 }
 
 // Notify sends a message to every CLI session of the stack.

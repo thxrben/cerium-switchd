@@ -200,7 +200,14 @@ func (sh *Shell) showOSPFNeighbors(c *call, v ospf.Version, a ospfArgs) error {
 			if a.target != "" && n.Addr.String() != a.target && n.ID.String() != a.target {
 				continue
 			}
-			fmt.Fprintf(c.out, "%-26s %-12s %-9s %-15s %-4d %d\n", n.Addr, n.Iface, n.State, n.ID, n.Priority, int(n.DeadIn.Seconds()))
+			state := n.State
+			if n.HelperFor > 0 {
+				state += " (helper)"
+			}
+			fmt.Fprintf(c.out, "%-26s %-12s %-9s %-15s %-4d %d\n", n.Addr, n.Iface, state, n.ID, n.Priority, int(n.DeadIn.Seconds()))
+			if n.HelperFor > 0 && a.detail {
+				fmt.Fprintf(c.out, "  Restarting: this router helps it for %s more (graceful restart)\n", fmtDur(n.HelperFor))
+			}
 			if a.detail {
 				fmt.Fprintf(c.out, "  Area %s, DR %s, BDR %s, options 0x%x, up %s, %d state changes, %d to retransmit, %d requested\n",
 					n.Area, n.DR, n.BDR, n.Options, fmtDur(n.Up), n.Events, n.Retrans, n.Requests)
@@ -400,6 +407,16 @@ func (sh *Shell) showOSPFOverview(c *call, v ospf.Version, a ospfArgs) error {
 		fmt.Fprintf(c.out, "Areas: %s\n", strings.Join(areas, ", "))
 		if o.Overloaded {
 			c.out.WriteString("Overload: announced (maximum metric)\n")
+		}
+		switch {
+		case !o.GracefulRestart:
+			c.out.WriteString("Graceful restart: disabled\n")
+		case o.RestartLeft > 0:
+			fmt.Fprintf(c.out, "Graceful restart: restarting, at most %s more\n", fmtDur(o.RestartLeft))
+		case o.Helping > 0:
+			fmt.Fprintf(c.out, "Graceful restart: helping %d restarting neighbour(s)\n", o.Helping)
+		default:
+			c.out.WriteString("Graceful restart: enabled (helper and restarting)\n")
 		}
 		last := "never"
 		if o.SPFRuns > 0 {

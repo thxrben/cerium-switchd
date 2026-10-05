@@ -3,6 +3,7 @@ package ospf
 import (
 	"fmt"
 	"net/netip"
+	"time"
 )
 
 // IO sends packets. dst is a multicast group (AllSPF, AllDR of the
@@ -61,6 +62,10 @@ type Config struct {
 	Externals  []External
 	// Overload announces this router with maximum metric (RFC 6987).
 	Overload bool
+	// GracefulRestart: help restarting neighbours and restart gracefully
+	// (RFC 3623, RFC 5187) within RestartDuration.
+	GracefulRestart bool
+	RestartDuration time.Duration
 }
 
 // PathType is the type of an OSPF route (RFC 2328 §11).

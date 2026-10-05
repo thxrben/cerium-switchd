@@ -47,6 +47,9 @@ func (b bfdClient) Set(ctx context.Context, s bfdd.Set) error {
 func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := ospfd.New(ospfd.LinuxKernel{}, ospfd.LinuxNet{}, rc, k.Log)
+	// Graceful restart (reference 5.13): the neighbours kept in /run; a
+	// restart by the supervisor is announced to them.
+	d.RestartFile, d.Planned = ospfd.RestartFile, k.PlannedRestart
 	d.Full = func(purpose string, full bool) {
 		id := "cer-ospfd/memory " + purpose
 		if full {

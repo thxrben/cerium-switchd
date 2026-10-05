@@ -35,6 +35,12 @@ type neighbor struct {
 	state   NbrState
 	since   time.Time
 	inactAt time.Time
+	// helpUntil: this router helps the neighbour restart until then
+	// (RFC 3623; zero: not helping).
+	helpUntil time.Time
+	// the last hello's priority, DR and BDR (applied when helping ends).
+	helloPrio         uint8
+	helloDR, helloBDR ID
 
 	// Database exchange.
 	master  bool
@@ -277,7 +283,7 @@ func (n *neighbor) acceptDD(d *DD) {
 	r := n.ifc.r
 	n.lastRx = d
 	for _, h := range d.Headers {
-		if r.v == V2 && !r.v.Known(h.Type) {
+		if r.v == V2 && !r.v.Known(h.Type) && h.Type != V2OpaqueLink {
 			n.seqMismatch()
 			return
 		}
@@ -394,7 +400,10 @@ func (n *neighbor) receiveAck(hs []LSAHeader) {
 func (n *neighbor) tick() {
 	r := n.ifc.r
 	now := r.now
-	if n.state > NbrDown && !now.Before(n.inactAt) {
+	if n.helping() && !now.Before(n.helpUntil) {
+		n.stopHelping("grace period over")
+	}
+	if n.state > NbrDown && !now.Before(n.inactAt) && !n.helping() {
 		r.Log.Info("ospf neighbor dead", "version", r.v, "interface", n.ifc.cfg.Name, "neighbor", n.id)
 		n.kill()
 		delete(n.ifc.nbrs, n.ifc.nbrKey(n.addr, n.id))

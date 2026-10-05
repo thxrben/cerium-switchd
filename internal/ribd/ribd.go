@@ -24,6 +24,10 @@ type Config struct {
 	// OSPFLimit is the memory slots' capacity of OSPF routes (0: none;
 	// reference 5.1).
 	OSPFLimit int `json:"ospf_limit,omitempty"`
+	// OSPFGrace is the longest OSPF graceful restart (seconds, reference
+	// 5.13): OSPF's routes stay that long after a start when it is longer
+	// than Grace.
+	OSPFGrace int `json:"ospf_grace,omitempty"`
 }
 
 // Instance is a routing instance on this member.
@@ -252,7 +256,8 @@ func (s *Server) managed(now time.Time) map[int]bool {
 	}
 	out[netdev.ProtoStatic] = true
 	grace := now.Sub(s.started) >= Grace
-	if grace || (s.ready[rib.OSPF] && s.ready[rib.OSPF3]) {
+	ospfGrace := now.Sub(s.started) >= max(Grace, time.Duration(s.cfg.OSPFGrace)*time.Second)
+	if ospfGrace || (s.ready[rib.OSPF] && s.ready[rib.OSPF3]) {
 		out[netdev.ProtoOSPF] = true
 	}
 	if grace || s.ready[rib.BGP] {

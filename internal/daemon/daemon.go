@@ -441,8 +441,8 @@ func Run(ctx context.Context, o Options) error {
 				Wanted: func() map[string]bool { return wantedDaemons(engine) },
 				Beat:   func() { live.Beat("daemon supervisor") },
 				// request daemon stop lasts until the reboot (/run is a tmpfs).
-				StoppedFile: "/run/switchd/stopped-daemons",
-				Alarms:      services.alarms, Limits: mem.limits}
+				StoppedFile: "/run/switchd/stopped-daemons", PlannedDir: svc.PlannedRestartDir,
+				Alarms: services.alarms, Limits: mem.limits}
 			supRef.Store(sup)
 			go sup.Run(ctx)
 		}

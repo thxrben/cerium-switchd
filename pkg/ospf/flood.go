@@ -31,8 +31,12 @@ func (n *neighbor) receiveLSU(lsas []*LSA) {
 			if have != nil && r.now.Sub(s.db.arrived(ref)) < MinLSArrival*time.Second {
 				continue // arrived too soon after the last one: no ack
 			}
+			r.strictCheck(s, l, have)
 			back := r.flood(s, l, n, i)
 			r.dropFromRetrans(s, ref)
+			if r.v.isGrace(l) && l.AdvRtr != r.rid {
+				defer r.graceReceived(i, l) // after it is installed
+			}
 			if s.db.Install(l, r.now) {
 				r.scheduleSPF()
 				if r.v == V3 && l.Type == V3Link {
@@ -145,6 +149,9 @@ func (r *Router) flood(s *scope, l *LSA, from *neighbor, fromIf *iface) (back bo
 			if n == from {
 				continue
 			}
+			if r.v == V2 && l.Type == V2OpaqueLink && n.options&OptO == 0 {
+				continue // opaque LSAs only to neighbours that know them (RFC 5250)
+			}
 			n.addRetrans(l)
 			added = true
 		}
@@ -185,6 +192,9 @@ func (r *Router) ownNetwork(l *LSA) bool {
 func (r *Router) receivedOwn(s *scope, l *LSA) {
 	if l.Age >= MaxAge {
 		return // our flush coming back
+	}
+	if r.restart != nil {
+		return // restarting: our LSAs of before are kept as they are
 	}
 	if want := r.wanted(s, l.Ref()); want != nil && l.AdvRtr == r.rid {
 		r.install(s, want, l.Seq)

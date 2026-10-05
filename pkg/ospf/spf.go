@@ -75,8 +75,8 @@ func (r *Router) runSPF() {
 	changed := !slices.EqualFunc(routes, r.routes, routeEqual)
 	r.routes = routes
 	if changed {
-		r.dirty = true // summaries follow the routes
-		if r.OnRoutes != nil {
+		r.dirty = true                             // summaries follow the routes
+		if r.OnRoutes != nil && r.restart == nil { // restarting: the old routes stay
 			r.OnRoutes(slices.Clone(routes))
 		}
 	}
@@ -300,7 +300,7 @@ func (r *Router) nextHops(a *area, v, w, root *vertex, link, back RouterLink) (h
 			return nil, nil, false
 		}
 		for _, n := range i.nbrs {
-			if n.id == w.key.id && n.state == NbrFull {
+			if n.id == w.key.id && n.adjacent() {
 				return []NextHop{{Iface: i.cfg.Name, Gateway: n.addr}}, i, false
 			}
 		}

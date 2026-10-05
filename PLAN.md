@@ -605,6 +605,35 @@ Steps: (1) shared types and both codecs with tests (encode/decode round trips, c
 broadcast and p2p networks of several routers; (4) origination; (5) SPF with ECMP, areas, externals (topology
 tests); (6) cer-ospfd with Linux I/O, configuration from switchd, routes to cer-ribd, show/clear commands, smoke
 test; (7) graceful restart, overload, BFD; (8) lab: interop with FRR on srv1 (v2 and v3, broadcast and p2p).
+**Graceful restart, plan 2026-10-05** (RFC 3623, OSPFv3 RFC 5187; reference 5.13 `graceful-restart`):
+1. **Helper** (pkg/ospf): a grace LSA (v2: opaque link-local type 9, opaque type 3; v3: type 0x000b) from a Full
+   neighbour on that link (broadcast: matched by its IP-interface-address TLV, else the advertising router) with a
+   grace period not yet over, and no topology change pending for it (no changed LSA of types 1-5/7 on its
+   retransmission list) starts helping: the neighbour stays Full and advertised although its hellos stop, until the
+   period ends (then it goes down as dead), the grace LSA is flushed (the restart succeeded), or the topology changes
+   (strict LSA checking as RFC 3623 §3.2: a changed LSA of types 1-5/7 would be flooded to it: helping ends, its
+   inactivity timer runs normally). `show ospf neighbor` shows `helper`; the log names start and end with the reason.
+2. **Restarting** after a restart of cer-ospfd on the master (crash, `request daemon restart`, switchd's planned
+   stops): cer-ospfd keeps its neighbours in `/run/ceros/ospf-restart.json` (instance, interfaces, neighbour router
+   ids; written on changes; tmpfs: gone after a reboot). A planned stop first floods grace LSAs (reason software
+   restart, period = restart-duration) and waits up to 1 s for acknowledgements; it flushes nothing and sends no
+   1-way hellos. At start, with a recent file: grace LSAs before the first hello (unplanned: reason unknown), then
+   restarting mode: no own router/network/summary/external LSAs originated or changed (received self-originated
+   ones are kept as they are), no routes reported to cer-ribd (which keeps the old ones: no drop); it ends when every
+   neighbour of the file is Full again, when the period is over, or when a received router LSA of a neighbour no
+   longer lists this router (inconsistent): then normal origination, SPF, routes reported, grace LSAs flushed.
+   cer-ribd's grace for OSPF becomes the configured restart-duration (not the fixed 180 s) when it is longer.
+3. **Mastership change** (later step): the master replicates the restart file's content to the members (small, on
+   changes); a new master's cer-ospfd starts in restarting mode with it.
+4. Tests: the simulated network (sim_test.go) with a restarting router for v2 and v3: no route lost at the helper,
+   helper exit on period, flush, topology change; restarting mode exit conditions; the file across a daemon restart.
+Status 2026-10-05: 1, 2 and 4 done (pkg/ospf grace.go/restart.go, internal/ospfd/restart.go; not on a device; 3 is
+open). Found on the way: OSPFv2 dropped opaque LSAs and ended an exchange whose DD listed one (now type 9 is kept as
+Raw, the O bit is set); a helper keeps the restarting neighbour's DR election values until helping ends (then
+re-elects at once), and a restarting router takes the DR/BDR roles its neighbours' hellos give it and leaves Waiting
+at once (in the simulation the restart takes ~5 s instead of the 40 s wait timer). A planned restart is only a
+restart the supervisor makes (`request daemon restart`, a new unit): /run/ceros/planned-restart/<program>; a reboot,
+halt or `request system reload` (ports go down) never announces a grace period.
 
 ### Phase 9b: BGP (EVPN): own core, GoBGP's packet codec (decided 2026-10-04)
 BGP is our own core (`pkg/bgp`, like `pkg/ospf`) in the program **cer-bgpd**; only GoBGP's message codec

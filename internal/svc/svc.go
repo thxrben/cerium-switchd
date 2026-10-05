@@ -159,8 +159,12 @@ const (
 // protocols), MethodRoutes (rib.Query -> []rib.Entry, show route) and
 // MethodRouteSummary ([]rib.Summary, show route summary).
 const (
-	MethodRoutesSet    = "routes.set"
-	MethodRoutesDelta  = "routes.delta" // ribd.RoutesDelta -> ribd.DeltaReply
+	MethodRoutesSet   = "routes.set"
+	MethodRoutesDelta = "routes.delta" // ribd.RoutesDelta -> ribd.DeltaReply
+
+	// PlannedRestartDir holds a mark per program whose coming stop is a
+	// restart by the supervisor (supervise.Supervisor.PlannedDir).
+	PlannedRestartDir  = "/run/ceros/planned-restart"
 	MethodRoutes       = "routes"
 	MethodRouteSummary = "routes.summary"
 )

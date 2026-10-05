@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"github.com/thxrben/cerium-switchd/pkg/hwio"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -110,6 +111,14 @@ type Daemon struct {
 	Net    Net
 	RIB    RIB
 	Log    *slog.Logger
+	// RestartFile keeps the neighbours for a graceful restart (restart.go;
+	// "": none); Planned reports at the stop whether it is a restart the
+	// supervisor makes (then the neighbours are told, reference 5.13).
+	RestartFile string
+	Planned     func() bool
+	restartFrom *restartData
+	restartRead bool
+	lastSaved   restartData
 	// Replicate gives the routes to the other members (nil: standalone).
 	Replicate func(sr ribd.SetRoutes)
 	// Settle is the least time after the start before the routes count as
@@ -217,8 +226,9 @@ func (d *Daemon) Run(ctx context.Context) {
 				d.insts[k].r.Tick(now)
 			}
 			d.syncBFD(now)
-		case <-links.C:
+		case now := <-links.C:
 			d.refreshLinks()
+			d.saveRestart(now, false)
 		case <-export.C:
 			d.refreshExports(ctx)
 		}
@@ -288,8 +298,12 @@ func (d *Daemon) apply() {
 			d.insts[k] = in
 		}
 		in.r.ExtLimit = cfg.ExtLimit
+		fresh := in.cfg.RouterID == 0 // created just now
 		in.cfg = want[k]
 		in.configure(now)
+		if fresh {
+			d.startRestart(k, in) // the previous run's neighbours (restart.go)
+		}
 	}
 }
 
@@ -345,7 +359,8 @@ func cost(ic Iface, refBW uint64, li LinkInfo) uint16 {
 func (in *instance) configure(now time.Time) {
 	d := in.d
 	c := in.cfg
-	rc := ospf.Config{RouterID: c.RouterID, Overload: in.overloaded(now), Externals: in.ext}
+	rc := ospf.Config{RouterID: c.RouterID, Overload: in.overloaded(now), Externals: in.ext,
+		GracefulRestart: c.GracefulRestart, RestartDuration: time.Duration(c.RestartDuration) * time.Second}
 	seen := map[string]bool{}
 	for _, ic := range c.Interfaces {
 		seen[ic.Unit] = true
@@ -715,11 +730,25 @@ func (d *Daemon) Resend() {
 // Shutdown ends the adjacencies (the neighbours notice at once) and closes
 // the interfaces.
 func (d *Daemon) Shutdown(ctx context.Context) {
+	planned := d.Planned != nil && d.Planned()
 	done := make(chan struct{})
 	select {
 	case d.events <- func() {
-		for _, k := range d.sortedKeys() {
-			d.insts[k].r.Shutdown(time.Now())
+		now := time.Now()
+		if planned {
+			// A restart: the neighbours keep forwarding to us for the
+			// grace period (the kernel keeps our routes); nothing is ended.
+			for _, k := range d.sortedKeys() {
+				d.insts[k].r.PrepareRestart(ospf.ReasonSoftware)
+			}
+			d.saveRestart(now, true)
+		} else {
+			for _, k := range d.sortedKeys() {
+				d.insts[k].r.Shutdown(now)
+			}
+			if d.RestartFile != "" {
+				_ = hwio.Remove(d.RestartFile) // a real stop: no graceful restart
+			}
 		}
 		close(done)
 	}:
@@ -729,5 +758,13 @@ func (d *Daemon) Shutdown(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+		return
+	}
+	if planned {
+		// The acknowledgements of the grace LSAs (the loop keeps running).
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+		}
 	}
 }

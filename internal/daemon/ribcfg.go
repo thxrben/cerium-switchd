@@ -16,6 +16,13 @@ import (
 // the master (reference 1.8). leases are cer-dhcpcd's, by device.
 func ribConfig(cfg *model.Config, member int, names dataplane.PortNames, master bool, leases map[string]dataplane.DHCPLease) ribd.Config {
 	c := ribd.Config{Instances: map[string]ribd.Instance{}}
+	for _, r := range cfg.AllRouting() {
+		for _, o := range []*model.OSPF{r.OSPF, r.OSPF3} {
+			if o != nil && !o.Disabled && o.GracefulRestart {
+				c.OSPFGrace = max(c.OSPFGrace, o.RestartDuration)
+			}
+		}
+	}
 	insts := []string{""}
 	for n := range cfg.Instances {
 		if n == cfg.System.MgmtInstance && !master {

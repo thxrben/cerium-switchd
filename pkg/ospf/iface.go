@@ -141,6 +141,7 @@ func (i *iface) tick() {
 		return
 	}
 	if !now.Before(i.helloAt) {
+		i.r.restartHello(i) // a restarting router: the grace LSA first
 		i.sendHello()
 		i.helloAt = now.Add(i.hello())
 	}
@@ -196,15 +197,20 @@ func (i *iface) receiveHello(src netip.Addr, p *Packet) {
 	}
 	n.id, n.addr, n.ifID = p.RouterID, src, h.InterfaceID
 	oldPrio, oldDR, oldBDR := n.prio, n.dr, n.bdr
-	n.prio, n.options = h.Priority, h.Options
-	n.dr, n.bdr = h.DR, h.BDR
+	n.options = h.Options
+	n.helloPrio, n.helloDR, n.helloBDR = h.Priority, h.DR, h.BDR
+	if !n.helping() {
+		// A restarting neighbour keeps its place in the DR election
+		// while it relearns the link (RFC 3623 §3.2).
+		n.prio, n.dr, n.bdr = h.Priority, h.DR, h.BDR
+	}
 	n.helloReceived()
 	if !slices.Contains(h.Neighbors, i.r.rid) {
 		n.oneWay()
 		return
 	}
 	n.twoWay()
-	if i.cfg.P2P {
+	if i.cfg.P2P || n.helping() {
 		return
 	}
 	me := n.self()
@@ -221,6 +227,9 @@ func (i *iface) receiveHello(src netip.Addr, p *Packet) {
 		backupSeen = true
 	} else if declBDR != wasBDR {
 		change = true
+	}
+	if i.r.restart != nil && i.state == IfWaiting && (n.dr == i.self() || n.bdr == i.self()) {
+		backupSeen = true // restarting: the neighbour already knows our role (RFC 3623 §2.2)
 	}
 	if backupSeen {
 		i.electDR()
@@ -258,9 +267,21 @@ func (i *iface) electDR() {
 	}
 	me := i.self()
 	self := candidate{rid: i.r.rid, self: me, prio: i.cfg.Priority, dr: i.dr, bdr: i.bdr}
+	if i.r.restart != nil {
+		// Restarting: the roles the neighbours still give this router
+		// (RFC 3623 §2.2), so the election ends as before the restart.
+		for _, n := range i.nbrs {
+			if n.dr == me {
+				self.dr = me
+			}
+			if n.bdr == me {
+				self.bdr = me
+			}
+		}
+	}
 	var others []candidate
 	for _, n := range i.sortedNbrs() {
-		if n.state >= NbrTwoWay && n.prio > 0 {
+		if (n.state >= NbrTwoWay || n.helping()) && n.prio > 0 {
 			others = append(others, candidate{rid: n.id, self: n.self(), prio: n.prio, dr: n.dr, bdr: n.bdr})
 		}
 	}
@@ -414,7 +435,7 @@ func (i *iface) maxHeaders() int {
 func (i *iface) fullNbrs() []*neighbor {
 	var out []*neighbor
 	for _, n := range i.sortedNbrs() {
-		if n.state == NbrFull {
+		if n.adjacent() {
 			out = append(out, n)
 		}
 	}

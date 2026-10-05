@@ -176,7 +176,9 @@ func TestMKAOffload(t *testing.T) {
 	if strings.Contains(conf("eth1"), "macsec_offload") || !slices.Contains(f.actions, "restart cer-mka@eth1.service") {
 		t.Fatalf("no fallback: %v\n%s", f.actions, conf("eth1"))
 	}
-	if l := al.List(); !slices.ContainsFunc(l, func(a alarms.Alarm) bool { return a.Class == alarms.Minor && strings.Contains(a.Text, "1/0/1 encrypts in software") }) {
+	if l := al.List(); !slices.ContainsFunc(l, func(a alarms.Alarm) bool {
+		return a.Class == alarms.Minor && strings.Contains(a.Text, "1/0/1 encrypts in software")
+	}) {
 		t.Fatalf("alarms %+v", l)
 	}
 	// Ten minutes later the offload is tried again.

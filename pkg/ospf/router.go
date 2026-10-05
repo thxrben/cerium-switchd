@@ -40,6 +40,11 @@ type Router struct {
 	// extIDs: the LS ids of external (and v3 inter-area) prefixes.
 	prefixIDs map[prefixKey]ID
 
+	// restart: in a graceful restart (restart.go); planned: grace LSAs
+	// were announced for a planned stop (kept, not flushed).
+	restart *restartState
+	planned bool
+
 	dirty      bool // re-originate own LSAs
 	spfPending bool
 	spfAt      time.Time
@@ -284,6 +289,7 @@ func (r *Router) Tick(now time.Time) {
 	}
 	r.age()
 	r.originateDeferred()
+	r.checkRestart()
 }
 
 // settle finishes an event: own LSAs are re-originated when something
@@ -344,7 +350,7 @@ func (r *Router) options() uint32 {
 	if r.v == V3 {
 		return OptV6 | OptE | OptR
 	}
-	return OptE
+	return OptE | OptO // opaque LSAs: grace LSAs (RFC 5250, RFC 3623)
 }
 
 // send encodes and sends a packet on an interface.
@@ -370,6 +376,9 @@ func (r *Router) send(i *iface, dst netip.Addr, p *Packet) {
 func (r *Router) scopeFor(i *iface, t LSType) *scope {
 	if !r.v.Known(t) {
 		if r.v == V2 {
+			if t == V2OpaqueLink {
+				return i.sc // opaque link-local (grace LSAs), kept as Raw
+			}
 			return nil
 		}
 		if t&0x8000 == 0 {
