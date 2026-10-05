@@ -416,8 +416,10 @@ Last updated: 2026-10-04 (evening).
 ## REST API 18.1 (2026-10-05; unit-tested, NOT on a device)
 - `POST /api/v1/cli`, `GET /api/v1/config`, `/config/revisions`, configuration sessions (open/load/commands/compare/
   check/commit/delete), `/config/confirm` (reference 5.1 web-management). The API runs cli.Shells with the user's
-  class (webapi.User.Class; a User without SuperUser never becomes super-user). Next: 18.2 state/events/health,
-  18.3 tokens/OpenAPI (PLAN 18).
+  class (webapi.User.Class; a User without SuperUser never becomes super-user).
+- 18.2 done the same day: `GET /api/v1/state[/{name}]` (21 documents from the stack-wide ops), `GET /api/v1/events`
+  (SSE of every CLI notice: rpcserver.OnNotify -> webapi.Publish), `/healthz`, `/readyz`, `/metrics` (alarms,
+  daemons, interfaces and counters, memory purposes). Next: 18.3 tokens/OpenAPI (PLAN 18).
 
 ## OSPF graceful restart (2026-10-05; unit-tested, NOT on a device; PLAN 9c "Graceful restart")
 - Helper (RFC 3623/5187: grace LSAs, strict LSA checking, DR election kept), restarting role after a cer-ospfd

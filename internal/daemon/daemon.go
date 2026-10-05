@@ -619,6 +619,17 @@ func Run(ctx context.Context, o Options) error {
 		sh.SetPlainErrors()
 		return sh
 	})
+	apiSt := &apiState{
+		ops: func() cli.Operational { return srv.Env("rest-api", commit.ReadOnly).Ops },
+		ready: func() string {
+			if ctl != nil && ctl.node.Master() == 0 {
+				return "the virtual chassis has no master (no majority)"
+			}
+			return ""
+		},
+	}
+	mgmt.web.SetState(apiSt, apiSt)
+	srv.OnNotify(mgmt.web.Publish)
 	if ctl != nil {
 		ctl.serveOps(liveOps)
 		ctl.serveExec(func(name string, class commit.Class) cli.Env {

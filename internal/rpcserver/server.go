@@ -90,8 +90,16 @@ type Server struct {
 	// (nil: usb: names go to the client like other files).
 	USB USBFiles
 
-	mu    sync.Mutex
-	conns map[*conn]struct{}
+	mu       sync.Mutex
+	conns    map[*conn]struct{}
+	onNotify func(text string)
+}
+
+// OnNotify also gives every notice to f (the REST API's event stream).
+func (s *Server) OnNotify(f func(text string)) {
+	s.mu.Lock()
+	s.onNotify = f
+	s.mu.Unlock()
 }
 
 // Serve accepts connections until l is closed.
@@ -121,6 +129,9 @@ func (s *Server) Notify(ctx context.Context, text string) {
 	origin, _ := ctx.Value(originKey{}).(*conn)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.onNotify != nil {
+		s.onNotify(text) // (must not block: the API's hub drops for slow clients)
+	}
 	for c := range s.conns {
 		if c == origin {
 			continue

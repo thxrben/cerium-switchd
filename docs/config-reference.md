@@ -986,6 +986,12 @@ interfaces; it moves with mastership. It runs while `system services web-managem
 | `POST /api/v1/config/sessions/{id}/commit` | super-user | `{"comment": "…", "confirmed": 5}` (both optional) commits (`commit [confirmed <minutes>] [comment …]`) and closes the session: `{"ok", "output"}` with every member's result. A confirmed commit is confirmed with `POST /api/v1/config/confirm`. |
 | `DELETE /api/v1/config/sessions/{id}` | super-user | closes the session; its changes are discarded. |
 | `POST /api/v1/config/confirm` | operator | confirms a commit pending confirmation (4.2). |
+| `GET /api/v1/state` | any | the names of the state documents below. |
+| `GET /api/v1/state/{name}[?instance=<n>]` | any | what a `show` command reports, as JSON, for the whole stack: `interfaces`, `ethernet-switching-table`, `chassis-hardware`, `arp`, `ipv6-neighbors`, `uptime`, `ntp`, `offload`, `routes` (`instance`), `virtual-chassis`, `vc-mtu`, `lacp`, `lldp`, `mclag`, `limits`, `alarms`, `macsec`, `bfd`, `environment`, `memory`, `processes`. 404 for an unknown name. |
+| `GET /api/v1/events` | any | a stream of **server-sent events** (`text/event-stream`): every notice the CLI sessions get (commits, confirmations, rollbacks, alarms raised and cleared, daemon failures, other users' changes), as `event: notice` with the text as data; a comment line every 30 s keeps the connection open. A client that does not read fast enough loses events (`event: lost` tells it; it should read the state again). |
+| `GET /healthz` | none | 200 `{"status": "ok"}` while the API runs (no authentication: for load balancers). |
+| `GET /readyz` | none | 200 when the switch has applied its configuration and the stack has a master, else 503 with the reason. |
+| `GET /metrics` | any | Prometheus text format: `ceros_alarms{class}`, `ceros_daemon_up{program,member}`, `ceros_interface_up{interface}` and the interfaces' byte and packet counters, `ceros_memory_entries{purpose}` and `ceros_memory_capacity{purpose}`. |
 
   Example: `curl --pinnedpubkey 'sha256//…' -k -u admin -T ceros-1.4.0-amd64.bundle
   https://10.0.0.5/api/v1/software/upload`, then `curl … -u admin -X POST https://10.0.0.5/api/v1/software/install`

@@ -100,9 +100,12 @@ type Server struct {
 	Auth     func(user, password string) (User, bool)
 	Software Software
 	sess     sessions
+	events   hub
 
 	mu       sync.Mutex
 	newShell func(User) Shell // SetShells
+	state    StateSource      // SetState
+	health   Health
 	cfg      Config
 	running  bool
 	srv      *http.Server
@@ -290,6 +293,12 @@ func (s *Server) routes() http.Handler {
 		mux.HandleFunc("POST /api/v1/config/sessions/{id}/commit", s.auth(true, s.withSession(s.sessionCommit)))
 		mux.HandleFunc("DELETE /api/v1/config/sessions/{id}", s.auth(true, s.withSession(s.sessionDelete)))
 	}
+	mux.HandleFunc("GET /api/v1/state", s.auth(false, s.stateList))
+	mux.HandleFunc("GET /api/v1/state/{name}", s.auth(false, s.stateGet))
+	mux.HandleFunc("GET /api/v1/events", s.auth(false, s.eventStream))
+	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.HandleFunc("GET /metrics", s.auth(false, s.metrics))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
