@@ -80,6 +80,8 @@ func localOps(o *ops, r opsRequest) (any, error) {
 		return o.BFDSessions()
 	case "alarms":
 		return o.Alarms()
+	case "memory":
+		return o.Memory()
 	case "macsec":
 		return o.MACsec()
 	case "optics":
@@ -277,6 +279,17 @@ func (s *stackOps) Environment() ([]cli.EnvSensor, error) {
 func (s *stackOps) MACsec() ([]cli.MACsecConn, error) {
 	by, err := each[[]cli.MACsecConn](s, opsRequest{Method: "macsec"})
 	return rows(by), err
+}
+
+// MemoryAll is every member's memory plan (request system memory setup
+// works with the smallest member's slots).
+func (s *stackOps) MemoryAll() ([]cli.MemoryStatus, error) {
+	by, err := each[cli.MemoryStatus](s, opsRequest{Method: "memory"})
+	out := make([]cli.MemoryStatus, 0, len(by))
+	for _, id := range sortedIDs(by) {
+		out = append(out, by[id])
+	}
+	return out, err
 }
 
 // Alarms lists every member's alarms.

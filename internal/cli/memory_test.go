@@ -47,3 +47,28 @@ func TestMemorySetup(t *testing.T) {
 		t.Errorf("over-allocation:\n%s", out)
 	}
 }
+
+// memStackOps is a stack of two members; member 2 has fewer slots.
+type memStackOps struct {
+	memOps
+	all []MemoryStatus
+}
+
+func (o *memStackOps) MemoryAll() ([]MemoryStatus, error) { return o.all, nil }
+
+// In a stack the allocation is computed for the smallest member (any
+// member can become master, reference 5.1).
+func TestMemorySetupSmallestMember(t *testing.T) {
+	ts := newTester(t, newEngine(t), "root", commit.SuperUser)
+	purposes := []MemoryPurpose{{Name: "bgp-ipv4", Bytes: 2100, PerSlot: 1997}}
+	big := MemoryStatus{Member: 1, Allocatable: 1000, Purposes: purposes}
+	small := MemoryStatus{Member: 2, Allocatable: 400, Purposes: purposes}
+	ts.sh.env.Ops = &memStackOps{memOps: memOps{m: big}, all: []MemoryStatus{big, small}}
+	ts.term.answers = []string{"50%", "yes"}
+	out := ts.ok("request system memory setup")
+	for _, want := range []string{"The smallest of 2 members is member 2: 400 slots", "-> 200 slots, 399400 entries; 200 of 400 slots left"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
+	}
+}

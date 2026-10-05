@@ -56,6 +56,25 @@ type Memory interface {
 	Memory() (MemoryStatus, error)
 }
 
+// MemoryStack is implemented in a stack: every member's plan (a partial
+// error names the members that did not answer).
+type MemoryStack interface {
+	MemoryAll() ([]MemoryStatus, error)
+}
+
+// smallestMember picks the member with the fewest slots to allocate: the
+// allocation must fit every member (any of them can become master).
+func smallestMember(ms []MemoryStatus) (MemoryStatus, bool) {
+	var best MemoryStatus
+	found := false
+	for _, m := range ms {
+		if !found || m.Allocatable < best.Allocatable {
+			best, found = m, true
+		}
+	}
+	return best, found
+}
+
 func mb(n uint64) string { return strconv.FormatUint((n+(1<<20)-1)>>20, 10) + " MB" }
 
 func used(n int) string {
@@ -133,8 +152,22 @@ func (sh *Shell) memorySetup(c *call) error {
 	if err != nil {
 		return err
 	}
+	members := 1
+	if st, ok := sh.env.Ops.(MemoryStack); ok {
+		all, err := st.MemoryAll()
+		if err != nil {
+			if pe := (*PartialError)(nil); errors.As(err, &pe) {
+				fmt.Fprintf(c.out, "warning: %v; the slots below may not fit those members\n", err)
+			} else {
+				return err
+			}
+		}
+		if s, ok := smallestMember(all); ok {
+			m, members = s, len(all)
+		}
+	}
 	if m.Allocatable <= 0 {
-		return fmt.Errorf("this member has no slots to allocate (%d slots, system area %d, update %d)", m.Slots, m.System, m.Update)
+		return fmt.Errorf("member %d has no slots to allocate (%d slots, system area %d, update %d)", m.Member, m.Slots, m.System, m.Update)
 	}
 	type choice struct{ percent, slots int }
 	cur := map[string]choice{}
@@ -158,7 +191,12 @@ func (sh *Shell) memorySetup(c *call) error {
 		}
 		return "-"
 	}
-	fmt.Fprintf(c.out, "Member %d: %d slots of 4 MiB to allocate (after the system area and the update slots).\n", m.Member, m.Allocatable)
+	if members > 1 {
+		fmt.Fprintf(c.out, "The smallest of %d members is member %d: %d slots of 4 MiB to allocate (after the system area and the update slots); the allocation must fit it.\n",
+			members, m.Member, m.Allocatable)
+	} else {
+		fmt.Fprintf(c.out, "Member %d: %d slots of 4 MiB to allocate (after the system area and the update slots).\n", m.Member, m.Allocatable)
+	}
 	c.out.WriteString("Answer per purpose: a percentage (30%), a number of slots (120), '-' for none, '?' for help, or nothing to keep.\n\n")
 	for _, p := range m.Purposes {
 		for {
