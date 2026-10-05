@@ -1095,9 +1095,9 @@ the running version):
 
 | Purpose | One entry is | Bytes | Per slot |
 |---|---|---|---|
-| `bgp-ipv4` | an IPv4 prefix learned by BGP with its best path | 2221 | 1888 |
-| `bgp-ipv6` | an IPv6 prefix learned by BGP with its best path | 2533 | 1655 |
-| `bgp-paths` | every further path to a BGP prefix (a second neighbour, multipath, a backup) | 1721 | 2437 |
+| `bgp-ipv4` | an IPv4 prefix learned by BGP with its best path | 1781 | 2355 |
+| `bgp-ipv6` | an IPv6 prefix learned by BGP with its best path | 2093 | 2003 |
+| `bgp-paths` | every further path to a BGP prefix (a second neighbour, multipath, a backup) | 1281 | 3274 |
 | `ospf` | an OSPF or OSPFv3 route with its share of the link-state database | 994 | 4219 |
 | `arp` | an IPv4 neighbour | 512 | 8192 |
 | `ndp` | an IPv6 neighbour | 512 | 8192 |

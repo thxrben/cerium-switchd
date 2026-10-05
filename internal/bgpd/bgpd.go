@@ -91,6 +91,7 @@ type Listener interface {
 // RIB is cer-ribd for this daemon.
 type RIB interface {
 	SetRoutes(ctx context.Context, sr ribd.SetRoutes) error
+	Delta(ctx context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error)
 	Active(ctx context.Context, instance string) ([]rib.Entry, error)
 }
 
@@ -99,8 +100,13 @@ type Daemon struct {
 	Net Net
 	RIB RIB
 	Log *slog.Logger
-	// Replicate gives the routes to the other members (nil: standalone).
-	Replicate func(sr ribd.SetRoutes)
+	// Members are the members that get the routes (the reachable ones
+	// while this member is master; nil: standalone); MemberDelta gives
+	// them a delta (stack op StackRoutesDelta), MemberSetRoutes a whole
+	// table to a member of an older release (StackRoutes).
+	Members         func() []int
+	MemberDelta     func(ctx context.Context, member int, d ribd.RoutesDelta) (ribd.DeltaReply, error)
+	MemberSetRoutes func(ctx context.Context, member int, sr ribd.SetRoutes) error
 	// BFD is cer-bfdd on this member (nil: no BFD).
 	BFD BFD
 	// Member is this member's id; StackCall calls cer-bgpd on another
@@ -143,18 +149,8 @@ type instance struct {
 	cancel context.CancelFunc
 	pol    *policyAdapter
 
-	mu      sync.Mutex
-	sources map[string]bool // peer sources last given to cer-ribd
-	full    bool
-	last    map[string][]rib.Route
-	pending *routesUpdate
-	running bool
-}
-
-// routesUpdate is a table for cer-ribd (the newest one wins).
-type routesUpdate struct {
-	by   map[string][]rib.Route
-	full bool
+	snd     *sender
+	sndDone chan struct{}
 }
 
 // New returns a daemon; Run runs it.
@@ -286,12 +282,14 @@ func (d *Daemon) start(c Instance, eng *policy.Engine) (*instance, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
-	in := &instance{d: d, name: c.Name, cfg: c, lis: lis, cancel: cancel, sources: map[string]bool{}}
+	in := &instance{d: d, name: c.Name, cfg: c, lis: lis, cancel: cancel, sndDone: make(chan struct{})}
+	in.snd = newSender(in)
 	in.pol = &policyAdapter{eng: eng, chains: chains(c)}
 	in.sp = bgp.New(dialer{d: d, instance: c.Name, vrf: c.VRF}, in.pol.policy(), d.Log.With("instance", instName(c.Name)))
-	in.sp.OnRoutes = in.onRoutes
+	in.sp.OnChanged = in.snd.changed
 	in.sp.Limits = d.limits
 	go in.sp.Run(ctx)
+	go func() { in.snd.run(ctx); close(in.sndDone) }()
 	in.sp.Configure(speakerConfig(c))
 	go func() {
 		for {
@@ -339,13 +337,8 @@ func (in *instance) stop() {
 	in.lis.Close()
 	// The routes go with the instance (the routing table keeps them for
 	// its grace time when cer-bgpd itself restarts).
-	in.mu.Lock()
-	srcs := in.sources
-	in.sources = map[string]bool{}
-	in.mu.Unlock()
-	for s := range srcs {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s})
-	}
+	<-in.sndDone
+	in.snd.withdraw()
 }
 
 func instName(n string) string {
@@ -412,79 +405,6 @@ func (t dialer) Dial(ctx context.Context, n bgp.Neighbor) (net.Conn, error) {
 		return d.dialRelay(ctx, owner, t.instance, t.vrf, n)
 	}
 	return d.Net.Dial(ctx, t.vrf, n)
-}
-
-// onRoutes gives the speaker's table to cer-ribd: one source per
-// neighbour, so "show route" lists every BGP path of a destination. It
-// runs on the speaker's loop: the calls happen on a worker, newest first.
-func (in *instance) onRoutes(rs []bgp.Route, converged bool) {
-	by := map[string][]rib.Route{}
-	for _, r := range rs {
-		src := r.Peer.String()
-		by[src] = append(by[src], ribRoute(r))
-	}
-	in.mu.Lock()
-	in.pending = &routesUpdate{by: by, full: converged}
-	if in.running {
-		in.mu.Unlock()
-		return
-	}
-	in.running = true
-	in.mu.Unlock()
-	go func() {
-		for {
-			in.mu.Lock()
-			u := in.pending
-			in.pending = nil
-			if u == nil {
-				in.running = false
-				in.mu.Unlock()
-				return
-			}
-			in.mu.Unlock()
-			in.give(u.by, u.full)
-		}
-	}()
-}
-
-// give sends a table to cer-ribd (and the members).
-func (in *instance) give(by map[string][]rib.Route, full bool) {
-	in.mu.Lock()
-	in.last = by
-	gone := []string{}
-	for s := range in.sources {
-		if _, ok := by[s]; !ok {
-			gone = append(gone, s)
-		}
-	}
-	in.sources = map[string]bool{}
-	for s := range by {
-		in.sources[s] = true
-	}
-	in.mu.Unlock()
-	for _, s := range sortedKeys(by) {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Routes: by[s], Full: full})
-	}
-	for _, s := range gone {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Full: full})
-	}
-	if len(by) == 0 && full {
-		in.d.setRoutes(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Full: true})
-	}
-	in.mu.Lock()
-	in.full = full
-	in.mu.Unlock()
-}
-
-func (d *Daemon) setRoutes(sr ribd.SetRoutes) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := d.RIB.SetRoutes(ctx, sr); err != nil {
-		d.Log.Warn("bgp: routes not given to the routing table", "err", err)
-	}
-	if d.Replicate != nil {
-		d.Replicate(sr)
-	}
 }
 
 // ribRoute converts a BGP path (its next hop is resolved by cer-ribd).
@@ -667,8 +587,11 @@ const (
 	MethodClear  = "bgp.clear"
 	// MethodCounts is the received prefixes and further paths (Counts).
 	MethodCounts = "bgp.counts"
-	// StackRoutes is the master's routes for the other members.
-	StackRoutes = "bgp-routes"
+	// StackRoutes is the master's routes for the other members (whole
+	// tables: members of an older release); StackRoutesDelta the changes
+	// (ribd.RoutesDelta -> ribd.DeltaReply, PLAN 15b).
+	StackRoutes      = "bgp-routes"
+	StackRoutesDelta = "bgp-routes-delta"
 )
 
 // InstanceStatus is show bgp summary|neighbor of one instance.
@@ -744,19 +667,18 @@ func (d *Daemon) Clear(q ClearRequest) (int, error) {
 }
 
 // Resend gives the routes to the members again (a member became
-// reachable).
+// reachable): a full sync for each.
 func (d *Daemon) Resend() {
 	for _, in := range d.instances() {
-		in.mu.Lock()
-		last := in.last
-		full := in.full
-		in.mu.Unlock()
-		if d.Replicate == nil {
-			continue
-		}
-		for _, s := range sortedKeys(last) {
-			d.Replicate(ribd.SetRoutes{Instance: in.name, Protocol: rib.BGP, Source: s, Routes: last[s], Full: full})
-		}
+		in.snd.syncAgain(-1)
+	}
+}
+
+// ResyncRIB gives cer-ribd the routes again (it reconnected: it may have
+// restarted).
+func (d *Daemon) ResyncRIB() {
+	for _, in := range d.instances() {
+		in.snd.syncAgain(0)
 	}
 }
 

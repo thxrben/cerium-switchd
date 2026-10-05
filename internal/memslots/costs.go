@@ -15,7 +15,6 @@ var Go = map[string]int{
 	"rib/ospf":    470, // cer-ribd: an OSPF route
 	"bgp/prefix":  966, // cer-bgpd: Adj-RIB-In (received, and accepted after a policy that changed it) and the decision
 	"bgp/path":    870, // cer-bgpd: a further path to a prefix (likewise)
-	"bgpd/export": 440, // cer-bgpd: the copy of the table it gives cer-ribd and the members
 	// Estimates: an OSPF route's share of cer-ospfd's database and SPF
 	// result; a MAC address's copy in cer-mclagd.
 	"ospf/route": 420,
@@ -40,9 +39,11 @@ var Kernel = map[Purpose]int{
 // Costs is the bytes one entry of each purpose takes in this release:
 // everything it holds (protocol, routing table, kernel).
 var Costs = map[Purpose]int{
-	BGPv4:     Go["bgp/prefix"] + Go["bgpd/export"] + Go["rib/bgp"] + Kernel[BGPv4],
-	BGPv6:     Go["bgp/prefix"] + Go["bgpd/export"] + Go["rib/bgp"] + Kernel[BGPv6] + 2*16, // longer addresses
-	BGPPaths:  Go["bgp/path"] + Go["bgpd/export"] + Go["rib/bgp"]/2 + Kernel[BGPPaths],
+	// (cer-bgpd sends changes in pieces, PLAN 15b: no copy of the table
+	// per entry; the pieces are in the daemons' base.)
+	BGPv4:     Go["bgp/prefix"] + Go["rib/bgp"] + Kernel[BGPv4],
+	BGPv6:     Go["bgp/prefix"] + Go["rib/bgp"] + Kernel[BGPv6] + 2*16, // longer addresses
+	BGPPaths:  Go["bgp/path"] + Go["rib/bgp"]/2 + Kernel[BGPPaths],
 	OSPF:      Go["ospf/route"] + Go["rib/ospf"] + Kernel[OSPF],
 	ARP:       Kernel[ARP],
 	NDP:       Kernel[NDP],

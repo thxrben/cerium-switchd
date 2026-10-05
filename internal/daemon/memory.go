@@ -267,7 +267,7 @@ func (m *memoryCtl) limits(program string) supervise.Limits {
 	var tables uint64
 	switch program {
 	case "cer-bgpd":
-		tables = (c(memslots.BGPv4)+c(memslots.BGPv6))*(g("bgp/prefix")+g("bgpd/export")) + c(memslots.BGPPaths)*(g("bgp/path")+g("bgpd/export"))
+		tables = (c(memslots.BGPv4)+c(memslots.BGPv6))*g("bgp/prefix") + c(memslots.BGPPaths)*g("bgp/path")
 	case "cer-ribd":
 		tables = (c(memslots.BGPv4)+c(memslots.BGPv6)+c(memslots.BGPPaths)/2)*g("rib/bgp") + c(memslots.OSPF)*g("rib/ospf")
 	case "cer-ospfd":

@@ -123,3 +123,19 @@ func (r *RIB) SweepGen(instance string, proto Protocol) {
 		}
 	}
 }
+
+// EachAt calls f for the protocol's routes at one prefix of the instance
+// (a copy; under the lock: f must not call the RIB).
+func (r *RIB) EachAt(instance string, proto Protocol, prefix netip.Prefix, f func(t Table, rt Route)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefix = prefix.Masked()
+	t := TableOf(instance, prefix)
+	if d := r.tables[t][prefix]; d != nil {
+		for _, rt := range d.routes {
+			if rt.Protocol == proto {
+				f(t, *rt)
+			}
+		}
+	}
+}

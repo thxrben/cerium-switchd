@@ -57,11 +57,16 @@ func (t netDialer) Dial(ctx context.Context, nb bgp.Neighbor) (net.Conn, error) 
 	return t.n.Dial(ctx, "", nb)
 }
 
-// fakeRIB records the routes per source and answers Active.
+// fakeRIB applies the deltas to a routing table as cer-ribd does
+// (sequence, sync, sweep when converged) and answers Active.
 type fakeRIB struct {
 	mu     sync.Mutex
 	sets   map[string]ribd.SetRoutes
 	active []rib.Entry
+	rib    *rib.RIB
+	seq    uint64
+	// deltas, syncs and prefixes received (for tests of the protocol).
+	deltas, syncs, prefixes int
 }
 
 func (r *fakeRIB) SetRoutes(_ context.Context, sr ribd.SetRoutes) error {
@@ -69,6 +74,32 @@ func (r *fakeRIB) SetRoutes(_ context.Context, sr ribd.SetRoutes) error {
 	defer r.mu.Unlock()
 	r.sets[sr.Source] = sr
 	return nil
+}
+
+func (r *fakeRIB) Delta(_ context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rib == nil {
+		r.rib = rib.New(nil)
+	}
+	if d.Sync != "begin" && d.Seq != r.seq+1 {
+		return ribd.DeltaReply{Resync: true}, nil
+	}
+	r.seq = d.Seq
+	r.deltas++
+	if d.Sync == "begin" {
+		r.syncs++
+		r.rib.BeginGen(d.Instance, d.Protocol)
+	}
+	for _, p := range d.Prefixes {
+		r.rib.Replace(d.Instance, d.Protocol, p.Prefix, p.Routes)
+	}
+	r.prefixes += len(d.Prefixes)
+	if d.Sync == "end" && d.Full {
+		r.rib.SweepGen(d.Instance, d.Protocol)
+	}
+	r.rib.Changes()
+	return ribd.DeltaReply{}, nil
 }
 
 func (r *fakeRIB) Active(context.Context, string) ([]rib.Entry, error) {
@@ -80,7 +111,16 @@ func (r *fakeRIB) Active(context.Context, string) ([]rib.Entry, error) {
 func (r *fakeRIB) routes(src string) []rib.Route {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.sets[src].Routes
+	if r.rib == nil {
+		return nil
+	}
+	var out []rib.Route
+	r.rib.Each(rib.BGP, func(_ rib.Table, rt rib.Route) {
+		if rt.Source == src {
+			out = append(out, rt)
+		}
+	})
+	return out
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {

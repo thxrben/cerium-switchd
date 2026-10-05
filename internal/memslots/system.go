@@ -55,8 +55,8 @@ var DaemonBase = map[string]uint64{
 	"cer-syslogd":    24 << 20,
 	"cer-ntpd":       16 << 20,
 	"cer-dhcpcd":     16 << 20,
-	"cer-ribd":       24 << 20,
+	"cer-ribd":       32 << 20, // + one piece of BGP changes being decoded (PLAN 15b)
 	"cer-bfdd":       16 << 20,
 	"cer-ospfd":      24 << 20,
-	"cer-bgpd":       24 << 20,
+	"cer-bgpd":       32 << 20, // + one piece of changes being sent (4096 prefixes)
 }

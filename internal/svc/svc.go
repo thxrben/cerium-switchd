@@ -160,6 +160,7 @@ const (
 // MethodRouteSummary ([]rib.Summary, show route summary).
 const (
 	MethodRoutesSet    = "routes.set"
+	MethodRoutesDelta  = "routes.delta" // ribd.RoutesDelta -> ribd.DeltaReply
 	MethodRoutes       = "routes"
 	MethodRouteSummary = "routes.summary"
 )

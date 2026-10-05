@@ -50,6 +50,13 @@ func setup(k *daemonkit.Kit) error {
 		s.SetRoutes(sr)
 		return nil, nil
 	})
+	k.Endpoint.Handle(svc.MethodRoutesDelta, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+		var d ribd.RoutesDelta
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return nil, err
+		}
+		return s.Delta(d), nil
+	})
 	k.Endpoint.Handle(svc.MethodRoutes, func(_ context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
 		var q rib.Query
 		if len(raw) > 0 && string(raw) != "null" {

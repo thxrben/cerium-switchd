@@ -803,6 +803,16 @@ neighbour thresholds are raised to a sane value, see 7).
    use, read through netlink (RTM_GETMDB dump; not `bridge -j mdb`).
 3. **`request system memory setup` across members**: the slots shown and the capacities computed are the stack's
    smallest member's (each member's plan through the ops `memory` call), as the reference says; today this member's.
+4. **Found on the way (open)**: cer-ribd still revalidates every BGP route after a change of another protocol (a
+   copy of references to all of them) and hands the kernel installer the whole active table on every change
+   (netdev.SyncRoutes diffs it): with a full table a large transient per change cycle as well. Next: install from
+   RIB.Changes() (only the changed prefixes; a full reconciliation at start and every few minutes), and revalidate
+   only the BGP routes whose next hop lies under a changed non-BGP prefix.
+Status 2026-10-05: 1-3 done, unit-tested (not on a device). 1: the sync's "end" sweeps only when the speaker is
+converged (a restarted cer-bgpd starts with an empty table: sweeping then would remove the kernel's routes before BGP
+has learned them again); a converged speaker syncs once more; an empty delta every 30 s lets a restarted cer-ribd
+notice the gap; cer-ribd's reconnect forces a sync. Costs per entry: bgp-ipv4 1781, bgp-ipv6 2093, bgp-paths 1281
+(the export copy of 440 B per route is gone; a piece of 4096 prefixes, 3.8 MiB measured, is in the daemon base).
 
 ### Phase 16: `request system reload [member <id> | all-members]` (decided 2026-10-04)
 Restarts the whole switch software without rebooting the operating system (applies a new slot map, Phase 15).

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"time"
 
 	"github.com/thxrben/cerium-switchd/internal/bfdd"
 	"github.com/thxrben/cerium-switchd/internal/bgpd"
@@ -29,6 +28,12 @@ func (r ribClient) SetRoutes(ctx context.Context, sr ribd.SetRoutes) error {
 	return r.c.Call(ctx, svc.MethodRoutesSet, sr, nil)
 }
 
+func (r ribClient) Delta(ctx context.Context, d ribd.RoutesDelta) (ribd.DeltaReply, error) {
+	var out ribd.DeltaReply
+	err := r.c.Call(ctx, svc.MethodRoutesDelta, d, &out)
+	return out, err
+}
+
 func (r ribClient) Active(ctx context.Context, instance string) ([]rib.Entry, error) {
 	var out []rib.Entry
 	q := rib.Query{Active: true, Tables: []rib.Table{{Instance: instance}, {Instance: instance, V6: true}}}
@@ -47,6 +52,8 @@ func setup(k *daemonkit.Kit) error {
 	rc := ribClient{k.Endpoint.Dial(k.Ctx, k.SocketOf("cer-ribd"))}
 	d := bgpd.New(bgpd.LinuxNet{}, rc, k.Log)
 	d.Member, d.StackCall = k.Member, k.StackCall
+	// cer-ribd (re)connected: it may have restarted and lost the routes.
+	rc.c.OnConnect(func(*ipc.Conn) { d.ResyncRIB() })
 	d.Full = func(purpose string, full bool) {
 		id := "cer-bgpd/memory " + purpose
 		if full {
@@ -108,20 +115,39 @@ func setup(k *daemonkit.Kit) error {
 		}
 		d.BFDChanged(ev.Key, st.Up, ev.Deleted)
 	})
-	// The master's routes for the other members.
-	d.Replicate = func(sr ribd.SetRoutes) {
+	// The master's routes for the other members (PLAN 15b: changes by
+	// prefix; whole tables only to members of an older release).
+	d.Members = func() []int {
 		r, ok := k.Role()
 		if !ok || !r.Master {
-			return
+			return nil
 		}
+		var out []int
 		for _, m := range r.Reachable {
-			ctx, cancel := context.WithTimeout(k.Ctx, 5*time.Second)
-			if err := k.StackCall(ctx, m, bgpd.StackRoutes, sr, nil); err != nil {
-				k.Log.Debug("bgp routes to member", "member", m, "err", err)
+			if m != k.Member {
+				out = append(out, m)
 			}
-			cancel()
 		}
+		return out
 	}
+	d.MemberDelta = func(ctx context.Context, m int, dl ribd.RoutesDelta) (ribd.DeltaReply, error) {
+		var out ribd.DeltaReply
+		err := k.StackCall(ctx, m, bgpd.StackRoutesDelta, dl, &out)
+		return out, err
+	}
+	d.MemberSetRoutes = func(ctx context.Context, m int, sr ribd.SetRoutes) error {
+		return k.StackCall(ctx, m, bgpd.StackRoutes, sr, nil)
+	}
+	k.HandleStack(bgpd.StackRoutesDelta, func(ctx context.Context, from int, raw json.RawMessage) (any, error) {
+		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
+			return ribd.DeltaReply{}, nil // only the master's routes count
+		}
+		var dl ribd.RoutesDelta
+		if err := json.Unmarshal(raw, &dl); err != nil {
+			return nil, err
+		}
+		return rc.Delta(ctx, dl)
+	})
 	k.HandleStack(bgpd.StackRoutes, func(ctx context.Context, from int, raw json.RawMessage) (any, error) {
 		if r, ok := k.Role(); ok && (r.Master || r.MasterID != from) {
 			return nil, nil // only the master's routes count

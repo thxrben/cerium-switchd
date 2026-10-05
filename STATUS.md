@@ -555,9 +555,13 @@ Unit-tested, NOT on the lab switches yet (the lab still runs 05240a8; see "Lab d
   unchanged accepted path is the received one, a policy's copy shares what it left, Path 384 -> 352 B). The old
   speaker measurement missed Adj-RIB-In (real was 1070 B/prefix); now 966 worst case (policy that changes the path),
   ~630 without. cer-bgpd's export copy measured (440 B). Costs: bgp-ipv4 2221, bgp-ipv6 2533, bgp-paths 1721, ospf 994.
-- Open in Phase 15: multicast count in show system memory; setup across members (uses this member's slots);
-  cer-bgpd keeps a full copy of its table for cer-ribd (in.last) and sends the whole table as JSON on every change:
-  for a full Internet table that is a large transient (a delta protocol would fix it).
+- Done 2026-10-05 (PLAN 15b, unit-tested, not on a device): BGP routes to cer-ribd and the members as changes by
+  prefix (speaker OnChanged/Paths/Prefixes; ribd routes.delta with sequence numbers, syncs between begin/end in
+  pieces of 4096 prefixes, sweep only when converged; rib.Replace/BeginGen/SweepGen; stack op bgp-routes-delta,
+  members of an older release get whole tables); no table copy in cer-bgpd (costs bgp-ipv4 1781, bgp-ipv6 2093,
+  bgp-paths 1281 bytes); multicast memberships through netlink (RTM_GETMDB, also `show igmp snooping`) and counted
+  in show system memory; memory setup uses the smallest member's slots. Open (PLAN 15b.4): cer-ribd installs the
+  whole active table into the kernel on every change and revalidates every BGP route after other protocols change.
 - Done: show system limits "used of available" (MACsec offload: ports using it of those able to; no "(full)" for 0
   of 0).
 - Done (Phase 10, stacking): virtual-chassis macsec (on by default): per stacking port a MACsec device (XPN-256) in

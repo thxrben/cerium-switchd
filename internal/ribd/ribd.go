@@ -48,6 +48,33 @@ type SetRoutes struct {
 	Full     bool         `json:"full,omitempty"`
 }
 
+// RoutesDelta is a protocol's change by prefix (PLAN 15b: BGP sends what
+// changed, not tables): every route of the protocol at each prefix
+// (Source tells the neighbours apart; none: the prefix is gone).
+type RoutesDelta struct {
+	Instance string       `json:"instance"`
+	Protocol rib.Protocol `json:"protocol"`
+	// Seq numbers the deltas per (instance, protocol); a gap means one was
+	// lost: the answer asks for a sync and nothing is applied.
+	Seq uint64 `json:"seq"`
+	// Sync: "begin" starts a full sync (any Seq accepted), "end" ends it:
+	// the protocol's routes the sync did not set are withdrawn.
+	Sync     string         `json:"sync,omitempty"`
+	Prefixes []PrefixRoutes `json:"prefixes,omitempty"`
+	Full     bool           `json:"full,omitempty"`
+}
+
+// PrefixRoutes is one prefix of a delta.
+type PrefixRoutes struct {
+	Prefix netip.Prefix `json:"prefix"`
+	Routes []rib.Route  `json:"routes,omitempty"`
+}
+
+// DeltaReply answers a delta.
+type DeltaReply struct {
+	Resync bool `json:"resync,omitempty"` // a delta was lost: sync again
+}
+
 // Grace is how long routes of a routing protocol that has not reported
 // since cer-ribd started are left alone in the kernel (its graceful
 // restart time).
@@ -75,6 +102,15 @@ type Server struct {
 	kick    chan struct{}
 	warned  string
 	full    bool // OSPF routes were refused
+	// seqs is the last delta per (instance, protocol); syncing those in a
+	// sync between "begin" and "end".
+	seqs    map[deltaKey]uint64
+	syncing map[deltaKey]bool
+}
+
+type deltaKey struct {
+	instance string
+	proto    rib.Protocol
 }
 
 // New returns a server.
@@ -137,6 +173,57 @@ func (s *Server) SetRoutes(sr SetRoutes) {
 		s.mu.Unlock()
 	}
 	s.poke()
+}
+
+// Delta takes a protocol's changes by prefix (RoutesDelta).
+func (s *Server) Delta(d RoutesDelta) DeltaReply {
+	k := deltaKey{d.Instance, d.Protocol}
+	s.mu.Lock()
+	if s.seqs == nil {
+		s.seqs, s.syncing = map[deltaKey]uint64{}, map[deltaKey]bool{}
+	}
+	switch {
+	case d.Sync == "begin":
+		s.syncing[k] = true
+	case d.Seq != s.seqs[k]+1:
+		s.mu.Unlock()
+		s.Log.Warn("routes: a delta was lost; asking for a sync", "instance", d.Instance, "protocol", d.Protocol, "seq", d.Seq, "expected", s.seqs[k]+1)
+		return DeltaReply{Resync: true}
+	}
+	s.seqs[k] = d.Seq
+	s.mu.Unlock()
+	if d.Sync == "begin" {
+		s.RIB.BeginGen(d.Instance, d.Protocol)
+	}
+	for _, p := range d.Prefixes {
+		s.RIB.Replace(d.Instance, d.Protocol, p.Prefix, p.Routes)
+	}
+	if d.Sync == "end" {
+		// Only a converged protocol's sync removes what it did not set:
+		// before, the routes of before its restart stay (no drop while it
+		// learns the table again).
+		if d.Full {
+			s.RIB.SweepGen(d.Instance, d.Protocol)
+		}
+		s.mu.Lock()
+		delete(s.syncing, k)
+		s.mu.Unlock()
+	}
+	s.RIB.Changes() // settle the active routes the resolution reads
+	if d.Protocol == rib.BGP && d.Sync != "end" {
+		// Only BGP routes changed: only theirs need resolving again.
+		s.revalidateAt(d.Instance, d.Prefixes)
+	} else {
+		s.revalidate()
+	}
+	s.RIB.Changes()
+	if d.Full {
+		s.mu.Lock()
+		s.ready[d.Protocol] = true
+		s.mu.Unlock()
+	}
+	s.poke()
+	return DeltaReply{}
 }
 
 // kernelProto is the kernel protocol id of a source's routes (0: not
@@ -245,6 +332,29 @@ func (s *Server) revalidate() {
 		hidden := len(r.hops) > 0 && len(s.resolveAll(r.t, r.hops, cache)) == 0
 		if hidden != r.hidden {
 			s.RIB.SetHidden(r.t, r.prefix, rib.BGP, r.source, hidden)
+		}
+	}
+}
+
+// revalidateAt is revalidate for the BGP routes at some prefixes.
+func (s *Server) revalidateAt(instance string, ps []PrefixRoutes) {
+	cache := map[rib.Table]map[netip.Addr][]rib.NextHop{}
+	for _, p := range ps {
+		type ref struct {
+			t      rib.Table
+			source string
+			hops   []rib.NextHop
+			hidden bool
+		}
+		var rs []ref
+		s.RIB.EachAt(instance, rib.BGP, p.Prefix, func(t rib.Table, rt rib.Route) {
+			rs = append(rs, ref{t, rt.Source, rt.NextHops, rt.Hidden})
+		})
+		for _, r := range rs {
+			hidden := len(r.hops) > 0 && len(s.resolveAll(r.t, r.hops, cache)) == 0
+			if hidden != r.hidden {
+				s.RIB.SetHidden(r.t, p.Prefix.Masked(), rib.BGP, r.source, hidden)
+			}
 		}
 	}
 }
