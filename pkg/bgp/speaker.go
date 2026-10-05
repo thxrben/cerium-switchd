@@ -33,7 +33,14 @@ type Speaker struct {
 	// OnRoutes receives the whole BGP table after changes (at most every
 	// RoutesDelay): every usable path, ranked; converged as Converged. It
 	// runs on the event loop and must not block.
-	OnRoutes    func(rs []Route, converged bool)
+	OnRoutes func(rs []Route, converged bool)
+	// OnChanged receives which prefixes were decided since its last call
+	// (at most every RoutesDelay; converged as Converged): their paths
+	// are read with Paths when they are sent, the table with Prefixes.
+	// Programs with large tables use it instead of OnRoutes (reference
+	// 5.1: no copy of the table in flight). It runs on the event loop and
+	// must not block.
+	OnChanged   func(prefixes []netip.Prefix, converged bool)
 	RoutesDelay time.Duration
 	// Limits are the memory slots' capacities (nil: none; shared by the
 	// instances' speakers).
@@ -52,6 +59,7 @@ type Speaker struct {
 	started       time.Time
 	routesAt      time.Time
 	routesDirty   bool
+	changed       map[netip.Prefix]bool // decided since the last OnChanged
 	lastConverged bool
 	clusterIDs    map[netip.Addr]bool
 	refs          map[netip.Prefix]int // received paths per prefix (Limits)
@@ -82,6 +90,70 @@ func New(t Transport, pol Policy, log *slog.Logger) *Speaker {
 }
 
 func (s *Speaker) do(f func()) { s.events <- f }
+
+// callCtx runs f on the loop and waits for it, or until ctx ends.
+func (s *Speaker) callCtx(ctx context.Context, f func()) error {
+	done := make(chan struct{})
+	select {
+	case s.events <- func() { f(); close(done) }:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// PrefixPaths is a prefix with its usable paths, ranked (none: no route).
+type PrefixPaths struct {
+	Prefix netip.Prefix
+	Routes []Route
+}
+
+// Paths returns the current paths of prefixes (OnChanged).
+func (s *Speaker) Paths(ctx context.Context, prefixes []netip.Prefix) ([]PrefixPaths, error) {
+	var out []PrefixPaths
+	err := s.callCtx(ctx, func() {
+		out = make([]PrefixPaths, 0, len(prefixes))
+		for _, pf := range prefixes {
+			out = append(out, PrefixPaths{Prefix: pf, Routes: s.routesOf(pf)})
+		}
+	})
+	return out, err
+}
+
+// Prefixes lists the prefixes of the table (for a full sync of a
+// receiver: their paths are read with Paths, piece by piece).
+func (s *Speaker) Prefixes(ctx context.Context) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	err := s.callCtx(ctx, func() {
+		out = make([]netip.Prefix, 0, len(s.best))
+		for pf := range s.best {
+			out = append(out, pf)
+		}
+	})
+	return out, err
+}
+
+// routesOf is a prefix's usable paths, ranked.
+func (s *Speaker) routesOf(pf netip.Prefix) []Route {
+	d := s.best[pf]
+	if d == nil {
+		return nil
+	}
+	out := make([]Route, 0, len(d.paths))
+	for i, p := range d.paths {
+		r := Route{Path: *p}
+		if i >= d.used {
+			r.Rank = i - d.used + 1
+		}
+		out = append(out, r)
+	}
+	return out
+}
 
 // call runs f on the loop and waits for it.
 func (s *Speaker) call(f func()) {
@@ -337,14 +409,32 @@ func (s *Speaker) settle(now time.Time) {
 		for _, a := range s.sortedPeers() {
 			s.peers[a].advertise(changed)
 		}
+		if s.OnChanged != nil {
+			if s.changed == nil {
+				s.changed = map[netip.Prefix]bool{}
+			}
+			for _, pf := range changed {
+				s.changed[pf] = true
+			}
+		}
 		s.routesDirty = true
 	}
 	if c := s.converged(); c != s.lastConverged {
 		s.lastConverged, s.routesDirty = c, true
 	}
-	if s.routesDirty && s.OnRoutes != nil && now.Sub(s.routesAt) >= s.RoutesDelay {
+	if s.routesDirty && (s.OnRoutes != nil || s.OnChanged != nil) && now.Sub(s.routesAt) >= s.RoutesDelay {
 		s.routesDirty, s.routesAt = false, now
-		s.OnRoutes(s.table(), s.lastConverged)
+		if s.OnRoutes != nil {
+			s.OnRoutes(s.table(), s.lastConverged)
+		}
+		if s.OnChanged != nil {
+			ps := make([]netip.Prefix, 0, len(s.changed))
+			for pf := range s.changed {
+				ps = append(ps, pf)
+			}
+			clear(s.changed)
+			s.OnChanged(ps, s.lastConverged)
+		}
 	}
 }
 
@@ -352,14 +442,7 @@ func (s *Speaker) settle(now time.Time) {
 func (s *Speaker) table() []Route {
 	var out []Route
 	for _, pf := range sortedPrefixes(s.best) {
-		d := s.best[pf]
-		for i, p := range d.paths {
-			r := Route{Path: *p}
-			if i >= d.used {
-				r.Rank = i - d.used + 1
-			}
-			out = append(out, r)
-		}
+		out = append(out, s.routesOf(pf)...)
 	}
 	return out
 }

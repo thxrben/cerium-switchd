@@ -118,6 +118,8 @@ type Route struct {
 	// active, shown by "show route hidden" only. Set by the RIB's owner
 	// (SetHidden), kept across Set.
 	Hidden bool `json:",omitempty"`
+
+	gen uint32 // the sync generation that set it (Replace, SweepGen)
 }
 
 // Attrs are a route's protocol details ("show route detail"); the RIB
@@ -225,6 +227,9 @@ type RIB struct {
 	hopSets  map[string][]NextHop
 	attrSets map[uint64]weak.Pointer[Attrs]
 	attrLive int
+	// gens is the current sync generation per (instance, protocol)
+	// (BeginGen).
+	gens map[genKey]uint32
 }
 
 // SetLimit bounds the routes of a protocol over every instance (0: no
@@ -280,14 +285,7 @@ func (r *RIB) Set(instance string, proto Protocol, source string, routes []Route
 	k := key{proto, source}
 	want := map[Table]map[netip.Prefix]*Route{}
 	for i := range routes {
-		rt := routes[i]
-		rt.Protocol, rt.Source = proto, source
-		rt.Prefix = rt.Prefix.Masked()
-		rt.NextHops = slices.Clone(rt.NextHops)
-		slices.SortFunc(rt.NextHops, compareNH)
-		rt.NextHops = r.internHops(slices.CompactFunc(rt.NextHops, func(a, b NextHop) bool { return compareNH(a, b) == 0 }))
-		rt.Attrs = r.internAttrs(rt.Attrs)
-		rt.Source = unique.Make(rt.Source).Value()
+		rt := r.normalize(routes[i], proto, source)
 		t := TableOf(instance, rt.Prefix)
 		if want[t] == nil {
 			want[t] = map[netip.Prefix]*Route{}
@@ -393,6 +391,19 @@ func sortedPrefixes(m map[netip.Prefix]*Route, sorted bool) []netip.Prefix {
 		return a.Bits() - b.Bits()
 	})
 	return out
+}
+
+// normalize prepares a route for storing: its key, sorted unique next
+// hops and shared next hop sets, attributes and source names.
+func (r *RIB) normalize(rt Route, proto Protocol, source string) Route {
+	rt.Protocol, rt.Source = proto, source
+	rt.Prefix = rt.Prefix.Masked()
+	rt.NextHops = slices.Clone(rt.NextHops)
+	slices.SortFunc(rt.NextHops, compareNH)
+	rt.NextHops = r.internHops(slices.CompactFunc(rt.NextHops, func(a, b NextHop) bool { return compareNH(a, b) == 0 }))
+	rt.Attrs = r.internAttrs(rt.Attrs)
+	rt.Source = unique.Make(rt.Source).Value()
+	return rt
 }
 
 // MarkStale marks every route of the protocol in the instance stale

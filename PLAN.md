@@ -779,10 +779,11 @@ neighbour thresholds are raised to a sane value, see 7).
    (pkg/bgp Speaker.table: a copy of every path), groups it per neighbour (rib.Route), sends it as JSON to cer-ribd and
    to every member, and keeps the last one (bgpd instance.last) for resends: with a full Internet table hundreds of
    MB of transient memory per cycle, on top of the slots. New:
-   * **Speaker**: `OnChanges(ch []PrefixPaths, converged bool)` replaces OnRoutes: for every prefix decided since the
-     last call, its complete ranked path list (empty = gone). A prefix is the unit of change, so rank changes are
-     included. `Snapshot(after netip.Prefix, n int) ([]PrefixPaths, next)` on the event loop gives the table in pieces
-     for a resync (no full copy).
+   * **Speaker**: `OnChanged(prefixes []netip.Prefix, converged bool)` replaces OnRoutes: only *which* prefixes were
+     decided since the last call (a prefix is the unit of change, so rank changes are included). The sender asks the
+     event loop for their current ranked paths when it sends (`Paths(ctx, prefixes)`; empty = gone), so every message
+     carries the newest state and a queued older one can never overwrite a newer one. `Prefixes(ctx)` lists the
+     table's prefixes for a resync (the keys only, no paths).
    * **cer-ribd**: `routes.delta` {instance, protocol, seq, prefixes: [{prefix, routes (with source)}], sync:
      ""|"begin"|"end", full}. `rib.RIB.Replace(instance, proto, prefix, routes)` replaces every route of that
      protocol at the prefix (all sources; counts and limits as Set). Seq per (instance, protocol): a gap answers

@@ -86,6 +86,7 @@ func (n *net127) speaker(ctx context.Context, addr string, as uint32, pol Policy
 	s := New(transport{n, a}, pol, quiet)
 	rs := &routes{}
 	s.OnRoutes = rs.set
+	rs.mirror(ctx, s)
 	s.RoutesDelay = 10 * time.Millisecond
 	for i := range nbrs {
 		if nbrs[i].LocalAS == 0 {
@@ -118,10 +119,88 @@ func (n *net127) speaker(ctx context.Context, addr string, as uint32, pol Policy
 	return s, rs
 }
 
-// routes collects OnRoutes.
+// routes collects OnRoutes, and mirrors the table through OnChanged and
+// Paths as cer-bgpd does (changes noted on the loop, paths fetched by a
+// worker).
 type routes struct {
 	mu sync.Mutex
 	rs []Route
+
+	mmu     sync.Mutex
+	pending map[netip.Prefix]bool
+	wake    chan struct{}
+	copy    map[netip.Prefix][]Route
+}
+
+func (r *routes) mirror(ctx context.Context, s *Speaker) {
+	r.pending, r.copy, r.wake = map[netip.Prefix]bool{}, map[netip.Prefix][]Route{}, make(chan struct{}, 1)
+	s.OnChanged = func(ps []netip.Prefix, _ bool) {
+		r.mmu.Lock()
+		for _, p := range ps {
+			r.pending[p] = true
+		}
+		r.mmu.Unlock()
+		select {
+		case r.wake <- struct{}{}:
+		default:
+		}
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.wake:
+			}
+			r.mmu.Lock()
+			ps := make([]netip.Prefix, 0, len(r.pending))
+			for p := range r.pending {
+				ps = append(ps, p)
+			}
+			clear(r.pending)
+			r.mmu.Unlock()
+			got, err := s.Paths(ctx, ps)
+			if err != nil {
+				return
+			}
+			r.mmu.Lock()
+			for _, pp := range got {
+				if len(pp.Routes) == 0 {
+					delete(r.copy, pp.Prefix)
+				} else {
+					r.copy[pp.Prefix] = pp.Routes
+				}
+			}
+			r.mmu.Unlock()
+		}
+	}()
+}
+
+// mirrored reports whether the mirror equals the table OnRoutes gave.
+func (r *routes) mirrored() bool {
+	r.mu.Lock()
+	want := map[netip.Prefix][]Route{}
+	for _, x := range r.rs {
+		want[x.Prefix] = append(want[x.Prefix], x)
+	}
+	r.mu.Unlock()
+	r.mmu.Lock()
+	defer r.mmu.Unlock()
+	if len(want) != len(r.copy) {
+		return false
+	}
+	for p, w := range want {
+		g := r.copy[p]
+		if len(g) != len(w) {
+			return false
+		}
+		for i := range w {
+			if g[i].Rank != w[i].Rank || g[i].Peer != w[i].Peer || g[i].NextHop != w[i].NextHop || g[i].PathString() != w[i].PathString() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (r *routes) set(rs []Route, _ bool) {
@@ -386,4 +465,35 @@ func TestLocalAS(t *testing.T) {
 	if p := rc.get("10.12.0.0/16")[0].PathString(); p != "65000 65010 65002 I" {
 		t.Fatalf("path at another neighbour: %s", p)
 	}
+}
+
+// OnChanged with Paths mirrors the table exactly through originations,
+// multipath ranks, a policy change and withdrawals (cer-bgpd's delta
+// protocol, PLAN 15b).
+func TestChangedMirrorsTable(t *testing.T) {
+	n := newNet(t)
+	b1, b2 := nbr("127.0.0.41", 65001, false), nbr("127.0.0.42", 65001, false)
+	b1.Multipath, b2.Multipath = true, true
+	c, rc := n.speaker(n.ctx, "127.0.0.40", 65000, exportAll, b1, b2)
+	a1, _ := n.speaker(n.ctx, "127.0.0.41", 65001, exportAll, nbr("127.0.0.40", 65000, false))
+	a2, _ := n.speaker(n.ctx, "127.0.0.42", 65001, exportAll, nbr("127.0.0.40", 65000, false))
+	var many []Path
+	for i := range 60 {
+		many = append(many, local(fmt.Sprintf("10.%d.0.0/16", 100+i)))
+	}
+	a1.SetLocal(many, nil)
+	a2.SetLocal(many[:30], nil)
+	waitFor(t, "table", func() bool { return len(rc.get("10.100.0.0/16")) == 2 && len(rc.get("10.159.0.0/16")) == 1 })
+	waitFor(t, "mirror after originations", rc.mirrored)
+	// Ranks change on every shared prefix (multipath off).
+	b1.Multipath, b2.Multipath = false, false
+	b1.LocalAS, b2.LocalAS = 65000, 65000
+	c.Configure(Config{AS: 65000, RouterID: netip.MustParseAddr("127.0.0.40"), Neighbors: []Neighbor{b1, b2}, ConnectRetry: 200 * time.Millisecond})
+	waitFor(t, "ranks", func() bool { rs := rc.get("10.100.0.0/16"); return len(rs) == 2 && rs[1].Rank == 1 })
+	waitFor(t, "mirror after rank changes", rc.mirrored)
+	// Withdrawals: some prefixes lose one path, others every path.
+	a2.SetLocal(many[:10], nil)
+	a1.SetLocal(many[20:], nil)
+	waitFor(t, "withdrawn", func() bool { return len(rc.get("10.115.0.0/16")) == 0 && len(rc.get("10.105.0.0/16")) == 1 })
+	waitFor(t, "mirror after withdrawals", rc.mirrored)
 }
